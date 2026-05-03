@@ -1,11 +1,23 @@
 import logging
 import os
 import shutil
+from pathlib import Path
 
 from ..config import DEFAULT_CATEGORY_DESCRIPTIONS, MEMES_DATA_PATH, MEMES_DIR
 from ..utils import ensure_dir_exists, load_json, save_json
 
 logger = logging.getLogger(__name__)
+
+
+def is_safe_category_name(category: str) -> bool:
+    """Return whether category stays within one memes directory segment."""
+    if not category or category != category.strip():
+        return False
+    if category in {".", ".."}:
+        return False
+    return (
+        "/" not in category and "\\" not in category and Path(category).name == category
+    )
 
 
 class CategoryManager:
@@ -64,7 +76,7 @@ class CategoryManager:
         try:
             category = category.strip()
             description = description.strip() or "请添加描述"
-            if not category:
+            if not is_safe_category_name(category):
                 return False
 
             os.makedirs(os.path.join(MEMES_DIR, category), exist_ok=True)

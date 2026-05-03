@@ -1018,7 +1018,6 @@ class MemeSender(Star):
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
         """Ensure edited personas still get the meme prompt before LLM calls."""
-        self._reload_personas()
         self._apply_request_prompt(req)
 
     @filter.on_llm_response(priority=99999)
@@ -1443,7 +1442,8 @@ class MemeSender(Star):
 
         # 流式传输兼容处理
         if result.result_content_type == ResultContentType.STREAMING_FINISH:
-            await self._send_memes_streaming(event)
+            if self.streaming_compatibility:
+                await self._send_memes_streaming(event)
             return
 
         try:
