@@ -37,6 +37,11 @@ class CategoryManager:
         """加载类别描述配置"""
         return load_json(MEMES_DATA_PATH, DEFAULT_CATEGORY_DESCRIPTIONS)
 
+    def reload_descriptions(self) -> dict[str, str]:
+        """Reload category descriptions from disk."""
+        self.descriptions = self._load_descriptions()
+        return self.descriptions
+
     def get_local_categories(self) -> set[str]:
         """获取本地文件夹中的类别"""
         try:
@@ -54,6 +59,7 @@ class CategoryManager:
         返回: (missing_in_config, deleted_categories)
         """
         local_categories = self.get_local_categories()
+        self.reload_descriptions()
         config_categories = set(self.descriptions.keys())
 
         return (
@@ -64,6 +70,7 @@ class CategoryManager:
     def update_description(self, category: str, description: str) -> bool:
         """更新类别描述"""
         try:
+            self.reload_descriptions()
             self.descriptions[category] = description  # 更新内存中的 descriptions
             # 同步保存到文件
             return save_json(self.descriptions, MEMES_DATA_PATH)
@@ -88,6 +95,7 @@ class CategoryManager:
     def rename_category(self, old_name: str, new_name: str) -> bool:
         """重命名类别"""
         try:
+            self.reload_descriptions()
             if old_name not in self.descriptions:
                 return False
 
@@ -113,6 +121,7 @@ class CategoryManager:
     def delete_category(self, category: str) -> bool:
         """删除类别"""
         try:
+            self.reload_descriptions()
             # 从配置中删除
             if category in self.descriptions:
                 del self.descriptions[category]
@@ -128,13 +137,27 @@ class CategoryManager:
             logger.error(f"删除类别失败: {e}")
             return False
 
+    def remove_from_config(self, category: str) -> bool:
+        """Remove a category from the description config only (keep directory on disk)."""
+        try:
+            self.reload_descriptions()
+            if category not in self.descriptions:
+                return False
+            del self.descriptions[category]
+            return save_json(self.descriptions, MEMES_DATA_PATH)
+        except Exception as e:
+            logger.error(f"从配置中移除类别失败: {e}")
+            return False
+
     def get_descriptions(self) -> dict[str, str]:
         """获取所有类别描述"""
+        self.reload_descriptions()
         return self.descriptions.copy()  # 返回字典的副本
 
     def sync_with_filesystem(self) -> bool:
         """同步文件系统和配置"""
         try:
+            self.reload_descriptions()
             local_categories = self.get_local_categories()
             changed = False
 

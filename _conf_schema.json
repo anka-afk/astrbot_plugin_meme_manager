@@ -67,11 +67,6 @@
       }
     }
   },
-  "webui_port": {
-    "description": "Web UI 端口号",
-    "type": "int",
-    "default": 5000
-  },
   "prompt": {
     "description": "自动添加的提示词(类别描述自动插入到提示词中)",
     "type": "object",

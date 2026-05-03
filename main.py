@@ -1,6 +1,8 @@
 import asyncio
+import base64
 import io
 import json
+import mimetypes
 import os
 import random
 import re
@@ -8,7 +10,6 @@ import ssl
 import tempfile
 import time
 import traceback
-from multiprocessing import Process
 
 import aiohttp
 from PIL import Image as PILImage
@@ -20,18 +21,15 @@ from astrbot.api.event.filter import EventMessageType
 from astrbot.api.message_components import *  # noqa: F403
 from astrbot.api.message_components import Image
 from astrbot.api.provider import LLMResponse, ProviderRequest
-from astrbot.api.star import Context, Star, register
-from astrbot.core import astrbot_config
+from astrbot.api.star import Context, Star
 from astrbot.core.message.components import Plain
 from astrbot.core.message.message_event_result import MessageChain, ResultContentType
-from astrbot.core.platform import MessageType as PlatformMessageType
-from astrbot.core.platform.message_session import MessageSession
-from astrbot.core.utils.io import get_local_ip_addresses
 from astrbot.core.utils.session_waiter import (
     SessionController,
     SessionFilter,
     session_waiter,
 )
+from quart import jsonify, make_response, request, send_file
 
 from .backend.category_manager import CategoryManager
 from .backend.models import (
@@ -44,12 +42,10 @@ from .image_host.img_sync import ImageSync
 from .init import init_plugin
 from .utils import (
     dict_to_string,
-    generate_secret_key,
     get_default_meme_categories,
     load_json,
     restore_default_memes,
 )
-from .webui import ServerState, run_server
 
 
 class ConfirmationCancelled(Exception):
@@ -62,6 +58,11 @@ class CategoryCreationCancelled(Exception):
 
 MEME_PROMPT_MARKER_START = "<!-- meme_manager_prompt:start -->"
 MEME_PROMPT_MARKER_END = "<!-- meme_manager_prompt:end -->"
+PLUGIN_NAME = "meme_manager"
+WEBUI_LOG_PREFIX = f"[{PLUGIN_NAME}][WebUI]"
+MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_ORIGINAL_IMAGE_BYTES = 32 * 1024 * 1024
+PREVIEW_IMAGE_MAX_DIMENSION = 512
 
 
 class SenderScopedSessionFilter(SessionFilter):
@@ -72,9 +73,6 @@ class SenderScopedSessionFilter(SessionFilter):
         return f"{event.unified_msg_origin}:{sender_id}"
 
 
-@register(
-    "meme_manager", "anka", "anka - 表情包管理器 - 支持表情包发送及表情包上传", "3.20"
-)
 class MemeSender(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -91,6 +89,7 @@ class MemeSender(Star):
         self.img_sync = None
         self.img_sync_config = None
         self.img_sync_provider_type = None
+        self._last_img_host_sync_task_status = None
         image_host_type = self.config.get("image_host", "stardots")
 
         if image_host_type == "stardots":
@@ -137,12 +136,6 @@ class MemeSender(Star):
                 )
                 # 延迟日志记录，避免 logger 未初始化
                 self._r2_bucket_name = r2_config.get("bucket_name")
-
-        # 用于管理服务器
-        self.webui_process = None
-
-        self.server_key = None
-        self.server_port = self.config.get("webui_port", 5000)
 
         # 初始化表情状态
         self.found_emotions = []  # 存储找到的表情
@@ -192,11 +185,12 @@ class MemeSender(Star):
         self.persona_base_prompts = {}
         self._reload_personas()
 
+        # 注册仪表盘插件页面 API
+        self._register_web_apis()
+
     @filter.command_group("表情管理")
     def meme_manager(self):
         """表情包管理命令组:
-        开启管理后台
-        关闭管理后台
         查看图库
         添加分类
         添加表情
@@ -210,183 +204,794 @@ class MemeSender(Star):
         """
         pass
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @meme_manager.command("开启管理后台")
-    async def start_webui(self, event: AstrMessageEvent):
-        """启动表情包管理服务器"""
-        if event.get_message_type() != PlatformMessageType.FRIEND_MESSAGE:
-            yield event.plain_result(
-                "⚠️ 该指令仅限私聊使用。\n请私聊发送“表情管理 开启管理后台”。"
-            )
-            return
+    def _register_web_apis(self):
+        # --- Emoji CRUD ---
+        self._register_webui_api(
+            "emoji", self._api_get_emojis, ["GET"], "Get all emojis grouped by category"
+        )
+        self._register_webui_api(
+            "emoji/<category>",
+            self._api_get_emoji_by_category,
+            ["GET"],
+            "Get emojis in a specific category",
+        )
+        self._register_webui_api(
+            "emoji/add/<category>",
+            self._api_add_emoji,
+            ["POST"],
+            "Upload emoji to category (multipart: file field)",
+        )
+        self._register_webui_api(
+            "emoji/delete", self._api_delete_emoji, ["POST"], "Delete a single emoji"
+        )
+        self._register_webui_api(
+            "emoji/batch_delete",
+            self._api_batch_delete_emojis,
+            ["POST"],
+            "Batch delete emojis",
+        )
+        self._register_webui_api(
+            "emoji/move",
+            self._api_move_emoji,
+            ["POST"],
+            "Move single emoji to another category",
+        )
+        self._register_webui_api(
+            "emoji/batch_move",
+            self._api_batch_move_emojis,
+            ["POST"],
+            "Batch move emojis",
+        )
+        self._register_webui_api(
+            "emoji/batch_copy",
+            self._api_batch_copy_emojis,
+            ["POST"],
+            "Batch copy emojis",
+        )
+        self._register_webui_api(
+            "emoji/clear_all",
+            self._api_clear_all_emojis,
+            ["POST"],
+            "Clear all emojis (keeps categories)",
+        )
 
-        try:
-            self.server_port = self.config.get("webui_port", 5000)
-            is_running = bool(self.webui_process and self.webui_process.is_alive())
-            if is_running and self.server_key and await self._check_port_active():
-                yield event.plain_result(
-                    "ℹ️ 管理后台已在运行，以下是当前访问信息：\n\n"
-                    + self._build_webui_access_message()
+        # --- Category management ---
+        self._register_webui_api(
+            "emotions", self._api_get_emotions, ["GET"], "Get category descriptions"
+        )
+        self._register_webui_api(
+            "category/delete",
+            self._api_delete_category,
+            ["POST"],
+            "Delete category and its files",
+        )
+        self._register_webui_api(
+            "category/clear",
+            self._api_clear_category,
+            ["POST"],
+            "Clear emojis in category (keep category)",
+        )
+        self._register_webui_api(
+            "category/restore",
+            self._api_restore_category,
+            ["POST"],
+            "Restore or create a category",
+        )
+        self._register_webui_api(
+            "category/rename", self._api_rename_category, ["POST"], "Rename a category"
+        )
+        self._register_webui_api(
+            "category/update_description",
+            self._api_update_description,
+            ["POST"],
+            "Update category description",
+        )
+        self._register_webui_api(
+            "category/remove_from_config",
+            self._api_remove_from_config,
+            ["POST"],
+            "Remove category from config only",
+        )
+
+        # --- Sync ---
+        self._register_webui_api(
+            "sync/status", self._api_sync_status, ["GET"], "Get config sync status"
+        )
+        self._register_webui_api(
+            "sync/config",
+            self._api_sync_config,
+            ["POST"],
+            "Sync config with filesystem",
+        )
+
+        # --- Image host sync ---
+        self._register_webui_api(
+            "img_host/sync/status",
+            self._api_img_host_sync_status,
+            ["GET"],
+            "Get image host sync status",
+        )
+        self._register_webui_api(
+            "img_host/sync/upload",
+            self._api_img_host_sync_upload,
+            ["POST"],
+            "Start upload to image host",
+        )
+        self._register_webui_api(
+            "img_host/sync/download",
+            self._api_img_host_sync_download,
+            ["POST"],
+            "Start download from image host",
+        )
+        self._register_webui_api(
+            "img_host/sync/overwrite_to_remote",
+            self._api_img_host_sync_overwrite_to_remote,
+            ["POST"],
+            "Overwrite image host from local files",
+        )
+        self._register_webui_api(
+            "img_host/sync/overwrite_from_remote",
+            self._api_img_host_sync_overwrite_from_remote,
+            ["POST"],
+            "Overwrite local files from image host",
+        )
+        self._register_webui_api(
+            "img_host/sync/progress",
+            self._api_img_host_sync_progress,
+            ["GET"],
+            "SSE stream for sync progress",
+        )
+        self._register_webui_api(
+            "img_host/sync/task_status",
+            self._api_img_host_sync_task_status,
+            ["GET"],
+            "Get current image host sync task status",
+        )
+
+        # --- Image serving ---
+        self._register_webui_api(
+            "meme_image", self._api_serve_meme_image, ["GET"], "Serve a meme image file"
+        )
+        self._register_webui_api(
+            "meme_image_data",
+            self._api_get_meme_image_data,
+            ["GET"],
+            "Get a meme image as a data URL for plugin page previews",
+        )
+
+    def _register_webui_api(self, route, handler, methods, desc):
+        route_path = f"/{PLUGIN_NAME}/{route.strip('/')}"
+
+        async def logged_handler(*args, **kwargs):
+            started_at = time.monotonic()
+            logger.info(
+                f"{WEBUI_LOG_PREFIX} {request.method} {route_path} start"
+            )
+            try:
+                response = await handler(*args, **kwargs)
+            except Exception:
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                logger.error(
+                    f"{WEBUI_LOG_PREFIX} {request.method} {route_path} "
+                    f"failed duration_ms={elapsed_ms}",
+                    exc_info=True,
                 )
-                return
+                raise
 
-            state = ServerState()
-            state.ready.clear()
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            status_code = self._get_webui_response_status(response)
+            logger.info(
+                f"{WEBUI_LOG_PREFIX} {request.method} {route_path} "
+                f"done status={status_code} duration_ms={elapsed_ms}"
+            )
+            return response
 
-            # 生成秘钥
-            self.server_key = generate_secret_key(8)
+        logged_handler.__name__ = f"webui_{handler.__name__}"
+        self.context.register_web_api(route_path, logged_handler, methods, desc)
 
-            # 检查端口占用情况
-            if await self._check_port_active():
-                await self._shutdown()
-                await asyncio.sleep(1)  # 等待系统释放端口
-                if await self._check_port_active():
-                    raise RuntimeError(f"端口 {self.server_port} 仍被占用")
+    @staticmethod
+    def _get_webui_response_status(response) -> int | str:
+        if isinstance(response, tuple) and len(response) > 1:
+            return response[1]
+        return getattr(response, "status_code", "unknown")
 
-            config_for_server = {
-                "img_sync_config": self.img_sync_config,
-                "img_sync_provider_type": self.img_sync_provider_type,
-                "webui_port": self.server_port,
-                "server_key": self.server_key,
+    # === API Handler Methods ===
+
+    async def _api_get_emojis(self):
+        from .backend.models import scan_emoji_folder
+
+        emoji_data = await scan_emoji_folder()
+        for category in emoji_data:
+            if not isinstance(emoji_data[category], list):
+                emoji_data[category] = []
+        return jsonify(emoji_data)
+
+    async def _api_get_emoji_by_category(self, category):
+        from .backend.models import get_emoji_by_category
+
+        emojis = get_emoji_by_category(category)
+        if emojis is None:
+            return jsonify({"message": "Category not found"}), 404
+        return jsonify(emojis if isinstance(emojis, list) else []), 200
+
+    async def _api_add_emoji(self, category):
+        from .backend.models import DuplicateEmojiError, add_emoji_to_category
+
+        try:
+            files = await request.files
+            if not files or "file" not in files:
+                return jsonify({"message": "没有找到上传的图片文件"}), 400
+
+            image_file = files["file"]
+            if not image_file or not image_file.filename:
+                return jsonify({"message": "无效的图片文件"}), 400
+
+            logger.info(f"收到上传请求: 类别={category}, 文件名={image_file.filename}")
+
+            try:
+                result = add_emoji_to_category(category, image_file)
+                self.category_manager.sync_with_filesystem()
+                logger.info(f"表情包添加成功: {result['path']}")
+                return jsonify(
+                    {
+                        "message": "表情包添加成功",
+                        "path": result["path"],
+                        "category": category,
+                        "filename": result["filename"],
+                    }
+                ), 201
+            except DuplicateEmojiError as e:
+                logger.info(f"跳过重复表情包: {e}")
+                return jsonify(
+                    {
+                        "message": str(e),
+                        "code": "duplicate_emoji",
+                        "category": category,
+                        "filename": e.existing_filename,
+                    }
+                ), 409
+        except Exception as e:
+            logger.error(f"处理上传请求时出错: {e}", exc_info=True)
+            return jsonify({"message": f"处理上传请求时出错: {str(e)}"}), 500
+
+    async def _api_delete_emoji(self):
+        from .backend.models import delete_emoji_from_category
+
+        data = await request.get_json()
+        category = data.get("category")
+        image_file = data.get("image_file")
+        if not category or not image_file:
+            return jsonify({"message": "Category and image file are required"}), 400
+        if delete_emoji_from_category(category, image_file):
+            return jsonify(
+                {
+                    "message": "Emoji deleted successfully",
+                    "category": category,
+                    "filename": image_file,
+                }
+            ), 200
+        return jsonify({"message": "Emoji not found"}), 404
+
+    async def _api_batch_delete_emojis(self):
+        from .backend.models import batch_delete_emojis
+
+        data = await request.get_json()
+        category = data.get("category")
+        image_files = data.get("image_files")
+        if not category or not isinstance(image_files, list) or not image_files:
+            return jsonify({"message": "Category and image_files are required"}), 400
+        result = batch_delete_emojis(category, image_files)
+        if not result["category_exists"]:
+            return jsonify({"message": "Category not found"}), 404
+        return jsonify(
+            {
+                "message": "Batch delete completed",
+                "category": category,
+                "deleted_files": result["deleted_files"],
+                "missing_files": result["missing_files"],
+                "deleted_count": len(result["deleted_files"]),
+                "missing_count": len(result["missing_files"]),
             }
-            self.webui_process = Process(target=run_server, args=(config_for_server,))
-            self.webui_process.start()
+        ), 200
 
-            # 等待服务器就绪（轮询检测端口激活）
-            for i in range(10):
-                if await self._check_port_active():
-                    break
-                await asyncio.sleep(1)
-            else:
-                raise RuntimeError("⌛ 启动超时，请检查防火墙设置")
+    async def _api_move_emoji(self):
+        from .backend.models import move_emoji_to_category
 
-            access_message = self._build_webui_access_message()
-            yield event.plain_result(access_message)
+        data = await request.get_json()
+        source_category = data.get("source_category")
+        target_category = data.get("target_category")
+        image_file = data.get("image_file")
+        if not source_category or not target_category or not image_file:
+            return jsonify(
+                {
+                    "message": "source_category, target_category and image_file are required"
+                }
+            ), 400
+        if source_category == target_category:
+            return jsonify(
+                {"message": "Source and target category must be different"}
+            ), 400
+        result = move_emoji_to_category(source_category, image_file, target_category)
+        if not result["source_category_exists"]:
+            return jsonify({"message": "Source category not found"}), 404
+        if result["conflict"]:
+            return jsonify({"message": "Target file already exists"}), 409
+        if result["missing"]:
+            return jsonify({"message": "Emoji not found"}), 404
+        return jsonify(
+            {
+                "message": "Emoji moved successfully",
+                "source_category": result["source_category"],
+                "target_category": result["target_category"],
+                "filename": result["filename"],
+            }
+        ), 200
 
+    async def _api_batch_move_emojis(self):
+        from .backend.models import batch_move_emojis
+
+        data = await request.get_json()
+        source_category = data.get("source_category")
+        target_category = data.get("target_category")
+        image_files = data.get("image_files")
+        if (
+            not source_category
+            or not target_category
+            or not isinstance(image_files, list)
+            or not image_files
+        ):
+            return jsonify(
+                {
+                    "message": "source_category, target_category and image_files are required"
+                }
+            ), 400
+        if source_category == target_category:
+            return jsonify(
+                {"message": "Source and target category must be different"}
+            ), 400
+        result = batch_move_emojis(source_category, image_files, target_category)
+        if not result["source_category_exists"]:
+            return jsonify({"message": "Source category not found"}), 404
+        return jsonify(
+            {
+                "message": "Batch move completed",
+                "source_category": source_category,
+                "target_category": target_category,
+                "moved_files": result["moved_files"],
+                "missing_files": result["missing_files"],
+                "conflicting_files": result["conflicting_files"],
+                "moved_count": len(result["moved_files"]),
+                "missing_count": len(result["missing_files"]),
+                "conflict_count": len(result["conflicting_files"]),
+            }
+        ), 200
+
+    async def _api_batch_copy_emojis(self):
+        from .backend.models import batch_copy_emojis
+
+        data = await request.get_json()
+        source_category = data.get("source_category")
+        target_category = data.get("target_category")
+        image_files = data.get("image_files")
+        if (
+            not source_category
+            or not target_category
+            or not isinstance(image_files, list)
+            or not image_files
+        ):
+            return jsonify(
+                {
+                    "message": "source_category, target_category and image_files are required"
+                }
+            ), 400
+        result = batch_copy_emojis(source_category, image_files, target_category)
+        if not result["source_category_exists"]:
+            return jsonify({"message": "Source category not found"}), 404
+        return jsonify(
+            {
+                "message": "Batch copy completed",
+                "source_category": source_category,
+                "target_category": target_category,
+                "copied_files": result["copied_files"],
+                "missing_files": result["missing_files"],
+                "conflicting_files": result["conflicting_files"],
+                "copied_count": len(result["copied_files"]),
+                "missing_count": len(result["missing_files"]),
+                "conflict_count": len(result["conflicting_files"]),
+            }
+        ), 200
+
+    async def _api_clear_all_emojis(self):
+        from .backend.models import clear_all_emojis
+
+        result = clear_all_emojis()
+        deleted_count = sum(result["deleted_by_category"].values())
+        return jsonify(
+            {
+                "message": "All emojis cleared successfully",
+                "deleted_by_category": result["deleted_by_category"],
+                "deleted_count": deleted_count,
+                "affected_categories": len(result["deleted_by_category"]),
+            }
+        ), 200
+
+    async def _api_get_emotions(self):
+        try:
+            descriptions = self.category_manager.get_descriptions()
+            return jsonify(descriptions)
         except Exception as e:
-            logger.error(f"启动失败: {str(e)}")
-            yield event.plain_result(
-                f"⚠️ 后台启动失败，请稍后重试\n（错误代码：{str(e)}）"
-            )
-            await self._cleanup_resources()
+            logger.error(f"获取标签描述失败: {e}")
+            return jsonify({"error": "获取标签描述失败"}), 500
 
-    async def _check_port_active(self):
-        """验证端口是否实际已激活"""
+    async def _api_delete_category(self):
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection("127.0.0.1", self.server_port), timeout=1
-            )
-            writer.close()
-            return True
-        except Exception:
-            return False
+            data = await request.get_json()
+            category = data.get("category")
+            if not category:
+                return jsonify({"message": "Category is required"}), 400
+            if self.category_manager.delete_category(category):
+                return jsonify({"message": "Category deleted successfully"}), 200
+            return jsonify({"message": "Failed to delete category"}), 500
+        except Exception as e:
+            return jsonify({"message": f"Failed to delete category: {str(e)}"}), 500
 
-    def _build_webui_access_urls(self) -> list[str]:
-        """参考 AstrBot 本体生成可访问地址列表。"""
-        access_urls = [f"http://localhost:{self.server_port}"]
-        seen_hosts = {"localhost", "127.0.0.1"}
+    async def _api_clear_category(self):
+        from .backend.models import clear_category_emojis
 
+        data = await request.get_json()
+        category = data.get("category")
+        if not category:
+            return jsonify({"message": "Category is required"}), 400
+        result = clear_category_emojis(category)
+        if not result["category_exists"]:
+            return jsonify({"message": "Category not found"}), 404
+        return jsonify(
+            {
+                "message": "Category cleared successfully",
+                "category": category,
+                "deleted_files": result["deleted_files"],
+                "deleted_count": len(result["deleted_files"]),
+            }
+        ), 200
+
+    async def _api_restore_category(self):
         try:
-            for ip_addr in get_local_ip_addresses():
-                if not ip_addr or ip_addr in seen_hosts or ip_addr.startswith("127."):
-                    continue
-                seen_hosts.add(ip_addr)
-                access_urls.append(f"http://{ip_addr}:{self.server_port}")
+            data = await request.get_json()
+            category = data.get("category")
+            description = data.get("description", "请添加描述")
+            if not category:
+                return jsonify({"message": "Category is required"}), 400
+            if self.category_manager.create_category(category, description):
+                return jsonify(
+                    {
+                        "message": "Category created successfully",
+                        "description": description,
+                    }
+                ), 200
+            return jsonify({"message": "Failed to create category"}), 500
+        except Exception as e:
+            return jsonify({"message": f"Failed to create category: {str(e)}"}), 500
+
+    async def _api_rename_category(self):
+        try:
+            data = await request.get_json()
+            old_name = data.get("old_name")
+            new_name = data.get("new_name")
+            if not old_name or not new_name:
+                return jsonify(
+                    {"message": "Old and new category names are required"}
+                ), 400
+            if self.category_manager.rename_category(old_name, new_name):
+                return jsonify({"message": "Category renamed successfully"}), 200
+            return jsonify({"message": "Failed to rename category"}), 500
+        except Exception as e:
+            return jsonify({"message": f"Failed to rename category: {str(e)}"}), 500
+
+    async def _api_update_description(self):
+        try:
+            data = await request.get_json()
+            category = data.get("tag")
+            description = data.get("description")
+            if not category or not description:
+                return jsonify(
+                    {"message": "Category and description are required"}
+                ), 400
+            if self.category_manager.update_description(category, description):
+                return jsonify({"category": category, "description": description}), 200
+            return jsonify({"message": "Failed to update category description"}), 500
+        except Exception as e:
+            return jsonify(
+                {"message": f"Failed to update category description: {str(e)}"}
+            ), 500
+
+    async def _api_remove_from_config(self):
+        try:
+            data = await request.get_json()
+            category = data.get("category")
+            if not category:
+                return jsonify({"message": "Category is required"}), 400
+            if self.category_manager.remove_from_config(category):
+                return jsonify(
+                    {"message": "Category removed from config successfully"}
+                ), 200
+            return jsonify({"message": "Failed to remove category from config"}), 500
+        except Exception as e:
+            return jsonify(
+                {"message": f"Failed to remove category from config: {str(e)}"}
+            ), 500
+
+    async def _api_sync_status(self):
+        try:
+            missing_in_config, deleted_categories = (
+                self.category_manager.get_sync_status()
+            )
+            return jsonify(
+                {
+                    "status": "ok",
+                    "missing_in_config": missing_in_config,
+                    "deleted_categories": deleted_categories,
+                    "differences": {
+                        "missing_in_config": missing_in_config,
+                        "deleted_categories": deleted_categories,
+                    },
+                }
+            )
+        except Exception as e:
+            logger.error(f"获取同步状态失败: {e}")
+            return jsonify({"error": "获取同步状态失败"}), 500
+
+    async def _api_sync_config(self):
+        try:
+            logger.info("开始同步配置...")
+            if self.category_manager.sync_with_filesystem():
+                logger.info("配置同步成功")
+                return jsonify({"message": "配置同步成功"}), 200
+            logger.warning("配置同步失败")
+            return jsonify({"message": "配置同步失败"}), 500
+        except Exception as e:
+            logger.error(f"配置同步失败: {e}")
+            return jsonify({"message": f"配置同步失败: {str(e)}"}), 500
+
+    def _get_provider_label(self) -> str:
+        if self.img_sync_provider_type == "cloudflare_r2":
+            return "Cloudflare R2"
+        if self.img_sync_provider_type == "stardots":
+            return "StarDots"
+        if self.img_sync and hasattr(self.img_sync, "provider"):
+            return self.img_sync.provider.__class__.__name__
+        return "未知图床"
+
+    def _get_img_host_sync_task_status(self) -> dict:
+        if not self.img_sync:
+            return {
+                "available": False,
+                "running": False,
+                "completed": True,
+                "success": False,
+                "message": "图床服务未配置",
+            }
+
+        process = getattr(self.img_sync, "sync_process", None)
+        if not process:
+            if self._last_img_host_sync_task_status:
+                return self._last_img_host_sync_task_status.copy()
+            return {
+                "available": True,
+                "running": False,
+                "completed": True,
+                "success": None,
+                "message": "当前没有同步任务",
+            }
+
+        status = {
+            "available": True,
+            "pid": process.pid,
+            "exit_code": process.exitcode,
+        }
+        if process.is_alive():
+            status.update(
+                {
+                    "running": True,
+                    "completed": False,
+                    "success": None,
+                    "message": "同步任务运行中",
+                }
+            )
+            return status
+
+        exit_code = process.exitcode
+        try:
+            process.join(timeout=0)
         except Exception as exc:
-            logger.warning(f"获取本地网络地址失败: {exc}")
+            logger.warning(f"回收图床同步进程失败: {exc}")
+        self.img_sync.sync_process = None
 
-        return access_urls
+        status.update(
+            {
+                "running": False,
+                "completed": True,
+                "success": exit_code == 0,
+                "exit_code": exit_code,
+                "message": "同步任务已完成" if exit_code == 0 else "同步任务失败",
+            }
+        )
+        self._last_img_host_sync_task_status = status.copy()
+        return status
 
-    def _build_webui_access_message(self) -> str:
-        access_urls = self._build_webui_access_urls()
-        parts = [
-            "✨ 管理后台已就绪！",
-            "━━━━━━━━━━━━━━",
-            "表情包管理服务器已启动！",
-            "🔗 可访问地址：",
-            f"   ➜ 本地: {access_urls[0]}",
-        ]
+    def _start_img_host_sync_task(self, task: str) -> dict:
+        status = self._get_img_host_sync_task_status()
+        if not status.get("available", False):
+            raise RuntimeError(status.get("message") or "图床服务未配置")
+        if status.get("running"):
+            raise RuntimeError("已有同步任务正在运行，请等待当前任务完成")
 
-        for url in access_urls[1:]:
-            parts.append(f"   ➜ 网络: {url}")
+        self._last_img_host_sync_task_status = None
+        self.img_sync.sync_process = self.img_sync._start_sync_process(task)
+        return self._get_img_host_sync_task_status()
 
-        parts.extend(
-            [
-                f"🔑 临时密钥：{self.server_key} （本次有效）",
-                "⚠️ 请勿分享给未授权用户",
-            ]
+    async def _api_img_host_sync_status(self):
+        try:
+            if not self.img_sync:
+                return jsonify({"error": "图床服务未配置"}), 400
+            status = self.img_sync.check_status()
+            status["upload_count"] = len(status.get("to_upload", []))
+            status["download_count"] = len(status.get("to_download", []))
+            status["remote_extra_count"] = len(status.get("to_delete_remote", []))
+            status["local_extra_count"] = len(status.get("to_delete_local", []))
+            status["provider_label"] = self._get_provider_label()
+            return jsonify(status)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    async def _api_img_host_sync_upload(self):
+        try:
+            if not self.img_sync:
+                return jsonify({"message": "图床服务未配置"}), 400
+            task_status = self._start_img_host_sync_task("upload")
+            return jsonify({"success": True, "task": task_status})
+        except Exception as e:
+            status_code = 409 if "已有同步任务" in str(e) else 500
+            return jsonify({"message": str(e)}), status_code
+
+    async def _api_img_host_sync_overwrite_to_remote(self):
+        try:
+            if not self.img_sync:
+                return jsonify({"message": "图床服务未配置"}), 400
+            task_status = self._start_img_host_sync_task("overwrite_to_remote")
+            return jsonify({"success": True, "task": task_status})
+        except Exception as e:
+            status_code = 409 if "已有同步任务" in str(e) else 500
+            return jsonify({"message": str(e)}), status_code
+
+    async def _api_img_host_sync_overwrite_from_remote(self):
+        try:
+            if not self.img_sync:
+                return jsonify({"message": "图床服务未配置"}), 400
+            task_status = self._start_img_host_sync_task("overwrite_from_remote")
+            return jsonify({"success": True, "task": task_status})
+        except Exception as e:
+            status_code = 409 if "已有同步任务" in str(e) else 500
+            return jsonify({"message": str(e)}), status_code
+
+    async def _api_img_host_sync_download(self):
+        try:
+            if not self.img_sync:
+                return jsonify({"message": "图床服务未配置"}), 400
+            task_status = self._start_img_host_sync_task("download")
+            return jsonify({"success": True, "task": task_status})
+        except Exception as e:
+            status_code = 409 if "已有同步任务" in str(e) else 500
+            return jsonify({"message": str(e)}), status_code
+
+    async def _api_img_host_sync_task_status(self):
+        return jsonify(self._get_img_host_sync_task_status())
+
+    async def _api_img_host_sync_progress(self):
+        async def generate():
+            while True:
+                status = self._get_img_host_sync_task_status()
+                yield f"data: {json.dumps(status)}\n\n"
+                if status.get("completed"):
+                    return
+                if status.get("running"):
+                    await asyncio.sleep(1)
+                else:
+                    return
+
+        response = await make_response(
+            generate(),
+            {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+        response.timeout = None
+        return response
+
+    async def _api_serve_meme_image(self):
+        category = request.args.get("category", "")
+        filename = request.args.get("filename", "")
+        file_path = (MEMES_DIR / category / filename).resolve()
+        if not str(file_path).startswith(str(MEMES_DIR.resolve())):
+            return jsonify({"status": "error", "message": "Invalid path"}), 403
+        if not file_path.exists():
+            return jsonify({"status": "error", "message": "File not found"}), 404
+        return await send_file(str(file_path))
+
+    async def _api_get_meme_image_data(self):
+        category = request.args.get("category", "")
+        filename = request.args.get("filename", "")
+        size = request.args.get("size", "preview")
+        file_path = (MEMES_DIR / category / filename).resolve()
+        memes_root = MEMES_DIR.resolve()
+
+        try:
+            file_path.relative_to(memes_root)
+        except ValueError:
+            return jsonify({"status": "error", "message": "Invalid path"}), 403
+
+        if not file_path.exists() or not file_path.is_file():
+            return jsonify({"status": "error", "message": "File not found"}), 404
+
+        max_bytes = (
+            MAX_ORIGINAL_IMAGE_BYTES if size == "original" else MAX_PREVIEW_IMAGE_BYTES
+        )
+        file_size = file_path.stat().st_size
+        if file_size > max_bytes:
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": "Image is too large to preview in the plugin page",
+                    "size": file_size,
+                    "max_size": max_bytes,
+                }
+            ), 413
+
+        mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        if size == "preview" and mime_type != "image/gif":
+            try:
+                data_url, mime_type = self._build_preview_data_url(file_path)
+            except Exception as exc:
+                logger.warning(f"生成预览缩略图失败，回退原图数据: {exc}")
+                data_url = self._build_file_data_url(file_path, mime_type)
+        else:
+            data_url = self._build_file_data_url(file_path, mime_type)
+
+        return jsonify(
+            {
+                "category": category,
+                "filename": filename,
+                "mime_type": mime_type,
+                "size": file_size,
+                "data_url": data_url,
+            }
         )
 
-        if len(access_urls) == 1:
-            parts.append(
-                "⚠️ 当前仅检测到本地地址，如需远程访问，请确认端口映射、防火墙和宿主机网络已放行。"
-            )
+    @staticmethod
+    def _build_file_data_url(file_path, mime_type: str) -> str:
+        with open(file_path, "rb") as image_file:
+            encoded = base64.b64encode(image_file.read()).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"
 
-        callback_api_base = str(
-            astrbot_config.get("callback_api_base", "") or ""
-        ).strip()
-        if callback_api_base:
-            parts.append(
-                f"ℹ️ 如你通过反代对外暴露服务，请优先使用你自己的外部地址访问。当前 callback_api_base: {callback_api_base}"
-            )
-
-        return "\n".join(parts)
-
-    async def _send_webui_access_info_privately(
-        self, event: AstrMessageEvent, message: str
-    ) -> bool:
-        """只向当前操作者私聊发送管理后台地址。"""
-        sender_id = str(event.get_sender_id() or "").strip()
-        if not sender_id:
-            return False
-
-        private_session = MessageSession(
-            event.get_platform_id(),
-            PlatformMessageType.FRIEND_MESSAGE,
-            sender_id,
+    @staticmethod
+    def _build_preview_data_url(file_path) -> tuple[str, str]:
+        resample_filter = getattr(
+            getattr(PILImage, "Resampling", PILImage),
+            "LANCZOS",
+            PILImage.BICUBIC,
         )
-
-        try:
-            return await self.context.send_message(
-                private_session, MessageChain([Plain(message)])
+        with PILImage.open(file_path) as image:
+            image.thumbnail(
+                (PREVIEW_IMAGE_MAX_DIMENSION, PREVIEW_IMAGE_MAX_DIMENSION),
+                resample_filter,
             )
-        except Exception as exc:
-            logger.warning(f"私聊发送管理后台地址失败: {exc}")
-            return False
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @meme_manager.command("关闭管理后台")
-    async def stop_server(self, event: AstrMessageEvent):
-        """关闭表情包管理服务器的指令"""
-        try:
-            is_running = bool(self.webui_process and self.webui_process.is_alive())
-            if not is_running:
-                yield event.plain_result("ℹ️ 管理后台当前未运行。")
-                return
-
-            await self._shutdown()
-            yield event.plain_result("✅ 管理后台已关闭。")
-        except Exception as e:
-            yield event.plain_result(f"❌ 管理后台关闭失败：{str(e)}")
-        finally:
-            await self._cleanup_resources()
-
-    async def _shutdown(self):
-        if self.webui_process:
-            self.webui_process.terminate()
-            self.webui_process.join()
-
-    async def _cleanup_resources(self):
-        if self.img_sync:
-            self.img_sync.stop_sync()
-        self.server_key = None
-        self.server_port = None
-        if self.webui_process:
-            if self.webui_process.is_alive():
-                self.webui_process.terminate()
-                self.webui_process.join()
-        self.webui_process = None
-        logger.info("资源清理完成")
+            if image.mode not in {"RGB", "RGBA"}:
+                image = image.convert("RGBA")
+            output = io.BytesIO()
+            image.save(output, format="WEBP", quality=82, method=4)
+        encoded = base64.b64encode(output.getvalue()).decode("ascii")
+        return f"data:image/webp;base64,{encoded}", "image/webp"
 
     def _get_manageable_categories(self) -> set[str]:
         """Return the union of configured and local categories."""
@@ -2030,9 +2635,6 @@ class MemeSender(Star):
         # 停止图床同步
         if self.img_sync:
             self.img_sync.stop_sync()
-
-        await self._shutdown()
-        await self._cleanup_resources()
 
     def _merge_components_with_images(self, components, images):
         """将表情图片与文本组件智能配对，支持分段回复
