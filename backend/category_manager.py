@@ -59,6 +59,20 @@ class CategoryManager:
             logger.error(f"更新类别描述失败: {e}")
             return False
 
+    def create_category(self, category: str, description: str = "请添加描述") -> bool:
+        """创建类别目录并写入描述。"""
+        try:
+            category = category.strip()
+            description = description.strip() or "请添加描述"
+            if not category:
+                return False
+
+            os.makedirs(os.path.join(MEMES_DIR, category), exist_ok=True)
+            return self.update_description(category, description)
+        except Exception as e:
+            logger.error(f"创建类别失败: {e}")
+            return False
+
     def rename_category(self, old_name: str, new_name: str) -> bool:
         """重命名类别"""
         try:

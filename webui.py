@@ -14,8 +14,27 @@ from quart import (
     url_for,
 )
 
+from .backend.category_manager import CategoryManager
 from .backend.api import api
 from .config import MEMES_DIR
+from .image_host.img_sync import ImageSync
+
+
+def _build_plugin_config(config=None):
+    config = config or {}
+    img_sync = config.get("img_sync")
+    if img_sync is None and config.get("img_sync_config"):
+        img_sync = ImageSync(
+            config=config["img_sync_config"],
+            local_dir=MEMES_DIR,
+            provider_type=config.get("img_sync_provider_type", "stardots"),
+        )
+
+    return {
+        "img_sync": img_sync,
+        "category_manager": config.get("category_manager") or CategoryManager(),
+        "webui_port": config.get("webui_port", 5000),
+    }
 
 
 class ServerState:
@@ -100,11 +119,7 @@ async def start_server(config=None):
 
     # 配置应用
     app.secret_key = os.urandom(16)
-    app.config["PLUGIN_CONFIG"] = {
-        "img_sync": config.get("img_sync", False),
-        "category_manager": config.get("category_manager"),
-        "webui_port": port,
-    }
+    app.config["PLUGIN_CONFIG"] = _build_plugin_config(config)
 
     @app.before_serving
     async def notify_ready():
@@ -126,11 +141,7 @@ async def create_app(config=None):
     app = Quart(__name__)
 
     if config is not None and hasattr(config, "get"):
-        app.config["PLUGIN_CONFIG"] = {
-            "img_sync": config.get("img_sync"),
-            "category_manager": config.get("category_manager"),
-            "webui_port": config.get("webui_port", 5000),
-        }
+        app.config["PLUGIN_CONFIG"] = _build_plugin_config(config)
     else:
         print("警告: 配置格式不正确")
 
