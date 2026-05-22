@@ -82,7 +82,13 @@ class MemeSender(Star):
 
         # 初始化图床同步客户端
         self.img_sync = None
-        image_host_type = self.config.get("image_host", "stardots")
+        image_host_type = self._get_image_host_type()
+        webdav_config = self._get_webdav_config()
+        if image_host_type == "stardots" and self._has_required_config(
+            webdav_config, ["url", "username", "password"]
+        ):
+            image_host_type = "webdav"
+            logger.info("检测到完整 WebDAV 配置，自动启用 WebDAV 图床。")
 
         if image_host_type == "stardots":
             stardots_config = self.config.get("image_host_config", {}).get(
@@ -122,6 +128,29 @@ class MemeSender(Star):
                 )
                 # 延迟日志记录，避免 logger 未初始化
                 self._r2_bucket_name = r2_config.get("bucket_name")
+        elif image_host_type == "webdav":
+            required_fields = ["url", "username", "password"]
+            if all(webdav_config.get(field) for field in required_fields):
+                if webdav_config.get("url"):
+                    webdav_config["url"] = str(webdav_config["url"]).rstrip("/")
+                if webdav_config.get("public_url"):
+                    webdav_config["public_url"] = str(
+                        webdav_config["public_url"]
+                    ).rstrip("/")
+                webdav_config["provider"] = "webdav"
+                self.img_sync = ImageSync(
+                    config=webdav_config, local_dir=MEMES_DIR, provider_type="webdav"
+                )
+                self._webdav_url = webdav_config.get("url")
+            else:
+                missing_fields = [
+                    field for field in required_fields if not webdav_config.get(field)
+                ]
+                logger.warning(
+                    "WebDAV 图床未初始化，缺少必要配置项: %s。当前已读取字段: %s",
+                    ", ".join(missing_fields),
+                    ", ".join(sorted(webdav_config.keys())) or "无",
+                )
 
         # 用于管理服务器
         self.webui_process = None
@@ -141,6 +170,9 @@ class MemeSender(Star):
         if hasattr(self, "_r2_bucket_name"):
             logger.info(f"Cloudflare R2 图床已初始化: {self._r2_bucket_name}")
             delattr(self, "_r2_bucket_name")
+        if hasattr(self, "_webdav_url"):
+            logger.info(f"WebDAV 图床已初始化: {self._webdav_url}")
+            delattr(self, "_webdav_url")
 
         # 处理人格
         self.prompt_head = self.config.get("prompt").get("prompt_head")
@@ -194,6 +226,54 @@ class MemeSender(Star):
         """
         pass
 
+    def _get_image_host_type(self) -> str:
+        """读取图床类型，兼容不同配置保存格式。"""
+        image_host = self.config.get("image_host", "stardots")
+        if isinstance(image_host, dict):
+            image_host = image_host.get("name") or image_host.get("value") or image_host.get(
+                "type", "stardots"
+            )
+        return str(image_host or "stardots").strip().lower()
+
+    def _get_nested_config(self, *keys: str) -> dict:
+        current = self.config
+        for key in keys:
+            if not isinstance(current, dict):
+                return {}
+            current = current.get(key, {})
+        return current if isinstance(current, dict) else {}
+
+    def _has_required_config(self, config: dict, required_fields: list[str]) -> bool:
+        return all(config.get(field) not in (None, "") for field in required_fields)
+
+    def _get_webdav_config(self) -> dict:
+        """读取 WebDAV 配置，兼容嵌套、扁平和常见字段别名。"""
+        webdav_config = dict(self._get_nested_config("image_host_config", "webdav"))
+
+        if not webdav_config:
+            webdav_config = dict(self._get_nested_config("webdav"))
+
+        aliases = {
+            "url": ["webdav_url", "endpoint", "base_url", "host"],
+            "username": ["webdav_username", "user", "account"],
+            "password": ["webdav_password", "pass", "token", "access_token"],
+            "base_path": ["webdav_base_path", "path", "root_path", "remote_path"],
+            "public_url": ["webdav_public_url", "cdn_url"],
+            "verify_ssl": ["webdav_verify_ssl", "ssl_verify"],
+            "timeout": ["webdav_timeout"],
+        }
+
+        for target_key, alias_keys in aliases.items():
+            if webdav_config.get(target_key) not in (None, ""):
+                continue
+            for alias_key in alias_keys:
+                value = webdav_config.get(alias_key, self.config.get(alias_key))
+                if value not in (None, ""):
+                    webdav_config[target_key] = value
+                    break
+
+        return webdav_config
+
     @filter.permission_type(filter.PermissionType.ADMIN)
     @meme_manager.command("开启管理后台")
     async def start_webui(self, event: AstrMessageEvent):
@@ -228,7 +308,10 @@ class MemeSender(Star):
                     raise RuntimeError(f"端口 {self.server_port} 仍被占用")
 
             config_for_server = {
-                "img_sync": self.img_sync,
+                "img_sync_config": self.img_sync.config if self.img_sync else None,
+                "img_sync_provider_type": self.img_sync.provider_type
+                if self.img_sync
+                else None,
                 "category_manager": self.category_manager,
                 "webui_port": self.server_port,
                 "server_key": self.server_key,

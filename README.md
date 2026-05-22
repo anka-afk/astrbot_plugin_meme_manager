@@ -126,7 +126,7 @@
 
 ## ☁️ 图床配置
 
-本插件支持 **stardots** 和 **Cloudflare R2** 两种图床。
+本插件支持 **stardots**、**Cloudflare R2** 和 **WebDAV** 三种图床。
 
 ### 方案一：Stardots 图床（国内访问友好）
 
@@ -195,11 +195,45 @@
 > - 支持自定义域名
 > - 智能上传记录，避免重复上传相同文件
 
+### 方案三：WebDAV 图床/云存储（自建友好）
+
+WebDAV 适合用于 NAS、Alist、Nextcloud、坚果云、群晖等服务，可作为表情包云端同步存储。若 WebDAV 服务本身不提供公开外链，也可以只用于备份和多设备同步。
+
+1. **准备 WebDAV 服务**：确认你的服务支持 WebDAV，并记录 WebDAV 根地址、用户名和密码/应用密码。
+
+2. **配置插件**：在插件设置中选择 `webdav` 并填写：
+   ```yaml
+         # WebDAV 根地址 (url)
+         url: "https://example.com/dav"
+         # WebDAV 用户名 (username)
+         username: "your_username"
+         # WebDAV 密码或应用密码 (password)
+         password: "your_password"
+         # 远端目录 (base_path)
+         base_path: "memes"
+         # 公开访问根地址（可选）(public_url)
+         public_url: "https://cdn.example.com/memes"
+         # 是否校验 SSL 证书 (verify_ssl)
+         verify_ssl: true
+         # 请求超时时间，单位秒 (timeout)
+         timeout: 30
+   ```
+
+3. **使用图床功能**：
+   - 发送 `/表情管理 同步状态` 查看同步状态
+   - 发送 `/表情管理 同步到云端` 上传表情包到 WebDAV
+   - 发送 `/表情管理 从云端同步` 从 WebDAV 下载表情包
+
+> **WebDAV 注意事项**：
+> - `base_path` 是 WebDAV 内保存表情包的目录，插件会自动创建缺失目录
+> - `public_url` 可选；不填写时仍可同步，但生成的 URL 可能需要登录才能访问
+> - 自签名证书服务可将 `verify_ssl` 设置为 `false`
+
 ## ⚙️ 配置说明
 
 插件配置项包括：
 
-- `image_host`: 选择图床服务 (支持 stardots 和 cloudflare_r2)
+- `image_host`: 选择图床服务 (支持 stardots、cloudflare_r2 和 webdav)
 - `image_host_config`: 图床配置信息（根据选择的图床服务填写相应配置）
 - `webui_port`: WebUI 服务端口号
 - `max_emotions_per_message`: 每条消息最大表情数量

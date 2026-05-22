@@ -16,6 +16,7 @@ from quart import (
 
 from .backend.api import api
 from .config import MEMES_DIR
+from .image_host.img_sync import ImageSync
 
 
 class ServerState:
@@ -36,6 +37,20 @@ app.register_blueprint(api, url_prefix="/api")
 
 SERVER_LOGIN_KEY = None
 _current_server = None
+
+
+def _build_img_sync(config):
+    """在 WebUI 进程内重建图床同步客户端，避免跨进程复用连接对象。"""
+    if not config:
+        return False
+
+    existing_img_sync = config.get("img_sync")
+    img_sync_config = config.get("img_sync_config")
+    provider_type = config.get("img_sync_provider_type")
+
+    if img_sync_config and provider_type:
+        return ImageSync(img_sync_config, MEMES_DIR, provider_type)
+    return existing_img_sync or False
 
 
 @app.route("/health", methods=["GET"])
@@ -101,7 +116,7 @@ async def start_server(config=None):
     # 配置应用
     app.secret_key = os.urandom(16)
     app.config["PLUGIN_CONFIG"] = {
-        "img_sync": config.get("img_sync", False),
+        "img_sync": _build_img_sync(config),
         "category_manager": config.get("category_manager"),
         "webui_port": port,
     }
@@ -127,7 +142,7 @@ async def create_app(config=None):
 
     if config is not None and hasattr(config, "get"):
         app.config["PLUGIN_CONFIG"] = {
-            "img_sync": config.get("img_sync"),
+            "img_sync": _build_img_sync(config),
             "category_manager": config.get("category_manager"),
             "webui_port": config.get("webui_port", 5000),
         }
