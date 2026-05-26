@@ -1936,6 +1936,19 @@ class MemeSender(Star):
             f"[meme_manager] 清理后的最终文本内容长度: {len(response.completion_text)}"
         )
 
+        # webchat 流式场景：在 "complete" 入队前发送干净文本，替换客户端已显示的含标记脏文本
+        result = event.get_result()
+        if (
+            event.get_platform_name() == "webchat"
+            and result is not None
+            and result.result_content_type == ResultContentType.STREAMING_RESULT
+        ):
+            try:
+                await event.send(MessageChain([Plain(response.completion_text)]))
+                logger.debug("[meme_manager] webchat 流式文本已替换为干净版本")
+            except Exception as e:
+                logger.error(f"[meme_manager] webchat 流式文本替换失败: {e}")
+
     def _is_likely_emotion_markup(self, markup, text, position):
         """判断一个标记是否可能是表情而非普通文本的一部分"""
         # 获取标记前后的文本
@@ -2127,7 +2140,7 @@ class MemeSender(Star):
 
         # 流式传输兼容处理
         if result.result_content_type == ResultContentType.STREAMING_FINISH:
-            if self.streaming_compatibility:
+            if self.streaming_compatibility or event.get_platform_name() == "webchat":
                 await self._send_memes_streaming(event)
             return
 
