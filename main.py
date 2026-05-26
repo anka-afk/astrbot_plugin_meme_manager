@@ -1,5 +1,4 @@
 import asyncio
-import copy
 import io
 import json
 import os
@@ -20,7 +19,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import EventMessageType
 from astrbot.api.message_components import *  # noqa: F403
 from astrbot.api.message_components import Image
-from astrbot.api.provider import LLMResponse
+from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, register
 from astrbot.core import astrbot_config
 from astrbot.core.message.components import Plain
@@ -57,6 +56,14 @@ class ConfirmationCancelled(Exception):
     """Raised when a dangerous command is cancelled by the user."""
 
 
+class CategoryCreationCancelled(Exception):
+    """Raised when category creation is cancelled by the user."""
+
+
+MEME_PROMPT_MARKER_START = "<!-- meme_manager_prompt:start -->"
+MEME_PROMPT_MARKER_END = "<!-- meme_manager_prompt:end -->"
+
+
 class SenderScopedSessionFilter(SessionFilter):
     """Bind confirmation replies to the same sender within the same session."""
 
@@ -82,6 +89,8 @@ class MemeSender(Star):
 
         # 初始化图床同步客户端
         self.img_sync = None
+        self.img_sync_config = None
+        self.img_sync_provider_type = None
         image_host_type = self.config.get("image_host", "stardots")
 
         if image_host_type == "stardots":
@@ -91,15 +100,17 @@ class MemeSender(Star):
             if stardots_config.get("key") and stardots_config.get("secret"):
                 # 添加提供商信息到配置中
                 stardots_config["provider"] = "stardots"
+                self.img_sync_config = {
+                    "key": stardots_config["key"],
+                    "secret": stardots_config["secret"],
+                    "space": stardots_config.get("space", "memes"),
+                    "provider": "stardots",
+                }
+                self.img_sync_provider_type = "stardots"
                 self.img_sync = ImageSync(
-                    config={
-                        "key": stardots_config["key"],
-                        "secret": stardots_config["secret"],
-                        "space": stardots_config.get("space", "memes"),
-                        "provider": "stardots",
-                    },
+                    config=self.img_sync_config,
                     local_dir=MEMES_DIR,
-                    provider_type="stardots",
+                    provider_type=self.img_sync_provider_type,
                 )
         elif image_host_type == "cloudflare_r2":
             r2_config = self.config.get("image_host_config", {}).get(
@@ -117,8 +128,12 @@ class MemeSender(Star):
                     r2_config["public_url"] = r2_config["public_url"].rstrip("/")
                 # 添加提供商信息到配置中
                 r2_config["provider"] = "cloudflare_r2"
+                self.img_sync_config = dict(r2_config)
+                self.img_sync_provider_type = "cloudflare_r2"
                 self.img_sync = ImageSync(
-                    config=r2_config, local_dir=MEMES_DIR, provider_type="cloudflare_r2"
+                    config=self.img_sync_config,
+                    local_dir=MEMES_DIR,
+                    provider_type=self.img_sync_provider_type,
                 )
                 # 延迟日志记录，避免 logger 未初始化
                 self._r2_bucket_name = r2_config.get("bucket_name")
@@ -173,8 +188,8 @@ class MemeSender(Star):
         )
 
         # 构建表情包提示词
-        personas = self.context.provider_manager.personas
-        self.persona_backup = copy.deepcopy(personas)
+        self.sys_prompt_add = ""
+        self.persona_base_prompts = {}
         self._reload_personas()
 
     @filter.command_group("表情管理")
@@ -183,6 +198,7 @@ class MemeSender(Star):
         开启管理后台
         关闭管理后台
         查看图库
+        添加分类
         添加表情
         恢复默认表情包
         清空指定类型
@@ -228,8 +244,8 @@ class MemeSender(Star):
                     raise RuntimeError(f"端口 {self.server_port} 仍被占用")
 
             config_for_server = {
-                "img_sync": self.img_sync,
-                "category_manager": self.category_manager,
+                "img_sync_config": self.img_sync_config,
+                "img_sync_provider_type": self.img_sync_provider_type,
                 "webui_port": self.server_port,
                 "server_key": self.server_key,
             }
@@ -379,6 +395,56 @@ class MemeSender(Star):
             | self.category_manager.get_local_categories()
         )
 
+    def _extract_category_description_from_command(
+        self, event: AstrMessageEvent, category: str
+    ) -> str:
+        command_prefix = "表情管理 添加分类"
+        message = re.sub(r"\s+", " ", event.get_message_str().strip())
+        if not message.startswith(command_prefix):
+            return ""
+
+        remaining = message[len(command_prefix) :].strip()
+        if remaining == category:
+            return ""
+        if not remaining.startswith(f"{category} "):
+            return ""
+
+        return remaining[len(category) :].strip()
+
+    async def _wait_for_category_description(
+        self, event: AstrMessageEvent, category: str, timeout: int = 60
+    ) -> str:
+        description = ""
+
+        @session_waiter(timeout=timeout, record_history_chains=False)
+        async def description_waiter(
+            controller: SessionController, description_event: AstrMessageEvent
+        ) -> None:
+            nonlocal description
+            reply = (description_event.message_str or "").strip()
+
+            if reply == "返回":
+                await description_event.send(
+                    description_event.plain_result("已取消创建分类。")
+                )
+                controller.stop(CategoryCreationCancelled())
+                return
+
+            if not reply:
+                await description_event.send(
+                    description_event.plain_result(
+                        f"请发送分类「{category}」的描述，或发送“返回”取消创建。"
+                    )
+                )
+                controller.keep(timeout=timeout, reset_timeout=True)
+                return
+
+            description = reply
+            controller.stop()
+
+        await description_waiter(event, SenderScopedSessionFilter())
+        return description
+
     async def _wait_for_command_confirmation(
         self, event: AstrMessageEvent, timeout: int = 30
     ) -> bool:
@@ -452,29 +518,94 @@ class MemeSender(Star):
         if updated:
             self._reload_personas()
 
-    def _reload_personas(self):
-        """重新加载表情配置并构建提示词并注入全局人格"""
-        self.category_mapping = load_json(
-            MEMES_DATA_PATH, DEFAULT_CATEGORY_DESCRIPTIONS
-        )
-        self.category_mapping_string = dict_to_string(self.category_mapping)
-        personas = self.context.provider_manager.personas
-        # 如果启用模型情感分析，不注入新的提示词
-        if self.emotion_llm_enabled:
-            self.sys_prompt_add = ""
-            for persona, persona_backup in zip(personas, self.persona_backup):
-                persona["prompt"] = persona_backup["prompt"]
-            return
-        self.sys_prompt_add = (
+    def _build_meme_prompt(self) -> str:
+        return (
             self.prompt_head
             + self.category_mapping_string
             + self.prompt_tail_1
             + str(self.max_emotions_per_message)
             + self.prompt_tail_2
         )
-        # 注入全局人格，以便利用缓存并减少对聊天内容的影响(如果不启用模型分析情感)
-        for persona, persona_backup in zip(personas, self.persona_backup):
-            persona["prompt"] = persona_backup["prompt"] + self.sys_prompt_add
+
+    def _wrap_meme_prompt(self, prompt: str) -> str:
+        return f"\n\n{MEME_PROMPT_MARKER_START}\n{prompt}\n{MEME_PROMPT_MARKER_END}"
+
+    def _strip_meme_prompt(self, prompt: str | None) -> str:
+        prompt = prompt or ""
+        marker_pattern = re.compile(
+            rf"\n*{re.escape(MEME_PROMPT_MARKER_START)}[\s\S]*?{re.escape(MEME_PROMPT_MARKER_END)}"
+        )
+        prompt = marker_pattern.sub("", prompt).rstrip()
+
+        if self.sys_prompt_add and prompt.endswith(self.sys_prompt_add):
+            prompt = prompt[: -len(self.sys_prompt_add)].rstrip()
+
+        if not self.prompt_head:
+            return prompt
+
+        start = prompt.find(self.prompt_head)
+        if start < 0:
+            return prompt
+        if not self.prompt_tail_2:
+            return prompt[:start].rstrip()
+
+        end = prompt.find(self.prompt_tail_2, start)
+        if end >= 0:
+            end += len(self.prompt_tail_2)
+            prompt = (prompt[:start] + prompt[end:]).rstrip()
+
+        return prompt
+
+    def _get_persona_key(self, persona: dict, index: int) -> str:
+        return str(persona.get("name") or persona.get("id") or index)
+
+    def _sync_persona_base_prompts(self, personas: list[dict]) -> None:
+        active_keys = set()
+        for index, persona in enumerate(personas):
+            key = self._get_persona_key(persona, index)
+            active_keys.add(key)
+            self.persona_base_prompts[key] = self._strip_meme_prompt(
+                persona.get("prompt", "")
+            )
+
+        for key in set(self.persona_base_prompts) - active_keys:
+            del self.persona_base_prompts[key]
+
+    def _apply_persona_prompts(self) -> None:
+        personas = self.context.provider_manager.personas
+        self._sync_persona_base_prompts(personas)
+
+        if self.emotion_llm_enabled:
+            self.sys_prompt_add = ""
+            for index, persona in enumerate(personas):
+                key = self._get_persona_key(persona, index)
+                persona["prompt"] = self.persona_base_prompts[key]
+            return
+
+        self.sys_prompt_add = self._build_meme_prompt()
+        addition = self._wrap_meme_prompt(self.sys_prompt_add)
+        for index, persona in enumerate(personas):
+            key = self._get_persona_key(persona, index)
+            persona["prompt"] = self.persona_base_prompts[key] + addition
+
+    def _apply_request_prompt(self, req: ProviderRequest) -> None:
+        if self.emotion_llm_enabled:
+            req.system_prompt = self._strip_meme_prompt(req.system_prompt)
+            return
+        if not self.sys_prompt_add:
+            return
+
+        req.system_prompt = self._strip_meme_prompt(
+            req.system_prompt
+        ) + self._wrap_meme_prompt(self.sys_prompt_add)
+
+    def _reload_personas(self):
+        """重新加载表情配置并构建提示词并注入全局人格"""
+        self.category_mapping = load_json(
+            MEMES_DATA_PATH, DEFAULT_CATEGORY_DESCRIPTIONS
+        )
+        self.category_mapping_string = dict_to_string(self.category_mapping)
+        self._apply_persona_prompts()
 
     @meme_manager.command("查看图库")
     async def list_emotions(self, event: AstrMessageEvent):
@@ -484,6 +615,43 @@ class MemeSender(Star):
             [f"- {tag}: {desc}" for tag, desc in descriptions.items()]
         )
         yield event.plain_result(f"🖼️ 当前图库：\n{categories}")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @meme_manager.command("添加分类")
+    async def add_category_command(self, event: AstrMessageEvent, category: str = None):
+        """创建新的表情包分类。"""
+        if not category:
+            yield event.plain_result(
+                "📌 若要添加分类，请按照此格式操作：\n"
+                "/表情管理 添加分类 [类别名称] [描述]\n"
+                "也可以只发送类别名称，随后按提示补充描述。"
+            )
+            return
+
+        category = category.strip()
+        if category in self._get_manageable_categories():
+            yield event.plain_result(f"ℹ️ 分类「{category}」已存在，无需重复创建。")
+            return
+
+        description = self._extract_category_description_from_command(event, category)
+        if not description:
+            yield event.plain_result(
+                f"请发送分类「{category}」的描述，或发送“返回”取消创建。"
+            )
+            try:
+                description = await self._wait_for_category_description(event, category)
+            except TimeoutError:
+                yield event.plain_result("⌛ 等待描述超时，已取消创建分类。")
+                return
+            except CategoryCreationCancelled:
+                return
+
+        if not self.category_manager.create_category(category, description):
+            yield event.plain_result(f"❌ 创建分类「{category}」失败，请稍后重试。")
+            return
+
+        self._reload_personas()
+        yield event.plain_result(f"✅ 已创建分类「{category}」：{description}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @meme_manager.command("添加表情")
@@ -844,6 +1012,13 @@ class MemeSender(Star):
                 logger.info(
                     f"表情分类 {emotion} 对应的目录 {emotion_path} 包含 {len(memes)} 个图片"
                 )
+
+    @filter.on_llm_request(priority=99999)
+    async def inject_meme_prompt(
+        self, event: AstrMessageEvent, req: ProviderRequest
+    ) -> None:
+        """Ensure edited personas still get the meme prompt before LLM calls."""
+        self._apply_request_prompt(req)
 
     @filter.on_llm_response(priority=99999)
     async def resp(self, event: AstrMessageEvent, response: LLMResponse):
@@ -1231,15 +1406,9 @@ class MemeSender(Star):
                 final_meme_file = self._convert_to_gif(meme_file)
 
                 try:
-                    if event.get_platform_name() == "gewechat":
-                        await event.send(
-                            MessageChain([Image.fromFileSystem(final_meme_file)])
-                        )
-                    else:
-                        await self.context.send_message(
-                            event.unified_msg_origin,
-                            MessageChain([Image.fromFileSystem(final_meme_file)]),
-                        )
+                    await self._send_meme_image(
+                        event, Image.fromFileSystem(final_meme_file)
+                    )
                 except Exception as e:
                     logger.error(f"[meme_manager] 流式模式发送表情失败: {e}")
                 finally:
@@ -1254,6 +1423,13 @@ class MemeSender(Star):
             logger.error(traceback.format_exc())
         finally:
             self.found_emotions = []
+
+    async def _send_meme_image(self, event: AstrMessageEvent, image: Image) -> None:
+        if event.get_platform_name() in {"gewechat", "webchat"}:
+            await event.send(MessageChain([image]))
+            return
+
+        await self.context.send_message(event.unified_msg_origin, MessageChain([image]))
 
     @filter.on_decorating_result(priority=99999)
     async def on_decorating_result(self, event: AstrMessageEvent):
@@ -1428,12 +1604,7 @@ class MemeSender(Star):
         try:
             if pending_images:
                 for image in pending_images:
-                    if event.get_platform_name() == "gewechat":
-                        await event.send(MessageChain([image]))
-                    else:
-                        await self.context.send_message(
-                            event.unified_msg_origin, MessageChain([image])
-                        )
+                    await self._send_meme_image(event, image)
         except Exception as e:
             logger.error(f"发送表情图片失败: {str(e)}")
             logger.error(traceback.format_exc())
@@ -1851,8 +2022,10 @@ class MemeSender(Star):
         """清理资源"""
         # 恢复人格
         personas = self.context.provider_manager.personas
-        for persona, persona_backup in zip(personas, self.persona_backup):
-            persona["prompt"] = persona_backup["prompt"]
+        self._sync_persona_base_prompts(personas)
+        for index, persona in enumerate(personas):
+            key = self._get_persona_key(persona, index)
+            persona["prompt"] = self.persona_base_prompts[key]
 
         # 停止图床同步
         if self.img_sync:

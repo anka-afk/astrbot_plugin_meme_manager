@@ -1,9 +1,6 @@
 import logging
-import os
-
 from quart import Blueprint, current_app, jsonify, request
 
-from ..config import MEMES_DIR
 from .models import (
     DuplicateEmojiError,
     add_emoji_to_category,
@@ -474,12 +471,7 @@ async def restore_category():
         if not category_manager:
             return jsonify({"message": "Category manager not found"}), 404
 
-        # 创建类别目录
-        category_path = os.path.join(MEMES_DIR, category)
-        os.makedirs(category_path, exist_ok=True)
-
-        # 更新类别描述
-        if category_manager.update_description(category, description):
+        if category_manager.create_category(category, description):
             return jsonify(
                 {"message": "Category created successfully", "description": description}
             ), 200
