@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .core.sync_manager import SyncManager
 from .core.upload_tracker import UploadTracker
-from .providers import CloudflareR2Provider, StarDotsProvider
+from .providers import CloudflareR2Provider, StarDotsProvider, WebDAVProvider
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class ImageSync:
         Args:
             config: 包含图床配置信息的字典
             local_dir: 本地图片目录的路径
-            provider_type: 图床提供者类型，可选 "stardots" 或 "cloudflare_r2"
+            provider_type: 图床提供者类型，可选 "stardots"、"cloudflare_r2" 或 "webdav"
         """
         self.config = config
         self.local_dir = Path(local_dir)
@@ -67,6 +67,8 @@ class ImageSync:
             )
         elif provider_type == "cloudflare_r2":
             self.provider = CloudflareR2Provider(config)
+        elif provider_type == "webdav":
+            self.provider = WebDAVProvider({**config, "local_dir": str(local_dir)})
         else:
             raise ValueError(f"不支持的图床提供者类型: {provider_type}")
 
@@ -260,6 +262,10 @@ def run_sync_process(config: dict[str, str], local_dir: str, task: str):
             # 如果是 stardots 配置
             provider_config = config["stardots"]
             provider_type = "stardots"
+        elif "webdav" in config:
+            # 如果是完整配置，提取 webdav 部分
+            provider_config = config["webdav"]
+            provider_type = "webdav"
         elif "account_id" in config:
             # 如果是直接的 R2 配置
             provider_config = config
@@ -268,6 +274,12 @@ def run_sync_process(config: dict[str, str], local_dir: str, task: str):
             # 如果是直接的 stardots 配置
             provider_config = config
             provider_type = "stardots"
+        elif config.get("provider") == "webdav" or all(
+            config.get(field) for field in ("url", "username", "password")
+        ):
+            # 如果是直接的 WebDAV 配置
+            provider_config = config
+            provider_type = "webdav"
         else:
             logger.error(f"无法识别的配置格式: {list(config.keys())}")
             sys.exit(1)

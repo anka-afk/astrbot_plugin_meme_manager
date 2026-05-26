@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>表情包管理中心</title>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+    <link rel="stylesheet" href="./style.css" />
+    <style>
+      .icon {
+        margin-right: 8px;
+        font-size: 0.9em;
+      }
+      .fa-cloud-arrow-up {
+        color: #2ecc71;
+      }
+      .fa-cloud-arrow-down {
+        color: #3498db;
+      }
+    </style>
+  </head>
+  <body class="app-page">
+    <header class="page-header">
+      <div class="page-header-main">
+        <button
+          id="sidebar-toggle-btn"
+          class="sidebar-toggle"
+          type="button"
+          aria-expanded="true"
+          aria-controls="app-sidebar-panel app-directory-panel"
+          aria-label="切换侧边栏"
+        >
+          <i class="fas fa-bars icon"></i>侧栏
+        </button>
+        <div class="page-title-block">
+          <h1><i class="fas fa-face-grin-beam icon"></i>表情包管理</h1>
+          <p class="page-subtitle">
+            支持批量选择、拖拽移动、图床同步和移动端管理。
+          </p>
+        </div>
+      </div>
+    </header>
+
+    <div
+      id="sidebar-backdrop"
+      class="sidebar-backdrop hidden"
+      aria-hidden="true"
+    ></div>
+
+    <div class="container">
+      <aside class="left-panel" id="app-sidebar-panel">
+        <div class="left-panel-header">
+          <div>
+            <p class="left-panel-eyebrow">控制台</p>
+            <h2>同步控制</h2>
+          </div>
+          <button
+            id="sidebar-close-btn"
+            class="sidebar-close"
+            type="button"
+            aria-label="关闭侧边栏"
+          >
+            <i class="fas fa-xmark"></i>
+          </button>
+        </div>
+        <div class="sync-buttons">
+          <button id="check-sync-btn">
+            <i class="fas fa-sync icon"></i>检查同步状态
+          </button>
+        </div>
+
+        <div class="sync-panel">
+          <h3><i class="fas fa-gear icon"></i>配置同步</h3>
+          <div id="sync-status">
+            <p>
+              <i class="fas fa-spinner fa-spin icon"></i>正在检查同步状态...
+            </p>
+          </div>
+        </div>
+
+        <hr class="sync-divider" />
+
+        <div class="sync-panel">
+          <h4><i class="fas fa-cloud icon"></i>图床同步</h4>
+          <div class="sync-status">
+            <div class="sync-provider-summary">
+              <p>
+                <i class="fas fa-server icon"></i>图床服务商:
+                <span id="img-host-provider">--</span>
+              </p>
+              <p>
+                <i class="fas fa-images icon"></i>云端图片数:
+                <span id="remote-image-count">--</span> 张
+              </p>
+              <p>
+                <i class="fas fa-hard-drive icon"></i>云端占用:
+                <span id="remote-storage-size">--</span>
+              </p>
+            </div>
+            <p>
+              <i class="fas fa-upload icon"></i>待上传:
+              <span id="upload-count">0</span> 个文件
+            </p>
+            <p>
+              <i class="fas fa-download icon"></i>待下载:
+              <span id="download-count">0</span> 个文件
+            </p>
+            <p>
+              <i class="fas fa-cloud icon"></i>云端多出:
+              <span id="remote-extra-count">0</span> 个文件
+            </p>
+            <p>
+              <i class="fas fa-folder-plus icon"></i>本地多出:
+              <span id="local-extra-count">0</span> 个文件
+            </p>
+            <p id="img-host-sync-progress" class="sync-progress-message hidden">
+              <i class="fas fa-spinner fa-spin icon"></i>
+              <span id="img-host-sync-progress-text">同步准备中...</span>
+            </p>
+            <button id="upload-sync-btn">
+              <i class="fas fa-cloud-arrow-up icon"></i>同步到云端
+            </button>
+            <button id="force-upload-sync-btn" class="danger">
+              <i class="fas fa-triangle-exclamation icon"></i>强制同步云端
+            </button>
+            <button id="download-sync-btn">
+              <i class="fas fa-cloud-arrow-down icon"></i>从云端同步
+            </button>
+          </div>
+        </div>
+
+      </aside>
+
+      <aside class="directory-panel" id="app-directory-panel">
+        <div id="sidebar">
+          <h2><i class="fas fa-folder-open icon"></i>目录</h2>
+          <ul id="sidebar-list"></ul>
+        </div>
+      </aside>
+
+      <div id="content">
+        <div class="page-toolbar">
+          <div class="selection-toolbar">
+            <div class="selection-toolbar-copy">
+              <h2>批量管理</h2>
+              <p id="selection-summary">未开启批量选择</p>
+            </div>
+            <div class="selection-toolbar-actions">
+              <button id="batch-move-btn" class="secondary" disabled>
+                <i class="fas fa-right-left icon"></i>移动已选
+              </button>
+              <button id="toggle-selection-mode-btn" class="secondary">
+                <i class="fas fa-list-check icon"></i>开启批量选择
+              </button>
+              <button id="batch-delete-btn" class="danger" disabled>
+                <i class="fas fa-trash-can icon"></i>删除已选
+              </button>
+              <button id="clear-all-btn" class="danger">
+                <i class="fas fa-radiation icon"></i>清空全部表情包
+              </button>
+            </div>
+          </div>
+        </div>
+        <div id="emoji-categories"></div>
+        <button id="add-category-btn">
+          <i class="fas fa-plus-circle icon"></i>添加分类
+        </button>
+        <div id="add-category-form" style="display: none">
+          <input
+            type="text"
+            id="new-category-name"
+            placeholder="输入类别名称"
+            class="form-control"
+          />
+          <input
+            type="text"
+            id="new-category-description"
+            placeholder="输入类别描述"
+            class="form-control mt-2"
+          />
+          <button id="save-category-btn" class="btn btn-primary mt-2">
+            <i class="fas fa-save icon"></i>保存分类
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+    <div
+      id="batch-context-menu"
+      class="batch-context-menu hidden"
+      role="menu"
+      aria-hidden="true"
+      aria-label="批量管理菜单"
+    >
+      <div class="batch-context-menu-header">
+        <p id="batch-context-menu-title">批量管理</p>
+        <p id="batch-context-menu-subtitle">选择一个操作继续</p>
+      </div>
+      <div class="batch-context-menu-actions">
+        <button id="context-menu-delete-btn" type="button" class="danger" role="menuitem">
+          <i class="fas fa-trash-can icon"></i>删除文件
+        </button>
+        <button id="context-menu-move-btn" type="button" class="secondary" role="menuitem">
+          <i class="fas fa-right-left icon"></i>移动文件
+        </button>
+        <button id="context-menu-copy-btn" type="button" class="secondary" role="menuitem">
+          <i class="fas fa-copy icon"></i>复制文件
+        </button>
+        <button id="context-menu-paste-btn" type="button" role="menuitem">
+          <i class="fas fa-paste icon"></i>粘贴文件
+        </button>
+      </div>
+    </div>
+
+    <div id="move-target-modal" class="move-target-modal hidden" aria-hidden="true">
+      <div class="move-target-modal-card" role="dialog" aria-modal="true" aria-labelledby="move-target-modal-title">
+        <p class="move-target-modal-eyebrow">批量移动</p>
+        <h2 id="move-target-modal-title">选择目标分类</h2>
+        <p id="move-target-modal-description">选择一个分类，将已选表情包批量移动过去。</p>
+        <div id="move-target-list" class="move-target-list"></div>
+        <div class="move-target-modal-actions">
+          <button id="move-target-cancel-btn" class="secondary">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="category-edit-modal" class="category-edit-modal hidden" aria-hidden="true">
+      <div class="category-edit-modal-card" role="dialog" aria-modal="true" aria-labelledby="category-edit-modal-title">
+        <p class="category-edit-modal-eyebrow">类别编辑</p>
+        <h2 id="category-edit-modal-title">编辑类别</h2>
+        <p id="category-edit-modal-description">修改类别名称和描述，保存后立即生效。</p>
+        <div class="category-edit-form-panel">
+          <label for="category-edit-name-input">类别名称</label>
+          <input id="category-edit-name-input" type="text" placeholder="输入类别名称" />
+          <label for="category-edit-desc-input">类别描述</label>
+          <input id="category-edit-desc-input" type="text" placeholder="输入类别描述" />
+        </div>
+        <div class="category-edit-modal-actions">
+          <button id="category-edit-cancel-btn" class="secondary">取消</button>
+          <button id="category-edit-save-btn">保存修改</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="confirm-modal" class="confirm-modal hidden" aria-hidden="true">
+      <div class="confirm-modal-card" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title">
+        <p class="confirm-modal-eyebrow">操作确认</p>
+        <h2 id="confirm-modal-title">请确认操作</h2>
+        <p id="confirm-modal-description"></p>
+        <div class="confirm-modal-actions">
+          <button id="confirm-modal-cancel-btn" class="secondary">取消</button>
+          <button id="confirm-modal-confirm-btn">确认</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="danger-confirm-modal" class="danger-modal hidden" aria-hidden="true">
+      <div class="danger-modal-card" role="dialog" aria-modal="true" aria-labelledby="danger-modal-title">
+        <p class="danger-modal-eyebrow">危险操作</p>
+        <h2 id="danger-modal-title">请确认操作</h2>
+        <p id="danger-modal-description"></p>
+        <label class="danger-modal-check" for="danger-modal-ack">
+          <input type="checkbox" id="danger-modal-ack" />
+          <span>我已理解该操作不可恢复</span>
+        </label>
+        <p id="danger-modal-stage-text" class="danger-modal-stage-text">
+          请先勾选已理解，再进入 5 秒倒计时的最终确认。
+        </p>
+        <div class="danger-modal-actions">
+          <button id="danger-modal-cancel-btn" class="secondary">取消</button>
+          <button id="danger-modal-confirm-btn" class="danger" disabled>
+            继续确认
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="drag-hud" class="drag-hud hidden" aria-hidden="true">
+      <div class="drag-hud-ring"></div>
+      <div class="drag-hud-center">
+        <span id="drag-hud-label">2s</span>
+      </div>
+      <div id="drag-hud-caption" class="drag-hud-caption">长按 2 秒进入拖拽</div>
+    </div>
+
+    <div id="image-preview-modal" class="image-preview-modal hidden" aria-hidden="true">
+      <div class="image-preview-stage" role="dialog" aria-modal="true" aria-label="表情包预览">
+        <button
+          id="image-preview-close-btn"
+          class="image-preview-close"
+          type="button"
+          aria-label="关闭预览"
+        >
+          <i class="fas fa-xmark"></i>
+        </button>
+        <div id="image-preview-frame" class="image-preview-frame">
+          <div id="image-preview-loading" class="image-preview-loading">
+            <i class="fas fa-spinner fa-spin"></i>
+          </div>
+          <img id="image-preview-img" alt="表情包预览" />
+          <button
+            id="image-preview-original-btn"
+            class="image-preview-original"
+            type="button"
+          >
+            <i class="fas fa-up-right-and-down-left-from-center icon"></i>原图
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./script.js"></script>
+  </body>
+</html>

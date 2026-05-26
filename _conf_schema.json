@@ -6,7 +6,8 @@
     "default": "stardots",
     "options": [
       "stardots",
-      "cloudflare_r2"
+      "cloudflare_r2",
+      "webdav"
     ]
   },
   "image_host_config": {
@@ -64,13 +65,52 @@
             "hint": "自定义CDN域名，例如：https://cdn.yourdomain.com"
           }
         }
+      },
+      "webdav": {
+        "description": "WebDAV 图床配置",
+        "type": "object",
+        "items": {
+          "url": {
+            "description": "WebDAV 地址",
+            "type": "string",
+            "hint": "请输入 WebDAV 根地址，例如：https://example.com/dav"
+          },
+          "username": {
+            "description": "用户名",
+            "type": "string",
+            "hint": "请输入 WebDAV 用户名"
+          },
+          "password": {
+            "description": "密码或应用密码",
+            "type": "string",
+            "hint": "请输入 WebDAV 密码或应用密码"
+          },
+          "base_path": {
+            "description": "远端目录",
+            "type": "string",
+            "default": "memes",
+            "hint": "表情包在 WebDAV 中保存的目录，例如：memes"
+          },
+          "public_url": {
+            "description": "公开访问地址（可选）",
+            "type": "string",
+            "hint": "如需生成外链，请填写公开访问根地址，例如：https://cdn.example.com/memes"
+          },
+          "verify_ssl": {
+            "description": "校验 SSL 证书",
+            "type": "bool",
+            "default": true,
+            "hint": "自签名证书服务可关闭此项"
+          },
+          "timeout": {
+            "description": "请求超时时间（秒）",
+            "type": "int",
+            "default": 30,
+            "hint": "WebDAV 上传、下载、列表请求的超时时间"
+          }
+        }
       }
     }
-  },
-  "webui_port": {
-    "description": "Web UI 端口号",
-    "type": "int",
-    "default": 5000
   },
   "prompt": {
     "description": "自动添加的提示词(类别描述自动插入到提示词中)",

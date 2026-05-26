@@ -6,6 +6,7 @@ import string
 import time
 from pathlib import Path
 from typing import TypedDict
+from urllib.parse import quote, urlencode
 
 import requests
 import urllib3
@@ -439,8 +440,13 @@ class StarDotsProvider(ImageHostInterface):
                     ticket_result = ticket_response.json()
                     if ticket_result["success"]:
                         # 构建正确的下载 URL
-                        base_url = f"https://i.stardots.io/{self.space}/{original_name}"
-                        url = f"{base_url}?ticket={ticket_result['data']['ticket']}"
+                        encoded_space = quote(self.space, safe="")
+                        encoded_name = quote(original_name, safe="/")
+                        base_url = (
+                            f"https://i.stardots.io/{encoded_space}/{encoded_name}"
+                        )
+                        query = urlencode({"ticket": ticket_result["data"]["ticket"]})
+                        url = f"{base_url}?{query}"
 
                         # 下载文件
                         response = requests.get(url, stream=True, verify=False)
