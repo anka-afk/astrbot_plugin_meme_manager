@@ -1,4 +1,15 @@
-document.addEventListener("DOMContentLoaded", () => {
+async function initApp() {
+  await window.AstrBotPluginPage.ready();
+  window.AstrBotPluginPage.getContext();
+
+  async function apiGet(endpoint, params = {}) {
+    return await window.AstrBotPluginPage.apiGet(endpoint, params);
+  }
+
+  async function apiPost(endpoint, body = {}) {
+    return await window.AstrBotPluginPage.apiPost(endpoint, body);
+  }
+
   const selectionState = {
     enabled: false,
     items: new Map(),
@@ -34,9 +45,17 @@ document.addEventListener("DOMContentLoaded", () => {
   const sidebarCloseBtn = document.getElementById("sidebar-close-btn");
   const sidebarBackdrop = document.getElementById("sidebar-backdrop");
   const leftPanel = document.getElementById("app-sidebar-panel");
+  const directoryPanel = document.getElementById("app-directory-panel");
   const dragHud = document.getElementById("drag-hud");
   const dragHudLabel = document.getElementById("drag-hud-label");
   const dragHudCaption = document.getElementById("drag-hud-caption");
+  const imagePreviewModalRoot = document.getElementById("image-preview-modal");
+  const imagePreviewImg = document.getElementById("image-preview-img");
+  const imagePreviewLoading = document.getElementById("image-preview-loading");
+  const imagePreviewOriginalBtn = document.getElementById(
+    "image-preview-original-btn"
+  );
+  const imagePreviewCloseBtn = document.getElementById("image-preview-close-btn");
   const moveTargetModalRoot = document.getElementById("move-target-modal");
   const moveTargetModalTitle = document.getElementById("move-target-modal-title");
   const moveTargetModalDescription = document.getElementById(
@@ -87,11 +106,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const dangerModalConfirmBtn = document.getElementById(
     "danger-modal-confirm-btn"
   );
+  const imgHostSyncProgress = document.getElementById("img-host-sync-progress");
+  const imgHostSyncProgressText = document.getElementById(
+    "img-host-sync-progress-text"
+  );
   let confirmResolver = null;
   const MOBILE_LAYOUT_MEDIA = "(max-width: 960px)";
   const DRAG_HUD_OFFSET_X = 18;
   const DRAG_HUD_OFFSET_Y = 88;
-  const LONG_PRESS_DURATION_MS = 3000;
+  const LONG_PRESS_DURATION_MS = 2000;
   const LONG_PRESS_TICK_MS = 60;
   const LONG_PRESS_CANCEL_DISTANCE_PX = 18;
   const DRAG_READY_TIMEOUT_MS = 15000;
@@ -125,34 +148,18 @@ document.addEventListener("DOMContentLoaded", () => {
     targetCategory: null,
   };
   const uploadStateByCategory = new Map();
-  const requestState = {
-    emojis: { controller: null, seq: 0 },
-    syncStatus: { controller: null, seq: 0 },
-    imgHostStatus: { controller: null, seq: 0 },
-  };
   let initialStatusTimerId = null;
   let activeCategoryEdit = null;
   let pendingMoveTargetItems = [];
+  let imagePreviewState = null;
 
   // 获取表情包数据和描述
   async function fetchEmojis() {
-    const requestToken = startLatestRequest("emojis");
     try {
       const [emojiResponse, tagDescriptions] = await Promise.all([
-        fetch("/api/emoji", { signal: requestToken.controller.signal }).then((res) => {
-          if (!res.ok) throw new Error("获取表情包数据失败");
-          return res.json();
-        }),
-        fetch("/api/emotions", {
-          signal: requestToken.controller.signal,
-        }).then((res) => {
-          if (!res.ok) throw new Error("获取标签描述失败");
-          return res.json();
-        }),
+        apiGet("emoji"),
+        apiGet("emotions"),
       ]);
-      if (!isLatestRequest("emojis", requestToken)) {
-        return;
-      }
       clearDragMode();
       closeBatchContextMenu();
       latestEmojiData = emojiResponse;
@@ -161,12 +168,7 @@ document.addEventListener("DOMContentLoaded", () => {
       updateSidebar(emojiResponse, tagDescriptions);
       updateSelectionUI();
     } catch (error) {
-      if (error.name === "AbortError") {
-        return;
-      }
       console.error("加载表情包数据失败", error);
-    } finally {
-      finishLatestRequest("emojis", requestToken);
     }
   }
 
@@ -235,6 +237,665 @@ document.addEventListener("DOMContentLoaded", () => {
     button.disabled = false;
     if (button.dataset.originalHtml) {
       button.innerHTML = button.dataset.originalHtml;
+    }
+  }
+
+  function getImageRequestParams(category, emoji, size = "preview") {
+    return {
+      category,
+      filename: emoji,
+      size,
+    };
+  }
+
+  function setEmojiPreviewLoading(emojiItem) {
+    emojiItem.classList.remove("emoji-load-error", "emoji-loaded");
+    emojiItem.classList.add("emoji-loading");
+    emojiItem.setAttribute("aria-label", "正在加载表情包预览");
+  }
+
+  function setEmojiPreviewLoaded(emojiItem, dataUrl) {
+    emojiItem.style.backgroundImage = `url("${dataUrl}")`;
+    emojiItem.dataset.previewDataUrl = dataUrl;
+    emojiItem.classList.remove("emoji-loading", "emoji-load-error");
+    emojiItem.classList.add("emoji-loaded");
+    emojiItem.setAttribute("aria-label", `预览表情包 ${emojiItem.dataset.emoji || ""}`);
+  }
+
+  function setEmojiPreviewError(emojiItem) {
+    emojiItem.style.backgroundImage = "";
+    emojiItem.classList.remove("emoji-loading", "emoji-loaded");
+    emojiItem.classList.add("emoji-load-error");
+    emojiItem.setAttribute("aria-label", "预览加载失败，点击重试");
+  }
+
+  async function loadEmojiPreview(emojiItem, { force = false } = {}) {
+    if (
+      !emojiItem ||
+      (!force && (emojiItem.dataset.previewDataUrl || emojiItem.dataset.loading === "true"))
+    ) {
+      return;
+    }
+
+    const { category, emoji } = emojiItem.dataset;
+    if (!category || !emoji) {
+      setEmojiPreviewError(emojiItem);
+      return;
+    }
+
+    emojiItem.dataset.loading = "true";
+    setEmojiPreviewLoading(emojiItem);
+    try {
+      const data = await apiGet(
+        "meme_image_data",
+        getImageRequestParams(category, emoji, "preview")
+      );
+      if (!data?.data_url) {
+        throw new Error("图片接口未返回预览数据");
+      }
+      setEmojiPreviewLoaded(emojiItem, data.data_url);
+    } catch (error) {
+      console.error("加载表情包预览失败:", error);
+      setEmojiPreviewError(emojiItem);
+    } finally {
+      emojiItem.dataset.loading = "false";
+    }
+  }
+
+  function retryEmojiPreview(emojiItem) {
+    if (!emojiItem) {
+      return;
+    }
+    delete emojiItem.dataset.previewDataUrl;
+    void loadEmojiPreview(emojiItem, { force: true });
+  }
+
+  async function loadPreviewImage(category, emoji, size = "preview") {
+    const data = await apiGet(
+      "meme_image_data",
+      getImageRequestParams(category, emoji, size)
+    );
+    if (!data?.data_url) {
+      throw new Error("图片接口未返回预览数据");
+    }
+    return data.data_url;
+  }
+
+  function setImagePreviewBusy(isBusy) {
+    if (imagePreviewLoading) {
+      imagePreviewLoading.classList.toggle("hidden", !isBusy);
+    }
+    if (imagePreviewOriginalBtn) {
+      imagePreviewOriginalBtn.disabled = isBusy;
+    }
+  }
+
+  function closeImagePreview() {
+    imagePreviewState = null;
+    if (imagePreviewModalRoot) {
+      imagePreviewModalRoot.classList.add("hidden");
+      imagePreviewModalRoot.setAttribute("aria-hidden", "true");
+    }
+    if (imagePreviewImg) {
+      imagePreviewImg.removeAttribute("src");
+    }
+    setImagePreviewBusy(false);
+  }
+
+  async function openImagePreview(category, emoji, previewDataUrl = "") {
+    if (!imagePreviewModalRoot || !imagePreviewImg) {
+      return;
+    }
+
+    imagePreviewState = { category, emoji };
+    imagePreviewModalRoot.classList.remove("hidden");
+    imagePreviewModalRoot.setAttribute("aria-hidden", "false");
+    imagePreviewImg.alt = `表情包预览：${emoji}`;
+    if (previewDataUrl) {
+      imagePreviewImg.src = previewDataUrl;
+    } else {
+      imagePreviewImg.removeAttribute("src");
+    }
+
+    setImagePreviewBusy(!previewDataUrl);
+    try {
+      if (!previewDataUrl) {
+        imagePreviewImg.src = await loadPreviewImage(category, emoji, "preview");
+      }
+    } catch (error) {
+      console.error("打开大图预览失败:", error);
+      closeImagePreview();
+      showToast("图片预览加载失败，请稍后重试。", "error", "加载失败");
+      return;
+    } finally {
+      setImagePreviewBusy(false);
+    }
+
+    imagePreviewCloseBtn?.focus();
+  }
+
+  async function showOriginalPreview() {
+    if (!imagePreviewState || !imagePreviewImg) {
+      return;
+    }
+
+    setImagePreviewBusy(true);
+    try {
+      imagePreviewImg.src = await loadPreviewImage(
+        imagePreviewState.category,
+        imagePreviewState.emoji,
+        "original"
+      );
+    } catch (error) {
+      console.error("加载原图失败:", error);
+      showToast("原图加载失败，可能文件过大或已不存在。", "error", "加载失败");
+    } finally {
+      setImagePreviewBusy(false);
+    }
+  }
+
+  function showToast(message, type = "info", title = "提示", duration = 3200) {
+    if (!toastContainer) {
+      return;
+    }
+
+    const toast = document.createElement("div");
+    toast.className = `toast toast-${type}`;
+
+    const content = document.createElement("div");
+    content.className = "toast-content";
+
+    const titleElement = document.createElement("p");
+    titleElement.className = "toast-title";
+    titleElement.textContent = title;
+
+    const messageElement = document.createElement("p");
+    messageElement.className = "toast-message";
+    messageElement.textContent = message;
+
+    content.appendChild(titleElement);
+    content.appendChild(messageElement);
+    toast.appendChild(content);
+    toastContainer.appendChild(toast);
+
+    window.setTimeout(() => {
+      toast.remove();
+    }, duration);
+  }
+
+  function closeConfirm(result) {
+    if (confirmModalRoot) {
+      confirmModalRoot.classList.add("hidden");
+      confirmModalRoot.setAttribute("aria-hidden", "true");
+    }
+    if (confirmModalConfirmBtn) {
+      confirmModalConfirmBtn.classList.remove("danger");
+      confirmModalConfirmBtn.textContent = "确认";
+    }
+    if (confirmResolver) {
+      const resolver = confirmResolver;
+      confirmResolver = null;
+      resolver(result);
+    }
+  }
+
+  function showConfirm({
+    title,
+    description,
+    confirmLabel = "确认",
+    confirmClassName = "",
+  }) {
+    if (
+      !confirmModalRoot ||
+      !confirmModalTitle ||
+      !confirmModalDescription ||
+      !confirmModalConfirmBtn
+    ) {
+      return Promise.resolve(confirm(`${title}\n\n${description}`));
+    }
+
+    confirmModalTitle.textContent = title;
+    confirmModalDescription.textContent = description;
+    confirmModalConfirmBtn.textContent = confirmLabel;
+    confirmModalConfirmBtn.classList.toggle(
+      "danger",
+      confirmClassName.includes("danger")
+    );
+    confirmModalRoot.classList.remove("hidden");
+    confirmModalRoot.setAttribute("aria-hidden", "false");
+
+    return new Promise((resolve) => {
+      confirmResolver = resolve;
+    });
+  }
+
+static/js/script.js
+  async function parseResponsePayload(response) {
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      return response.json();
+    }
+
+    const text = await response.text();
+    return {
+      message:
+        text.startsWith("<!DOCTYPE") || text.startsWith("<html")
+          ? "服务器返回了错误页面，请联系管理员"
+          : text,
+    };
+  }
+
+  async function requestJson(
+    url,
+    options = {},
+    { defaultErrorMessage = "请求失败" } = {}
+  ) {
+    const response = await fetch(url, options);
+    const payload = await parseResponsePayload(response).catch(() => ({}));
+
+    if (!response.ok) {
+      const error = new Error(payload.message || payload.error || defaultErrorMessage);
+      error.status = response.status;
+      error.code = payload.code || null;
+      error.payload = payload;
+      throw error;
+    }
+
+    return payload;
+  }
+
+luginPage.ready();
+  window.AstrBotPluginPage.getContext();
+
+  async function apiGet(endpoint, params = {}) {
+    return await window.AstrBotPluginPage.apiGet(endpoint, params);
+  }
+
+  async function apiPost(endpoint, body = {}) {
+    return await window.AstrBotPluginPage.apiPost(endpoint, body);
+  }
+
+  const selectionState = {
+    enabled: false,
+    items: new Map(),
+  };
+  let latestEmojiData = {};
+  let dangerConfirmResolver = null;
+  let dangerConfirmStage = "ack";
+  let dangerConfirmTimer = null;
+  let dangerConfirmConfig = null;
+
+  const toggleSelectionModeBtn = document.getElementById(
+    "toggle-selection-mode-btn"
+  );
+  const batchMoveBtn = document.getElementById("batch-move-btn");
+  const batchDeleteBtn = document.getElementById("batch-delete-btn");
+  const clearAllBtn = document.getElementById("clear-all-btn");
+  const selectionSummary = document.getElementById("selection-summary");
+  const toastContainer = document.getElementById("toast-container");
+  const batchContextMenu = document.getElementById("batch-context-menu");
+  const batchContextMenuTitle = document.getElementById(
+    "batch-context-menu-title"
+  );
+  const batchContextMenuSubtitle = document.getElementById(
+    "batch-context-menu-subtitle"
+  );
+  const contextMenuDeleteBtn = document.getElementById(
+    "context-menu-delete-btn"
+  );
+  const contextMenuMoveBtn = document.getElementById("context-menu-move-btn");
+  const contextMenuCopyBtn = document.getElementById("context-menu-copy-btn");
+  const contextMenuPasteBtn = document.getElementById("context-menu-paste-btn");
+  const sidebarToggleBtn = document.getElementById("sidebar-toggle-btn");
+  const sidebarCloseBtn = document.getElementById("sidebar-close-btn");
+  const sidebarBackdrop = document.getElementById("sidebar-backdrop");
+  const leftPanel = document.getElementById("app-sidebar-panel");
+  const directoryPanel = document.getElementById("app-directory-panel");
+  const dragHud = document.getElementById("drag-hud");
+  const dragHudLabel = document.getElementById("drag-hud-label");
+  const dragHudCaption = document.getElementById("drag-hud-caption");
+  const imagePreviewModalRoot = document.getElementById("image-preview-modal");
+  const imagePreviewImg = document.getElementById("image-preview-img");
+  const imagePreviewLoading = document.getElementById("image-preview-loading");
+  const imagePreviewOriginalBtn = document.getElementById(
+    "image-preview-original-btn"
+  );
+  const imagePreviewCloseBtn = document.getElementById("image-preview-close-btn");
+  const moveTargetModalRoot = document.getElementById("move-target-modal");
+  const moveTargetModalTitle = document.getElementById("move-target-modal-title");
+  const moveTargetModalDescription = document.getElementById(
+    "move-target-modal-description"
+  );
+  const moveTargetList = document.getElementById("move-target-list");
+  const moveTargetCancelBtn = document.getElementById("move-target-cancel-btn");
+  const categoryEditModalRoot = document.getElementById("category-edit-modal");
+  const categoryEditModalTitle = document.getElementById(
+    "category-edit-modal-title"
+  );
+  const categoryEditModalDescription = document.getElementById(
+    "category-edit-modal-description"
+  );
+  const categoryEditNameInput = document.getElementById(
+    "category-edit-name-input"
+  );
+  const categoryEditDescInput = document.getElementById(
+    "category-edit-desc-input"
+  );
+  const categoryEditCancelBtn = document.getElementById(
+    "category-edit-cancel-btn"
+  );
+  const categoryEditSaveBtn = document.getElementById("category-edit-save-btn");
+  const confirmModalRoot = document.getElementById("confirm-modal");
+  const confirmModalTitle = document.getElementById("confirm-modal-title");
+  const confirmModalDescription = document.getElementById(
+    "confirm-modal-description"
+  );
+  const confirmModalCancelBtn = document.getElementById(
+    "confirm-modal-cancel-btn"
+  );
+  const confirmModalConfirmBtn = document.getElementById(
+    "confirm-modal-confirm-btn"
+  );
+  const dangerModalRoot = document.getElementById("danger-confirm-modal");
+  const dangerModalTitle = document.getElementById("danger-modal-title");
+  const dangerModalDescription = document.getElementById(
+    "danger-modal-description"
+  );
+  const dangerModalStageText = document.getElementById(
+    "danger-modal-stage-text"
+  );
+  const dangerModalAcknowledge = document.getElementById("danger-modal-ack");
+  const dangerModalCancelBtn = document.getElementById(
+    "danger-modal-cancel-btn"
+  );
+  const dangerModalConfirmBtn = document.getElementById(
+    "danger-modal-confirm-btn"
+  );
+  const imgHostSyncProgress = document.getElementById("img-host-sync-progress");
+  const imgHostSyncProgressText = document.getElementById(
+    "img-host-sync-progress-text"
+  );
+  let confirmResolver = null;
+  const MOBILE_LAYOUT_MEDIA = "(max-width: 960px)";
+  const DRAG_HUD_OFFSET_X = 18;
+  const DRAG_HUD_OFFSET_Y = 88;
+  const LONG_PRESS_DURATION_MS = 2000;
+  const LONG_PRESS_TICK_MS = 60;
+  const LONG_PRESS_CANCEL_DISTANCE_PX = 18;
+  const DRAG_READY_TIMEOUT_MS = 15000;
+  const longPressState = {
+    emojiItem: null,
+    pointerId: null,
+    startTime: 0,
+    startX: 0,
+    startY: 0,
+    currentX: 0,
+    currentY: 0,
+    timeoutId: null,
+    intervalId: null,
+  };
+  const dragModeState = {
+    items: [],
+    timeoutId: null,
+    pointerId: null,
+    activeCategory: null,
+    isPointerDragging: false,
+    captureElement: null,
+    autoScrollFrameId: null,
+    lastClientX: 0,
+    lastClientY: 0,
+  };
+  const clipboardState = {
+    items: [],
+  };
+  const contextMenuState = {
+    items: [],
+    targetCategory: null,
+  };
+  const uploadStateByCategory = new Map();
+  let initialStatusTimerId = null;
+  let activeCategoryEdit = null;
+  let pendingMoveTargetItems = [];
+  let imagePreviewState = null;
+
+  // 获取表情包数据和描述
+  async function fetchEmojis() {
+    try {
+      const [emojiResponse, tagDescriptions] = await Promise.all([
+        apiGet("emoji"),
+        apiGet("emotions"),
+      ]);
+      clearDragMode();
+      closeBatchContextMenu();
+      latestEmojiData = emojiResponse;
+      pruneSelectionState();
+      displayCategories(emojiResponse, tagDescriptions);
+      updateSidebar(emojiResponse, tagDescriptions);
+      updateSelectionUI();
+    } catch (error) {
+      console.error("加载表情包数据失败", error);
+    }
+  }
+
+  function createButton({
+    className = "",
+    text = "",
+    disabled = false,
+    onClick = null,
+  }) {
+    const button = document.createElement("button");
+    button.type = "button";
+    if (className) {
+      button.className = className;
+    }
+    button.textContent = text;
+    button.disabled = disabled;
+    if (onClick) {
+      button.addEventListener("click", onClick);
+    }
+    return button;
+  }
+
+  function createIconButton({
+    className = "",
+    iconClass = "",
+    title = "",
+    ariaLabel = "",
+    onClick = null,
+  }) {
+    const button = document.createElement("button");
+    button.type = "button";
+    if (className) {
+      button.className = className;
+    }
+    if (title) {
+      button.title = title;
+    }
+    if (ariaLabel) {
+      button.setAttribute("aria-label", ariaLabel);
+    }
+
+    if (iconClass) {
+      const icon = document.createElement("i");
+      icon.className = iconClass;
+      button.appendChild(icon);
+    }
+
+    if (onClick) {
+      button.addEventListener("click", onClick);
+    }
+
+    return button;
+  }
+
+  function setButtonBusy(button, busyText) {
+    if (!button) return;
+    if (!button.dataset.originalHtml) {
+      button.dataset.originalHtml = button.innerHTML;
+    }
+    button.disabled = true;
+    button.textContent = busyText;
+  }
+
+  function restoreButton(button) {
+    if (!button) return;
+    button.disabled = false;
+    if (button.dataset.originalHtml) {
+      button.innerHTML = button.dataset.originalHtml;
+    }
+  }
+
+  function getImageRequestParams(category, emoji, size = "preview") {
+    return {
+      category,
+      filename: emoji,
+      size,
+    };
+  }
+
+  function setEmojiPreviewLoading(emojiItem) {
+    emojiItem.classList.remove("emoji-load-error", "emoji-loaded");
+    emojiItem.classList.add("emoji-loading");
+    emojiItem.setAttribute("aria-label", "正在加载表情包预览");
+  }
+
+  function setEmojiPreviewLoaded(emojiItem, dataUrl) {
+    emojiItem.style.backgroundImage = `url("${dataUrl}")`;
+    emojiItem.dataset.previewDataUrl = dataUrl;
+    emojiItem.classList.remove("emoji-loading", "emoji-load-error");
+    emojiItem.classList.add("emoji-loaded");
+    emojiItem.setAttribute("aria-label", `预览表情包 ${emojiItem.dataset.emoji || ""}`);
+  }
+
+  function setEmojiPreviewError(emojiItem) {
+    emojiItem.style.backgroundImage = "";
+    emojiItem.classList.remove("emoji-loading", "emoji-loaded");
+    emojiItem.classList.add("emoji-load-error");
+    emojiItem.setAttribute("aria-label", "预览加载失败，点击重试");
+  }
+
+  async function loadEmojiPreview(emojiItem, { force = false } = {}) {
+    if (
+      !emojiItem ||
+      (!force && (emojiItem.dataset.previewDataUrl || emojiItem.dataset.loading === "true"))
+    ) {
+      return;
+    }
+
+    const { category, emoji } = emojiItem.dataset;
+    if (!category || !emoji) {
+      setEmojiPreviewError(emojiItem);
+      return;
+    }
+
+    emojiItem.dataset.loading = "true";
+    setEmojiPreviewLoading(emojiItem);
+    try {
+      const data = await apiGet(
+        "meme_image_data",
+        getImageRequestParams(category, emoji, "preview")
+      );
+      if (!data?.data_url) {
+        throw new Error("图片接口未返回预览数据");
+      }
+      setEmojiPreviewLoaded(emojiItem, data.data_url);
+    } catch (error) {
+      console.error("加载表情包预览失败:", error);
+      setEmojiPreviewError(emojiItem);
+    } finally {
+      emojiItem.dataset.loading = "false";
+    }
+  }
+
+  function retryEmojiPreview(emojiItem) {
+    if (!emojiItem) {
+      return;
+    }
+    delete emojiItem.dataset.previewDataUrl;
+    void loadEmojiPreview(emojiItem, { force: true });
+  }
+
+  async function loadPreviewImage(category, emoji, size = "preview") {
+    const data = await apiGet(
+      "meme_image_data",
+      getImageRequestParams(category, emoji, size)
+    );
+    if (!data?.data_url) {
+      throw new Error("图片接口未返回预览数据");
+    }
+    return data.data_url;
+  }
+
+  function setImagePreviewBusy(isBusy) {
+    if (imagePreviewLoading) {
+      imagePreviewLoading.classList.toggle("hidden", !isBusy);
+    }
+    if (imagePreviewOriginalBtn) {
+      imagePreviewOriginalBtn.disabled = isBusy;
+    }
+  }
+
+  function closeImagePreview() {
+    imagePreviewState = null;
+    if (imagePreviewModalRoot) {
+      imagePreviewModalRoot.classList.add("hidden");
+      imagePreviewModalRoot.setAttribute("aria-hidden", "true");
+    }
+    if (imagePreviewImg) {
+      imagePreviewImg.removeAttribute("src");
+    }
+    setImagePreviewBusy(false);
+  }
+
+  async function openImagePreview(category, emoji, previewDataUrl = "") {
+    if (!imagePreviewModalRoot || !imagePreviewImg) {
+      return;
+    }
+
+    imagePreviewState = { category, emoji };
+    imagePreviewModalRoot.classList.remove("hidden");
+    imagePreviewModalRoot.setAttribute("aria-hidden", "false");
+    imagePreviewImg.alt = `表情包预览：${emoji}`;
+    if (previewDataUrl) {
+      imagePreviewImg.src = previewDataUrl;
+    } else {
+      imagePreviewImg.removeAttribute("src");
+    }
+
+    setImagePreviewBusy(!previewDataUrl);
+    try {
+      if (!previewDataUrl) {
+        imagePreviewImg.src = await loadPreviewImage(category, emoji, "preview");
+      }
+    } catch (error) {
+      console.error("打开大图预览失败:", error);
+      closeImagePreview();
+      showToast("图片预览加载失败，请稍后重试。", "error", "加载失败");
+      return;
+    } finally {
+      setImagePreviewBusy(false);
+    }
+
+    imagePreviewCloseBtn?.focus();
+  }
+
+  async function showOriginalPreview() {
+    if (!imagePreviewState || !imagePreviewImg) {
+      return;
+    }
+
+    setImagePreviewBusy(true);
+    try {
+      imagePreviewImg.src = await loadPreviewImage(
+        imagePreviewState.category,
+        imagePreviewState.emoji,
+        "original"
+      );
+    } catch (error) {
+      console.error("加载原图失败:", error);
+      showToast("原图加载失败，可能文件过大或已不存在。", "error", "加载失败");
+    } finally {
+      setImagePreviewBusy(false);
     }
   }
 
@@ -367,40 +1028,6 @@ document.addEventListener("DOMContentLoaded", () => {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  function startLatestRequest(key) {
-    const state = requestState[key];
-    state.controller?.abort();
-    state.seq += 1;
-    state.controller = new AbortController();
-    return {
-      seq: state.seq,
-      controller: state.controller,
-    };
-  }
-
-  function isLatestRequest(key, requestToken) {
-    const state = requestState[key];
-    return state.seq === requestToken.seq && state.controller === requestToken.controller;
-  }
-
-  function finishLatestRequest(key, requestToken) {
-    const state = requestState[key];
-    if (state.controller === requestToken.controller) {
-      state.controller = null;
-    }
-  }
-
-  function cancelAllPendingRequests() {
-    Object.values(requestState).forEach((state) => {
-      state.controller?.abort();
-      state.controller = null;
-    });
-    if (initialStatusTimerId) {
-      clearTimeout(initialStatusTimerId);
-      initialStatusTimerId = null;
-    }
-  }
-
   function isCompactViewport() {
     return window.matchMedia(MOBILE_LAYOUT_MEDIA).matches;
   }
@@ -429,21 +1056,26 @@ document.addEventListener("DOMContentLoaded", () => {
       );
     }
 
-    if (leftPanel) {
-      leftPanel.setAttribute("aria-hidden", String(!sidebarExpanded));
-    }
+    [leftPanel, directoryPanel].forEach((panel) => {
+      panel?.setAttribute("aria-hidden", String(!sidebarExpanded));
+    });
   }
 
   function openSidebar() {
-    if (!isCompactViewport()) {
-      return;
+    if (isCompactViewport()) {
+      document.body.classList.add("sidebar-open");
+    } else {
+      document.body.classList.remove("sidebar-collapsed");
     }
-    document.body.classList.add("sidebar-open");
     updateSidebarToggleState();
   }
 
   function closeSidebar() {
-    document.body.classList.remove("sidebar-open");
+    if (isCompactViewport()) {
+      document.body.classList.remove("sidebar-open");
+    } else {
+      document.body.classList.add("sidebar-collapsed");
+    }
     updateSidebarToggleState();
   }
 
@@ -455,20 +1087,21 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     document.body.classList.remove("sidebar-open");
-    document.body.classList.remove("sidebar-collapsed");
     updateSidebarToggleState();
   }
 
   function toggleSidebar() {
-    if (!isCompactViewport()) {
+    if (isCompactViewport()) {
+      if (document.body.classList.contains("sidebar-open")) {
+        closeSidebar();
+      } else {
+        openSidebar();
+      }
       return;
     }
 
-    if (document.body.classList.contains("sidebar-open")) {
-      closeSidebar();
-    } else {
-      openSidebar();
-    }
+    document.body.classList.toggle("sidebar-collapsed");
+    updateSidebarToggleState();
   }
 
   function formatBytes(bytes) {
@@ -1302,7 +1935,7 @@ document.addEventListener("DOMContentLoaded", () => {
         uploadBlock.classList.remove("uploading");
         uploadBlock.setAttribute("aria-busy", "false");
         uploadTitle.textContent = "上传表情包";
-        uploadHint.textContent = "点击上传图片，或将表情长按 3 秒后拖到这里";
+        uploadHint.textContent = "点击上传图片，或将表情长按 2 秒后拖到这里";
         uploadMeta.textContent = "";
         uploadMeta.classList.add("hidden");
         uploadProgress.classList.add("hidden");
@@ -1519,7 +2152,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const uploadHint = document.createElement("div");
     uploadHint.className = "emoji-upload-hint";
-    uploadHint.textContent = "点击上传图片，或将表情长按 3 秒后拖到这里";
+    uploadHint.textContent = "点击上传图片，或将表情长按 2 秒后拖到这里";
 
     const uploadMeta = document.createElement("div");
     uploadMeta.className = "emoji-upload-meta hidden";
@@ -1682,7 +2315,14 @@ document.addEventListener("DOMContentLoaded", () => {
         emojiItem.dataset.suppressClick = "false";
         return;
       }
-      if (!selectionState.enabled) return;
+      if (emojiItem.classList.contains("emoji-load-error")) {
+        retryEmojiPreview(emojiItem);
+        return;
+      }
+      if (!selectionState.enabled) {
+        void openImagePreview(category, emoji, emojiItem.dataset.previewDataUrl || "");
+        return;
+      }
       toggleEmojiSelection(category, emoji);
     });
 
@@ -1797,19 +2437,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     for (const [sourceCategory, imageFiles] of groupedItems.entries()) {
       try {
-        const data = await requestJson(
-          "/api/emoji/batch_move",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              source_category: sourceCategory,
-              target_category: targetCategory,
-              image_files: imageFiles,
-            }),
-          },
-          { defaultErrorMessage: `移动失败：${sourceCategory}` }
-        );
+        const data = await apiPost("emoji/batch_move", {
+          source_category: sourceCategory,
+          target_category: targetCategory,
+          image_files: imageFiles,
+        });
 
         movedCount += data.moved_count || 0;
         (data.moved_files || []).forEach((filename) => {
@@ -1895,19 +2527,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     for (const [sourceCategory, imageFiles] of groupedItems.entries()) {
       try {
-        const data = await requestJson(
-          "/api/emoji/batch_copy",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              source_category: sourceCategory,
-              target_category: targetCategory,
-              image_files: imageFiles,
-            }),
-          },
-          { defaultErrorMessage: `复制失败：${sourceCategory}` }
-        );
+        const data = await apiPost("emoji/batch_copy", {
+          source_category: sourceCategory,
+          target_category: targetCategory,
+          image_files: imageFiles,
+        });
 
         copiedCount += data.copied_count || 0;
         (data.conflicting_files || []).forEach((filename) => {
@@ -2025,21 +2649,131 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  async function waitForSyncCompletion() {
-    while (true) {
-      const status = await requestJson("/api/img_host/sync/check_process", {}, {
-        defaultErrorMessage: "检查同步状态失败",
-      });
-
-      if (status.completed) {
-        if (!status.success) {
-          throw new Error("同步失败");
-        }
-        return status;
-      }
-
-      await sleep(1000);
+  function setImgHostSyncProgress(message, state = "info") {
+    if (!imgHostSyncProgress || !imgHostSyncProgressText) {
+      return;
     }
+
+    imgHostSyncProgress.classList.remove(
+      "hidden",
+      "sync-progress-success",
+      "sync-progress-error",
+      "sync-progress-warning"
+    );
+    if (state === "success") {
+      imgHostSyncProgress.classList.add("sync-progress-success");
+    } else if (state === "error") {
+      imgHostSyncProgress.classList.add("sync-progress-error");
+    } else if (state === "warning") {
+      imgHostSyncProgress.classList.add("sync-progress-warning");
+    }
+    imgHostSyncProgressText.textContent = message;
+  }
+
+  function hideImgHostSyncProgress(delay = 0) {
+    if (!imgHostSyncProgress) {
+      return;
+    }
+    window.setTimeout(() => {
+      imgHostSyncProgress.classList.add("hidden");
+    }, delay);
+  }
+
+  async function waitForSyncCompletion(actionLabel = "同步") {
+    return new Promise((resolve, reject) => {
+      let done = false;
+      let subscriptionId = null;
+      let pollTimer = null;
+      let timeoutTimer = null;
+
+      const cleanup = async () => {
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+        if (timeoutTimer) {
+          clearTimeout(timeoutTimer);
+          timeoutTimer = null;
+        }
+        if (subscriptionId && window.AstrBotPluginPage.unsubscribeSSE) {
+          try {
+            await window.AstrBotPluginPage.unsubscribeSSE(subscriptionId);
+          } catch (error) {
+            console.warn("取消同步进度订阅失败:", error);
+          }
+        }
+      };
+
+      const finish = (error, result) => {
+        if (done) return;
+        done = true;
+        void cleanup();
+        if (error) {
+          reject(error);
+        } else {
+          resolve(result);
+        }
+      };
+
+      const handleStatus = (status) => {
+        if (!status || done) return;
+
+        if (status.running) {
+          setImgHostSyncProgress(`${actionLabel}进行中...`, "info");
+          return;
+        }
+
+        if (!status.completed) {
+          return;
+        }
+
+        if (status.success === false) {
+          const message =
+            status.exit_code != null
+              ? `${actionLabel}失败，进程退出码：${status.exit_code}`
+              : `${actionLabel}失败`;
+          finish(new Error(message));
+          return;
+        }
+
+        if (status.success === true) {
+          finish(null, status);
+          return;
+        }
+
+        finish(new Error("没有检测到正在运行的同步任务"));
+      };
+
+      const pollStatus = async () => {
+        try {
+          const status = await apiGet("img_host/sync/task_status");
+          handleStatus(status);
+        } catch (error) {
+          console.warn("轮询同步状态失败:", error);
+        }
+      };
+
+      timeoutTimer = window.setTimeout(() => {
+        finish(new Error(`${actionLabel}超时，请查看 AstrBot 日志确认结果。`));
+      }, 30 * 60 * 1000);
+
+      pollTimer = window.setInterval(pollStatus, 2000);
+      void pollStatus();
+
+      window.AstrBotPluginPage.subscribeSSE("img_host/sync/progress", {
+        onOpen: () => setImgHostSyncProgress(`${actionLabel}进行中...`, "info"),
+        onMessage: ({ parsed }) => handleStatus(parsed),
+        onError: () =>
+          setImgHostSyncProgress("实时进度连接异常，已切换轮询确认结果。", "warning"),
+      })
+        .then((id) => {
+          subscriptionId = id;
+        })
+        .catch((error) => {
+          console.warn("订阅同步进度失败，改用轮询:", error);
+          setImgHostSyncProgress("实时进度不可用，正在轮询同步结果。", "warning");
+        });
+    });
   }
 
   // 根据数据生成 DOM 节点，展示每个分类及其表情包，并添加上传块
@@ -2141,6 +2875,7 @@ document.addEventListener("DOMContentLoaded", () => {
           emojiItem.dataset.category = category;
           emojiItem.dataset.emoji = emoji;
           emojiItem.dataset.suppressClick = "false";
+          emojiItem.dataset.loading = "false";
           emojiItem.tabIndex = 0;
 
           const selectionIndicator = document.createElement("button");
@@ -2160,8 +2895,7 @@ document.addEventListener("DOMContentLoaded", () => {
           emojiItem.appendChild(deleteBtn);
           bindEmojiInteractions(emojiItem, category, emoji);
 
-          // 使用 data-bg 存储图片URL
-          emojiItem.setAttribute("data-bg", `/memes/${category}/${emoji}`);
+          setEmojiPreviewLoading(emojiItem);
           emojiGrid.appendChild(emojiItem);
         });
       }
@@ -2177,21 +2911,20 @@ document.addEventListener("DOMContentLoaded", () => {
       container.appendChild(categoryDiv);
     });
 
-    // 懒加载背景图片
-    const lazyBackgrounds = document.querySelectorAll(".emoji-item");
+    const lazyBackgrounds = container.querySelectorAll(".emoji-item");
     const observer = new IntersectionObserver(
       (entries, observer) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting) {
-            const emojiItem = entry.target;
-            const bgUrl = emojiItem.getAttribute("data-bg");
-            emojiItem.style.backgroundImage = `url('${bgUrl}')`; // 加载背景图片
-            emojiItem.removeAttribute("data-bg"); // 移除临时属性
-            observer.unobserve(emojiItem); // 停止观察
+            void loadEmojiPreview(entry.target);
+            observer.unobserve(entry.target);
           }
         });
       },
-      { threshold: 0.1 }
+      {
+        rootMargin: "220px 0px",
+        threshold: 0.01,
+      }
     );
 
     lazyBackgrounds.forEach((item) => {
@@ -2522,17 +3255,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // 上传表情包
   async function uploadEmoji(category, file) {
-    const formData = new FormData();
-    formData.append("category", category);
-    formData.append("image_file", file);
-
-    return requestJson(
-      "/api/emoji/add",
-      {
-        method: "POST",
-        body: formData,
-      },
-      { defaultErrorMessage: "上传失败，服务器返回错误" }
+    return await window.AstrBotPluginPage.upload(
+      "emoji/add/" + encodeURIComponent(category),
+      file
     );
   }
 
@@ -2547,15 +3272,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!confirmed) return;
 
     try {
-      const data = await requestJson(
-        "/api/emoji/delete",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ category, image_file: emoji }),
-        },
-        { defaultErrorMessage: "删除表情包失败" }
-      );
+      const data = await apiPost("emoji/delete", { category, image_file: emoji });
       selectionState.items.delete(createSelectionKey(category, emoji));
       await refreshUi({ emojis: true });
       showToast(
@@ -2606,15 +3323,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     for (const [category, imageFiles] of groupedSelections.entries()) {
       try {
-        const data = await requestJson(
-          "/api/emoji/batch_delete",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ category, image_files: imageFiles }),
-          },
-          { defaultErrorMessage: `批量删除失败: ${category}` }
-        );
+        const data = await apiPost("emoji/batch_delete", {
+          category,
+          image_files: imageFiles,
+        });
         deletedCount += data.deleted_count || 0;
         (data.deleted_files || []).forEach((filename) => {
           deletedKeys.push(createSelectionKey(category, filename));
@@ -2677,15 +3389,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     try {
-      await requestJson(
-        "/api/category/delete",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ category }),
-        },
-        { defaultErrorMessage: "删除分类失败" }
-      );
+      await apiPost("category/delete", { category });
       await refreshUi({ emojis: true, syncStatus: true });
       showToast(`已删除分类 ${category}`, "success", "删除成功");
     } catch (error) {
@@ -2718,15 +3422,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     try {
-      const data = await requestJson(
-        "/api/category/clear",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ category }),
-        },
-        { defaultErrorMessage: "清空分类失败" }
-      );
+      const data = await apiPost("category/clear", { category });
       clearSelections();
       await refreshUi({ emojis: true });
       showToast(
@@ -2761,13 +3457,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     try {
-      const data = await requestJson(
-        "/api/emoji/clear_all",
-        {
-          method: "POST",
-        },
-        { defaultErrorMessage: "清空全部表情包失败" }
-      );
+      const data = await apiPost("emoji/clear_all");
       clearSelections();
       await refreshUi({ emojis: true });
       showToast(
@@ -2972,6 +3662,30 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  if (imagePreviewCloseBtn) {
+    imagePreviewCloseBtn.addEventListener("click", () => {
+      closeImagePreview();
+    });
+  }
+
+  if (imagePreviewOriginalBtn) {
+    imagePreviewOriginalBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void showOriginalPreview();
+    });
+  }
+
+  if (imagePreviewModalRoot) {
+    imagePreviewModalRoot.addEventListener("click", (event) => {
+      if (
+        event.target === imagePreviewModalRoot ||
+        event.target?.classList?.contains("image-preview-stage")
+      ) {
+        closeImagePreview();
+      }
+    });
+  }
+
   if (categoryEditModalRoot) {
     categoryEditModalRoot.addEventListener("click", (event) => {
       if (event.target === categoryEditModalRoot) {
@@ -3124,6 +3838,13 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
     }
+    if (event.key === "Escape" && imagePreviewModalRoot) {
+      const isPreviewOpen = !imagePreviewModalRoot.classList.contains("hidden");
+      if (isPreviewOpen) {
+        closeImagePreview();
+        return;
+      }
+    }
     if (event.key === "Escape" && categoryEditModalRoot) {
       const isEditOpen = !categoryEditModalRoot.classList.contains("hidden");
       if (isEditOpen) {
@@ -3173,20 +3894,10 @@ document.addEventListener("DOMContentLoaded", () => {
       setButtonBusy(saveButton, "保存中...");
 
       try {
-        await requestJson(
-          "/api/category/restore",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              category: categoryName,
-              description: categoryDesc,
-            }),
-          },
-          { defaultErrorMessage: "添加类别失败" }
-        );
+        await apiPost("category/restore", {
+          category: categoryName,
+          description: categoryDesc,
+        });
 
         document.getElementById("new-category-name").value = "";
         document.getElementById("new-category-description").value = "";
@@ -3336,26 +4047,15 @@ document.addEventListener("DOMContentLoaded", () => {
     );
   }
 
-  // 检查同步状态的函数
   async function checkSyncStatus(showAlert = true) {
     const statusDiv = document.getElementById("sync-status");
     if (!statusDiv) return;
 
     const btn = document.getElementById("check-sync-btn");
     setButtonBusy(btn, "正在检查中...");
-    const requestToken = startLatestRequest("syncStatus");
 
     try {
-      const data = await requestJson(
-        "/api/sync/status",
-        { signal: requestToken.controller.signal },
-        {
-          defaultErrorMessage: "检查同步状态失败",
-        }
-      );
-      if (!isLatestRequest("syncStatus", requestToken)) {
-        return;
-      }
+      const data = await apiGet("sync/status");
       if (data.status === "error") throw new Error(data.message);
 
       const differences = normalizeSyncDifferences(data);
@@ -3365,42 +4065,63 @@ document.addEventListener("DOMContentLoaded", () => {
         showToast("配置状态已刷新。", "success", "检查完成");
       }
     } catch (error) {
-      if (error.name === "AbortError") {
-        return;
-      }
       console.error("检查同步状态失败:", error);
-      if (!isLatestRequest("syncStatus", requestToken)) {
-        return;
-      }
       renderSyncStatusError(statusDiv, error.message);
       if (showAlert) {
         showToast(error.message, "error", "检查失败");
       }
     } finally {
-      finishLatestRequest("syncStatus", requestToken);
-      if (isLatestRequest("syncStatus", requestToken) || !requestState.syncStatus.controller) {
-        restoreButton(btn);
-      }
+      restoreButton(btn);
     }
   }
 
   async function syncToRemote() {
     const btn = document.getElementById("upload-sync-btn");
     try {
-      setButtonBusy(btn, "同步中...");
+      setButtonBusy(btn, "上传中...");
+      setImgHostSyncProgress("正在启动上传同步...", "info");
 
-      await requestJson(
-        "/api/img_host/sync/upload",
-        {
-          method: "POST",
-        },
-        { defaultErrorMessage: "同步到云端失败" }
-      );
-      await waitForSyncCompletion();
+      await apiPost("img_host/sync/upload");
+      await waitForSyncCompletion("上传同步");
       await refreshUi({ syncStatus: true, imgHostStatus: true });
+      setImgHostSyncProgress("上传同步已完成。", "success");
+      hideImgHostSyncProgress(3000);
       showToast("云端上传同步已完成。", "success", "同步成功");
     } catch (error) {
       console.error("同步到云端失败:", error);
+      setImgHostSyncProgress(error.message, "error");
+      showToast(error.message, "error", "同步失败");
+    } finally {
+      restoreButton(btn);
+    }
+  }
+
+  async function forceSyncToRemote() {
+    const confirmed = await showDangerConfirm({
+      title: "强制同步云端",
+      description:
+        "该操作会让云端图库与当前本地图库完全一致：上传本地缺失文件，并删除云端多出的文件。本地已经删除的图片会从云端删除。",
+      actionLabel: "确认强制同步云端",
+      countdown: 5,
+    });
+    if (!confirmed) {
+      return;
+    }
+
+    const btn = document.getElementById("force-upload-sync-btn");
+    try {
+      setButtonBusy(btn, "强制同步中...");
+      setImgHostSyncProgress("正在启动强制同步云端...", "warning");
+
+      await apiPost("img_host/sync/overwrite_to_remote");
+      await waitForSyncCompletion("强制同步云端");
+      await refreshUi({ syncStatus: true, imgHostStatus: true });
+      setImgHostSyncProgress("强制同步云端已完成。", "success");
+      hideImgHostSyncProgress(3000);
+      showToast("强制同步云端已完成。", "success", "同步成功");
+    } catch (error) {
+      console.error("强制同步云端失败:", error);
+      setImgHostSyncProgress(error.message, "error");
       showToast(error.message, "error", "同步失败");
     } finally {
       restoreButton(btn);
@@ -3410,20 +4131,18 @@ document.addEventListener("DOMContentLoaded", () => {
   async function syncFromRemote() {
     const btn = document.getElementById("download-sync-btn");
     try {
-      setButtonBusy(btn, "同步中...");
+      setButtonBusy(btn, "下载中...");
+      setImgHostSyncProgress("正在启动下载同步...", "info");
 
-      await requestJson(
-        "/api/img_host/sync/download",
-        {
-          method: "POST",
-        },
-        { defaultErrorMessage: "从云端同步失败" }
-      );
-      await waitForSyncCompletion();
+      await apiPost("img_host/sync/download");
+      await waitForSyncCompletion("下载同步");
       await refreshUi({ emojis: true, syncStatus: true, imgHostStatus: true });
+      setImgHostSyncProgress("下载同步已完成。", "success");
+      hideImgHostSyncProgress(3000);
       showToast("云端下载同步已完成。", "success", "同步成功");
     } catch (error) {
       console.error("从云端同步失败:", error);
+      setImgHostSyncProgress(error.message, "error");
       showToast(error.message, "error", "同步失败");
     } finally {
       restoreButton(btn);
@@ -3438,19 +4157,16 @@ document.addEventListener("DOMContentLoaded", () => {
     .getElementById("upload-sync-btn")
     .addEventListener("click", syncToRemote);
   document
+    .getElementById("force-upload-sync-btn")
+    .addEventListener("click", forceSyncToRemote);
+  document
     .getElementById("download-sync-btn")
     .addEventListener("click", syncFromRemote);
 
   // 同步配置的函数
   async function syncConfig() {
     try {
-      await requestJson(
-        "/api/sync/config",
-        {
-          method: "POST",
-        },
-        { defaultErrorMessage: "同步配置失败" }
-      );
+      await apiPost("sync/config");
       await refreshUi({ emojis: true, syncStatus: true });
       showToast("配置已同步到最新状态。", "success", "同步成功");
     } catch (error) {
@@ -3462,17 +4178,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // 恢复类别
   async function restoreCategory(category) {
     try {
-      const data = await requestJson(
-        "/api/category/restore",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ category }),
-        },
-        { defaultErrorMessage: "恢复类别失败" }
-      );
+      const data = await apiPost("category/restore", { category });
 
       await refreshUi({ emojis: true, syncStatus: true });
       showToast(
@@ -3499,17 +4205,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     try {
-      await requestJson(
-        "/api/category/remove_from_config",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ category }),
-        },
-        { defaultErrorMessage: "从配置中删除类别失败" }
-      );
+      await apiPost("category/remove_from_config", { category });
 
       await refreshUi({ syncStatus: true });
       showToast(
@@ -3594,26 +4290,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
     try {
       if (oldName !== newName) {
-        await requestJson(
-          "/api/category/rename",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ old_name: oldName, new_name: newName }),
-          },
-          { defaultErrorMessage: "重命名类别失败" }
-        );
+        await apiPost("category/rename", {
+          old_name: oldName,
+          new_name: newName,
+        });
       }
 
-      await requestJson(
-        "/api/category/update_description",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tag: newName, description: newDesc }),
-        },
-        { defaultErrorMessage: "更新描述失败" }
-      );
+      await apiPost("category/update_description", {
+        tag: newName,
+        description: newDesc,
+      });
 
       await refreshUi({ emojis: true, syncStatus: true });
       closeCategoryEditModal();
@@ -3645,42 +4331,35 @@ document.addEventListener("DOMContentLoaded", () => {
     syncSidebarLayout();
     closeBatchContextMenu();
   });
-  window.addEventListener("beforeunload", () => {
-    cancelAllPendingRequests();
-  });
-  void (async () => {
-    await fetchEmojis();
-    initialStatusTimerId = window.setTimeout(() => {
-      initialStatusTimerId = null;
-      void checkSyncStatus(false);
-      void checkImgHostSyncStatus(false);
-    }, 180);
-  })();
+
+  await fetchEmojis();
+  initialStatusTimerId = window.setTimeout(() => {
+    initialStatusTimerId = null;
+    void checkSyncStatus(false);
+    void checkImgHostSyncStatus(false);
+  }, 180);
 
   // 检查图床同步状态
   async function checkImgHostSyncStatus(showAlert = true) {
     const uploadCountElement = document.getElementById("upload-count");
     const downloadCountElement = document.getElementById("download-count");
+    const remoteExtraCountElement =
+      document.getElementById("remote-extra-count");
+    const localExtraCountElement = document.getElementById("local-extra-count");
     const providerElement = document.getElementById("img-host-provider");
     const remoteImageCountElement = document.getElementById("remote-image-count");
     const remoteStorageSizeElement =
       document.getElementById("remote-storage-size");
 
-    const requestToken = startLatestRequest("imgHostStatus");
     try {
-      const data = await requestJson(
-        "/api/img_host/sync/status",
-        { signal: requestToken.controller.signal },
-        {
-          defaultErrorMessage: "获取图床同步状态失败",
-        }
-      );
-      if (!isLatestRequest("imgHostStatus", requestToken)) {
-        return;
-      }
+      const data = await apiGet("img_host/sync/status");
 
       const uploadCount = data.upload_count ?? data.to_upload?.length ?? 0;
       const downloadCount = data.download_count ?? data.to_download?.length ?? 0;
+      const remoteExtraCount =
+        data.remote_extra_count ?? data.to_delete_remote?.length ?? 0;
+      const localExtraCount =
+        data.local_extra_count ?? data.to_delete_local?.length ?? 0;
       const remoteImageCount =
         data.remote_image_count ??
         data.remote_count ??
@@ -3699,6 +4378,12 @@ document.addEventListener("DOMContentLoaded", () => {
       if (downloadCountElement) {
         downloadCountElement.textContent = downloadCount;
       }
+      if (remoteExtraCountElement) {
+        remoteExtraCountElement.textContent = remoteExtraCount;
+      }
+      if (localExtraCountElement) {
+        localExtraCountElement.textContent = localExtraCount;
+      }
       if (providerElement) {
         providerElement.textContent = data.provider_label || "未知图床";
       }
@@ -3711,24 +4396,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
       if (showAlert) {
         showToast(
-          `${data.provider_label || "图床"}：云端 ${remoteImageCount} 张，待上传 ${uploadCount} 个，待下载 ${downloadCount} 个。`,
+          `${data.provider_label || "图床"}：云端 ${remoteImageCount} 张，待上传 ${uploadCount} 个，待下载 ${downloadCount} 个，云端多出 ${remoteExtraCount} 个。`,
           "info",
           "图床状态已刷新"
         );
       }
     } catch (error) {
-      if (error.name === "AbortError") {
-        return;
-      }
       console.error("检查图床同步状态失败:", error);
-      if (!isLatestRequest("imgHostStatus", requestToken)) {
-        return;
-      }
       if (uploadCountElement) {
         uploadCountElement.textContent = "--";
       }
       if (downloadCountElement) {
         downloadCountElement.textContent = "--";
+      }
+      if (remoteExtraCountElement) {
+        remoteExtraCountElement.textContent = "--";
+      }
+      if (localExtraCountElement) {
+        localExtraCountElement.textContent = "--";
       }
       if (providerElement) {
         providerElement.textContent = "--";
@@ -3742,8 +4427,8 @@ document.addEventListener("DOMContentLoaded", () => {
       if (showAlert) {
         showToast(error.message, "error", "检查失败");
       }
-    } finally {
-      finishLatestRequest("imgHostStatus", requestToken);
     }
   }
-});
+}
+
+initApp();
