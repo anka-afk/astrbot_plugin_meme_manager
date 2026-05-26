@@ -119,21 +119,21 @@
 
 管理界面已集成到 AstrBot WebUI 中，进入 WebUI → 插件 → meme_manager → manage 页面即可访问。支持批量选择、拖拽移动、图床同步和移动端管理。
 
-![alt text](.github/img/webui.png)
+具体步骤如下：
 
-![alt text](.github/img/webui_enter.png)
+![webui入口步骤1](.github/img/webui.png)
+
+![webui入口步骤2](.github/img/webui_enter.png)
 
 WebUI 图床同步面板会显示当前服务商、云端图片数、云端占用、待上传、待下载、云端多出和本地多出。普通「同步到云端」只上传本地缺失文件；「强制同步云端」会让云端与本地完全一致，包含删除云端多出的图片，执行前需要勾选确认并等待 5 秒倒计时。
 
-图片预览在 WebUI 内通过插件接口加载，不依赖 iframe cookie。预览图支持懒加载、点击查看大图、右下角继续加载原图，加载失败时会显示重试入口。
-
 WebUI 管理界面如下所示：
 
-![alt text](.github/img/webui_preview.png)
+![webui预览](.github/img/webui_preview.png)
 
 ## ☁️ 图床配置
 
-本插件支持 **stardots**、**Cloudflare R2** 和 **WebDAV** 三种图床。由于stardots图床政策更新，推荐使用后两种方案。
+本插件支持 **stardots**、**Cloudflare R2** 和 **WebDAV** 三种图床。由于stardots图床政策更新，免费用户可存储空间较小, 推荐使用后两种方案。
 
 ### 方案一：Stardots 图床（国内访问友好）
 
