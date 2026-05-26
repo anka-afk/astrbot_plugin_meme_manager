@@ -57,6 +57,20 @@ SERVER_LOGIN_KEY = None
 _current_server = None
 
 
+def _build_img_sync(config):
+    """在 WebUI 进程内重建图床同步客户端，避免跨进程复用连接对象。"""
+    if not config:
+        return False
+
+    existing_img_sync = config.get("img_sync")
+    img_sync_config = config.get("img_sync_config")
+    provider_type = config.get("img_sync_provider_type")
+
+    if img_sync_config and provider_type:
+        return ImageSync(img_sync_config, MEMES_DIR, provider_type)
+    return existing_img_sync or False
+
+
 @app.route("/health", methods=["GET"])
 async def health_check():
     """健康检查接口"""

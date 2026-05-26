@@ -27,6 +27,8 @@ def _get_provider_label(img_sync) -> str:
         return "Cloudflare R2"
     if provider_type == "stardots":
         return "StarDots"
+    if provider_type == "webdav":
+        return "WebDAV"
 
     provider = getattr(img_sync, "provider", None)
     if provider is not None:
@@ -513,7 +515,7 @@ async def get_img_host_sync_status():
         plugin_config = current_app.config.get("PLUGIN_CONFIG", {})
         img_sync = plugin_config.get("img_sync")
         if not img_sync:
-            return jsonify({"error": "图床服务未配置"}), 400
+            return jsonify({"message": "图床服务未配置", "error": "图床服务未配置"}), 400
 
         status = img_sync.check_status()
         status["upload_count"] = len(status.get("to_upload", []))
@@ -521,7 +523,7 @@ async def get_img_host_sync_status():
         status["provider_label"] = _get_provider_label(img_sync)
         return jsonify(status)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"message": str(e), "error": str(e)}), 500
 
 
 @api.route("/img_host/sync/upload", methods=["POST"])

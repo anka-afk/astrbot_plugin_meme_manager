@@ -337,7 +337,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const payload = await parseResponsePayload(response).catch(() => ({}));
 
     if (!response.ok) {
-      const error = new Error(payload.message || defaultErrorMessage);
+      const error = new Error(payload.message || payload.error || defaultErrorMessage);
       error.status = response.status;
       error.code = payload.code || null;
       error.payload = payload;
