@@ -53,7 +53,9 @@ class WebDAVProvider(ImageHostInterface):
         self.password = config["password"]
         self.base_path = self._normalize_path(config.get("base_path", "memes"))
         self.public_url = str(config.get("public_url", "")).rstrip("/")
-        self.local_dir = Path(config.get("local_dir", "")) if config.get("local_dir") else None
+        self.local_dir = (
+            Path(config.get("local_dir", "")) if config.get("local_dir") else None
+        )
         self.timeout = int(config.get("timeout", 30) or 30)
         self.verify_ssl = self._parse_bool(config.get("verify_ssl", True))
 
@@ -163,7 +165,9 @@ class WebDAVProvider(ImageHostInterface):
             )
         return response
 
-    def _parse_propfind_response(self, xml_text: str, requested_path: str) -> list[dict]:
+    def _parse_propfind_response(
+        self, xml_text: str, requested_path: str
+    ) -> list[dict]:
         try:
             root = ET.fromstring(xml_text)
         except ET.ParseError as exc:
@@ -178,8 +182,13 @@ class WebDAVProvider(ImageHostInterface):
 
             remote_path = self._path_from_href(href, requested_path)
             resource_type = response.find(".//d:resourcetype", namespace)
-            is_dir = resource_type is not None and resource_type.find("d:collection", namespace) is not None
-            size_text = response.findtext(".//d:getcontentlength", default="0", namespaces=namespace)
+            is_dir = (
+                resource_type is not None
+                and resource_type.find("d:collection", namespace) is not None
+            )
+            size_text = response.findtext(
+                ".//d:getcontentlength", default="0", namespaces=namespace
+            )
             entries.append(
                 {
                     "path": remote_path,
@@ -213,7 +222,9 @@ class WebDAVProvider(ImageHostInterface):
         return response
 
     def _url_for_path(self, remote_path: str) -> str:
-        quoted_parts = [urllib.parse.quote(part) for part in remote_path.split("/") if part]
+        quoted_parts = [
+            urllib.parse.quote(part) for part in remote_path.split("/") if part
+        ]
         if not quoted_parts:
             return self.base_url
         return f"{self.base_url}/{'/'.join(quoted_parts)}"
@@ -221,8 +232,14 @@ class WebDAVProvider(ImageHostInterface):
     def _public_url_for_id(self, remote_id: str) -> str:
         if not self.public_url:
             return self._url_for_path(self._remote_id_to_path(remote_id))
-        quoted_parts = [urllib.parse.quote(part) for part in remote_id.split("/") if part]
-        return f"{self.public_url}/{'/'.join(quoted_parts)}" if quoted_parts else self.public_url
+        quoted_parts = [
+            urllib.parse.quote(part) for part in remote_id.split("/") if part
+        ]
+        return (
+            f"{self.public_url}/{'/'.join(quoted_parts)}"
+            if quoted_parts
+            else self.public_url
+        )
 
     def _get_remote_id(self, file_path: Path) -> str:
         if self.local_dir:
@@ -235,7 +252,11 @@ class WebDAVProvider(ImageHostInterface):
 
     def _remote_id_to_path(self, remote_id: str) -> str:
         normalized_id = self._normalize_path(remote_id)
-        return posixpath.join(self.base_path, normalized_id) if normalized_id else self.base_path
+        return (
+            posixpath.join(self.base_path, normalized_id)
+            if normalized_id
+            else self.base_path
+        )
 
     def _strip_base_path(self, remote_path: str) -> str:
         normalized_path = self._normalize_path(remote_path)
@@ -247,8 +268,12 @@ class WebDAVProvider(ImageHostInterface):
         return normalized_path
 
     def _path_from_href(self, href: str, requested_path: str) -> str:
-        parsed_href_path = urllib.parse.unquote(urllib.parse.urlparse(href).path).strip("/")
-        base_url_path = urllib.parse.unquote(urllib.parse.urlparse(self.base_url).path).strip("/")
+        parsed_href_path = urllib.parse.unquote(urllib.parse.urlparse(href).path).strip(
+            "/"
+        )
+        base_url_path = urllib.parse.unquote(
+            urllib.parse.urlparse(self.base_url).path
+        ).strip("/")
         if base_url_path and parsed_href_path.startswith(base_url_path):
             parsed_href_path = parsed_href_path[len(base_url_path) :].strip("/")
         if parsed_href_path:

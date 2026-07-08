@@ -286,7 +286,9 @@ def _migrate_legacy_root_into_pack(plugin_data_dir: Path) -> None:
         DEFAULT_CATEGORY_DESCRIPTIONS,
     )
     _write_pack_compatibility_metadata(legacy_pack_dir, category_descriptions)
-    _write_pack_manifest(legacy_pack_dir, LEGACY_MIGRATED_PACK_ID, category_descriptions)
+    _write_pack_manifest(
+        legacy_pack_dir, LEGACY_MIGRATED_PACK_ID, category_descriptions
+    )
     _save_json_file(
         plugin_data_dir / "migration" / "legacy_runtime_migrated.json",
         {
@@ -301,14 +303,20 @@ def _ensure_builtin_default_pack(plugin_data_dir: Path) -> None:
     builtin_pack_dir = plugin_data_dir / "packs" / DEFAULT_PACK_ID
     builtin_pack_memes_dir = builtin_pack_dir / "memes"
     builtin_pack_memes_dir.mkdir(parents=True, exist_ok=True)
-    _write_pack_manifest(builtin_pack_dir, DEFAULT_PACK_ID, DEFAULT_CATEGORY_DESCRIPTIONS)
+    _write_pack_manifest(
+        builtin_pack_dir, DEFAULT_PACK_ID, DEFAULT_CATEGORY_DESCRIPTIONS
+    )
 
 
 def _resolve_default_pack_id(plugin_data_dir: Path) -> str:
     selection_rules_path = plugin_data_dir / "selection_rules.json"
     if selection_rules_path.is_file():
         selection_rules = _load_json_file(selection_rules_path, {})
-        rules = selection_rules.get("rules", []) if isinstance(selection_rules, dict) else []
+        rules = (
+            selection_rules.get("rules", [])
+            if isinstance(selection_rules, dict)
+            else []
+        )
         if isinstance(rules, list):
             for rule in reversed(rules):
                 if not isinstance(rule, dict):
@@ -326,7 +334,9 @@ def _resolve_default_pack_id(plugin_data_dir: Path) -> str:
     return DEFAULT_PACK_ID
 
 
-def sync_active_pack_metadata(category_descriptions: dict[str, str] | None = None) -> None:
+def sync_active_pack_metadata(
+    category_descriptions: dict[str, str] | None = None,
+) -> None:
     """将当前表情包的清单与兼容性元数据文件同步。"""
     active_pack_dir = PACKS_DIR / ACTIVE_PACK_ID
     active_pack_dir.mkdir(parents=True, exist_ok=True)
@@ -343,9 +353,10 @@ def sync_active_pack_metadata(category_descriptions: dict[str, str] | None = Non
 def _bootstrap_pack_runtime(plugin_data_dir: Path) -> None:
     _ensure_runtime_layout(plugin_data_dir)
 
-    if not (plugin_data_dir / "registry.json").is_file() or not (
-        plugin_data_dir / "selection_rules.json"
-    ).is_file():
+    if (
+        not (plugin_data_dir / "registry.json").is_file()
+        or not (plugin_data_dir / "selection_rules.json").is_file()
+    ):
         if _has_legacy_root_runtime_data(plugin_data_dir):
             _migrate_legacy_root_into_pack(plugin_data_dir)
             default_pack_id = LEGACY_MIGRATED_PACK_ID
