@@ -143,7 +143,11 @@ class EventHandlerMixin:
                 self.found_emotions.append(emotion)
 
         # 第二阶段：替代标记处理（如[emotion]、(emotion)等）
-        if self.config.get("enable_alternative_markup", True):
+        if self._read_config_value(
+            ("generation", "markup", "enable_alternative"),
+            default=True,
+            legacy_keys=("enable_alternative_markup",),
+        ):
             remove_invalid_markup = self.remove_invalid_alternative_markup
             # 处理[emotion]格式
             bracket_pattern = r"\[([^\[\]]+)\]"
@@ -197,8 +201,16 @@ class EventHandlerMixin:
 
         # 第三阶段：处理重复表情模式（如angryangryangry）
         repeated_emotions = []
-        if self.config.get("enable_repeated_emotion_detection", True):
-            high_confidence_emotions = self.config.get("high_confidence_emotions", [])
+        if self._read_config_value(
+            ("generation", "markup", "enable_repeated_detection"),
+            default=True,
+            legacy_keys=("enable_repeated_emotion_detection",),
+        ):
+            high_confidence_emotions = self._read_config_value(
+                ("generation", "matching", "high_confidence_emotions"),
+                default=[],
+                legacy_keys=("high_confidence_emotions",),
+            )
 
             for emotion in valid_emoticons:
                 # 跳过太短的表情词，避免误判
@@ -242,7 +254,11 @@ class EventHandlerMixin:
 
         # 第四阶段：智能识别可能的表情（松散模式）
         loose_emotions = []
-        if self.config.get("enable_loose_emotion_matching", True):
+        if self._read_config_value(
+            ("generation", "matching", "enable_loose_matching"),
+            default=True,
+            legacy_keys=("enable_loose_emotion_matching",),
+        ):
             # 查找所有可能的表情词
             for emotion in valid_emoticons:
                 # 使用单词边界确保不是其他单词的一部分
@@ -623,7 +639,11 @@ class EventHandlerMixin:
             return True
 
         # 规则5：如果是已知的表情占比很高(>=70%)的单词，即使在英文上下文中也可能是表情
-        if word in self.config.get("high_confidence_emotions", []):
+        if word in self._read_config_value(
+            ("generation", "matching", "high_confidence_emotions"),
+            default=[],
+            legacy_keys=("high_confidence_emotions",),
+        ):
             return True
 
         return False

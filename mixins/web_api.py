@@ -854,9 +854,17 @@ class WebAPIMixin:
         for key in keys_to_remove:
             cache.pop(key, None)
 
-    @staticmethod
-    def _get_img_host_status_cache_ttl() -> int:
-        return IMG_HOST_STATUS_CACHE_TTL_SECONDS
+    def _get_img_host_status_cache_ttl(self) -> int:
+        raw_value = self._read_config_value(
+            ("sync", "status_cache_ttl_seconds"),
+            default=IMG_HOST_STATUS_CACHE_TTL_SECONDS,
+            legacy_keys=("img_host_status_cache_ttl_seconds",),
+        )
+        try:
+            ttl = int(raw_value)
+        except (TypeError, ValueError):
+            return IMG_HOST_STATUS_CACHE_TTL_SECONDS
+        return max(0, min(ttl, 300))
 
     @staticmethod
     def _make_img_host_status_cache_key(pack_id: str, local_dir: Path | str) -> str:

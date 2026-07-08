@@ -1,255 +1,533 @@
 {
-  "image_host": {
-    "description": "选择的图床",
-    "type": "string",
-    "hint": "请选择要使用的图床服务",
-    "default": "cloudflare_r2",
-    "options": ["stardots", "cloudflare_r2", "webdav"]
+  "storage": {
+    "description": "存储与图床",
+    "type": "object",
+    "hint": "新结构：优先使用此分组配置图床",
+    "items": {
+      "provider": {
+        "description": "图床服务",
+        "type": "string",
+        "default": "cloudflare_r2",
+        "options": ["stardots", "cloudflare_r2", "webdav"],
+        "hint": "请选择要使用的图床服务"
+      },
+      "providers": {
+        "description": "图床参数",
+        "type": "object",
+        "items": {
+          "stardots": {
+            "description": "StarDots 配置",
+            "type": "object",
+            "items": {
+              "key": {
+                "description": "API Key",
+                "type": "string",
+                "hint": "请输入 StarDots 的 API Key"
+              },
+              "secret": {
+                "description": "API Secret",
+                "type": "string",
+                "hint": "请输入 StarDots 的 API Secret"
+              },
+              "space": {
+                "description": "空间名称",
+                "type": "string",
+                "default": "memes",
+                "hint": "请输入 StarDots 的空间名称"
+              },
+              "list_cache_ttl": {
+                "description": "远端列表缓存时长（秒）",
+                "type": "int",
+                "default": 60,
+                "hint": "用于减少状态轮询时的 API 调用次数；0 表示关闭缓存",
+                "slider": {
+                  "min": 0,
+                  "max": 300,
+                  "step": 5
+                }
+              }
+            }
+          },
+          "cloudflare_r2": {
+            "description": "Cloudflare R2 配置",
+            "type": "object",
+            "items": {
+              "account_id": {
+                "description": "Cloudflare Account ID",
+                "type": "string",
+                "hint": "请输入 Cloudflare Account ID"
+              },
+              "access_key_id": {
+                "description": "R2 Access Key ID",
+                "type": "string",
+                "hint": "请输入 R2 Access Key ID"
+              },
+              "secret_access_key": {
+                "description": "R2 Secret Access Key",
+                "type": "string",
+                "hint": "请输入 R2 Secret Access Key"
+              },
+              "bucket_name": {
+                "description": "R2 Bucket 名称",
+                "type": "string",
+                "hint": "请输入 R2 Bucket 名称"
+              },
+              "public_url": {
+                "description": "自定义 CDN 域名（可选）",
+                "type": "string",
+                "default": "",
+                "hint": "例如：https://cdn.yourdomain.com"
+              }
+            }
+          },
+          "webdav": {
+            "description": "WebDAV 配置",
+            "type": "object",
+            "items": {
+              "url": {
+                "description": "WebDAV 地址",
+                "type": "string",
+                "hint": "例如：https://example.com/dav"
+              },
+              "username": {
+                "description": "用户名",
+                "type": "string",
+                "hint": "请输入 WebDAV 用户名"
+              },
+              "password": {
+                "description": "密码或应用密码",
+                "type": "string",
+                "hint": "请输入 WebDAV 密码或应用密码"
+              },
+              "base_path": {
+                "description": "远端目录",
+                "type": "string",
+                "default": "memes",
+                "hint": "表情包在 WebDAV 中保存的目录，例如：memes"
+              },
+              "public_url": {
+                "description": "公开访问地址（可选）",
+                "type": "string",
+                "default": "",
+                "hint": "如需生成外链，请填写公开访问根地址"
+              },
+              "verify_ssl": {
+                "description": "校验 SSL 证书",
+                "type": "bool",
+                "default": true,
+                "hint": "自签名证书服务可关闭此项"
+              },
+              "timeout": {
+                "description": "请求超时时间（秒）",
+                "type": "int",
+                "default": 30,
+                "hint": "WebDAV 上传、下载、列表请求的超时时间"
+              }
+            }
+          }
+        }
+      }
+    }
   },
-  "image_host_config": {
-    "description": "图床配置",
+  "sync": {
+    "description": "同步策略",
     "type": "object",
     "items": {
-      "stardots": {
-        "description": "Stardots 图床配置",
+      "status_cache_ttl_seconds": {
+        "description": "同步状态缓存时长（秒）",
+        "type": "int",
+        "default": 15,
+        "hint": "管理页同步状态接口缓存；0 表示关闭缓存",
+        "slider": {
+          "min": 0,
+          "max": 120,
+          "step": 5
+        }
+      }
+    }
+  },
+  "generation": {
+    "description": "表情生成与发送",
+    "type": "object",
+    "items": {
+      "prompt": {
+        "description": "提示词模板",
         "type": "object",
+        "hint": "类别描述会自动插入到提示词中",
         "items": {
-          "key": {
-            "description": "API Key",
-            "type": "string",
-            "hint": "请输入 Stardots 的 API Key"
+          "head": {
+            "description": "提示词前缀",
+            "type": "text",
+            "editor_mode": true,
+            "editor_language": "markdown",
+            "default": "\n\n你在对话中需根据当前情境智能选用表情符号，表情需用&&包裹，例如：&&happy&&, 通用格式:&&标签&&。选择逻辑遵循以下动态规则：\n\n[智能触发机制]\n1. 关键词匹配：当对话内容包含以下类型词汇时激活表情使用\n   - 核心情绪词（开心/生气/惊讶等）→ 直接匹配对应标签\n   - 场景特征词（早安/报酬/思考等）→ 关联场景标签\n   - 语气调节词（请/建议/但是等）→ 触发软化型表情\n2. 动态优先级：\n   a) 精确匹配现有标签 > 同义词扩展 > 放弃使用\n   b) 高频使用标签优先于低频标签\n\n[表情标签库]（当前可用）\n格式：标签 - 使用场景描述\n当前可用：\n",
+            "hint": "请输入提示词头"
           },
-          "secret": {
-            "description": "API Secret",
-            "type": "string",
-            "hint": "请输入 Stardots 的 API Secret"
+          "tail_before_limit": {
+            "description": "提示词后缀（数量前）",
+            "type": "text",
+            "editor_mode": true,
+            "editor_language": "markdown",
+            "default": "\n\n=== 安全控制体系 ===\n1. 使用频率：\n   • 日常对话：最多",
+            "hint": "请输入提示词尾_1"
           },
-          "space": {
-            "description": "空间名称",
-            "type": "string",
-            "hint": "请输入 Stardots 的空间名称"
+          "tail_after_limit": {
+            "description": "提示词后缀（数量后）",
+            "type": "text",
+            "editor_mode": true,
+            "editor_language": "markdown",
+            "default": "个表情\n   • 专业咨询：≤1个\n2. 强制校验规则：\n   a) 存在性检查：仅使用当前列表存在的标签\n   b) 冲突检测：当涉及医疗/法律/暴力话题时禁用所有表情\n   c) 语义一致性：表情含义需与上下文情绪方向一致\n3. 智能降级策略：\n   1) 首选：同类别表情或相近表情\n   2) 备选：放弃使用表情\n4. 自检流程：\n   提取关键词 → 匹配标签 → 语境审查 → 最终输出",
+            "hint": "请输入提示词尾_2"
           }
         }
       },
-      "cloudflare_r2": {
-        "description": "Cloudflare R2 图床配置",
+      "emotion": {
+        "description": "表情选择策略",
         "type": "object",
         "items": {
-          "account_id": {
-            "description": "Cloudflare Account ID",
-            "type": "string",
-            "hint": "请输入 Cloudflare Account ID"
+          "max_per_message": {
+            "description": "每次回复最多使用表情数量",
+            "type": "int",
+            "default": 2,
+            "hint": "每次回复最多使用表情数量"
           },
-          "access_key_id": {
-            "description": "R2 Access Key ID",
-            "type": "string",
-            "hint": "请输入 R2 Access Key ID"
+          "probability": {
+            "description": "表情出现概率",
+            "type": "int",
+            "default": 50,
+            "hint": "每次发送表情出现的概率，范围为 1-100",
+            "slider": {
+              "min": 1,
+              "max": 100,
+              "step": 5
+            }
           },
-          "secret_access_key": {
-            "description": "R2 Secret Access Key",
-            "type": "string",
-            "hint": "请输入 R2 Secret Access Key"
-          },
-          "bucket_name": {
-            "description": "R2 Bucket 名称",
-            "type": "string",
-            "hint": "请输入 R2 Bucket 名称"
-          },
-          "public_url": {
-            "description": "自定义CDN域名（可选）",
-            "type": "string",
-            "hint": "自定义CDN域名，例如：https://cdn.yourdomain.com"
-          }
-        }
-      },
-      "webdav": {
-        "description": "WebDAV 图床配置",
-        "type": "object",
-        "items": {
-          "url": {
-            "description": "WebDAV 地址",
-            "type": "string",
-            "hint": "请输入 WebDAV 根地址，例如：https://example.com/dav"
-          },
-          "username": {
-            "description": "用户名",
-            "type": "string",
-            "hint": "请输入 WebDAV 用户名"
-          },
-          "password": {
-            "description": "密码或应用密码",
-            "type": "string",
-            "hint": "请输入 WebDAV 密码或应用密码"
-          },
-          "base_path": {
-            "description": "远端目录",
-            "type": "string",
-            "default": "memes",
-            "hint": "表情包在 WebDAV 中保存的目录，例如：memes"
-          },
-          "public_url": {
-            "description": "公开访问地址（可选）",
-            "type": "string",
-            "hint": "如需生成外链，请填写公开访问根地址，例如：https://cdn.example.com/memes"
-          },
-          "verify_ssl": {
-            "description": "校验 SSL 证书",
+          "strict_max_per_message": {
+            "description": "严格限制表情数量",
             "type": "bool",
             "default": true,
-            "hint": "自签名证书服务可关闭此项"
+            "hint": "开启后将严格裁剪超出数量的表情"
           },
-          "timeout": {
-            "description": "请求超时时间（秒）",
+          "llm": {
+            "description": "情感模型辅助",
+            "type": "object",
+            "items": {
+              "enabled": {
+                "description": "启用情感模型判断",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后将调用指定模型判断表情标签"
+              },
+              "provider_id": {
+                "description": "情感模型 Provider ID",
+                "type": "string",
+                "default": "",
+                "hint": "留空则使用当前对话模型",
+                "_special": "select_provider"
+              }
+            }
+          }
+        }
+      },
+      "markup": {
+        "description": "标记解析策略",
+        "type": "object",
+        "items": {
+          "enable_alternative": {
+            "description": "启用备用标记",
+            "type": "bool",
+            "default": true,
+            "hint": "允许将 :happy: 识别为 &&happy&&"
+          },
+          "remove_invalid_alternative": {
+            "description": "移除无效备用标记",
+            "type": "bool",
+            "default": true,
+            "hint": "开启后会移除无法识别的 () 或 [] 标记内容"
+          },
+          "enable_repeated_detection": {
+            "description": "启用重复表情检测",
+            "type": "bool",
+            "default": true,
+            "hint": "防止输出 angryangryangry 这类重复标签"
+          }
+        }
+      },
+      "matching": {
+        "description": "匹配增强",
+        "type": "object",
+        "items": {
+          "enable_loose_matching": {
+            "description": "启用宽松匹配",
+            "type": "bool",
+            "default": true,
+            "hint": "中文场景建议开启，英文场景误匹配可关闭"
+          },
+          "high_confidence_emotions": {
+            "description": "高置信度表情列表",
+            "type": "list",
+            "default": [
+              "angry",
+              "happy",
+              "sad",
+              "surprised",
+              "confused",
+              "color",
+              "cpu",
+              "fool",
+              "givemoney",
+              "like",
+              "see",
+              "shy",
+              "work",
+              "reply",
+              "meow",
+              "baka",
+              "morning",
+              "sleep",
+              "sigh"
+            ],
+            "hint": "即使在英文上下文中也会优先识别这些标签"
+          }
+        }
+      },
+      "message": {
+        "description": "消息发送策略",
+        "type": "object",
+        "items": {
+          "convert_static_to_gif": {
+            "description": "静态图转 GIF 发送",
+            "type": "bool",
+            "default": false,
+            "hint": "开启后，发送静态图片时会转换为 1 帧 GIF"
+          },
+          "enable_mixed": {
+            "description": "启用图文同条回复",
+            "type": "bool",
+            "default": false,
+            "hint": "文本和表情图片在同一条消息中发送"
+          },
+          "mixed_probability": {
+            "description": "图文同条回复概率",
             "type": "int",
-            "default": 30,
-            "hint": "WebDAV 上传、下载、列表请求的超时时间"
+            "default": 50,
+            "hint": "启用图文同条时的发送概率，范围为 1-100",
+            "slider": {
+              "min": 1,
+              "max": 100,
+              "step": 5
+            }
+          },
+          "streaming_compatibility": {
+            "description": "流式传输兼容模式",
+            "type": "bool",
+            "default": true,
+            "hint": "流式模式下将图片作为独立消息发送"
+          },
+          "content_cleanup_rule": {
+            "description": "内容过滤正则表达式",
+            "type": "string",
+            "default": "&&[a-zA-Z]*&&",
+            "hint": "移除分段后内容中的指定内容"
           }
         }
       }
     }
   },
   "prompt": {
-    "description": "自动添加的提示词(类别描述自动插入到提示词中)",
+    "description": "旧版提示词（兼容）",
     "type": "object",
     "items": {
       "prompt_head": {
         "description": "提示词头",
-        "type": "string",
-        "hint": "请输入提示词头",
-        "default": "\n\n你在对话中需根据当前情境智能选用表情符号，表情需用&&包裹，例如：&&happy&&, 通用格式:&&标签&&。选择逻辑遵循以下动态规则：\n\n[智能触发机制]\n1. 关键词匹配：当对话内容包含以下类型词汇时激活表情使用\n   - 核心情绪词（开心/生气/惊讶等）→ 直接匹配对应标签\n   - 场景特征词（早安/报酬/思考等）→ 关联场景标签\n   - 语气调节词（请/建议/但是等）→ 触发软化型表情\n2. 动态优先级：\n   a) 精确匹配现有标签 > 同义词扩展 > 放弃使用\n   b) 高频使用标签优先于低频标签\n\n[表情标签库]（当前可用）\n格式：标签 - 使用场景描述\n当前可用：\n"
+        "type": "text",
+        "default": ""
       },
       "prompt_tail_1": {
-        "description": "提示词尾",
-        "type": "string",
-        "hint": "请输入提示词尾_1",
-        "default": "\n\n=== 安全控制体系 ===\n1. 使用频率：\n   • 日常对话：最多"
+        "description": "提示词尾_1",
+        "type": "text",
+        "default": ""
       },
       "prompt_tail_2": {
-        "description": "提示词尾",
-        "type": "string",
-        "hint": "请输入提示词尾_2",
-        "default": "个表情\n   • 专业咨询：≤1个\n2. 强制校验规则：\n   a) 存在性检查：仅使用当前列表存在的标签\n   b) 冲突检测：当涉及医疗/法律/暴力话题时禁用所有表情\n   c) 语义一致性：表情含义需与上下文情绪方向一致\n3. 智能降级策略：\n   1) 首选：同类别表情或相近表情\n   2) 备选：放弃使用表情\n4. 自检流程：\n   提取关键词 → 匹配标签 → 语境审查 → 最终输出"
+        "description": "提示词尾_2",
+        "type": "text",
+        "default": ""
       }
-    }
-  },
-  "emotion_llm_enabled": {
-    "description": "启用情感模型判断表情",
-    "type": "bool",
-    "default": false,
-    "hint": "开启后将调用指定对话模型判断表情标签"
-  },
-  "emotion_llm_provider_id": {
-    "description": "情感模型Provider ID",
-    "type": "string",
-    "default": "",
-    "hint": "留空则使用当前对话的模型",
-    "_special": "select_provider"
-  },
-  "convert_static_to_gif": {
-    "description": "静态图转GIF发送",
-    "type": "bool",
-    "default": false,
-    "hint": "开启后，发送静态图片表情时会将其转换为1帧的GIF格式"
+    },
+    "invisible": true
   },
   "max_emotions_per_message": {
-    "description": "每次回复最多使用表情数量",
+    "description": "旧版每次回复最多表情数量（兼容）",
     "type": "int",
     "default": 2,
-    "hint": "每次回复最多使用表情数量"
+    "invisible": true
   },
   "emotions_probability": {
-    "description": "表情出现概率",
+    "description": "旧版表情出现概率（兼容）",
     "type": "int",
     "default": 50,
-    "hint": "每次发送表情出现的概率，范围为1-100",
-    "slider": {
-      "min": 1,
-      "max": 100,
-      "step": 10
-    }
+    "invisible": true
   },
   "strict_max_emotions_per_message": {
-    "description": "严格限制表情数量",
+    "description": "旧版严格限制表情数量（兼容）",
     "type": "bool",
     "default": true,
-    "hint": "如果为true，则每次回复最多使用max_emotions_per_message个表情, 多余的数量会被严格裁剪去除"
+    "invisible": true
   },
-  "enable_loose_emotion_matching": {
-    "description": "启用宽松的表情匹配",
-    "type": "bool",
-    "default": true,
-    "hint": "如果为true，则会尝试匹配相似的表情标签, 如果你使用中文, 强烈建议开启, 如果使用英文, 在出现错误时建议关闭"
-  },
-  "enable_alternative_markup": {
-    "description": "启用备用标记",
-    "type": "bool",
-    "default": true,
-    "hint": "如果为true，则会尝试使用备用标记, 例如: &&happy&& 和 :happy: 是等价的, 防止llm自己编标记, 一般情况建议开启"
-  },
-  "remove_invalid_alternative_markup": {
-    "description": "移除无效备用标记",
-    "type": "bool",
-    "default": true,
-    "hint": "如果为true，将移除无法识别的()或[]标记内容；如遇括号内容被误删问题，请关闭"
-  },
-  "enable_repeated_emotion_detection": {
-    "description": "启用重复表情检测",
-    "type": "bool",
-    "default": true,
-    "hint": "如果为true，则会尝试检测重复的表情, 防止重复使用表情(例如angryangryangry), 一般情况建议开启"
-  },
-  "high_confidence_emotions": {
-    "description": "高置信度表情列表，即使在英文上下文中也可能被识别",
-    "type": "list",
-    "default": [
-      "angry",
-      "happy",
-      "sad",
-      "surprised",
-      "confused",
-      "color",
-      "cpu",
-      "fool",
-      "givemoney",
-      "like",
-      "see",
-      "shy",
-      "work",
-      "reply",
-      "meow",
-      "baka",
-      "morning",
-      "sleep",
-      "sigh"
-    ]
-  },
-  "content_cleanup_rule": {
-    "description": "内容过滤正则表达式",
-    "type": "string",
-    "default": "&&[a-zA-Z]*&&",
-    "hint": "移除分段后内容中的指定内容。如填写 `[。？！]` 将移除所有的句号、问号、感叹号。"
-  },
-  "enable_mixed_message": {
-    "description": "启用回复带图",
+  "emotion_llm_enabled": {
+    "description": "旧版情感模型开关（兼容）",
     "type": "bool",
     "default": false,
-    "hint": "文本和表情图片在同一条消息中发送（注意：分段回复可能导致功能失效）"
+    "invisible": true
   },
-  "mixed_message_probability": {
-    "description": "回复带图概率",
-    "type": "int",
-    "default": 50,
-    "hint": "启用回复带图时的发送概率，范围为1-100",
-    "slider": {
-      "min": 1,
-      "max": 100,
-      "step": 10
-    }
+  "emotion_llm_provider_id": {
+    "description": "旧版情感模型 Provider ID（兼容）",
+    "type": "string",
+    "default": "",
+    "invisible": true
   },
-  "streaming_compatibility": {
-    "description": "流式传输兼容",
+  "enable_loose_emotion_matching": {
+    "description": "旧版宽松匹配开关（兼容）",
     "type": "bool",
     "default": true,
-    "hint": "开启后，在流式传输模式下表情图片将作为独立消息发送（流式模式下无法混合图文）"
+    "invisible": true
+  },
+  "enable_alternative_markup": {
+    "description": "旧版备用标记开关（兼容）",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "remove_invalid_alternative_markup": {
+    "description": "旧版移除无效备用标记（兼容）",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "enable_repeated_emotion_detection": {
+    "description": "旧版重复表情检测开关（兼容）",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "high_confidence_emotions": {
+    "description": "旧版高置信度表情列表（兼容）",
+    "type": "list",
+    "default": [],
+    "invisible": true
+  },
+  "convert_static_to_gif": {
+    "description": "旧版静态图转 GIF（兼容）",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "enable_mixed_message": {
+    "description": "旧版图文同条开关（兼容）",
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "mixed_message_probability": {
+    "description": "旧版图文同条概率（兼容）",
+    "type": "int",
+    "default": 50,
+    "invisible": true
+  },
+  "streaming_compatibility": {
+    "description": "旧版流式兼容开关（兼容）",
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "content_cleanup_rule": {
+    "description": "旧版内容清理正则（兼容）",
+    "type": "string",
+    "default": "&&[a-zA-Z]*&&",
+    "invisible": true
+  },
+  "image_host": {
+    "description": "旧版图床选择（兼容）",
+    "type": "string",
+    "default": "cloudflare_r2",
+    "options": ["stardots", "cloudflare_r2", "webdav"],
+    "invisible": true
+  },
+  "image_host_config": {
+    "description": "旧版图床配置（兼容）",
+    "type": "object",
+    "items": {
+      "stardots": {
+        "description": "StarDots 旧版配置",
+        "type": "object",
+        "items": {
+          "key": { "description": "API Key", "type": "string" },
+          "secret": { "description": "API Secret", "type": "string" },
+          "space": {
+            "description": "空间名称",
+            "type": "string",
+            "default": "memes"
+          },
+          "list_cache_ttl": {
+            "description": "远端列表缓存时长（秒）",
+            "type": "int",
+            "default": 60
+          }
+        },
+        "invisible": true
+      },
+      "cloudflare_r2": {
+        "description": "R2 旧版配置",
+        "type": "object",
+        "items": {
+          "account_id": { "description": "Account ID", "type": "string" },
+          "access_key_id": { "description": "Access Key ID", "type": "string" },
+          "secret_access_key": {
+            "description": "Secret Access Key",
+            "type": "string"
+          },
+          "bucket_name": { "description": "Bucket 名称", "type": "string" },
+          "public_url": {
+            "description": "公开 URL",
+            "type": "string",
+            "default": ""
+          }
+        },
+        "invisible": true
+      },
+      "webdav": {
+        "description": "WebDAV 旧版配置",
+        "type": "object",
+        "items": {
+          "url": { "description": "WebDAV 地址", "type": "string" },
+          "username": { "description": "用户名", "type": "string" },
+          "password": { "description": "密码", "type": "string" },
+          "base_path": {
+            "description": "远端目录",
+            "type": "string",
+            "default": "memes"
+          },
+          "public_url": {
+            "description": "公开 URL",
+            "type": "string",
+            "default": ""
+          },
+          "verify_ssl": {
+            "description": "校验 SSL",
+            "type": "bool",
+            "default": true
+          },
+          "timeout": { "description": "超时秒数", "type": "int", "default": 30 }
+        },
+        "invisible": true
+      }
+    },
+    "invisible": true
+  },
+  "img_host_status_cache_ttl_seconds": {
+    "description": "旧版状态缓存秒数（兼容）",
+    "type": "int",
+    "default": 15,
+    "invisible": true
   }
 }

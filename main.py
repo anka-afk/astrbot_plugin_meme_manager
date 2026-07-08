@@ -51,22 +51,19 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             logger.info("检测到完整 WebDAV 配置，自动启用 WebDAV 图床。")
 
         if image_host_type == "stardots":
-            stardots_config = self.config.get("image_host_config", {}).get(
-                "stardots", {}
-            )
+            stardots_config = self._get_provider_config("stardots")
             if stardots_config.get("key") and stardots_config.get("secret"):
                 stardots_config["provider"] = "stardots"
                 self.img_sync_config = {
                     "key": stardots_config["key"],
                     "secret": stardots_config["secret"],
                     "space": stardots_config.get("space", "memes"),
+                    "list_cache_ttl": stardots_config.get("list_cache_ttl", 60),
                     "provider": "stardots",
                 }
                 self.img_sync_provider_type = "stardots"
         elif image_host_type == "cloudflare_r2":
-            r2_config = self.config.get("image_host_config", {}).get(
-                "cloudflare_r2", {}
-            )
+            r2_config = self._get_provider_config("cloudflare_r2")
             required_fields = [
                 "account_id",
                 "access_key_id",
@@ -113,27 +110,75 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         self.pending_images = {}
 
         # 配置项
-        self.prompt_head = self.config.get("prompt").get("prompt_head")
-        self.prompt_tail_1 = self.config.get("prompt").get("prompt_tail_1")
-        self.prompt_tail_2 = self.config.get("prompt").get("prompt_tail_2")
-        self.max_emotions_per_message = self.config.get("max_emotions_per_message")
-        self.emotions_probability = self.config.get("emotions_probability")
-        self.strict_max_emotions_per_message = self.config.get(
-            "strict_max_emotions_per_message"
+        self.prompt_head = self._read_config_value(
+            ("generation", "prompt", "head"),
+            default="",
+            legacy_paths=(("prompt", "prompt_head"),),
         )
-        self.emotion_llm_enabled = self.config.get("emotion_llm_enabled", False)
-        self.emotion_llm_provider_id = self.config.get("emotion_llm_provider_id", "")
-        self.enable_mixed_message = self.config.get("enable_mixed_message", True)
-        self.mixed_message_probability = self.config.get(
-            "mixed_message_probability", 80
+        self.prompt_tail_1 = self._read_config_value(
+            ("generation", "prompt", "tail_before_limit"),
+            default="",
+            legacy_paths=(("prompt", "prompt_tail_1"),),
         )
-        self.remove_invalid_alternative_markup = self.config.get(
-            "remove_invalid_alternative_markup", False
+        self.prompt_tail_2 = self._read_config_value(
+            ("generation", "prompt", "tail_after_limit"),
+            default="",
+            legacy_paths=(("prompt", "prompt_tail_2"),),
         )
-        self.convert_static_to_gif = self.config.get("convert_static_to_gif", False)
-        self.streaming_compatibility = self.config.get("streaming_compatibility", False)
-        self.content_cleanup_rule = self.config.get(
-            "content_cleanup_rule", "&&[a-zA-Z]*&&"
+        self.max_emotions_per_message = self._read_config_value(
+            ("generation", "emotion", "max_per_message"),
+            default=2,
+            legacy_keys=("max_emotions_per_message",),
+        )
+        self.emotions_probability = self._read_config_value(
+            ("generation", "emotion", "probability"),
+            default=50,
+            legacy_keys=("emotions_probability",),
+        )
+        self.strict_max_emotions_per_message = self._read_config_value(
+            ("generation", "emotion", "strict_max_per_message"),
+            default=True,
+            legacy_keys=("strict_max_emotions_per_message",),
+        )
+        self.emotion_llm_enabled = self._read_config_value(
+            ("generation", "emotion", "llm", "enabled"),
+            default=False,
+            legacy_keys=("emotion_llm_enabled",),
+        )
+        self.emotion_llm_provider_id = self._read_config_value(
+            ("generation", "emotion", "llm", "provider_id"),
+            default="",
+            legacy_keys=("emotion_llm_provider_id",),
+        )
+        self.enable_mixed_message = self._read_config_value(
+            ("generation", "message", "enable_mixed"),
+            default=False,
+            legacy_keys=("enable_mixed_message",),
+        )
+        self.mixed_message_probability = self._read_config_value(
+            ("generation", "message", "mixed_probability"),
+            default=50,
+            legacy_keys=("mixed_message_probability",),
+        )
+        self.remove_invalid_alternative_markup = self._read_config_value(
+            ("generation", "markup", "remove_invalid_alternative"),
+            default=True,
+            legacy_keys=("remove_invalid_alternative_markup",),
+        )
+        self.convert_static_to_gif = self._read_config_value(
+            ("generation", "message", "convert_static_to_gif"),
+            default=False,
+            legacy_keys=("convert_static_to_gif",),
+        )
+        self.streaming_compatibility = self._read_config_value(
+            ("generation", "message", "streaming_compatibility"),
+            default=True,
+            legacy_keys=("streaming_compatibility",),
+        )
+        self.content_cleanup_rule = self._read_config_value(
+            ("generation", "message", "content_cleanup_rule"),
+            default="&&[a-zA-Z]*&&",
+            legacy_keys=("content_cleanup_rule",),
         )
 
         # 构建表情包提示词
@@ -166,7 +211,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         return await self._after_message_sent_impl(event)
 
     def _get_image_host_type(self) -> str:
-        image_host = self.config.get("image_host", "stardots")
+        image_host = self._read_config_value(
+            ("storage", "provider"),
+            default="stardots",
+            legacy_keys=("image_host",),
+        )
         if isinstance(image_host, dict):
             image_host = (
                 image_host.get("name")
@@ -174,6 +223,48 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 or image_host.get("type", "stardots")
             )
         return str(image_host or "stardots").strip().lower()
+
+    def _read_path(self, path: tuple[str, ...], missing=None):
+        current = self.config
+        for key in path:
+            if not isinstance(current, dict) or key not in current:
+                return missing
+            current = current[key]
+        return current
+
+    def _read_config_value(
+        self,
+        primary_path: tuple[str, ...],
+        default=None,
+        legacy_paths: tuple[tuple[str, ...], ...] = (),
+        legacy_keys: tuple[str, ...] = (),
+    ):
+        missing = object()
+        value = self._read_path(primary_path, missing)
+        if value is not missing and value is not None:
+            return value
+
+        for legacy_path in legacy_paths:
+            value = self._read_path(legacy_path, missing)
+            if value is not missing and value is not None:
+                return value
+
+        for legacy_key in legacy_keys:
+            value = self.config.get(legacy_key, missing)
+            if value is not missing and value is not None:
+                return value
+
+        return default
+
+    def _get_provider_config(self, provider_key: str) -> dict:
+        merged_config = {}
+        legacy_config = self._read_path(("image_host_config", provider_key), {})
+        modern_config = self._read_path(("storage", "providers", provider_key), {})
+        if isinstance(legacy_config, dict):
+            merged_config.update(legacy_config)
+        if isinstance(modern_config, dict):
+            merged_config.update(modern_config)
+        return merged_config
 
     def _get_nested_config(self, *keys: str) -> dict:
         current = self.config
@@ -187,7 +278,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         return all(config.get(field) not in (None, "") for field in required_fields)
 
     def _get_webdav_config(self) -> dict:
-        webdav_config = dict(self._get_nested_config("image_host_config", "webdav"))
+        webdav_config = dict(self._get_provider_config("webdav"))
         if not webdav_config:
             webdav_config = dict(self._get_nested_config("webdav"))
         aliases = {
