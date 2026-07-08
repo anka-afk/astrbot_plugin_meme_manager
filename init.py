@@ -5,6 +5,7 @@ from .config import (
     BASE_DATA_DIR,
     DEFAULT_CATEGORY_DESCRIPTIONS,
     MEMES_DATA_PATH,
+    sync_active_pack_metadata,
 )
 from .utils import copy_default_memes_if_needed, ensure_dir_exists, save_json
 
@@ -12,20 +13,18 @@ logger = logging.getLogger(__name__)
 
 
 def init_plugin():
-    """初始化插件，创建必要的目录和配置文件"""
+    """初始化运行时存储和兼容性元数据。"""
     try:
-        # 创建基础数据目录
         ensure_dir_exists(BASE_DATA_DIR)
-
-        # 创建表情包目录
         copy_default_memes_if_needed()
 
-        # 初始化 memes_data.json
         if not os.path.exists(MEMES_DATA_PATH):
             save_json(DEFAULT_CATEGORY_DESCRIPTIONS, MEMES_DATA_PATH)
-            logger.info(f"创建默认类别描述文件: {MEMES_DATA_PATH}")
+            logger.info("已创建兼容性描述文件: %s", MEMES_DATA_PATH)
+
+        sync_active_pack_metadata()
 
         return True
     except Exception as e:
-        logger.error(f"插件初始化失败: {e}")
+        logger.error("插件初始化失败: %s", e)
         return False

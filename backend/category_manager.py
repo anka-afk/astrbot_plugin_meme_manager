@@ -3,7 +3,12 @@ import os
 import shutil
 from pathlib import Path
 
-from ..config import DEFAULT_CATEGORY_DESCRIPTIONS, MEMES_DATA_PATH, MEMES_DIR
+from ..config import (
+    DEFAULT_CATEGORY_DESCRIPTIONS,
+    MEMES_DATA_PATH,
+    MEMES_DIR,
+    sync_active_pack_metadata,
+)
 from ..utils import ensure_dir_exists, load_json, save_json
 
 logger = logging.getLogger(__name__)
@@ -32,6 +37,7 @@ class CategoryManager:
         if not os.path.exists(MEMES_DATA_PATH):
             save_json(DEFAULT_CATEGORY_DESCRIPTIONS, MEMES_DATA_PATH)
             logger.info(f"创建默认类别描述文件: {MEMES_DATA_PATH}")
+            sync_active_pack_metadata(DEFAULT_CATEGORY_DESCRIPTIONS)
 
     def _load_descriptions(self) -> dict[str, str]:
         """加载类别描述配置"""
@@ -72,8 +78,10 @@ class CategoryManager:
         try:
             self.reload_descriptions()
             self.descriptions[category] = description  # 更新内存中的 descriptions
-            # 同步保存到文件
-            return save_json(self.descriptions, MEMES_DATA_PATH)
+            saved = save_json(self.descriptions, MEMES_DATA_PATH)
+            if saved:
+                sync_active_pack_metadata(self.descriptions)
+            return saved
         except Exception as e:
             logger.error(f"更新类别描述失败: {e}")
             return False
@@ -112,8 +120,10 @@ class CategoryManager:
             if os.path.exists(old_path):
                 os.rename(old_path, new_path)
 
-            # 同步更新内存中的数据
-            return save_json(self.descriptions, MEMES_DATA_PATH)
+            saved = save_json(self.descriptions, MEMES_DATA_PATH)
+            if saved:
+                sync_active_pack_metadata(self.descriptions)
+            return saved
         except Exception as e:
             logger.error(f"重命名类别失败: {e}")
             return False
@@ -132,6 +142,7 @@ class CategoryManager:
             if os.path.exists(category_path):
                 shutil.rmtree(category_path)
 
+            sync_active_pack_metadata(self.descriptions)
             return True
         except Exception as e:
             logger.error(f"删除类别失败: {e}")
@@ -144,7 +155,10 @@ class CategoryManager:
             if category not in self.descriptions:
                 return False
             del self.descriptions[category]
-            return save_json(self.descriptions, MEMES_DATA_PATH)
+            saved = save_json(self.descriptions, MEMES_DATA_PATH)
+            if saved:
+                sync_active_pack_metadata(self.descriptions)
+            return saved
         except Exception as e:
             logger.error(f"从配置中移除类别失败: {e}")
             return False
@@ -168,7 +182,11 @@ class CategoryManager:
                     changed = True
 
             if changed:
-                return save_json(self.descriptions, MEMES_DATA_PATH)
+                saved = save_json(self.descriptions, MEMES_DATA_PATH)
+                if saved:
+                    sync_active_pack_metadata(self.descriptions)
+                return saved
+            sync_active_pack_metadata(self.descriptions)
             return True
         except Exception as e:
             logger.error(f"同步文件系统失败: {e}")
