@@ -766,6 +766,18 @@ class WebAPIMixin:
             return self.img_sync.provider.__class__.__name__
         return "未知图床"
 
+    @staticmethod
+    def _resolve_requested_sync_pack_id(payload: dict | None = None) -> str:
+        managed_pack_id = str(request.args.get("managed_pack_id") or "").strip()
+        if managed_pack_id:
+            return managed_pack_id
+        if isinstance(payload, dict):
+            for key in ("managed_pack_id", "pack_id"):
+                value = str(payload.get(key) or "").strip()
+                if value:
+                    return value
+        return ""
+
     def _get_img_host_sync_task_status(self) -> dict:
         if not self.img_sync:
             return {
@@ -823,7 +835,11 @@ class WebAPIMixin:
         self._last_img_host_sync_task_status = status.copy()
         return status
 
-    def _start_img_host_sync_task(self, task: str) -> dict:
+    def _start_img_host_sync_task(self, task: str, pack_id: str | None = None) -> dict:
+        sync_client = self._ensure_img_sync_for_pack(pack_id)
+        if not sync_client:
+            raise RuntimeError("图床服务未配置")
+
         status = self._get_img_host_sync_task_status()
         if not status.get("available", False):
             raise RuntimeError(status.get("message") or "图床服务未配置")
@@ -831,28 +847,34 @@ class WebAPIMixin:
             raise RuntimeError("已有同步任务正在运行，请等待当前任务完成")
 
         self._last_img_host_sync_task_status = None
-        self.img_sync.sync_process = self.img_sync._start_sync_process(task)
+        sync_client.sync_process = sync_client._start_sync_process(task)
         return self._get_img_host_sync_task_status()
 
     async def _api_img_host_sync_status(self):
         try:
-            if not self.img_sync:
+            pack_id = self._resolve_requested_sync_pack_id()
+            sync_client = self._ensure_img_sync_for_pack(pack_id)
+            if not sync_client:
                 return jsonify({"error": "图床服务未配置"}), 400
-            status = self.img_sync.check_status()
+            status = sync_client.check_status()
             status["upload_count"] = len(status.get("to_upload", []))
             status["download_count"] = len(status.get("to_download", []))
             status["remote_extra_count"] = len(status.get("to_delete_remote", []))
             status["local_extra_count"] = len(status.get("to_delete_local", []))
             status["provider_label"] = self._get_provider_label()
+            if pack_id:
+                status["managed_pack_id"] = pack_id
             return jsonify(status)
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
     async def _api_img_host_sync_upload(self):
         try:
-            if not self.img_sync:
+            payload = await request.get_json(silent=True)
+            pack_id = self._resolve_requested_sync_pack_id(payload)
+            if not self._ensure_img_sync_for_pack(pack_id):
                 return jsonify({"message": "图床服务未配置"}), 400
-            task_status = self._start_img_host_sync_task("upload")
+            task_status = self._start_img_host_sync_task("upload", pack_id=pack_id)
             return jsonify({"success": True, "task": task_status})
         except Exception as e:
             status_code = 409 if "已有同步任务" in str(e) else 500
@@ -860,9 +882,13 @@ class WebAPIMixin:
 
     async def _api_img_host_sync_overwrite_to_remote(self):
         try:
-            if not self.img_sync:
+            payload = await request.get_json(silent=True)
+            pack_id = self._resolve_requested_sync_pack_id(payload)
+            if not self._ensure_img_sync_for_pack(pack_id):
                 return jsonify({"message": "图床服务未配置"}), 400
-            task_status = self._start_img_host_sync_task("overwrite_to_remote")
+            task_status = self._start_img_host_sync_task(
+                "overwrite_to_remote", pack_id=pack_id
+            )
             return jsonify({"success": True, "task": task_status})
         except Exception as e:
             status_code = 409 if "已有同步任务" in str(e) else 500
@@ -870,9 +896,13 @@ class WebAPIMixin:
 
     async def _api_img_host_sync_overwrite_from_remote(self):
         try:
-            if not self.img_sync:
+            payload = await request.get_json(silent=True)
+            pack_id = self._resolve_requested_sync_pack_id(payload)
+            if not self._ensure_img_sync_for_pack(pack_id):
                 return jsonify({"message": "图床服务未配置"}), 400
-            task_status = self._start_img_host_sync_task("overwrite_from_remote")
+            task_status = self._start_img_host_sync_task(
+                "overwrite_from_remote", pack_id=pack_id
+            )
             return jsonify({"success": True, "task": task_status})
         except Exception as e:
             status_code = 409 if "已有同步任务" in str(e) else 500
@@ -880,9 +910,11 @@ class WebAPIMixin:
 
     async def _api_img_host_sync_download(self):
         try:
-            if not self.img_sync:
+            payload = await request.get_json(silent=True)
+            pack_id = self._resolve_requested_sync_pack_id(payload)
+            if not self._ensure_img_sync_for_pack(pack_id):
                 return jsonify({"message": "图床服务未配置"}), 400
-            task_status = self._start_img_host_sync_task("download")
+            task_status = self._start_img_host_sync_task("download", pack_id=pack_id)
             return jsonify({"success": True, "task": task_status})
         except Exception as e:
             status_code = 409 if "已有同步任务" in str(e) else 500

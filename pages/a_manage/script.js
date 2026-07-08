@@ -65,7 +65,14 @@ async function initApp() {
     const managedPackId = String(managePackSelect?.value || "").trim();
     if (
       managedPackId &&
-      ["emoji", "emotions", "meme_image", "meme_image_data"].includes(endpoint)
+      [
+        "emoji",
+        "emotions",
+        "meme_image",
+        "meme_image_data",
+        "img_host/sync/status",
+        "img_host/sync/task_status",
+      ].includes(endpoint)
     ) {
       mergedParams.managed_pack_id = managedPackId;
     }
@@ -73,6 +80,7 @@ async function initApp() {
   }
 
   async function apiPost(endpoint, body = {}) {
+    const mergedBody = { ...body };
     const selectedPackId = String(managePackSelect?.value || "").trim();
     if (
       selectedPackId &&
@@ -84,7 +92,10 @@ async function initApp() {
         "当前为管理视图模式，仅支持浏览。请切回默认管理包后再执行编辑操作。",
       );
     }
-    return await window.AstrBotPluginPage.apiPost(endpoint, body);
+    if (selectedPackId && endpoint.startsWith("img_host/sync/")) {
+      mergedBody.managed_pack_id = selectedPackId;
+    }
+    return await window.AstrBotPluginPage.apiPost(endpoint, mergedBody);
   }
 
   const selectionState = {
@@ -2549,15 +2560,28 @@ async function initApp() {
       pollTimer = window.setInterval(pollStatus, 2000);
       void pollStatus();
 
-      window.AstrBotPluginPage.subscribeSSE("img_host/sync/progress", {
-        onOpen: () => setImgHostSyncProgress(`${actionLabel}进行中...`, "info"),
-        onMessage: ({ parsed }) => handleStatus(parsed),
-        onError: () =>
-          setImgHostSyncProgress(
-            "实时进度连接异常，已切换轮询确认结果。",
-            "warning",
-          ),
-      })
+      const syncParams = {};
+      const currentManagedPackId = String(
+        managePackSelect?.value || managedPackIdFromUrl || "",
+      ).trim();
+      if (currentManagedPackId) {
+        syncParams.managed_pack_id = currentManagedPackId;
+      }
+
+      window.AstrBotPluginPage.subscribeSSE(
+        "img_host/sync/progress",
+        {
+          onOpen: () =>
+            setImgHostSyncProgress(`${actionLabel}进行中...`, "info"),
+          onMessage: ({ parsed }) => handleStatus(parsed),
+          onError: () =>
+            setImgHostSyncProgress(
+              "实时进度连接异常，已切换轮询确认结果。",
+              "warning",
+            ),
+        },
+        syncParams,
+      )
         .then((id) => {
           subscriptionId = id;
         })

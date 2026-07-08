@@ -1,6 +1,5 @@
 import re
-import functools
-from typing import Optional
+from pathlib import Path
 
 from astrbot.api import logger
 from astrbot.api.all import *
@@ -41,6 +40,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         self.img_sync = None
         self.img_sync_config = None
         self.img_sync_provider_type = None
+        self._img_sync_pack_id = ""
         self._last_img_host_sync_task_status = None
         image_host_type = self._get_image_host_type()
         webdav_config = self._get_webdav_config()
@@ -63,11 +63,6 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                     "provider": "stardots",
                 }
                 self.img_sync_provider_type = "stardots"
-                self.img_sync = ImageSync(
-                    config=self.img_sync_config,
-                    local_dir=MEMES_DIR,
-                    provider_type=self.img_sync_provider_type,
-                )
         elif image_host_type == "cloudflare_r2":
             r2_config = self.config.get("image_host_config", {}).get(
                 "cloudflare_r2", {}
@@ -84,11 +79,6 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 r2_config["provider"] = "cloudflare_r2"
                 self.img_sync_config = dict(r2_config)
                 self.img_sync_provider_type = "cloudflare_r2"
-                self.img_sync = ImageSync(
-                    config=self.img_sync_config,
-                    local_dir=MEMES_DIR,
-                    provider_type=self.img_sync_provider_type,
-                )
                 self._r2_bucket_name = r2_config.get("bucket_name")
         elif image_host_type == "webdav":
             required_fields = ["url", "username", "password"]
@@ -100,9 +90,8 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                         webdav_config["public_url"]
                     ).rstrip("/")
                 webdav_config["provider"] = "webdav"
-                self.img_sync = ImageSync(
-                    config=webdav_config, local_dir=MEMES_DIR, provider_type="webdav"
-                )
+                self.img_sync_config = dict(webdav_config)
+                self.img_sync_provider_type = "webdav"
                 self._webdav_url = webdav_config.get("url")
             else:
                 missing_fields = [
@@ -113,6 +102,10 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                     ", ".join(missing_fields),
                     ", ".join(sorted(webdav_config.keys())) or "无",
                 )
+
+        # 图床客户端按当前默认/目标表情包动态构建，避免固定绑定插件启动时目录。
+        if self.img_sync_config and self.img_sync_provider_type:
+            self._ensure_img_sync_for_pack()
 
         # 上传与待发送状态
         self.found_emotions = []
@@ -216,6 +209,55 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                     break
         return webdav_config
 
+    def _resolve_sync_pack_target(self, preferred_pack_id: str | None = None):
+        from .backend.pack_resolver import get_pack_paths, resolve_pack_id
+
+        pack_id = str(preferred_pack_id or "").strip()
+        if pack_id:
+            paths = get_pack_paths(pack_id)
+            pack_dir = paths["pack_dir"]
+            if pack_dir.is_dir():
+                memes_dir = paths["memes_dir"]
+                memes_dir.mkdir(parents=True, exist_ok=True)
+                return pack_id, memes_dir
+
+        resolved_pack_id = resolve_pack_id()
+        paths = get_pack_paths(resolved_pack_id)
+        memes_dir = paths["memes_dir"]
+        memes_dir.mkdir(parents=True, exist_ok=True)
+        return resolved_pack_id, memes_dir
+
+    def _ensure_img_sync_for_pack(self, preferred_pack_id: str | None = None):
+        if not (self.img_sync_config and self.img_sync_provider_type):
+            return None
+
+        running_process = (
+            getattr(self.img_sync, "sync_process", None) if self.img_sync else None
+        )
+        if running_process and running_process.is_alive():
+            return self.img_sync
+
+        target_pack_id, target_memes_dir = self._resolve_sync_pack_target(
+            preferred_pack_id
+        )
+
+        current_dir = None
+        if self.img_sync and getattr(self.img_sync, "local_dir", None):
+            try:
+                current_dir = Path(self.img_sync.local_dir).resolve()
+            except Exception:
+                current_dir = None
+
+        if current_dir != target_memes_dir.resolve():
+            self.img_sync = ImageSync(
+                config=self.img_sync_config,
+                local_dir=target_memes_dir,
+                provider_type=self.img_sync_provider_type,
+            )
+
+        self._img_sync_pack_id = target_pack_id
+        return self.img_sync
+
     def _build_meme_prompt(self, category_mapping_string: str | None = None) -> str:
         mapping_string = category_mapping_string or self.category_mapping_string
         return (
@@ -252,7 +294,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
 
     def _resolve_persona_id(
         self, event: AstrMessageEvent | None = None, req: ProviderRequest | None = None
-    ) -> Optional[str]:
+    ) -> str | None:
         if req and req.conversation:
             persona_id = str(getattr(req.conversation, "persona_id", "") or "").strip()
             if persona_id:

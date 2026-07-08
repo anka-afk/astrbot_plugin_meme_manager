@@ -375,7 +375,8 @@ class CommandMixin:
     @meme_manager.command("同步状态")
     async def check_sync_status(self, event: AstrMessageEvent, detail: str = None):
         """检查表情包与图床的同步状态"""
-        if not self.img_sync:
+        sync_client = self._ensure_img_sync_for_pack()
+        if not sync_client:
             yield event.plain_result(
                 "图床服务尚未配置，请先在插件页面的配置中完成图床配置哦。"
             )
@@ -383,16 +384,16 @@ class CommandMixin:
 
         try:
             # 获取图床配置信息
-            provider_name = self.img_sync.provider.__class__.__name__
-            if hasattr(self.img_sync.provider, "bucket_name"):
-                storage_info = f"存储桶: {self.img_sync.provider.bucket_name}"
-            elif hasattr(self.img_sync.provider, "album_id"):
-                storage_info = f"相册ID: {self.img_sync.provider.album_id}"
+            provider_name = sync_client.provider.__class__.__name__
+            if hasattr(sync_client.provider, "bucket_name"):
+                storage_info = f"存储桶: {sync_client.provider.bucket_name}"
+            elif hasattr(sync_client.provider, "album_id"):
+                storage_info = f"相册ID: {sync_client.provider.album_id}"
             else:
                 storage_info = "未知存储类型"
 
             # 获取同步状态
-            status = self.img_sync.check_status()
+            status = sync_client.check_status()
             to_upload = status.get("to_upload", [])
             to_download = status.get("to_download", [])
 
@@ -471,8 +472,8 @@ class CommandMixin:
 
                     # 显示所有文件类别的统计
                     try:
-                        if hasattr(self.img_sync.provider, "get_image_list"):
-                            remote_images = self.img_sync.provider.get_image_list()
+                        if hasattr(sync_client.provider, "get_image_list"):
+                            remote_images = sync_client.provider.get_image_list()
                             remote_stats = {}
                             for img in remote_images:
                                 cat = img.get("category", "未分类")
@@ -499,9 +500,10 @@ class CommandMixin:
                     # 显示本地图库统计
                     local_stats = {}
                     local_total = 0
-                    if os.path.exists(MEMES_DIR):
-                        for category in os.listdir(MEMES_DIR):
-                            category_path = os.path.join(MEMES_DIR, category)
+                    local_memes_dir = str(getattr(sync_client, "local_dir", MEMES_DIR))
+                    if os.path.exists(local_memes_dir):
+                        for category in os.listdir(local_memes_dir):
+                            category_path = os.path.join(local_memes_dir, category)
                             if os.path.isdir(category_path):
                                 files = [
                                     f
@@ -533,16 +535,16 @@ class CommandMixin:
 
             # 上传记录统计（如果有的话）
             if (
-                hasattr(self.img_sync.sync_manager, "upload_tracker")
-                and self.img_sync.sync_manager.upload_tracker
+                hasattr(sync_client.sync_manager, "upload_tracker")
+                and sync_client.sync_manager.upload_tracker
             ):
                 try:
                     # 获取上传记录总数
                     if hasattr(
-                        self.img_sync.sync_manager.upload_tracker, "get_uploaded_files"
+                        sync_client.sync_manager.upload_tracker, "get_uploaded_files"
                     ):
                         uploaded_files = (
-                            self.img_sync.sync_manager.upload_tracker.get_uploaded_files()
+                            sync_client.sync_manager.upload_tracker.get_uploaded_files()
                         )
                         result.append("")
                         result.append(
@@ -560,7 +562,8 @@ class CommandMixin:
     @meme_manager.command("同步到云端")
     async def sync_to_remote(self, event: AstrMessageEvent):
         """将本地表情包同步到云端"""
-        if not self.img_sync:
+        sync_client = self._ensure_img_sync_for_pack()
+        if not sync_client:
             yield event.plain_result(
                 "图床服务尚未配置，请先在配置文件中完成图床配置哦。"
             )
@@ -568,7 +571,7 @@ class CommandMixin:
 
         try:
             yield event.plain_result("⚡ 正在开启云端同步任务...")
-            success = await self.img_sync.start_sync("upload")
+            success = await sync_client.start_sync("upload")
             if success:
                 yield event.plain_result("云端同步已完成！")
             else:
@@ -581,7 +584,8 @@ class CommandMixin:
     @meme_manager.command("从云端同步")
     async def sync_from_remote(self, event: AstrMessageEvent):
         """从云端同步表情包到本地"""
-        if not self.img_sync:
+        sync_client = self._ensure_img_sync_for_pack()
+        if not sync_client:
             yield event.plain_result(
                 "图床服务尚未配置，请先在配置文件中完成图床配置哦。"
             )
@@ -589,7 +593,7 @@ class CommandMixin:
 
         try:
             yield event.plain_result("开始从云端进行同步...")
-            success = await self.img_sync.start_sync("download")
+            success = await sync_client.start_sync("download")
             if success:
                 yield event.plain_result("从云端同步已完成！")
                 # 重新加载表情配置
@@ -604,7 +608,8 @@ class CommandMixin:
     @meme_manager.command("覆盖到云端")
     async def overwrite_to_remote(self, event: AstrMessageEvent):
         """让云端完全和本地一致（会删除云端多出的图）"""
-        if not self.img_sync:
+        sync_client = self._ensure_img_sync_for_pack()
+        if not sync_client:
             yield event.plain_result(
                 "图床服务尚未配置，请先在配置文件中完成图床配置哦。"
             )
@@ -614,7 +619,7 @@ class CommandMixin:
             yield event.plain_result(
                 "⚠️ 正在执行覆盖到云端任务（将清理云端多余文件）..."
             )
-            success = await self.img_sync.start_sync("overwrite_to_remote")
+            success = await sync_client.start_sync("overwrite_to_remote")
             if success:
                 yield event.plain_result(
                     "覆盖到云端任务已完成！云端现在与本地完全一致。"
@@ -629,7 +634,8 @@ class CommandMixin:
     @meme_manager.command("从云端覆盖")
     async def overwrite_from_remote(self, event: AstrMessageEvent):
         """让本地完全和云端一致（会删除本地多出的图）"""
-        if not self.img_sync:
+        sync_client = self._ensure_img_sync_for_pack()
+        if not sync_client:
             yield event.plain_result(
                 "图床服务尚未配置，请先在配置文件中完成图床配置哦。"
             )
@@ -639,7 +645,7 @@ class CommandMixin:
             yield event.plain_result(
                 "⚠️ 正在执行从云端覆盖任务（将清理本地多余文件）..."
             )
-            success = await self.img_sync.start_sync("overwrite_from_remote")
+            success = await sync_client.start_sync("overwrite_from_remote")
             if success:
                 yield event.plain_result(
                     "从云端覆盖任务已完成！本地现在与云端完全一致。"
@@ -654,15 +660,21 @@ class CommandMixin:
     async def show_library_stats(self, event: AstrMessageEvent):
         """显示图库详细统计信息"""
         try:
+            sync_client = self._ensure_img_sync_for_pack()
             result = ["📊 表情包图库统计报告", "", "📁 本地图库统计:"]
 
             # 统计本地文件
             local_stats = {}
             local_total = 0
 
-            if os.path.exists(MEMES_DIR):
-                for category in os.listdir(MEMES_DIR):
-                    category_path = os.path.join(MEMES_DIR, category)
+            local_memes_dir = str(
+                getattr(sync_client, "local_dir", MEMES_DIR)
+                if sync_client
+                else MEMES_DIR
+            )
+            if os.path.exists(local_memes_dir):
+                for category in os.listdir(local_memes_dir):
+                    category_path = os.path.join(local_memes_dir, category)
                     if os.path.isdir(category_path):
                         files = [
                             f
@@ -687,12 +699,12 @@ class CommandMixin:
                 result.append("  • 本地图库为空")
 
             # 云端统计（如果配置了图床）
-            if self.img_sync:
+            if sync_client:
                 result.append("")
                 result.append("☁️ 云端图库统计:")
 
                 try:
-                    remote_images = self.img_sync.provider.get_image_list()
+                    remote_images = sync_client.provider.get_image_list()
                     remote_stats = {}
                     remote_total = len(remote_images)
 
@@ -759,7 +771,7 @@ class CommandMixin:
                 estimated_size = local_total * 500 / 1024  # 转换为MB
                 result.append(f"  • 本地图库约: {estimated_size:.1f} MB")
 
-            if self.img_sync and "remote_total" in locals():
+            if sync_client and "remote_total" in locals():
                 estimated_remote_size = remote_total * 500 / 1024
                 result.append(f"  • 云端图库约: {estimated_remote_size:.1f} MB")
 
