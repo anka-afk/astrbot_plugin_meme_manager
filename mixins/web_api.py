@@ -24,9 +24,13 @@ from ..backend.models import (
 )
 from ..backend.pack_storage import (
     export_pack_archive,
+    fetch_and_cache_community_index,
+    find_cached_pack_entry,
     get_pack_detail,
+    install_pack_from_github_source,
     import_pack_archive,
     list_installed_packs,
+    load_cached_community_index,
     set_default_pack,
     uninstall_pack,
 )
@@ -211,6 +215,24 @@ class WebAPIMixin:
             self._api_uninstall_pack,
             ["POST"],
             "卸载表情包",
+        )
+        self._register_webui_api(
+            "community/index/fetch",
+            self._api_fetch_community_index,
+            ["POST"],
+            "拉取并缓存社区索引",
+        )
+        self._register_webui_api(
+            "community/index/cache",
+            self._api_get_cached_community_index,
+            ["GET"],
+            "读取已缓存的社区索引",
+        )
+        self._register_webui_api(
+            "community/install",
+            self._api_install_community_pack,
+            ["POST"],
+            "按社区 source 安装表情包",
         )
 
     def _register_webui_api(self, route, handler, methods, desc):
@@ -944,3 +966,90 @@ class WebAPIMixin:
         except Exception as e:
             logger.error(f"卸载表情包失败: {e}", exc_info=True)
             return jsonify({"message": f"卸载表情包失败: {str(e)}"}), 500
+
+    async def _api_fetch_community_index(self):
+        try:
+            data = await request.get_json()
+            index_url = str((data or {}).get("index_url") or "").strip()
+            if not index_url:
+                return jsonify({"message": "index_url 不能为空"}), 400
+            cache_data = fetch_and_cache_community_index(index_url)
+            packs = cache_data.get("index", {}).get("packs", [])
+            return (
+                jsonify(
+                    {
+                        "message": "社区索引拉取成功",
+                        "fetched_at": cache_data.get("fetched_at"),
+                        "source_url": cache_data.get("source_url"),
+                        "pack_count": len(packs) if isinstance(packs, list) else 0,
+                        "index": cache_data.get("index", {}),
+                    }
+                ),
+                200,
+            )
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
+        except Exception as e:
+            logger.error(f"拉取社区索引失败: {e}", exc_info=True)
+            return jsonify({"message": f"拉取社区索引失败: {str(e)}"}), 500
+
+    async def _api_get_cached_community_index(self):
+        try:
+            cache_data = load_cached_community_index()
+            packs = cache_data.get("index", {}).get("packs", [])
+            return (
+                jsonify(
+                    {
+                        "fetched_at": cache_data.get("fetched_at"),
+                        "source_url": cache_data.get("source_url"),
+                        "pack_count": len(packs) if isinstance(packs, list) else 0,
+                        "index": cache_data.get("index", {}),
+                    }
+                ),
+                200,
+            )
+        except FileNotFoundError as e:
+            return jsonify({"message": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
+        except Exception as e:
+            logger.error(f"读取社区索引缓存失败: {e}", exc_info=True)
+            return jsonify({"message": f"读取社区索引缓存失败: {str(e)}"}), 500
+
+    async def _api_install_community_pack(self):
+        try:
+            data = await request.get_json()
+            payload = data or {}
+            overwrite = bool(payload.get("overwrite", False))
+            set_as_default = bool(payload.get("set_as_default", False))
+
+            source = payload.get("source")
+            if not isinstance(source, dict):
+                pack_id = str(payload.get("pack_id") or "").strip()
+                if not pack_id:
+                    return (
+                        jsonify(
+                            {
+                                "message": "请提供 source 或 pack_id（用于从缓存索引安装）"
+                            }
+                        ),
+                        400,
+                    )
+                source = find_cached_pack_entry(pack_id).get("source")
+                if not isinstance(source, dict):
+                    return jsonify({"message": "缓存条目缺少 source 信息"}), 400
+
+            result = install_pack_from_github_source(
+                source=source,
+                overwrite=overwrite,
+                set_as_default=set_as_default,
+            )
+            self._reload_personas()
+            return jsonify({"message": "社区表情包安装成功", **result}), 200
+        except FileExistsError as e:
+            return jsonify({"message": str(e)}), 409
+        except (FileNotFoundError, ValueError) as e:
+            return jsonify({"message": str(e)}), 400
+        except Exception as e:
+            logger.error(f"安装社区表情包失败: {e}", exc_info=True)
+            return jsonify({"message": f"安装社区表情包失败: {str(e)}"}), 500

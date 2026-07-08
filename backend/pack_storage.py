@@ -5,8 +5,11 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+import requests
+
 from ..config import (
     BACKUP_DIR,
+    COMMUNITY_CACHE_PATH,
     DEFAULT_PACK_ID,
     LEGACY_MIGRATED_PACK_ID,
     PACKS_DIR,
@@ -396,3 +399,141 @@ def uninstall_pack(pack_id: str) -> dict:
     _save_selection_rules(selection_rules)
 
     return {"pack_id": pack_id}
+
+
+def _validate_github_source(source: dict) -> dict:
+    if not isinstance(source, dict):
+        raise ValueError("source 必须是对象")
+
+    source_type = str(source.get("type") or "").strip().lower()
+    if source_type != "github":
+        raise ValueError("目前仅支持 github 来源")
+
+    repo = str(source.get("repo") or "").strip()
+    ref = str(source.get("ref") or "").strip()
+    subpath = str(source.get("subpath") or "").strip().strip("/")
+    if not repo or "/" not in repo:
+        raise ValueError("source.repo 无效，格式应为 owner/repo")
+    if not ref:
+        raise ValueError("source.ref 不能为空")
+    if not subpath:
+        raise ValueError("source.subpath 不能为空")
+    if ".." in Path(subpath).parts or "\\" in subpath:
+        raise ValueError("source.subpath 非法")
+
+    return {"type": "github", "repo": repo, "ref": ref, "subpath": subpath}
+
+
+def _download_github_archive(repo: str, ref: str, target_zip_path: Path) -> None:
+    archive_url = f"https://github.com/{repo}/archive/{ref}.zip"
+    response = requests.get(archive_url, timeout=30)
+    if response.status_code != 200:
+        raise ValueError(f"下载 GitHub 压缩包失败，状态码: {response.status_code}")
+    target_zip_path.parent.mkdir(parents=True, exist_ok=True)
+    target_zip_path.write_bytes(response.content)
+
+
+def fetch_and_cache_community_index(index_url: str) -> dict:
+    index_url = str(index_url or "").strip()
+    if not index_url:
+        raise ValueError("index_url 不能为空")
+
+    response = requests.get(index_url, timeout=20)
+    if response.status_code != 200:
+        raise ValueError(f"下载社区索引失败，状态码: {response.status_code}")
+
+    try:
+        index_data = response.json()
+    except Exception as exc:
+        raise ValueError(f"社区索引不是有效 JSON: {exc}") from exc
+
+    if not isinstance(index_data, dict):
+        raise ValueError("社区索引必须是 JSON 对象")
+    packs = index_data.get("packs")
+    if not isinstance(packs, list):
+        raise ValueError("社区索引缺少 packs 数组")
+
+    cache_payload = {
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "source_url": index_url,
+        "index": index_data,
+    }
+    _save_json(COMMUNITY_CACHE_PATH, cache_payload)
+    return cache_payload
+
+
+def load_cached_community_index() -> dict:
+    cache_data = _load_json(COMMUNITY_CACHE_PATH, {})
+    if not isinstance(cache_data, dict) or not cache_data:
+        raise FileNotFoundError("社区索引缓存不存在，请先拉取索引")
+    index_data = cache_data.get("index")
+    if not isinstance(index_data, dict):
+        raise ValueError("社区索引缓存格式无效")
+    return cache_data
+
+
+def find_cached_pack_entry(pack_id: str) -> dict:
+    pack_id = str(pack_id or "").strip()
+    if not pack_id:
+        raise ValueError("pack_id 不能为空")
+
+    cache_data = load_cached_community_index()
+    packs = cache_data.get("index", {}).get("packs", [])
+    if not isinstance(packs, list):
+        raise ValueError("社区索引缓存格式无效")
+
+    for entry in packs:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("id") or "").strip() == pack_id:
+            return entry
+    raise FileNotFoundError(f"缓存索引中未找到 pack_id={pack_id} 的条目")
+
+
+def install_pack_from_github_source(
+    source: dict,
+    overwrite: bool = False,
+    set_as_default: bool = False,
+) -> dict:
+    github_source = _validate_github_source(source)
+    repo = github_source["repo"]
+    ref = github_source["ref"]
+    subpath = github_source["subpath"]
+
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=TEMP_DIR, prefix="community_install_") as tmp_dir:
+        tmp_root = Path(tmp_dir)
+        remote_zip = tmp_root / "remote.zip"
+        _download_github_archive(repo, ref, remote_zip)
+
+        extract_dir = tmp_root / "extract"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        _extract_zip_safely(remote_zip, extract_dir)
+
+        roots = [child for child in extract_dir.iterdir() if child.is_dir()]
+        if len(roots) != 1:
+            raise ValueError("GitHub 压缩包结构异常")
+
+        source_pack_dir = (roots[0] / subpath).resolve()
+        try:
+            source_pack_dir.relative_to(roots[0].resolve())
+        except ValueError as exc:
+            raise ValueError("source.subpath 越界") from exc
+        if not source_pack_dir.is_dir():
+            raise FileNotFoundError("source.subpath 对应目录不存在")
+
+        local_zip = tmp_root / "pack.zip"
+        with zipfile.ZipFile(local_zip, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for file_path in source_pack_dir.rglob("*"):
+                if file_path.is_dir():
+                    continue
+                arc_name = file_path.relative_to(source_pack_dir).as_posix()
+                zip_file.write(file_path, arcname=arc_name)
+
+        result = import_pack_archive(
+            local_zip,
+            overwrite=overwrite,
+            set_as_default=set_as_default,
+        )
+        result["source"] = github_source
+        return result
