@@ -2692,7 +2692,7 @@ async function initApp() {
         showToast(
           "当前是空表情包，建议前往资源广场下载官方包。",
           "info",
-          "新手提示",
+          "提示",
         );
         emptyPackGuideShown = true;
       }
