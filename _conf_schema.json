@@ -324,6 +324,12 @@
             "default": true,
             "hint": "流式模式下将图片作为独立消息发送"
           },
+          "send_image_as_base64": {
+            "description": "以 Base64 发送图片",
+            "type": "bool",
+            "default": false,
+            "hint": "开启后将把本地图片转换为 base64:// 再发送，适配不支持 file:// 的平台"
+          },
           "content_cleanup_rule": {
             "description": "内容过滤正则表达式",
             "type": "string",
@@ -438,6 +444,12 @@
     "description": "旧版流式兼容开关（兼容）",
     "type": "bool",
     "default": true,
+    "invisible": true
+  },
+  "send_image_as_base64": {
+    "description": "旧版 Base64 发送开关（兼容）",
+    "type": "bool",
+    "default": false,
     "invisible": true
   },
   "content_cleanup_rule": {

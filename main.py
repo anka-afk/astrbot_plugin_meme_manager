@@ -174,6 +174,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             default=True,
             legacy_keys=("streaming_compatibility",),
         )
+        self.send_image_as_base64 = self._read_config_value(
+            ("generation", "message", "send_image_as_base64"),
+            default=False,
+            legacy_keys=("send_image_as_base64",),
+        )
         self.content_cleanup_rule = self._read_config_value(
             ("generation", "message", "content_cleanup_rule"),
             default="&&[a-zA-Z]*&&",

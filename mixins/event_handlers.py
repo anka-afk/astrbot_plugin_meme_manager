@@ -701,6 +701,14 @@ class EventHandlerMixin:
                                 random.randint(1, 100) <= self.mixed_message_probability
                             )
 
+                        if use_mixed_message and self.send_image_as_base64:
+                            normalized_images = []
+                            for image in emotion_images:
+                                normalized_images.append(
+                                    await self._ensure_image_send_format(image)
+                                )
+                            emotion_images = normalized_images
+
                         if use_mixed_message:
                             cleaned_components = self._merge_components_with_images(
                                 cleaned_components, emotion_images
@@ -965,10 +973,29 @@ class EventHandlerMixin:
             event.set_extra("found_emotions", None)
 
     async def _send_meme_image(self, event: AstrMessageEvent, image: Image) -> None:
+        image = await self._ensure_image_send_format(image)
         if event.get_platform_name() in {"gewechat", "webchat"}:
             await event.send(MessageChain([image]))
             return
         await self.context.send_message(event.unified_msg_origin, MessageChain([image]))
+
+    async def _ensure_image_send_format(self, image: Image) -> Image:
+        """根据配置规范图片发送格式。"""
+        if not self.send_image_as_base64:
+            return image
+
+        image_ref = image.file or image.url or ""
+        if isinstance(image_ref, str) and image_ref.startswith("base64://"):
+            return image
+
+        try:
+            base64_data = await image.convert_to_base64()
+            if not base64_data:
+                return image
+            return Image.fromBase64(base64_data)
+        except Exception as e:
+            logger.error(f"[meme_manager] 转换图片为 base64 失败: {e}")
+            return image
 
     def _merge_components_with_images(self, components, images):
         """将表情图片与文本组件智能配对，支持分段回复
