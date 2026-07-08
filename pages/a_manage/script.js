@@ -2686,7 +2686,7 @@ async function initApp() {
       hint.className = "empty-pack-hint";
       hint.innerHTML = `
         <p class="empty-pack-hint-title">当前还没有表情包内容</p>
-        <p class="empty-pack-hint-meta">你可以先新建分类上传表情，或前往资源广场下载官方包；也可直接一键安装官方首个包。</p>
+        <p class="empty-pack-hint-meta">你可以先新建分类上传表情，或前往资源广场下载官方包；也可直接一键安装官方包。</p>
         <div class="empty-pack-hint-actions">
           <button id="empty-hint-install-official" type="button">一键安装官方包</button>
           <button id="empty-hint-create-category" type="button">新建分类</button>

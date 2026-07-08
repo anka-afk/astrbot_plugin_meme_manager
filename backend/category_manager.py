@@ -1,9 +1,11 @@
 import logging
 import os
 import shutil
+import json
 from pathlib import Path
 
 from ..config import (
+    ACTIVE_PACK_MANIFEST_PATH,
     DEFAULT_CATEGORY_DESCRIPTIONS,
     MEMES_DATA_PATH,
     MEMES_DIR,
@@ -33,11 +35,49 @@ class CategoryManager:
         self.descriptions = self._load_descriptions()
 
     def _ensure_data_file(self) -> None:
-        """确保 memes_data.json 文件存在，不存在则创建空文件"""
+        """确保 memes_data.json 文件存在，不存在时基于当前包内容初始化。"""
         if not os.path.exists(MEMES_DATA_PATH):
-            save_json({}, MEMES_DATA_PATH)
-            logger.info(f"创建空类别描述文件: {MEMES_DATA_PATH}")
-            sync_active_pack_metadata({})
+            initial_descriptions = self._build_initial_descriptions()
+            save_json(initial_descriptions, MEMES_DATA_PATH)
+            logger.info(f"初始化类别描述文件: {MEMES_DATA_PATH}")
+            sync_active_pack_metadata(initial_descriptions)
+
+    def _build_initial_descriptions(self) -> dict[str, str]:
+        """在缺失 memes_data.json 时，从目录与 manifest 构建初始描述。"""
+        descriptions: dict[str, str] = {}
+
+        # 1) 优先读取当前包 manifest 的分类描述（官方包通常只带 manifest）
+        try:
+            if ACTIVE_PACK_MANIFEST_PATH.is_file():
+                with ACTIVE_PACK_MANIFEST_PATH.open(encoding="utf-8-sig") as file_obj:
+                    manifest = json.load(file_obj)
+                categories = (
+                    manifest.get("categories", {}) if isinstance(manifest, dict) else {}
+                )
+                if isinstance(categories, dict):
+                    for category, meta in categories.items():
+                        key = str(category or "").strip()
+                        if not key:
+                            continue
+                        if isinstance(meta, dict):
+                            descriptions[key] = str(
+                                meta.get("description") or "请添加描述"
+                            )
+                        else:
+                            descriptions[key] = str(meta or "请添加描述")
+        except Exception as exc:
+            logger.warning(f"从 manifest 初始化类别描述失败: {exc}")
+
+        # 2) 补齐实际目录存在但 manifest 未声明的分类
+        for category in self.get_local_categories():
+            descriptions.setdefault(category, "请添加描述")
+
+        # 3) 默认包兜底默认分类文案，防止首次运行完全为空
+        if not descriptions and MEMES_DIR.exists():
+            for category, desc in DEFAULT_CATEGORY_DESCRIPTIONS.items():
+                descriptions[category] = desc
+
+        return descriptions
 
     def _load_descriptions(self) -> dict[str, str]:
         """加载类别描述配置"""
