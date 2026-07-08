@@ -245,6 +245,12 @@ class WebAPIMixin:
             "获取或保存表情包选择规则",
         )
         self._register_webui_api(
+            "settings/targets",
+            self._api_settings_targets,
+            ["GET"],
+            "获取规则 target 建议值",
+        )
+        self._register_webui_api(
             "settings/backup/export",
             self._api_export_runtime_backup,
             ["POST"],
@@ -1105,6 +1111,60 @@ class WebAPIMixin:
         except Exception as e:
             logger.error(f"导出全量备份失败: {e}", exc_info=True)
             return jsonify({"message": f"导出全量备份失败: {str(e)}"}), 500
+
+    async def _api_settings_targets(self):
+        try:
+            rules_payload = get_selection_rules()
+            rules = (
+                rules_payload.get("rules", [])
+                if isinstance(rules_payload, dict)
+                else []
+            )
+
+            session_targets = []
+            seen_session_targets = set()
+            if isinstance(rules, list):
+                for rule in rules:
+                    if not isinstance(rule, dict):
+                        continue
+                    if str(rule.get("scope") or "").strip() != "session":
+                        continue
+                    target = str(rule.get("target") or "").strip()
+                    if not target or target in seen_session_targets:
+                        continue
+                    seen_session_targets.add(target)
+                    session_targets.append(target)
+
+            persona_targets = []
+            personas = getattr(self.context.provider_manager, "personas", [])
+            for index, persona in enumerate(
+                personas if isinstance(personas, list) else []
+            ):
+                if not isinstance(persona, dict):
+                    continue
+                if hasattr(self, "_get_persona_key"):
+                    persona_id = str(self._get_persona_key(persona, index)).strip()
+                else:
+                    persona_id = str(
+                        persona.get("id") or persona.get("name") or index
+                    ).strip()
+                if not persona_id:
+                    continue
+                persona_name = str(persona.get("name") or persona_id)
+                persona_targets.append({"id": persona_id, "label": persona_name})
+
+            return (
+                jsonify(
+                    {
+                        "persona_targets": persona_targets,
+                        "session_targets": session_targets,
+                    }
+                ),
+                200,
+            )
+        except Exception as e:
+            logger.error(f"获取规则 target 建议值失败: {e}", exc_info=True)
+            return jsonify({"message": f"获取规则 target 建议值失败: {str(e)}"}), 500
 
     async def _api_import_runtime_backup(self):
         temp_zip_path = None

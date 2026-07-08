@@ -25,6 +25,8 @@ async function initSettingsPage() {
   let installedPacks = [];
   let rules = [];
   let dragRuleIndex = -1;
+  let personaTargets = [];
+  let sessionTargets = [];
 
   async function apiGet(endpoint, params = {}) {
     return window.AstrBotPluginPage.apiGet(endpoint, params);
@@ -82,6 +84,20 @@ async function initSettingsPage() {
         return `<option value="${pack.id}" ${selectedAttr}>${pack.name || pack.id} (${pack.id})</option>`;
       })
       .join("");
+  }
+
+  function getTargetSuggestions(scope) {
+    if (scope === "persona") {
+      return personaTargets
+        .map((item) => String(item.id || "").trim())
+        .filter(Boolean);
+    }
+    if (scope === "session") {
+      return sessionTargets
+        .map((item) => String(item || "").trim())
+        .filter(Boolean);
+    }
+    return [];
   }
 
   function updateRuleFromInput(index, key, value) {
@@ -246,9 +262,20 @@ async function initSettingsPage() {
 
       const targetField = document.createElement("div");
       targetField.className = "field-row";
+      const targetListId = `target-suggestions-${index}`;
+      const targetPlaceholder =
+        rule.scope === "persona"
+          ? "从 persona 建议中选择或手动填写"
+          : rule.scope === "session"
+            ? "从 session 建议中选择或手动填写"
+            : "default 规则无需 target";
+      const targetSuggestions = getTargetSuggestions(rule.scope);
       targetField.innerHTML = `
         <label>target</label>
-        <input data-role="target" type="text" value="${rule.target || ""}" ${isDefault ? "disabled" : ""} placeholder="persona_id 或 session_id" />
+        <input data-role="target" type="text" value="${rule.target || ""}" ${isDefault ? "disabled" : ""} placeholder="${targetPlaceholder}" list="${targetListId}" />
+        <datalist id="${targetListId}">
+          ${targetSuggestions.map((item) => `<option value="${item}"></option>`).join("")}
+        </datalist>
       `;
 
       const packField = document.createElement("div");
@@ -281,6 +308,12 @@ async function initSettingsPage() {
         updateRuleFromInput(index, "scope", scopeSelect.value);
         if (scopeSelect.value === "default") {
           delete rules[index].target;
+        } else if (!rules[index].target) {
+          const firstSuggestion =
+            getTargetSuggestions(scopeSelect.value)[0] || "";
+          if (firstSuggestion) {
+            rules[index].target = firstSuggestion;
+          }
         }
         renderRules();
       });
@@ -363,24 +396,32 @@ async function initSettingsPage() {
   }
 
   async function refreshPacksAndRules() {
-    const [packsResponse, rulesResponse] = await Promise.all([
+    const [packsResponse, rulesResponse, targetsResponse] = await Promise.all([
       apiGet("packs"),
       apiGet("settings/rules"),
+      apiGet("settings/targets"),
     ]);
 
     installedPacks = Array.isArray(packsResponse?.packs)
       ? packsResponse.packs
       : [];
     rules = Array.isArray(rulesResponse?.rules) ? rulesResponse.rules : [];
+    personaTargets = Array.isArray(targetsResponse?.persona_targets)
+      ? targetsResponse.persona_targets
+      : [];
+    sessionTargets = Array.isArray(targetsResponse?.session_targets)
+      ? targetsResponse.session_targets
+      : [];
     ensureDefaultRuleAtEnd(rulesResponse?.default_pack_id || "");
     renderRules();
   }
 
   function buildNewRule(scope) {
+    const firstSuggestion = getTargetSuggestions(scope)[0] || "";
     return {
       id: `${scope}-${Date.now()}`,
       scope,
-      target: "",
+      target: firstSuggestion,
       pack_id: installedPacks[0]?.id || "",
     };
   }
