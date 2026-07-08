@@ -8,6 +8,7 @@ import time
 import traceback
 import io
 import json
+from typing import Any
 
 import aiohttp
 from PIL import Image as PILImage
@@ -17,7 +18,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import EventMessageType
 from astrbot.api.message_components import *
 from astrbot.api.provider import LLMResponse, ProviderRequest
-from astrbot.core.message.components import Plain
+from astrbot.core.message.components import Plain, Image
 from astrbot.core.message.message_event_result import MessageChain, ResultContentType
 
 from ..config import MEMES_DIR
@@ -25,6 +26,220 @@ from ..config import MEMES_DIR
 
 class EventHandlerMixin:
     """处理图片上传、LLM 响应解析、消息装饰等事件"""
+
+    def _normalize_outgoing_message_components(self, message: Any) -> list:
+        """将外部传入消息统一为组件列表。"""
+        if isinstance(message, MessageChain):
+            return list(message.chain or [])
+        if isinstance(message, list):
+            return list(message)
+        if isinstance(message, str):
+            return [Plain(message)]
+        raise TypeError("message 必须是 str、list 或 MessageChain")
+
+    def _extract_marked_emotions_from_text(
+        self,
+        text: str,
+        valid_emoticons: set[str],
+    ) -> tuple[str, list[str]]:
+        """提取文本中的表情标记并返回清理后的文本。"""
+        clean_text = text or ""
+        found_emotions: list[str] = []
+
+        # 严格标记：&&emotion&&
+        strict_pattern = re.compile(r"&&([^&]+?)&&")
+
+        def _replace_strict(match: re.Match) -> str:
+            emotion = match.group(1).strip()
+            if emotion in valid_emoticons:
+                found_emotions.append(emotion)
+            return ""
+
+        clean_text = strict_pattern.sub(_replace_strict, clean_text)
+
+        # 可选替代标记：[emotion] 与 (emotion)
+        if self._read_config_value(
+            ("generation", "markup", "enable_alternative"),
+            default=True,
+            legacy_keys=("enable_alternative_markup",),
+        ):
+            bracket_pattern = re.compile(r"\[([^\[\]]+)\]")
+
+            def _replace_bracket(match: re.Match) -> str:
+                emotion = match.group(1).strip()
+                if emotion in valid_emoticons:
+                    found_emotions.append(emotion)
+                    return ""
+                if self.remove_invalid_alternative_markup:
+                    return ""
+                return match.group(0)
+
+            clean_text = bracket_pattern.sub(_replace_bracket, clean_text)
+
+            paren_pattern = re.compile(r"\(([^()]+)\)")
+
+            def _replace_paren(match: re.Match) -> str:
+                emotion = match.group(1).strip()
+                markup = match.group(0)
+                if emotion in valid_emoticons and self._is_likely_emotion_markup(
+                    markup, clean_text, match.start()
+                ):
+                    found_emotions.append(emotion)
+                    return ""
+                if self.remove_invalid_alternative_markup:
+                    return ""
+                return markup
+
+            clean_text = paren_pattern.sub(_replace_paren, clean_text)
+
+        # 防御性清理残留符号
+        clean_text = re.sub(r"&&+", "", clean_text)
+        return clean_text, found_emotions
+
+    def _build_emotion_images_for_event(
+        self,
+        event: AstrMessageEvent,
+        emotions: list[str],
+    ) -> tuple[list[Image], list[str]]:
+        """根据表情列表构建待发送图片组件，并返回临时文件列表。"""
+        if not emotions:
+            return [], []
+
+        random_value = random.randint(1, 100)
+        if random_value > self.emotions_probability:
+            return [], []
+
+        memes_root = self._get_runtime_memes_dir_for_event(event)
+        emotion_images: list[Image] = []
+        temp_files: list[str] = []
+
+        for emotion in emotions:
+            if not emotion:
+                continue
+
+            emotion_path = os.path.join(memes_root, emotion)
+            if not os.path.exists(emotion_path):
+                continue
+
+            memes = [
+                f for f in os.listdir(emotion_path) if f.endswith((".jpg", ".png", ".gif"))
+            ]
+            if not memes:
+                continue
+
+            meme = random.choice(memes)
+            meme_file = os.path.join(emotion_path, meme)
+
+            try:
+                final_meme_file = self._convert_to_gif(meme_file)
+                if final_meme_file != meme_file:
+                    temp_files.append(final_meme_file)
+                emotion_images.append(Image.fromFileSystem(final_meme_file))
+            except Exception as e:
+                logger.error(f"[meme_manager] 构建表情图片失败: {e}")
+
+        return emotion_images, temp_files
+
+    async def compat_prepare_message(
+        self,
+        event: AstrMessageEvent,
+        message: str | list | MessageChain,
+    ) -> dict:
+        """对外兼容接口：清理消息中的表情标记并准备待发送表情图片。"""
+        pack_context = self._resolve_runtime_pack_context(event=event)
+        runtime_category_mapping = (
+            pack_context.get("category_mapping") or self.category_mapping
+        )
+        valid_emoticons = set(runtime_category_mapping.keys())
+
+        raw_components = self._normalize_outgoing_message_components(message)
+        cleaned_components = []
+        found_emotions: list[str] = []
+
+        for component in raw_components:
+            if isinstance(component, Plain):
+                cleaned_text, extracted = self._extract_marked_emotions_from_text(
+                    component.text,
+                    valid_emoticons,
+                )
+                found_emotions.extend(extracted)
+                if cleaned_text.strip():
+                    cleaned_components.append(Plain(cleaned_text.strip()))
+            else:
+                cleaned_components.append(component)
+
+        # 去重并应用数量限制
+        seen = set()
+        filtered_emotions: list[str] = []
+        for emotion in found_emotions:
+            if emotion in seen:
+                continue
+            seen.add(emotion)
+            filtered_emotions.append(emotion)
+            if len(filtered_emotions) >= self.max_emotions_per_message:
+                break
+
+        emotion_images, temp_files = self._build_emotion_images_for_event(
+            event,
+            filtered_emotions,
+        )
+
+        return {
+            "cleaned_chain": MessageChain(cleaned_components),
+            "emotions": filtered_emotions,
+            "images": emotion_images,
+            "temp_files": temp_files,
+        }
+
+    async def compat_send_message(
+        self,
+        event: AstrMessageEvent,
+        message: str | list | MessageChain,
+        *,
+        send_images: bool = True,
+    ) -> dict:
+        """对外兼容接口：使用本插件逻辑清理后发送消息，并可附带发送表情图片。"""
+        prepared = await self.compat_prepare_message(event, message)
+
+        return await self.compat_send_prepared_message(
+            event,
+            prepared,
+            send_images=send_images,
+        )
+
+    async def compat_send_prepared_message(
+        self,
+        event: AstrMessageEvent,
+        prepared: dict,
+        *,
+        send_text: bool = True,
+        send_images: bool = True,
+    ) -> dict:
+        """对外兼容接口：发送由 compat_prepare_message 生成的处理结果。"""
+        cleaned_chain: MessageChain = prepared.get("cleaned_chain") or MessageChain([])
+        emotion_images: list[Image] = prepared.get("images") or []
+        temp_files: list[str] = prepared.get("temp_files") or []
+
+        try:
+            if send_text and cleaned_chain.chain:
+                await event.send(cleaned_chain)
+
+            if send_images and emotion_images:
+                for image in emotion_images:
+                    await self._send_meme_image(event, image)
+        finally:
+            for temp_file in temp_files:
+                try:
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+                except Exception as e:
+                    logger.error(f"[meme_manager] 清理兼容接口临时文件失败: {e}")
+
+        return {
+            "sent_text": bool(send_text and cleaned_chain.chain),
+            "sent_images_count": len(emotion_images) if send_images else 0,
+            "detected_emotions": prepared.get("emotions") or [],
+        }
 
     async def _handle_upload_image_impl(self, event: AstrMessageEvent):
         user_key = f"{event.session_id}_{event.get_sender_id()}"

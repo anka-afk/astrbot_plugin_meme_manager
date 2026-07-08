@@ -291,6 +291,65 @@ WebDAV 适合用于 NAS、Alist、Nextcloud、坚果云、群晖等服务，可�
 - 当前插件已经完全兼容流式传输，但是视觉效果上会看见表情标签，在流式传输完毕后插件会清理标签并额外发送表情。
 - 如果您在 AstrBot 配置中开启了 **流式传输** 功能，并使用支持流式传输的平台，请打开流式传输兼容模式（默认开启）
 
+**插件间兼容接口：**
+
+- 为了兼容「其他插件自己请求 LLM 并发送消息」的场景，本插件提供了公开接口。
+- 其他插件在发送前可主动调用本插件接口，自动清理 `&&happy&&` 等标记并按本插件规则发送表情包。
+
+示例：
+
+```python
+from astrbot.api.message_components import Plain
+from astrbot.core.message.message_event_result import MessageChain
+
+
+async def send_with_meme_manager(context, event, text: str):
+   # 1) 获取 meme_manager 插件实例
+   md = context.get_registered_star("meme_manager")
+   plugin = md.star_cls if md and md.star_cls else None
+
+   if not plugin:
+      # 未安装或未启用时，走原始发送逻辑
+      await event.send(MessageChain([Plain(text)]))
+      return
+
+   # 2) 一步发送（清理标记 + 文本发送 + 表情图发送）
+   await plugin.compat_send_message(event, text)
+```
+
+如果你希望自己控制发送时机，也可以使用两段式接口：
+
+```python
+async def send_in_two_steps(context, event, chain: MessageChain):
+   md = context.get_registered_star("meme_manager")
+   plugin = md.star_cls if md and md.star_cls else None
+   if not plugin:
+      await event.send(chain)
+      return
+
+   prepared = await plugin.compat_prepare_message(event, chain)
+
+   # 先发清理后的文本/组件
+   cleaned_chain = prepared["cleaned_chain"]
+   if cleaned_chain.chain:
+      await event.send(cleaned_chain)
+
+   # 再调用公开接口发送准备好的表情图
+   await plugin.compat_send_prepared_message(
+      event,
+      prepared,
+      send_text=False,
+      send_images=True,
+   )
+```
+
+接口说明：
+
+- `compat_prepare_message(event, message)`：仅做处理，不发送，返回清理后的消息链与待发送图片。
+- `compat_send_message(event, message, send_images=True)`：直接完成处理与发送。
+- `compat_send_prepared_message(event, prepared, send_text=True, send_images=True)`：发送预处理结果（适合两段式流程）。
+- `message` 支持 `str` / `list` / `MessageChain`。
+
 ## 📝 使用指令
 
 当前大部分功能都可以通过 AstrBot WebUI 管理界面操作，无需使用指令。以下为指令列表，供 CLI 用户参考：
@@ -325,8 +384,6 @@ WebDAV 适合用于 NAS、Alist、Nextcloud、坚果云、群晖等服务，可�
 > - 首次启动不再自动导入默认表情包，初始状态为“空表情包”。
 > - 调整了插件配置及其结构，提供了部分向后兼容，升级版本建议重新配置
 
-主要更新：
-
 - 🛍️ 资源广场：支持官方包/社区包浏览与安装，支持从 github 仓库地址安装社区包索引外的表情包。
 - 📦 多表情包（pack）运行时体系完善：默认包、导入/导出、安装/卸载、规则选包（default/session/persona）联动。
 - ☁️ 云同步全面 pack-aware：按当前管理包动态绑定同步目录，避免多包场景串目录。
@@ -336,6 +393,7 @@ WebDAV 适合用于 NAS、Alist、Nextcloud、坚果云、群晖等服务，可�
 - 🚦 限流治理：限制重试、失败快速返回与分页容错。
 - ⚡ 状态查询降压：图床同步状态接口加入短 TTL 缓存并在任务启动前主动失效。
 - 📜 协议文档落地：新增 AstrBot 表情包协议草案中英文版本，并补充创作者与索引提交流程。
+- 🛠️ 提供了公开接口，方便其他插件在发送消息前调用本插件处理表情标记并发送表情包。
 
 ### v3.21
 
