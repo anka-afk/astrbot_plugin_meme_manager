@@ -11,8 +11,9 @@ from ..backend.models import (
     clear_category_emojis,
     clear_all_emojis,
 )
+from ..backend.pack_storage import install_first_official_pack_from_index
 from ..config import MEMES_DIR
-from ..utils import get_default_meme_categories, restore_default_memes
+from ..config import COMMUNITY_INDEX_URL
 
 
 class CommandMixin:
@@ -194,72 +195,38 @@ class CommandMixin:
     async def restore_default_memes_command(
         self, event: AstrMessageEvent, category: str = None
     ):
-        """恢复内置默认表情包，可指定类别或恢复全部。"""
-        available_default_categories = get_default_meme_categories()
-        if not available_default_categories:
-            yield event.plain_result("❌ 未找到插件内置默认表情包资源。")
-            return
-
-        normalized_category = category.strip() if category else None
-        if (
-            normalized_category
-            and normalized_category not in available_default_categories
-        ):
-            category_list = "\n".join(
-                f"- {name}" for name in available_default_categories
-            )
+        """从社区索引安装首个官方表情包并设为默认。"""
+        if category:
             yield event.plain_result(
-                f"⚠️ 默认表情包中不存在类别「{normalized_category}」。\n"
-                f"当前可恢复的默认类别如下：\n{category_list}"
+                "ℹ️ 该命令已改为从官方仓库安装默认包，不再支持按类别恢复。"
             )
-            return
 
-        restore_result = restore_default_memes(normalized_category)
-        if not restore_result["source_exists"]:
-            yield event.plain_result("❌ 未找到插件内置默认表情包资源。")
-            return
-
-        copied_files = restore_result["copied_files"]
-        duplicate_files = restore_result["duplicate_files"]
-        renamed_files = restore_result["renamed_files"]
-        restored_categories = sorted(
-            set(copied_files) | set(duplicate_files) | set(renamed_files)
-        )
-
-        if restored_categories:
-            self._ensure_default_category_descriptions(restored_categories)
-
-        copied_count = sum(len(files) for files in copied_files.values())
-        duplicate_count = sum(len(files) for files in duplicate_files.values())
-        renamed_count = sum(len(files) for files in renamed_files.values())
-
-        if copied_count == 0 and duplicate_count > 0:
+        try:
+            result = install_first_official_pack_from_index(
+                index_url=COMMUNITY_INDEX_URL,
+                overwrite=False,
+                set_as_default=True,
+            )
+            selected_name = str(
+                result.get("selected_pack_name")
+                or result.get("name")
+                or result.get("pack_id")
+                or ""
+            )
+            selected_pack_id = str(
+                result.get("pack_id") or result.get("selected_pack_id") or ""
+            )
+            self._reload_personas()
             yield event.plain_result(
-                (
-                    "ℹ️ 默认表情包已存在，本次未新增文件。"
-                    if not normalized_category
-                    else f"ℹ️ 类别「{normalized_category}」的默认表情包已存在，本次未新增文件。"
-                )
+                f"✅ 已从官方仓库安装默认表情包：{selected_name} ({selected_pack_id})。"
             )
-            return
-
-        if copied_count == 0:
-            yield event.plain_result("ℹ️ 本次没有恢复任何默认表情包文件。")
-            return
-
-        if normalized_category:
+        except FileExistsError:
             yield event.plain_result(
-                f"✅ 已恢复类别「{normalized_category}」的默认表情包，共新增 {copied_count} 个文件"
-                f"{f'，其中 {renamed_count} 个因重名自动补序号' if renamed_count > 0 else ''}"
-                f"{f'，跳过 {duplicate_count} 个重复文件' if duplicate_count > 0 else ''}。"
+                "⚠️ 目标表情包已存在。请先在广场或管理页卸载同名包后重试。"
             )
-            return
-
-        yield event.plain_result(
-            f"✅ 已恢复全部默认表情包，共新增 {copied_count} 个文件，涉及 {len(copied_files)} 个类别"
-            f"{f'，其中 {renamed_count} 个因重名自动补序号' if renamed_count > 0 else ''}"
-            f"{f'，跳过 {duplicate_count} 个重复文件' if duplicate_count > 0 else ''}。"
-        )
+        except Exception as exc:
+            logger.error("从官方仓库安装默认表情包失败: %s", exc, exc_info=True)
+            yield event.plain_result(f"❌ 安装默认表情包失败：{exc}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @meme_manager.command("清空指定类型")

@@ -251,6 +251,8 @@ async function initApp() {
   let activeCategoryEdit = null;
   let pendingMoveTargetItems = [];
   let imagePreviewState = null;
+  let emptyPackGuideShown = false;
+  let firstUseCatalogGuideShown = false;
 
   function formatPackOptionLabel(pack) {
     const name = String(pack?.name || pack?.id || "未命名");
@@ -268,6 +270,43 @@ async function initApp() {
       nextUrl.searchParams.delete("managed_pack_id");
     }
     window.history.replaceState(null, "", nextUrl.toString());
+  }
+
+  function buildCatalogPageUrl() {
+    return withCurrentAuthParams("../catalog/index.html", {
+      view: "catalog",
+      asset_token: navAuthToken || null,
+    }).toString();
+  }
+
+  async function openCatalogPage() {
+    await ensureNavAuthToken();
+    window.location.href = buildCatalogPageUrl();
+  }
+
+  function isSingleEmptyPack(packs) {
+    if (!Array.isArray(packs) || packs.length !== 1) {
+      return false;
+    }
+    const onlyPack = packs[0] || {};
+    return Number(onlyPack?.image_count || 0) === 0;
+  }
+
+  async function maybeShowFirstUseCatalogGuide(packs) {
+    if (firstUseCatalogGuideShown || !isSingleEmptyPack(packs)) {
+      return;
+    }
+
+    firstUseCatalogGuideShown = true;
+    const confirmed = await showConfirm({
+      title: "第一次使用？",
+      description: "可以前往资源广场下载官方表情包？",
+      confirmLabel: "前往广场",
+    });
+    if (!confirmed) {
+      return;
+    }
+    await openCatalogPage();
   }
 
   async function loadManagePackSwitcher(preferredPackId = "") {
@@ -345,6 +384,8 @@ async function initApp() {
           ) || packs[0];
         managePackSwitchMeta.textContent = `当前视图: ${String(selected?.name || selected?.id || "--")}`;
       }
+
+      await maybeShowFirstUseCatalogGuide(packs);
       return packs;
     } catch (error) {
       if (managePackSwitchMeta) {
@@ -424,6 +465,34 @@ async function initApp() {
       showToast(error?.message || String(error), "error", "删除失败", 4500);
     } finally {
       restoreButton(deleteManagePackBtn);
+    }
+  }
+
+  async function installOfficialFirstPackFromHint(triggerBtn) {
+    setButtonBusy(triggerBtn, "安装中...");
+    try {
+      const data = await apiPost("community/install_official_first", {
+        overwrite: false,
+        set_as_default: true,
+      });
+      const installedPackId = String(data?.pack_id || "").trim();
+      await loadManagePackSwitcher(installedPackId);
+      await refreshUi({ emojis: true, syncStatus: true });
+      const installedName = String(
+        data?.selected_pack_name ||
+          data?.name ||
+          installedPackId ||
+          "官方表情包",
+      );
+      showToast(
+        `已安装 ${installedName}，并切换为默认表情包。`,
+        "success",
+        "安装成功",
+      );
+    } catch (error) {
+      showToast(error?.message || String(error), "error", "安装失败");
+    } finally {
+      restoreButton(triggerBtn);
     }
   }
 
@@ -2610,13 +2679,30 @@ async function initApp() {
       hint.className = "empty-pack-hint";
       hint.innerHTML = `
         <p class="empty-pack-hint-title">当前还没有表情包内容</p>
-        <p class="empty-pack-hint-meta">你可以先新建分类上传表情，或者去资源广场下载官方包。</p>
+        <p class="empty-pack-hint-meta">你可以先新建分类上传表情，或前往资源广场下载官方包；也可直接一键安装官方首个包。</p>
         <div class="empty-pack-hint-actions">
+          <button id="empty-hint-install-official" type="button">一键安装官方包</button>
           <button id="empty-hint-create-category" type="button">新建分类</button>
           <a id="empty-hint-open-catalog" href="#">前往资源广场下载</a>
         </div>
       `;
       container.appendChild(hint);
+
+      if (!emptyPackGuideShown) {
+        showToast(
+          "当前是空表情包，建议前往资源广场下载官方包。",
+          "info",
+          "新手提示",
+        );
+        emptyPackGuideShown = true;
+      }
+
+      const installOfficialBtn = document.getElementById(
+        "empty-hint-install-official",
+      );
+      installOfficialBtn?.addEventListener("click", async () => {
+        await installOfficialFirstPackFromHint(installOfficialBtn);
+      });
 
       const createCategoryBtn = document.getElementById(
         "empty-hint-create-category",
@@ -2629,10 +2715,7 @@ async function initApp() {
         "empty-hint-open-catalog",
       );
       if (openCatalogLink) {
-        openCatalogLink.href = withCurrentAuthParams("../catalog/index.html", {
-          view: "catalog",
-          asset_token: navAuthToken || null,
-        }).toString();
+        openCatalogLink.href = buildCatalogPageUrl();
       }
     }
 

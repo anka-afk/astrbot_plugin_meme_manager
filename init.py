@@ -7,16 +7,15 @@ from .config import (
     MEMES_DATA_PATH,
     sync_active_pack_metadata,
 )
-from .utils import copy_default_memes_if_needed, ensure_dir_exists, save_json
+from .utils import ensure_dir_exists, save_json
 
 logger = logging.getLogger(__name__)
 
 
 def init_plugin():
-    """初始化运行时存储和兼容性元数据。"""
+    """初始化运行时存储和兼容性元数据，不自动注入默认表情包。"""
     try:
         ensure_dir_exists(BASE_DATA_DIR)
-        copy_default_memes_if_needed()
 
         if not os.path.exists(MEMES_DATA_PATH):
             save_json(DEFAULT_CATEGORY_DESCRIPTIONS, MEMES_DATA_PATH)

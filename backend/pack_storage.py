@@ -11,6 +11,7 @@ from .pack_protocol import (
     validate_community_index,
     validate_pack_directory,
     validate_pack_manifest,
+    is_official_pack_entry,
     validate_source_descriptor,
 )
 
@@ -695,6 +696,49 @@ def install_pack_from_github_source(
         )
         result["source"] = github_source
         return result
+
+
+def install_first_official_pack_from_index(
+    index_url: str,
+    overwrite: bool = False,
+    set_as_default: bool = True,
+) -> dict:
+    """从社区索引安装首个官方包；若无官方条目则回退索引首项。"""
+    cache_loaded = True
+    try:
+        cache_data = load_cached_community_index()
+    except Exception:
+        cache_loaded = False
+        cache_data = fetch_and_cache_community_index(index_url)
+
+    packs = cache_data.get("index", {}).get("packs", [])
+    if not isinstance(packs, list) or not packs:
+        raise ValueError("社区索引中没有可安装的表情包")
+
+    selected_entry = None
+    for entry in packs:
+        if is_official_pack_entry(entry):
+            selected_entry = entry
+            break
+    if selected_entry is None:
+        selected_entry = packs[0]
+
+    source = selected_entry.get("source")
+    if not isinstance(source, dict):
+        raise ValueError("选中的社区条目缺少 source 信息")
+
+    result = install_pack_from_github_source(
+        source=source,
+        overwrite=overwrite,
+        set_as_default=set_as_default,
+    )
+    result["selected_pack_id"] = str(selected_entry.get("id") or "").strip()
+    result["selected_pack_name"] = str(
+        selected_entry.get("name") or result.get("name") or result.get("pack_id")
+    )
+    result["selected_is_official"] = is_official_pack_entry(selected_entry)
+    result["from_cache"] = cache_loaded
+    return result
 
 
 def get_selection_rules() -> dict:

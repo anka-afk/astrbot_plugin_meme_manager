@@ -34,6 +34,7 @@ from ..backend.pack_storage import (
     import_runtime_backup,
     install_pack_from_github_source,
     import_pack_archive,
+    install_first_official_pack_from_index,
     list_installed_packs,
     load_cached_community_index,
     save_selection_rules,
@@ -240,6 +241,12 @@ class WebAPIMixin:
             self._api_install_community_pack,
             ["POST"],
             "按社区 source 安装表情包",
+        )
+        self._register_webui_api(
+            "community/install_official_first",
+            self._api_install_official_first_pack,
+            ["POST"],
+            "安装官方首个表情包",
         )
         self._register_webui_api(
             "settings/rules",
@@ -1344,6 +1351,34 @@ class WebAPIMixin:
         except Exception as e:
             logger.error(f"安装社区表情包失败: {e}", exc_info=True)
             return jsonify({"message": f"安装社区表情包失败: {str(e)}"}), 500
+
+    async def _api_install_official_first_pack(self):
+        data = None
+        try:
+            data = await request.get_json()
+            payload = data or {}
+            overwrite = bool(payload.get("overwrite", False))
+            set_as_default = bool(payload.get("set_as_default", True))
+
+            result = install_first_official_pack_from_index(
+                index_url=COMMUNITY_INDEX_URL,
+                overwrite=overwrite,
+                set_as_default=set_as_default,
+            )
+            self._reload_personas()
+            return jsonify({"message": "官方表情包安装成功", **result}), 200
+        except FileExistsError as e:
+            return jsonify({"message": str(e)}), 409
+        except (FileNotFoundError, ValueError) as e:
+            logger.warning(
+                "安装官方首个表情包失败: %s | payload=%s",
+                e,
+                data,
+            )
+            return jsonify({"message": str(e)}), 400
+        except Exception as e:
+            logger.error(f"安装官方首个表情包失败: {e}", exc_info=True)
+            return jsonify({"message": f"安装官方首个表情包失败: {str(e)}"}), 500
 
     async def _api_settings_rules(self):
         if request.method == "GET":
