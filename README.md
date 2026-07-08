@@ -1,5 +1,3 @@
-# 🌟 AstrBot 表情包管理器
-
 ![Banner](.github/img/Banner.png)
 
 <div align="center">
