@@ -4,7 +4,6 @@ import io
 import json
 import mimetypes
 import time
-import logging
 
 from PIL import Image as PILImage
 from quart import jsonify, make_response, request, send_file
@@ -23,7 +22,15 @@ from ..backend.models import (
     clear_all_emojis,
     clear_category_emojis,
 )
-from ..config import MEMES_DIR
+from ..backend.pack_storage import (
+    export_pack_archive,
+    get_pack_detail,
+    import_pack_archive,
+    list_installed_packs,
+    set_default_pack,
+    uninstall_pack,
+)
+from ..config import MEMES_DIR, TEMP_DIR
 
 PLUGIN_NAME = "meme_manager"
 WEBUI_LOG_PREFIX = f"[{PLUGIN_NAME}][WebUI]"
@@ -166,6 +173,44 @@ class WebAPIMixin:
             self._api_get_meme_image_data,
             ["GET"],
             "获取表情图片的 Data URL（预览）",
+        )
+
+        # Phase 3: pack-aware API
+        self._register_webui_api(
+            "packs",
+            self._api_list_packs,
+            ["GET"],
+            "获取已安装表情包列表",
+        )
+        self._register_webui_api(
+            "packs/<pack_id>",
+            self._api_get_pack_detail,
+            ["GET"],
+            "获取单个表情包详情",
+        )
+        self._register_webui_api(
+            "packs/default",
+            self._api_set_default_pack,
+            ["POST"],
+            "设置默认表情包",
+        )
+        self._register_webui_api(
+            "packs/export",
+            self._api_export_pack,
+            ["POST"],
+            "导出表情包压缩文件",
+        )
+        self._register_webui_api(
+            "packs/import",
+            self._api_import_pack,
+            ["POST"],
+            "导入表情包压缩文件",
+        )
+        self._register_webui_api(
+            "packs/uninstall",
+            self._api_uninstall_pack,
+            ["POST"],
+            "卸载表情包",
         )
 
     def _register_webui_api(self, route, handler, methods, desc):
@@ -775,3 +820,127 @@ class WebAPIMixin:
             image.save(output, format="WEBP", quality=82, method=4)
         encoded = base64.b64encode(output.getvalue()).decode("ascii")
         return f"data:image/webp;base64,{encoded}", "image/webp"
+
+    async def _api_list_packs(self):
+        try:
+            return jsonify({"packs": list_installed_packs()})
+        except Exception as e:
+            logger.error(f"获取已安装表情包列表失败: {e}", exc_info=True)
+            return jsonify({"message": f"获取已安装表情包列表失败: {str(e)}"}), 500
+
+    async def _api_get_pack_detail(self, pack_id: str):
+        try:
+            return jsonify(get_pack_detail(pack_id))
+        except FileNotFoundError as e:
+            return jsonify({"message": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
+        except Exception as e:
+            logger.error(f"获取表情包详情失败: {e}", exc_info=True)
+            return jsonify({"message": f"获取表情包详情失败: {str(e)}"}), 500
+
+    async def _api_set_default_pack(self):
+        try:
+            data = await request.get_json()
+            pack_id = str((data or {}).get("pack_id") or "").strip()
+            if not pack_id:
+                return jsonify({"message": "pack_id 不能为空"}), 400
+            result = set_default_pack(pack_id)
+            self._reload_personas()
+            return jsonify({"message": "默认表情包设置成功", **result}), 200
+        except FileNotFoundError as e:
+            return jsonify({"message": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
+        except Exception as e:
+            logger.error(f"设置默认表情包失败: {e}", exc_info=True)
+            return jsonify({"message": f"设置默认表情包失败: {str(e)}"}), 500
+
+    async def _api_export_pack(self):
+        try:
+            data = await request.get_json()
+            payload = data or {}
+            pack_id = str(payload.get("pack_id") or "").strip()
+            output_dir = payload.get("output_dir")
+            result = export_pack_archive(pack_id, output_dir=output_dir)
+            return jsonify({"message": "导出成功", **result}), 200
+        except FileNotFoundError as e:
+            return jsonify({"message": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
+        except Exception as e:
+            logger.error(f"导出表情包失败: {e}", exc_info=True)
+            return jsonify({"message": f"导出表情包失败: {str(e)}"}), 500
+
+    async def _api_import_pack(self):
+        temp_zip_path = None
+        try:
+            form = await request.form
+            overwrite = str(form.get("overwrite", "false")).lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            set_as_default = str(form.get("set_as_default", "false")).lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+
+            files = await request.files
+            if not files or "file" not in files:
+                return jsonify({"message": "缺少上传文件字段 file"}), 400
+
+            archive_file = files["file"]
+            if not archive_file or not archive_file.filename:
+                return jsonify({"message": "无效的压缩包文件"}), 400
+
+            filename = str(archive_file.filename)
+            if not filename.lower().endswith(".zip"):
+                return jsonify({"message": "仅支持 zip 压缩包"}), 400
+
+            temp_dir = TEMP_DIR
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = f"import_{int(time.time() * 1000)}.zip"
+            temp_zip_path = (temp_dir / safe_name).resolve()
+            archive_file.save(str(temp_zip_path))
+
+            result = import_pack_archive(
+                temp_zip_path,
+                overwrite=overwrite,
+                set_as_default=set_as_default,
+            )
+            self._reload_personas()
+            return jsonify({"message": "导入成功", **result}), 200
+        except FileExistsError as e:
+            return jsonify({"message": str(e)}), 409
+        except (FileNotFoundError, ValueError) as e:
+            return jsonify({"message": str(e)}), 400
+        except Exception as e:
+            logger.error(f"导入表情包失败: {e}", exc_info=True)
+            return jsonify({"message": f"导入表情包失败: {str(e)}"}), 500
+        finally:
+            if temp_zip_path and temp_zip_path.exists():
+                try:
+                    temp_zip_path.unlink()
+                except Exception:
+                    pass
+
+    async def _api_uninstall_pack(self):
+        try:
+            data = await request.get_json()
+            pack_id = str((data or {}).get("pack_id") or "").strip()
+            if not pack_id:
+                return jsonify({"message": "pack_id 不能为空"}), 400
+            result = uninstall_pack(pack_id)
+            self._reload_personas()
+            return jsonify({"message": "卸载成功", **result}), 200
+        except FileNotFoundError as e:
+            return jsonify({"message": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
+        except Exception as e:
+            logger.error(f"卸载表情包失败: {e}", exc_info=True)
+            return jsonify({"message": f"卸载表情包失败: {str(e)}"}), 500
