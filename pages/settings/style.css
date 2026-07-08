@@ -132,12 +132,56 @@ h1 {
   gap: 10px;
 }
 
+.validation {
+  margin-bottom: 10px;
+  border: 1px solid #efc7bb;
+  background: #fff5f2;
+  color: #8a2d1f;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.hidden {
+  display: none;
+}
+
 .rule-item {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 12px;
   display: grid;
   gap: 10px;
+}
+
+.rule-item.dragging {
+  opacity: 0.55;
+}
+
+.rule-item.drop-target {
+  outline: 2px dashed #5b88bb;
+  outline-offset: 2px;
+}
+
+.rule-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.drag-handle {
+  border: 1px solid var(--line);
+  background: #f0f6fc;
+  color: #3e5f80;
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 12px;
+  cursor: grab;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
 }
 
 .rule-item.default {

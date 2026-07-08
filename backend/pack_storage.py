@@ -559,6 +559,7 @@ def _validate_and_normalize_rules(rules: list[dict]) -> list[dict]:
 
     normalized = []
     default_count = 0
+    scope_target_set = set()
     for index, rule in enumerate(rules):
         if not isinstance(rule, dict):
             raise ValueError(f"第 {index + 1} 条规则格式无效")
@@ -581,6 +582,12 @@ def _validate_and_normalize_rules(rules: list[dict]) -> list[dict]:
         if scope in {"persona", "session"}:
             if not target:
                 raise ValueError(f"第 {index + 1} 条规则缺少 target")
+            scope_target_key = (scope, target)
+            if scope_target_key in scope_target_set:
+                raise ValueError(
+                    f"第 {index + 1} 条规则与前序规则冲突: {scope} 目标 {target} 重复"
+                )
+            scope_target_set.add(scope_target_key)
             normalized_rule["target"] = target
         if scope == "default":
             default_count += 1

@@ -6,6 +6,7 @@ async function initSettingsPage() {
   const addSessionRuleBtn = document.getElementById("add-session-rule-btn");
   const reloadRulesBtn = document.getElementById("reload-rules-btn");
   const saveRulesBtn = document.getElementById("save-rules-btn");
+  const rulesValidation = document.getElementById("rules-validation");
 
   const backupOutputDirInput = document.getElementById(
     "backup-output-dir-input",
@@ -23,6 +24,7 @@ async function initSettingsPage() {
 
   let installedPacks = [];
   let rules = [];
+  let dragRuleIndex = -1;
 
   async function apiGet(endpoint, params = {}) {
     return window.AstrBotPluginPage.apiGet(endpoint, params);
@@ -68,6 +70,10 @@ async function initSettingsPage() {
     rules = [...normalRules, defaultRule];
   }
 
+  function findDefaultRuleIndex() {
+    return rules.findIndex((rule) => rule.scope === "default");
+  }
+
   function getPackOptions(selectedPackId = "") {
     return installedPacks
       .map((pack) => {
@@ -83,27 +89,33 @@ async function initSettingsPage() {
       return;
     }
     rules[index][key] = value;
+    renderRulesValidation();
   }
 
-  function moveRule(index, delta) {
-    const target = index + delta;
-    if (
-      index < 0 ||
-      target < 0 ||
-      index >= rules.length ||
-      target >= rules.length
-    ) {
+  function moveRuleToIndex(fromIndex, toIndex) {
+    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) {
       return;
     }
-    if (rules[index].scope === "default" || rules[target].scope === "default") {
+
+    const defaultIndex = findDefaultRuleIndex();
+    if (defaultIndex < 0) {
       return;
+    }
+    if (fromIndex >= defaultIndex) {
+      return;
+    }
+    if (toIndex >= defaultIndex) {
+      toIndex = defaultIndex - 1;
+    }
+    if (toIndex < 0) {
+      toIndex = 0;
     }
 
     const cloned = [...rules];
-    const tmp = cloned[index];
-    cloned[index] = cloned[target];
-    cloned[target] = tmp;
+    const [item] = cloned.splice(fromIndex, 1);
+    cloned.splice(toIndex, 0, item);
     rules = cloned;
+    ensureDefaultRuleAtEnd();
     renderRules();
   }
 
@@ -115,6 +127,80 @@ async function initSettingsPage() {
     renderRules();
   }
 
+  function getClientValidationErrors() {
+    const errors = [];
+    const idSet = new Set();
+    const scopeTargetSet = new Set();
+    let defaultCount = 0;
+
+    rules.forEach((rule, index) => {
+      const position = `第 ${index + 1} 条`;
+      const id = String(rule.id || "").trim();
+      const scope = String(rule.scope || "").trim();
+      const packId = String(rule.pack_id || "").trim();
+      const target = String(rule.target || "").trim();
+
+      if (!id) {
+        errors.push(`${position} 缺少 id`);
+      } else if (idSet.has(id)) {
+        errors.push(`${position} 的 id 与其他规则重复: ${id}`);
+      } else {
+        idSet.add(id);
+      }
+
+      if (!["persona", "session", "default"].includes(scope)) {
+        errors.push(`${position} 的 scope 非法: ${scope || "(空)"}`);
+      }
+      if (!packId) {
+        errors.push(`${position} 缺少 pack_id`);
+      }
+
+      if (scope === "default") {
+        defaultCount += 1;
+      }
+
+      if (scope === "persona" || scope === "session") {
+        if (!target) {
+          errors.push(`${position} 缺少 target`);
+        } else {
+          const key = `${scope}::${target}`;
+          if (scopeTargetSet.has(key)) {
+            errors.push(
+              `${position} 与前序规则冲突: ${scope} 目标 ${target} 重复`,
+            );
+          } else {
+            scopeTargetSet.add(key);
+          }
+        }
+      }
+    });
+
+    if (defaultCount !== 1) {
+      errors.push("必须且仅能存在一条 default 规则");
+    }
+    if (rules.length && rules[rules.length - 1]?.scope !== "default") {
+      errors.push("default 规则必须位于最后");
+    }
+
+    return errors;
+  }
+
+  function renderRulesValidation() {
+    const errors = getClientValidationErrors();
+    if (!errors.length) {
+      rulesValidation.classList.add("hidden");
+      rulesValidation.textContent = "";
+      return true;
+    }
+
+    rulesValidation.classList.remove("hidden");
+    rulesValidation.innerHTML = `
+      <strong>规则存在问题，请先修复：</strong>
+      <ul>${errors.map((item) => `<li>${item}</li>`).join("")}</ul>
+    `;
+    return false;
+  }
+
   function renderRules() {
     rulesList.innerHTML = "";
 
@@ -122,10 +208,27 @@ async function initSettingsPage() {
       const isDefault = rule.scope === "default";
       const wrapper = document.createElement("div");
       wrapper.className = `rule-item${isDefault ? " default" : ""}`;
+      wrapper.dataset.index = String(index);
+      if (!isDefault) {
+        wrapper.draggable = true;
+      }
 
+      const titleRow = document.createElement("div");
+      titleRow.className = "rule-title-row";
       const title = document.createElement("div");
       title.innerHTML = `<strong>${isDefault ? "默认规则（固定在最后）" : `规则 #${index + 1}`}</strong>`;
-      wrapper.appendChild(title);
+      titleRow.appendChild(title);
+
+      if (!isDefault) {
+        const dragHandle = document.createElement("button");
+        dragHandle.type = "button";
+        dragHandle.className = "drag-handle";
+        dragHandle.textContent = "拖拽排序";
+        dragHandle.title = "拖拽调整顺序";
+        titleRow.appendChild(dragHandle);
+      }
+
+      wrapper.appendChild(titleRow);
 
       const grid = document.createElement("div");
       grid.className = "rule-grid";
@@ -163,8 +266,6 @@ async function initSettingsPage() {
       const actions = document.createElement("div");
       actions.className = "rule-actions";
       actions.innerHTML = `
-        <button type="button" class="ghost" data-action="up" ${isDefault || index === 0 ? "disabled" : ""}>上移</button>
-        <button type="button" class="ghost" data-action="down" ${isDefault || index >= rules.length - 2 ? "disabled" : ""}>下移</button>
         <button type="button" class="danger" data-action="remove" ${isDefault ? "disabled" : ""}>删除</button>
       `;
       wrapper.appendChild(actions);
@@ -193,23 +294,72 @@ async function initSettingsPage() {
       });
 
       actions
-        .querySelector('[data-action="up"]')
-        .addEventListener("click", () => {
-          moveRule(index, -1);
-        });
-      actions
-        .querySelector('[data-action="down"]')
-        .addEventListener("click", () => {
-          moveRule(index, 1);
-        });
-      actions
         .querySelector('[data-action="remove"]')
         .addEventListener("click", () => {
           removeRule(index);
         });
 
+      wrapper.addEventListener("dragstart", (event) => {
+        if (isDefault) {
+          event.preventDefault();
+          return;
+        }
+        dragRuleIndex = index;
+        wrapper.classList.add("dragging");
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", String(index));
+        }
+      });
+
+      wrapper.addEventListener("dragend", () => {
+        dragRuleIndex = -1;
+        wrapper.classList.remove("dragging");
+        rulesList
+          .querySelectorAll(".rule-item.drop-target")
+          .forEach((item) => item.classList.remove("drop-target"));
+      });
+
+      wrapper.addEventListener("dragover", (event) => {
+        if (dragRuleIndex < 0 || isDefault) {
+          return;
+        }
+        event.preventDefault();
+        wrapper.classList.add("drop-target");
+      });
+
+      wrapper.addEventListener("dragleave", () => {
+        wrapper.classList.remove("drop-target");
+      });
+
+      wrapper.addEventListener("drop", (event) => {
+        event.preventDefault();
+        wrapper.classList.remove("drop-target");
+        if (dragRuleIndex < 0 || isDefault) {
+          return;
+        }
+        moveRuleToIndex(dragRuleIndex, index);
+      });
+
       rulesList.appendChild(wrapper);
     });
+
+    const defaultIndex = findDefaultRuleIndex();
+    rulesList.ondragover = (event) => {
+      if (dragRuleIndex < 0) {
+        return;
+      }
+      event.preventDefault();
+    };
+    rulesList.ondrop = (event) => {
+      if (dragRuleIndex < 0) {
+        return;
+      }
+      event.preventDefault();
+      moveRuleToIndex(dragRuleIndex, Math.max(defaultIndex - 1, 0));
+    };
+
+    renderRulesValidation();
   }
 
   async function refreshPacksAndRules() {
@@ -250,6 +400,10 @@ async function initSettingsPage() {
 
     setLoading(saveRulesBtn, "保存中...");
     try {
+      if (!renderRulesValidation()) {
+        addLog("规则校验失败，请先修复后再保存", true);
+        return;
+      }
       const response = await apiPost("settings/rules", { rules: payloadRules });
       rules = Array.isArray(response?.rules) ? response.rules : payloadRules;
       ensureDefaultRuleAtEnd(response?.default_pack_id || "");
