@@ -1,24 +1,18 @@
 import re
 import os
 import time
-import random
 
 from astrbot.api import logger
 from astrbot.api.all import *
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Plain
-from astrbot.core.message.message_event_result import MessageChain
 
 from ..backend.models import (
     get_emoji_by_category,
     clear_category_emojis,
     clear_all_emojis,
 )
-from ..config import MEMES_DIR, DEFAULT_CATEGORY_DESCRIPTIONS
+from ..config import MEMES_DIR
 from ..utils import get_default_meme_categories, restore_default_memes
-from .web_api import (
-    WebAPIMixin,
-)
 
 
 class CommandMixin:
@@ -547,7 +541,9 @@ class CommandMixin:
                     if hasattr(
                         self.img_sync.sync_manager.upload_tracker, "get_uploaded_files"
                     ):
-                        uploaded_files = self.img_sync.sync_manager.upload_tracker.get_uploaded_files()
+                        uploaded_files = (
+                            self.img_sync.sync_manager.upload_tracker.get_uploaded_files()
+                        )
                         result.append("")
                         result.append(
                             f"📝 上传记录: 已记录 {len(uploaded_files)} 个文件"

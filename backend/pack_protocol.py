@@ -102,7 +102,7 @@ def validate_pack_directory(pack_root: Path, context: str = "pack") -> dict:
     try:
         import json
 
-        with manifest_path.open(encoding="utf-8") as file_obj:
+        with manifest_path.open(encoding="utf-8-sig") as file_obj:
             manifest = json.load(file_obj)
     except Exception as exc:
         raise ValueError(f"{context} 的 manifest.json 无法解析: {exc}") from exc

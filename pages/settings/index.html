@@ -20,8 +20,19 @@
         </p>
       </div>
       <div class="nav-actions">
-        <a class="nav-link" href="../manage/index.html">管理页</a>
-        <a class="nav-link" href="../catalog/index.html">资源广场</a>
+        <a
+          class="nav-link"
+          href="../a_manage/index.html"
+          data-nav-target="../a_manage/index.html"
+          >管理页</a
+        >
+        <a
+          class="nav-link"
+          href="../catalog/index.html"
+          data-nav-target="../catalog/index.html"
+          data-nav-view="catalog"
+          >资源广场</a
+        >
       </div>
     </header>
 
@@ -30,12 +41,7 @@
         <div class="panel-head">
           <h2><i class="fas fa-route icon"></i>选择规则</h2>
           <div class="head-actions">
-            <button id="add-persona-rule-btn" class="secondary">
-              新增 Persona 规则
-            </button>
-            <button id="add-session-rule-btn" class="secondary">
-              新增 Session 规则
-            </button>
+            <button id="add-rule-btn" class="secondary">新增规则</button>
             <button id="reload-rules-btn" class="ghost">重新加载</button>
           </div>
         </div>

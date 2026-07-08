@@ -3,12 +3,8 @@
     "description": "选择的图床",
     "type": "string",
     "hint": "请选择要使用的图床服务",
-    "default": "stardots",
-    "options": [
-      "stardots",
-      "cloudflare_r2",
-      "webdav"
-    ]
+    "default": "cloudflare_r2",
+    "options": ["stardots", "cloudflare_r2", "webdav"]
   },
   "image_host_config": {
     "description": "图床配置",
@@ -236,7 +232,7 @@
   "enable_mixed_message": {
     "description": "启用回复带图",
     "type": "bool",
-    "default": true,
+    "default": false,
     "hint": "文本和表情图片在同一条消息中发送（注意：分段回复可能导致功能失效）"
   },
   "mixed_message_probability": {
@@ -253,7 +249,7 @@
   "streaming_compatibility": {
     "description": "流式传输兼容",
     "type": "bool",
-    "default": false,
+    "default": true,
     "hint": "开启后，在流式传输模式下表情图片将作为独立消息发送（流式模式下无法混合图文）"
   }
 }

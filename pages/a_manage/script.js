@@ -2,11 +2,88 @@ async function initApp() {
   await window.AstrBotPluginPage.ready();
   window.AstrBotPluginPage.getContext();
 
+  function withCurrentAuthParams(targetPath, extraParams = {}) {
+    const nextUrl = new URL(targetPath, window.location.href);
+    const currentParams = new URLSearchParams(window.location.search);
+    for (const [key, value] of currentParams.entries()) {
+      if (key === "asset_token") {
+        continue;
+      }
+      if (!nextUrl.searchParams.has(key)) {
+        nextUrl.searchParams.set(key, value);
+      }
+    }
+    for (const [key, value] of Object.entries(extraParams)) {
+      if (value === null || value === undefined || value === "") {
+        nextUrl.searchParams.delete(key);
+      } else {
+        nextUrl.searchParams.set(key, String(value));
+      }
+    }
+    return nextUrl;
+  }
+
+  let navAuthToken = "";
+  async function ensureNavAuthToken() {
+    if (navAuthToken) {
+      return navAuthToken;
+    }
+    try {
+      const response =
+        await window.AstrBotPluginPage.apiGet("bridge/auth_token");
+      navAuthToken = String(response?.token || "").trim();
+    } catch (_) {
+      navAuthToken = "";
+    }
+    return navAuthToken;
+  }
+
+  async function applySecureNavLinks() {
+    const token = await ensureNavAuthToken();
+    document.querySelectorAll("a[data-nav-target]").forEach((link) => {
+      const targetPath = link.getAttribute("data-nav-target");
+      if (!targetPath) {
+        return;
+      }
+      const navView = link.getAttribute("data-nav-view") || "";
+      const nextUrl = withCurrentAuthParams(targetPath, {
+        view: navView || null,
+        asset_token: token || null,
+      });
+      link.href = nextUrl.toString();
+    });
+  }
+
+  await applySecureNavLinks();
+
+  const managedPackIdFromUrl = String(
+    new URLSearchParams(window.location.search).get("managed_pack_id") || "",
+  ).trim();
+
   async function apiGet(endpoint, params = {}) {
-    return await window.AstrBotPluginPage.apiGet(endpoint, params);
+    const mergedParams = { ...params };
+    const managedPackId = String(managePackSelect?.value || "").trim();
+    if (
+      managedPackId &&
+      ["emoji", "emotions", "meme_image", "meme_image_data"].includes(endpoint)
+    ) {
+      mergedParams.managed_pack_id = managedPackId;
+    }
+    return await window.AstrBotPluginPage.apiGet(endpoint, mergedParams);
   }
 
   async function apiPost(endpoint, body = {}) {
+    const selectedPackId = String(managePackSelect?.value || "").trim();
+    if (
+      selectedPackId &&
+      defaultManagePackId &&
+      selectedPackId !== defaultManagePackId &&
+      ["emoji/", "category/"].some((prefix) => endpoint.startsWith(prefix))
+    ) {
+      throw new Error(
+        "当前为管理视图模式，仅支持浏览。请切回默认管理包后再执行编辑操作。",
+      );
+    }
     return await window.AstrBotPluginPage.apiPost(endpoint, body);
   }
 
@@ -21,7 +98,7 @@ async function initApp() {
   let dangerConfirmConfig = null;
 
   const toggleSelectionModeBtn = document.getElementById(
-    "toggle-selection-mode-btn"
+    "toggle-selection-mode-btn",
   );
   const batchMoveBtn = document.getElementById("batch-move-btn");
   const batchDeleteBtn = document.getElementById("batch-delete-btn");
@@ -30,13 +107,13 @@ async function initApp() {
   const toastContainer = document.getElementById("toast-container");
   const batchContextMenu = document.getElementById("batch-context-menu");
   const batchContextMenuTitle = document.getElementById(
-    "batch-context-menu-title"
+    "batch-context-menu-title",
   );
   const batchContextMenuSubtitle = document.getElementById(
-    "batch-context-menu-subtitle"
+    "batch-context-menu-subtitle",
   );
   const contextMenuDeleteBtn = document.getElementById(
-    "context-menu-delete-btn"
+    "context-menu-delete-btn",
   );
   const contextMenuMoveBtn = document.getElementById("context-menu-move-btn");
   const contextMenuCopyBtn = document.getElementById("context-menu-copy-btn");
@@ -53,63 +130,74 @@ async function initApp() {
   const imagePreviewImg = document.getElementById("image-preview-img");
   const imagePreviewLoading = document.getElementById("image-preview-loading");
   const imagePreviewOriginalBtn = document.getElementById(
-    "image-preview-original-btn"
+    "image-preview-original-btn",
   );
-  const imagePreviewCloseBtn = document.getElementById("image-preview-close-btn");
+  const imagePreviewCloseBtn = document.getElementById(
+    "image-preview-close-btn",
+  );
   const moveTargetModalRoot = document.getElementById("move-target-modal");
-  const moveTargetModalTitle = document.getElementById("move-target-modal-title");
+  const moveTargetModalTitle = document.getElementById(
+    "move-target-modal-title",
+  );
   const moveTargetModalDescription = document.getElementById(
-    "move-target-modal-description"
+    "move-target-modal-description",
   );
   const moveTargetList = document.getElementById("move-target-list");
   const moveTargetCancelBtn = document.getElementById("move-target-cancel-btn");
   const categoryEditModalRoot = document.getElementById("category-edit-modal");
   const categoryEditModalTitle = document.getElementById(
-    "category-edit-modal-title"
+    "category-edit-modal-title",
   );
   const categoryEditModalDescription = document.getElementById(
-    "category-edit-modal-description"
+    "category-edit-modal-description",
   );
   const categoryEditNameInput = document.getElementById(
-    "category-edit-name-input"
+    "category-edit-name-input",
   );
   const categoryEditDescInput = document.getElementById(
-    "category-edit-desc-input"
+    "category-edit-desc-input",
   );
   const categoryEditCancelBtn = document.getElementById(
-    "category-edit-cancel-btn"
+    "category-edit-cancel-btn",
   );
   const categoryEditSaveBtn = document.getElementById("category-edit-save-btn");
   const confirmModalRoot = document.getElementById("confirm-modal");
   const confirmModalTitle = document.getElementById("confirm-modal-title");
   const confirmModalDescription = document.getElementById(
-    "confirm-modal-description"
+    "confirm-modal-description",
   );
   const confirmModalCancelBtn = document.getElementById(
-    "confirm-modal-cancel-btn"
+    "confirm-modal-cancel-btn",
   );
   const confirmModalConfirmBtn = document.getElementById(
-    "confirm-modal-confirm-btn"
+    "confirm-modal-confirm-btn",
   );
   const dangerModalRoot = document.getElementById("danger-confirm-modal");
   const dangerModalTitle = document.getElementById("danger-modal-title");
   const dangerModalDescription = document.getElementById(
-    "danger-modal-description"
+    "danger-modal-description",
   );
   const dangerModalStageText = document.getElementById(
-    "danger-modal-stage-text"
+    "danger-modal-stage-text",
   );
   const dangerModalAcknowledge = document.getElementById("danger-modal-ack");
   const dangerModalCancelBtn = document.getElementById(
-    "danger-modal-cancel-btn"
+    "danger-modal-cancel-btn",
   );
   const dangerModalConfirmBtn = document.getElementById(
-    "danger-modal-confirm-btn"
+    "danger-modal-confirm-btn",
   );
   const imgHostSyncProgress = document.getElementById("img-host-sync-progress");
   const imgHostSyncProgressText = document.getElementById(
-    "img-host-sync-progress-text"
+    "img-host-sync-progress-text",
   );
+  const managePackSelect = document.getElementById("manage-pack-select");
+  const switchManagePackBtn = document.getElementById("switch-manage-pack-btn");
+  const deleteManagePackBtn = document.getElementById("delete-manage-pack-btn");
+  const managePackSwitchMeta = document.getElementById(
+    "manage-pack-switch-meta",
+  );
+  let defaultManagePackId = "";
   let confirmResolver = null;
   const MOBILE_LAYOUT_MEDIA = "(max-width: 960px)";
   const DRAG_HUD_OFFSET_X = 18;
@@ -152,6 +240,181 @@ async function initApp() {
   let activeCategoryEdit = null;
   let pendingMoveTargetItems = [];
   let imagePreviewState = null;
+
+  function formatPackOptionLabel(pack) {
+    const name = String(pack?.name || pack?.id || "未命名");
+    const id = String(pack?.id || "").trim();
+    const imageCount = Number(pack?.image_count || 0);
+    return `${name} (${id}) · ${imageCount} 张`;
+  }
+
+  function syncManagedPackQuery(managedPackId) {
+    const nextUrl = new URL(window.location.href);
+    const normalized = String(managedPackId || "").trim();
+    if (normalized) {
+      nextUrl.searchParams.set("managed_pack_id", normalized);
+    } else {
+      nextUrl.searchParams.delete("managed_pack_id");
+    }
+    window.history.replaceState(null, "", nextUrl.toString());
+  }
+
+  async function loadManagePackSwitcher(preferredPackId = "") {
+    if (!managePackSelect) {
+      return [];
+    }
+    try {
+      const response = await apiGet("packs");
+      const packs = Array.isArray(response?.packs) ? response.packs : [];
+      managePackSelect.innerHTML = "";
+
+      if (!packs.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "暂无可用表情包";
+        managePackSelect.appendChild(option);
+        managePackSelect.disabled = true;
+        if (switchManagePackBtn) {
+          switchManagePackBtn.disabled = true;
+        }
+        if (deleteManagePackBtn) {
+          deleteManagePackBtn.disabled = true;
+        }
+        if (managePackSwitchMeta) {
+          managePackSwitchMeta.textContent = "当前: --";
+        }
+        return packs;
+      }
+
+      let selectedPackId = "";
+      defaultManagePackId = "";
+      packs.forEach((pack) => {
+        const option = document.createElement("option");
+        option.value = String(pack.id || "").trim();
+        option.textContent = formatPackOptionLabel(pack);
+        if (!selectedPackId) {
+          selectedPackId = option.value;
+        }
+        if (!defaultManagePackId && pack?.is_default) {
+          defaultManagePackId = option.value;
+        }
+        managePackSelect.appendChild(option);
+      });
+
+      if (!defaultManagePackId) {
+        defaultManagePackId = selectedPackId;
+      }
+
+      managePackSelect.disabled = false;
+      if (switchManagePackBtn) {
+        switchManagePackBtn.disabled = false;
+      }
+      if (deleteManagePackBtn) {
+        deleteManagePackBtn.disabled = false;
+      }
+      const preferred = String(preferredPackId || "").trim();
+      const canUsePreferred = packs.some(
+        (item) => String(item?.id || "").trim() === preferred,
+      );
+      const canUseUrlPack = packs.some(
+        (item) => String(item?.id || "").trim() === managedPackIdFromUrl,
+      );
+      if (canUsePreferred) {
+        selectedPackId = preferred;
+      } else if (canUseUrlPack) {
+        selectedPackId = managedPackIdFromUrl;
+      }
+      managePackSelect.value = selectedPackId;
+      syncManagedPackQuery(selectedPackId);
+
+      if (managePackSwitchMeta) {
+        const selected =
+          packs.find(
+            (item) => String(item?.id || "").trim() === selectedPackId,
+          ) || packs[0];
+        managePackSwitchMeta.textContent = `当前视图: ${String(selected?.name || selected?.id || "--")}`;
+      }
+      return packs;
+    } catch (error) {
+      if (managePackSwitchMeta) {
+        managePackSwitchMeta.textContent = "当前视图: 加载失败";
+      }
+      showToast(error?.message || String(error), "error", "加载表情包失败");
+      return [];
+    }
+  }
+
+  async function switchManagePack() {
+    if (!managePackSelect) {
+      return;
+    }
+    const targetPackId = String(managePackSelect.value || "").trim();
+    if (!targetPackId) {
+      showToast("请先选择表情包。", "warning", "切换失败");
+      return;
+    }
+
+    setButtonBusy(switchManagePackBtn, "切换中...");
+    try {
+      syncManagedPackQuery(targetPackId);
+      await refreshUi({ emojis: true });
+      if (managePackSwitchMeta) {
+        const selectedText =
+          managePackSelect.options[managePackSelect.selectedIndex]
+            ?.textContent || targetPackId;
+        managePackSwitchMeta.textContent = `当前视图: ${selectedText}`;
+      }
+      showToast(`已切换管理视图到 ${targetPackId}。`, "success", "切换成功");
+    } catch (error) {
+      showToast(error?.message || String(error), "error", "切换失败");
+    } finally {
+      restoreButton(switchManagePackBtn);
+    }
+  }
+
+  async function deleteCurrentManagePack() {
+    if (!managePackSelect) {
+      return;
+    }
+
+    const targetPackId = String(managePackSelect.value || "").trim();
+    if (!targetPackId) {
+      showToast("请先选择要删除的表情包。", "warning", "删除失败");
+      return;
+    }
+
+    const confirmed = await showDangerConfirm({
+      title: `删除表情包组「${targetPackId}」`,
+      description:
+        "该操作会删除整个表情包组（包括分类与图片）。删除后会自动切换到其他表情包；如果删空会自动创建一个空表情包。",
+      actionLabel: "确认删除当前表情包组",
+      countdown: 5,
+    });
+    if (!confirmed) {
+      return;
+    }
+
+    setButtonBusy(deleteManagePackBtn, "删除中...");
+    try {
+      const data = await apiPost("packs/uninstall", { pack_id: targetPackId });
+      const switchedPackId = String(data?.switched_default_to || "").trim();
+      await loadManagePackSwitcher(switchedPackId);
+      await refreshUi({ emojis: true, syncStatus: true });
+      const switchedHint = switchedPackId ? `，已切换到 ${switchedPackId}` : "";
+      const createdHint = data?.auto_created_empty_pack
+        ? "（已自动创建空表情包）"
+        : "";
+      showToast(
+        `已删除 ${targetPackId}${switchedHint}${createdHint}`,
+        "success",
+        "删除成功",
+      );
+    } catch (error) {
+      showToast(error?.message || String(error), "error", "删除失败", 4500);
+    } finally {
+      restoreButton(deleteManagePackBtn);
+    }
+  }
 
   // 获取表情包数据和描述
   async function fetchEmojis() {
@@ -259,7 +522,10 @@ async function initApp() {
     emojiItem.dataset.previewDataUrl = dataUrl;
     emojiItem.classList.remove("emoji-loading", "emoji-load-error");
     emojiItem.classList.add("emoji-loaded");
-    emojiItem.setAttribute("aria-label", `预览表情包 ${emojiItem.dataset.emoji || ""}`);
+    emojiItem.setAttribute(
+      "aria-label",
+      `预览表情包 ${emojiItem.dataset.emoji || ""}`,
+    );
   }
 
   function setEmojiPreviewError(emojiItem) {
@@ -272,7 +538,9 @@ async function initApp() {
   async function loadEmojiPreview(emojiItem, { force = false } = {}) {
     if (
       !emojiItem ||
-      (!force && (emojiItem.dataset.previewDataUrl || emojiItem.dataset.loading === "true"))
+      (!force &&
+        (emojiItem.dataset.previewDataUrl ||
+          emojiItem.dataset.loading === "true"))
     ) {
       return;
     }
@@ -288,7 +556,7 @@ async function initApp() {
     try {
       const data = await apiGet(
         "meme_image_data",
-        getImageRequestParams(category, emoji, "preview")
+        getImageRequestParams(category, emoji, "preview"),
       );
       if (!data?.data_url) {
         throw new Error("图片接口未返回预览数据");
@@ -313,7 +581,7 @@ async function initApp() {
   async function loadPreviewImage(category, emoji, size = "preview") {
     const data = await apiGet(
       "meme_image_data",
-      getImageRequestParams(category, emoji, size)
+      getImageRequestParams(category, emoji, size),
     );
     if (!data?.data_url) {
       throw new Error("图片接口未返回预览数据");
@@ -360,7 +628,11 @@ async function initApp() {
     setImagePreviewBusy(!previewDataUrl);
     try {
       if (!previewDataUrl) {
-        imagePreviewImg.src = await loadPreviewImage(category, emoji, "preview");
+        imagePreviewImg.src = await loadPreviewImage(
+          category,
+          emoji,
+          "preview",
+        );
       }
     } catch (error) {
       console.error("打开大图预览失败:", error);
@@ -384,7 +656,7 @@ async function initApp() {
       imagePreviewImg.src = await loadPreviewImage(
         imagePreviewState.category,
         imagePreviewState.emoji,
-        "original"
+        "original",
       );
     } catch (error) {
       console.error("加载原图失败:", error);
@@ -459,7 +731,7 @@ async function initApp() {
     confirmModalConfirmBtn.textContent = confirmLabel;
     confirmModalConfirmBtn.classList.toggle(
       "danger",
-      confirmClassName.includes("danger")
+      confirmClassName.includes("danger"),
     );
     confirmModalRoot.classList.remove("hidden");
     confirmModalRoot.setAttribute("aria-hidden", "false");
@@ -487,13 +759,15 @@ async function initApp() {
   async function requestJson(
     url,
     options = {},
-    { defaultErrorMessage = "请求失败" } = {}
+    { defaultErrorMessage = "请求失败" } = {},
   ) {
     const response = await fetch(url, options);
     const payload = await parseResponsePayload(response).catch(() => ({}));
 
     if (!response.ok) {
-      const error = new Error(payload.message || payload.error || defaultErrorMessage);
+      const error = new Error(
+        payload.message || payload.error || defaultErrorMessage,
+      );
       error.status = response.status;
       error.code = payload.code || null;
       error.payload = payload;
@@ -536,18 +810,18 @@ async function initApp() {
       sidebarToggleBtn.setAttribute("aria-expanded", String(sidebarExpanded));
       sidebarToggleBtn.setAttribute(
         "aria-label",
-        sidebarExpanded ? "收起侧边栏" : "展开侧边栏"
+        sidebarExpanded ? "收起侧边栏" : "展开侧边栏",
       );
     }
 
     if (sidebarBackdrop) {
       sidebarBackdrop.classList.toggle(
         "hidden",
-        !(isCompactViewport() && sidebarExpanded)
+        !(isCompactViewport() && sidebarExpanded),
       );
       sidebarBackdrop.setAttribute(
         "aria-hidden",
-        String(!(isCompactViewport() && sidebarExpanded))
+        String(!(isCompactViewport() && sidebarExpanded)),
       );
     }
 
@@ -622,7 +896,7 @@ async function initApp() {
 
   function getSortedCategories() {
     return Object.keys(latestEmojiData).sort((left, right) =>
-      left.localeCompare(right, "zh-CN")
+      left.localeCompare(right, "zh-CN"),
     );
   }
 
@@ -631,18 +905,21 @@ async function initApp() {
       return 0;
     }
 
-    return dedupeEmojiItems(items).filter((item) => item.category !== targetCategory)
-      .length;
+    return dedupeEmojiItems(items).filter(
+      (item) => item.category !== targetCategory,
+    ).length;
   }
 
-  function getAvailableMoveTargets(items = Array.from(selectionState.items.values())) {
+  function getAvailableMoveTargets(
+    items = Array.from(selectionState.items.values()),
+  ) {
     const uniqueItems = dedupeEmojiItems(items);
     if (uniqueItems.length === 0) {
       return [];
     }
 
     return getSortedCategories().filter(
-      (category) => getMoveableCountForTarget(uniqueItems, category) > 0
+      (category) => getMoveableCountForTarget(uniqueItems, category) > 0,
     );
   }
 
@@ -686,7 +963,10 @@ async function initApp() {
 
     const targetCategory = targetEmojiItem.dataset.category;
     const targetEmoji = targetEmojiItem.dataset.emoji;
-    if (selectionState.enabled && isEmojiSelected(targetCategory, targetEmoji)) {
+    if (
+      selectionState.enabled &&
+      isEmojiSelected(targetCategory, targetEmoji)
+    ) {
       return dedupeEmojiItems(Array.from(selectionState.items.values()));
     }
 
@@ -698,7 +978,9 @@ async function initApp() {
       return [];
     }
 
-    return getClipboardItems().filter((item) => item.category !== targetCategory);
+    return getClipboardItems().filter(
+      (item) => item.category !== targetCategory,
+    );
   }
 
   function closeBatchContextMenu() {
@@ -737,7 +1019,9 @@ async function initApp() {
 
     if (batchContextMenuTitle) {
       batchContextMenuTitle.textContent =
-        targetItems.length > 0 ? `批量管理 ${targetItems.length} 个文件` : "批量管理";
+        targetItems.length > 0
+          ? `批量管理 ${targetItems.length} 个文件`
+          : "批量管理";
     }
     if (batchContextMenuSubtitle) {
       if (targetCategory && pasteableItems.length > 0) {
@@ -754,13 +1038,15 @@ async function initApp() {
     }
     if (contextMenuMoveBtn) {
       contextMenuMoveBtn.disabled =
-        targetItems.length === 0 || getAvailableMoveTargets(targetItems).length === 0;
+        targetItems.length === 0 ||
+        getAvailableMoveTargets(targetItems).length === 0;
     }
     if (contextMenuCopyBtn) {
       contextMenuCopyBtn.disabled = targetItems.length === 0;
     }
     if (contextMenuPasteBtn) {
-      contextMenuPasteBtn.disabled = pasteableItems.length === 0 || !targetCategory;
+      contextMenuPasteBtn.disabled =
+        pasteableItems.length === 0 || !targetCategory;
     }
 
     batchContextMenu.classList.remove("hidden");
@@ -771,11 +1057,11 @@ async function initApp() {
       const menuHeight = batchContextMenu.offsetHeight || 220;
       const left = Math.min(
         window.innerWidth - menuWidth - 12,
-        Math.max(12, event.clientX)
+        Math.max(12, event.clientX),
       );
       const top = Math.min(
         window.innerHeight - menuHeight - 12,
-        Math.max(12, event.clientY)
+        Math.max(12, event.clientY),
       );
       batchContextMenu.style.left = `${left}px`;
       batchContextMenu.style.top = `${top}px`;
@@ -789,8 +1075,8 @@ async function initApp() {
 
     return Boolean(
       event.target.closest(".emoji-item") ||
-        event.target.closest(".emoji-upload") ||
-        event.target.closest(".category")
+      event.target.closest(".emoji-upload") ||
+      event.target.closest(".category"),
     );
   }
 
@@ -808,13 +1094,16 @@ async function initApp() {
   function hasActiveDragInteraction() {
     return Boolean(
       longPressState.emojiItem ||
-        dragModeState.pointerId !== null ||
-        dragModeState.items.length > 0
+      dragModeState.pointerId !== null ||
+      dragModeState.items.length > 0,
     );
   }
 
   function syncInteractionGuardState() {
-    document.body.classList.toggle("drag-session-active", hasActiveDragInteraction());
+    document.body.classList.toggle(
+      "drag-session-active",
+      hasActiveDragInteraction(),
+    );
   }
 
   function updateDragHudPosition(clientX, clientY) {
@@ -827,11 +1116,11 @@ async function initApp() {
     const hudHeight = hudRect.height || 72;
     const x = Math.min(
       window.innerWidth - hudWidth - 10,
-      Math.max(10, clientX + DRAG_HUD_OFFSET_X)
+      Math.max(10, clientX + DRAG_HUD_OFFSET_X),
     );
     const y = Math.min(
       window.innerHeight - hudHeight - 10,
-      Math.max(10, clientY - DRAG_HUD_OFFSET_Y)
+      Math.max(10, clientY - DRAG_HUD_OFFSET_Y),
     );
 
     dragHud.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
@@ -859,7 +1148,7 @@ async function initApp() {
     } else if (dragModeState.lastClientY > bottomThreshold) {
       deltaY = Math.min(
         18,
-        (dragModeState.lastClientY - bottomThreshold) * 0.18
+        (dragModeState.lastClientY - bottomThreshold) * 0.18,
       );
     }
 
@@ -867,7 +1156,7 @@ async function initApp() {
       window.scrollBy({ top: deltaY, behavior: "auto" });
       updateActiveDropTarget(
         dragModeState.lastClientX,
-        dragModeState.lastClientY
+        dragModeState.lastClientY,
       );
       showDragHud({
         label: getDragReadyLabel(dragModeState.items.length),
@@ -907,7 +1196,10 @@ async function initApp() {
     dragHud.classList.remove("hidden");
     dragHud.classList.add("visible");
     dragHud.dataset.state = state;
-    dragHud.style.setProperty("--drag-hud-progress", `${safeProgress * 360}deg`);
+    dragHud.style.setProperty(
+      "--drag-hud-progress",
+      `${safeProgress * 360}deg`,
+    );
     dragHud.setAttribute("aria-hidden", "false");
 
     if (dragHudLabel) {
@@ -1095,18 +1387,17 @@ async function initApp() {
     hideDragHud();
     syncInteractionGuardState();
 
-    if (targetCategory && hasMoveableItemsForTarget(dragItems, targetCategory)) {
+    if (
+      targetCategory &&
+      hasMoveableItemsForTarget(dragItems, targetCategory)
+    ) {
       await moveEmojiItemsToCategory(targetCategory, dragItems);
       return;
     }
 
     if (wasDragging) {
       clearDragMode();
-      showToast(
-        "未拖到有效分类，已取消本次移动。",
-        "warning",
-        "拖拽未完成"
-      );
+      showToast("未拖到有效分类，已取消本次移动。", "warning", "拖拽未完成");
       return;
     }
 
@@ -1114,7 +1405,7 @@ async function initApp() {
       showToast(
         "拖拽模式已开启，继续拖到目标分类即可移动。",
         "info",
-        "等待拖拽"
+        "等待拖拽",
       );
     }
   }
@@ -1134,7 +1425,9 @@ async function initApp() {
       typeof dragModeState.captureElement.releasePointerCapture === "function"
     ) {
       try {
-        dragModeState.captureElement.releasePointerCapture(dragModeState.pointerId);
+        dragModeState.captureElement.releasePointerCapture(
+          dragModeState.pointerId,
+        );
       } catch {}
     }
 
@@ -1163,13 +1456,15 @@ async function initApp() {
     clearDragMode();
     dragModeState.items = dragItems;
     const armedKeys = new Set(
-      dragItems.map(({ category, emoji }) => createSelectionKey(category, emoji))
+      dragItems.map(({ category, emoji }) =>
+        createSelectionKey(category, emoji),
+      ),
     );
 
     document.querySelectorAll(".emoji-item").forEach((emojiItem) => {
       const emojiKey = createSelectionKey(
         emojiItem.dataset.category,
-        emojiItem.dataset.emoji
+        emojiItem.dataset.emoji,
       );
       const armed = armedKeys.has(emojiKey);
       emojiItem.classList.toggle("drag-ready", armed);
@@ -1193,7 +1488,9 @@ async function initApp() {
         typeof dragModeState.captureElement.setPointerCapture === "function"
       ) {
         try {
-          dragModeState.captureElement.setPointerCapture(dragModeState.pointerId);
+          dragModeState.captureElement.setPointerCapture(
+            dragModeState.pointerId,
+          );
         } catch {}
       }
       ensureDragAutoScroll();
@@ -1211,7 +1508,11 @@ async function initApp() {
 
     dragModeState.timeoutId = window.setTimeout(() => {
       clearDragMode();
-      showToast("拖拽模式已自动退出，请重新长按进入。", "info", "拖拽模式已结束");
+      showToast(
+        "拖拽模式已自动退出，请重新长按进入。",
+        "info",
+        "拖拽模式已结束",
+      );
     }, DRAG_READY_TIMEOUT_MS);
 
     showToast(
@@ -1219,7 +1520,7 @@ async function initApp() {
         ? `已进入拖拽模式，可拖动这 ${dragItems.length} 个表情包到目标分类。`
         : "已进入拖拽模式，可将表情包拖到目标分类。",
       "success",
-      "拖拽模式已开启"
+      "拖拽模式已开启",
     );
   }
 
@@ -1268,10 +1569,7 @@ async function initApp() {
 
     emojiItem.classList.add("long-press-active");
     syncInteractionGuardState();
-    setLongPressProgress(
-      0,
-      `${Math.ceil(LONG_PRESS_DURATION_MS / 1000)}s`
-    );
+    setLongPressProgress(0, `${Math.ceil(LONG_PRESS_DURATION_MS / 1000)}s`);
 
     longPressState.intervalId = window.setInterval(() => {
       if (!longPressState.emojiItem) {
@@ -1282,12 +1580,9 @@ async function initApp() {
       const progress = elapsed / LONG_PRESS_DURATION_MS;
       const remainingSeconds = Math.max(
         1,
-        Math.ceil((LONG_PRESS_DURATION_MS - elapsed) / 1000)
+        Math.ceil((LONG_PRESS_DURATION_MS - elapsed) / 1000),
       );
-      setLongPressProgress(
-        progress,
-        `${remainingSeconds}s`
-      );
+      setLongPressProgress(progress, `${remainingSeconds}s`);
     }, LONG_PRESS_TICK_MS);
 
     longPressState.timeoutId = window.setTimeout(() => {
@@ -1323,7 +1618,9 @@ async function initApp() {
 
   function getDraggedEmojiPayload(event) {
     try {
-      const rawPayload = event.dataTransfer?.getData("application/x-meme-emoji");
+      const rawPayload = event.dataTransfer?.getData(
+        "application/x-meme-emoji",
+      );
       if (!rawPayload) {
         return null;
       }
@@ -1343,14 +1640,16 @@ async function initApp() {
 
   function hasMoveableItemsForTarget(items, targetCategory) {
     return dedupeEmojiItems(items).some(
-      (item) => item.category !== targetCategory
+      (item) => item.category !== targetCategory,
     );
   }
 
   function clearCategoryDropHighlights() {
-    document.querySelectorAll(".category-drop-active").forEach((categoryDiv) => {
-      categoryDiv.classList.remove("category-drop-active");
-    });
+    document
+      .querySelectorAll(".category-drop-active")
+      .forEach((categoryDiv) => {
+        categoryDiv.classList.remove("category-drop-active");
+      });
   }
 
   function normalizeUploadFiles(fileList) {
@@ -1407,9 +1706,11 @@ async function initApp() {
       const uploadTitle = uploadBlock.querySelector(".emoji-upload-title");
       const uploadHint = uploadBlock.querySelector(".emoji-upload-hint");
       const uploadMeta = uploadBlock.querySelector(".emoji-upload-meta");
-      const uploadProgress = uploadBlock.querySelector(".emoji-upload-progress");
+      const uploadProgress = uploadBlock.querySelector(
+        ".emoji-upload-progress",
+      );
       const uploadProgressBar = uploadBlock.querySelector(
-        ".emoji-upload-progress-bar"
+        ".emoji-upload-progress-bar",
       );
       const uploadIconInner = uploadBlock.querySelector(".emoji-upload-icon i");
 
@@ -1483,7 +1784,7 @@ async function initApp() {
       showToast(
         `已忽略 ${invalidCount} 个非图片文件。`,
         "warning",
-        "文件类型不支持"
+        "文件类型不支持",
       );
     }
 
@@ -1497,7 +1798,7 @@ async function initApp() {
       showToast(
         `已忽略本批次中 ${duplicateCount} 个重复文件。`,
         "info",
-        "已自动去重"
+        "已自动去重",
       );
     }
 
@@ -1509,7 +1810,7 @@ async function initApp() {
       showToast(
         `分类 ${category} 正在上传文件，请等待当前批次完成。`,
         "info",
-        "上传进行中"
+        "上传进行中",
       );
       return;
     }
@@ -1531,7 +1832,7 @@ async function initApp() {
         : `开始向 ${category} 上传 1 个文件。`,
       "info",
       "上传开始",
-      2200
+      2200,
     );
 
     const failedUploads = [];
@@ -1573,7 +1874,7 @@ async function initApp() {
           ? `已向 ${category} 上传 ${uploadState.completed} 个文件。`
           : `已向 ${category} 上传 1 个文件。`,
         "success",
-        "上传成功"
+        "上传成功",
       );
       return;
     }
@@ -1583,7 +1884,7 @@ async function initApp() {
         `上传完成，新增 ${uploadState.completed} 个，跳过重复 ${uploadState.duplicates} 个。`,
         "warning",
         "上传已去重",
-        4500
+        4500,
       );
       return;
     }
@@ -1599,7 +1900,7 @@ async function initApp() {
         `未新增文件，已跳过 ${uploadState.duplicates} 个重复项：${firstDuplicateMessage}`,
         "info",
         "无需重复上传",
-        4500
+        4500,
       );
       return;
     }
@@ -1609,7 +1910,7 @@ async function initApp() {
         `上传完成，成功 ${uploadState.completed} 个，重复 ${uploadState.duplicates} 个，失败 ${uploadState.failed} 个。`,
         "warning",
         "部分上传失败",
-        4500
+        4500,
       );
       return;
     }
@@ -1620,7 +1921,7 @@ async function initApp() {
       `本次上传全部失败：${firstErrorMessage}`,
       "error",
       "上传失败",
-      4500
+      4500,
     );
   }
 
@@ -1632,7 +1933,7 @@ async function initApp() {
     uploadBlock.setAttribute("role", "button");
     uploadBlock.setAttribute(
       "aria-label",
-      `上传 ${category} 分类表情包，支持点击选择或拖拽图片`
+      `上传 ${category} 分类表情包，支持点击选择或拖拽图片`,
     );
 
     const uploadIcon = document.createElement("div");
@@ -1681,7 +1982,7 @@ async function initApp() {
         showToast(
           `分类 ${category} 正在上传文件，请稍候。`,
           "info",
-          "上传进行中"
+          "上传进行中",
         );
         return;
       }
@@ -1695,7 +1996,7 @@ async function initApp() {
           showToast(
             `分类 ${category} 正在上传文件，请稍候。`,
             "info",
-            "上传进行中"
+            "上传进行中",
           );
           return;
         }
@@ -1756,7 +2057,7 @@ async function initApp() {
         showToast(
           `分类 ${category} 正在上传文件，请等待当前批次完成。`,
           "info",
-          "上传进行中"
+          "上传进行中",
         );
         return;
       }
@@ -1815,7 +2116,11 @@ async function initApp() {
         return;
       }
       if (!selectionState.enabled) {
-        void openImagePreview(category, emoji, emojiItem.dataset.previewDataUrl || "");
+        void openImagePreview(
+          category,
+          emoji,
+          emojiItem.dataset.previewDataUrl || "",
+        );
         return;
       }
       toggleEmojiSelection(category, emoji);
@@ -1845,7 +2150,9 @@ async function initApp() {
     }
   }
 
-  function openMoveTargetModal(items = Array.from(selectionState.items.values())) {
+  function openMoveTargetModal(
+    items = Array.from(selectionState.items.values()),
+  ) {
     const uniqueItems = dedupeEmojiItems(items);
     if (uniqueItems.length === 0) {
       showToast("请先选择要移动的表情包。", "warning", "未选择项目");
@@ -1908,14 +2215,10 @@ async function initApp() {
     }
 
     const moveableItems = dedupeEmojiItems(items).filter(
-      (item) => item.category !== targetCategory
+      (item) => item.category !== targetCategory,
     );
     if (moveableItems.length === 0) {
-      showToast(
-        "当前选择的表情包已经都在目标分类中。",
-        "warning",
-        "无需移动"
-      );
+      showToast("当前选择的表情包已经都在目标分类中。", "warning", "无需移动");
       clearDragMode();
       return;
     }
@@ -1979,19 +2282,14 @@ async function initApp() {
       if (requestErrors.length > 0) {
         messageParts.push(`请求失败：${requestErrors.join("；")}`);
       }
-      showToast(
-        messageParts.join("\n"),
-        "warning",
-        "移动部分完成",
-        5600
-      );
+      showToast(messageParts.join("\n"), "warning", "移动部分完成", 5600);
       return;
     }
 
     showToast(
       `已移动 ${movedCount} 个表情包到 ${targetCategory}`,
       "success",
-      "移动成功"
+      "移动成功",
     );
   }
 
@@ -2002,15 +2300,11 @@ async function initApp() {
     }
 
     const pasteableItems = dedupeEmojiItems(items).filter(
-      (item) => item.category !== targetCategory
+      (item) => item.category !== targetCategory,
     );
 
     if (pasteableItems.length === 0) {
-      showToast(
-        "当前没有可粘贴到该分类的文件。",
-        "warning",
-        "无需粘贴"
-      );
+      showToast("当前没有可粘贴到该分类的文件。", "warning", "无需粘贴");
       return;
     }
 
@@ -2060,19 +2354,14 @@ async function initApp() {
       if (requestErrors.length > 0) {
         messageParts.push(`请求失败：${requestErrors.join("；")}`);
       }
-      showToast(
-        messageParts.join("\n"),
-        "warning",
-        "粘贴部分完成",
-        5600
-      );
+      showToast(messageParts.join("\n"), "warning", "粘贴部分完成", 5600);
       return;
     }
 
     showToast(
       `已粘贴 ${copiedCount} 个表情包到 ${targetCategory}`,
       "success",
-      "粘贴成功"
+      "粘贴成功",
     );
   }
 
@@ -2153,7 +2442,7 @@ async function initApp() {
       "hidden",
       "sync-progress-success",
       "sync-progress-error",
-      "sync-progress-warning"
+      "sync-progress-warning",
     );
     if (state === "success") {
       imgHostSyncProgress.classList.add("sync-progress-success");
@@ -2248,9 +2537,14 @@ async function initApp() {
         }
       };
 
-      timeoutTimer = window.setTimeout(() => {
-        finish(new Error(`${actionLabel}超时，请查看 AstrBot 日志确认结果。`));
-      }, 30 * 60 * 1000);
+      timeoutTimer = window.setTimeout(
+        () => {
+          finish(
+            new Error(`${actionLabel}超时，请查看 AstrBot 日志确认结果。`),
+          );
+        },
+        30 * 60 * 1000,
+      );
 
       pollTimer = window.setInterval(pollStatus, 2000);
       void pollStatus();
@@ -2259,14 +2553,20 @@ async function initApp() {
         onOpen: () => setImgHostSyncProgress(`${actionLabel}进行中...`, "info"),
         onMessage: ({ parsed }) => handleStatus(parsed),
         onError: () =>
-          setImgHostSyncProgress("实时进度连接异常，已切换轮询确认结果。", "warning"),
+          setImgHostSyncProgress(
+            "实时进度连接异常，已切换轮询确认结果。",
+            "warning",
+          ),
       })
         .then((id) => {
           subscriptionId = id;
         })
         .catch((error) => {
           console.warn("订阅同步进度失败，改用轮询:", error);
-          setImgHostSyncProgress("实时进度不可用，正在轮询同步结果。", "warning");
+          setImgHostSyncProgress(
+            "实时进度不可用，正在轮询同步结果。",
+            "warning",
+          );
         });
     });
   }
@@ -2276,7 +2576,43 @@ async function initApp() {
     const container = document.getElementById("emoji-categories");
     container.innerHTML = "";
 
-    Object.entries(emojiData).forEach(([category, emojis]) => {
+    const categoryEntries = Object.entries(emojiData || {});
+    const totalEmojiCount = categoryEntries.reduce((total, [, emojis]) => {
+      return total + (Array.isArray(emojis) ? emojis.length : 0);
+    }, 0);
+
+    if (!categoryEntries.length || totalEmojiCount === 0) {
+      const hint = document.createElement("div");
+      hint.className = "empty-pack-hint";
+      hint.innerHTML = `
+        <p class="empty-pack-hint-title">当前还没有表情包内容</p>
+        <p class="empty-pack-hint-meta">你可以先新建分类上传表情，或者去资源广场下载官方包。</p>
+        <div class="empty-pack-hint-actions">
+          <button id="empty-hint-create-category" type="button">新建分类</button>
+          <a id="empty-hint-open-catalog" href="#">前往资源广场下载</a>
+        </div>
+      `;
+      container.appendChild(hint);
+
+      const createCategoryBtn = document.getElementById(
+        "empty-hint-create-category",
+      );
+      createCategoryBtn?.addEventListener("click", () => {
+        document.getElementById("add-category-btn")?.click();
+      });
+
+      const openCatalogLink = document.getElementById(
+        "empty-hint-open-catalog",
+      );
+      if (openCatalogLink) {
+        openCatalogLink.href = withCurrentAuthParams("../catalog/index.html", {
+          view: "catalog",
+          asset_token: navAuthToken || null,
+        }).toString();
+      }
+    }
+
+    categoryEntries.forEach(([category, emojis]) => {
       const categoryDiv = document.createElement("div");
       categoryDiv.className = "category";
       categoryDiv.id = `category-${category}`;
@@ -2419,7 +2755,7 @@ async function initApp() {
       {
         rootMargin: "220px 0px",
         threshold: 0.01,
-      }
+      },
     );
 
     lazyBackgrounds.forEach((item) => {
@@ -2514,7 +2850,9 @@ async function initApp() {
       const category = emojiItem.dataset.category;
       const emoji = emojiItem.dataset.emoji;
       const selected = isEmojiSelected(category, emoji);
-      const selectionIndicator = emojiItem.querySelector(".selection-indicator");
+      const selectionIndicator = emojiItem.querySelector(
+        ".selection-indicator",
+      );
 
       emojiItem.classList.toggle("selection-mode", selectionState.enabled);
       emojiItem.classList.toggle("selected", selected);
@@ -2522,7 +2860,7 @@ async function initApp() {
         selectionIndicator.classList.toggle("checked", selected);
         selectionIndicator.setAttribute(
           "aria-label",
-          selected ? "已选中" : "未选择"
+          selected ? "已选中" : "未选择",
         );
       }
     });
@@ -2534,7 +2872,9 @@ async function initApp() {
         : 0;
       const selectedCount = getCategorySelectedCount(category);
       const summary = categoryDiv.querySelector(".category-selection-summary");
-      const selectAllBtn = categoryDiv.querySelector(".select-all-category-btn");
+      const selectAllBtn = categoryDiv.querySelector(
+        ".select-all-category-btn",
+      );
       const hasEmojis = totalCount > 0;
       const allSelected = hasEmojis && selectedCount === totalCount;
 
@@ -2603,7 +2943,9 @@ async function initApp() {
       setSelectionMode(true);
     }
 
-    const allSelected = emojis.every((emoji) => isEmojiSelected(category, emoji));
+    const allSelected = emojis.every((emoji) =>
+      isEmojiSelected(category, emoji),
+    );
     emojis.forEach((emoji) => {
       const selectionKey = createSelectionKey(category, emoji);
       if (allSelected) {
@@ -2639,7 +2981,7 @@ async function initApp() {
         ? `已复制 ${uniqueItems.length} 个表情包，可在目标分类右键后粘贴。`
         : "已复制 1 个表情包，可在目标分类右键后粘贴。",
       "success",
-      "已复制到批量剪贴板"
+      "已复制到批量剪贴板",
     );
     return true;
   }
@@ -2691,8 +3033,7 @@ async function initApp() {
       dangerModalAcknowledge.disabled = true;
     }
     if (dangerModalStageText) {
-      dangerModalStageText.textContent =
-        `安全等待中，还需 ${remaining} 秒，倒计时结束后才可执行。`;
+      dangerModalStageText.textContent = `安全等待中，还需 ${remaining} 秒，倒计时结束后才可执行。`;
     }
     if (dangerModalConfirmBtn) {
       dangerModalConfirmBtn.disabled = true;
@@ -2702,8 +3043,7 @@ async function initApp() {
     dangerConfirmTimer = setInterval(() => {
       remaining -= 1;
       if (remaining > 0) {
-        dangerModalStageText.textContent =
-          `安全等待中，还需 ${remaining} 秒，倒计时结束后才可执行。`;
+        dangerModalStageText.textContent = `安全等待中，还需 ${remaining} 秒，倒计时结束后才可执行。`;
         dangerModalConfirmBtn.textContent = `等待 ${remaining} 秒`;
         return;
       }
@@ -2711,13 +3051,19 @@ async function initApp() {
       clearInterval(dangerConfirmTimer);
       dangerConfirmTimer = null;
       dangerConfirmStage = "ready";
-      dangerModalStageText.textContent = "5 秒倒计时已结束，请点击下方按钮执行。";
+      dangerModalStageText.textContent =
+        "5 秒倒计时已结束，请点击下方按钮执行。";
       dangerModalConfirmBtn.disabled = false;
       dangerModalConfirmBtn.textContent = dangerConfirmConfig.actionLabel;
     }, 1000);
   }
 
-  function showDangerConfirm({ title, description, actionLabel, countdown = 5 }) {
+  function showDangerConfirm({
+    title,
+    description,
+    actionLabel,
+    countdown = 5,
+  }) {
     if (
       !dangerModalRoot ||
       !dangerModalTitle ||
@@ -2725,7 +3071,7 @@ async function initApp() {
       !dangerModalConfirmBtn
     ) {
       return Promise.resolve(
-        confirm(`${title}\n\n${description}\n\n确认要继续执行吗？`)
+        confirm(`${title}\n\n${description}\n\n确认要继续执行吗？`),
       );
     }
 
@@ -2752,7 +3098,7 @@ async function initApp() {
   async function uploadEmoji(category, file) {
     return await window.AstrBotPluginPage.upload(
       "emoji/add/" + encodeURIComponent(category),
-      file
+      file,
     );
   }
 
@@ -2767,13 +3113,16 @@ async function initApp() {
     if (!confirmed) return;
 
     try {
-      const data = await apiPost("emoji/delete", { category, image_file: emoji });
+      const data = await apiPost("emoji/delete", {
+        category,
+        image_file: emoji,
+      });
       selectionState.items.delete(createSelectionKey(category, emoji));
       await refreshUi({ emojis: true });
       showToast(
         `已从 ${data.category} 删除 ${data.filename}`,
         "success",
-        "删除成功"
+        "删除成功",
       );
     } catch (error) {
       console.error("删除表情包失败", error);
@@ -2783,7 +3132,7 @@ async function initApp() {
 
   async function deleteEmojiItems(
     items,
-    { useSelectionState = true, confirmMode = "normal" } = {}
+    { useSelectionState = true, confirmMode = "normal" } = {},
   ) {
     const uniqueItems = dedupeEmojiItems(items);
     const selectedCount = uniqueItems.length;
@@ -2849,16 +3198,12 @@ async function initApp() {
         `已删除 ${deletedCount} 个表情包。\n失败分类：${errors.join("；")}`,
         "warning",
         "批量删除部分完成",
-        5200
+        5200,
       );
       return;
     }
 
-    showToast(
-      `已删除 ${deletedCount} 个表情包`,
-      "success",
-      "批量删除完成"
-    );
+    showToast(`已删除 ${deletedCount} 个表情包`, "success", "批量删除完成");
   }
 
   async function batchDeleteSelected() {
@@ -2901,7 +3246,7 @@ async function initApp() {
       showToast(
         `分类 ${category} 当前没有可清空的表情包`,
         "warning",
-        "无需清空"
+        "无需清空",
       );
       return;
     }
@@ -2923,7 +3268,7 @@ async function initApp() {
       showToast(
         `已清空分类 ${category}，删除 ${data.deleted_count} 个表情包。`,
         "success",
-        "清空成功"
+        "清空成功",
       );
     } catch (error) {
       console.error("清空分类失败:", error);
@@ -2934,7 +3279,7 @@ async function initApp() {
   async function clearAllEmojiFiles() {
     const totalEmojiCount = Object.values(latestEmojiData).reduce(
       (sum, emojis) => sum + (Array.isArray(emojis) ? emojis.length : 0),
-      0
+      0,
     );
     if (totalEmojiCount === 0) {
       showToast("当前没有可清空的表情包", "warning", "无需清空");
@@ -2959,7 +3304,7 @@ async function initApp() {
         `已清空全部表情包，共删除 ${data.deleted_count} 个文件，涉及 ${data.affected_categories} 个分类。`,
         "success",
         "清空成功",
-        4200
+        4200,
       );
     } catch (error) {
       console.error("清空全部表情包失败:", error);
@@ -2967,7 +3312,7 @@ async function initApp() {
         `清空全部表情包失败：${error.message}`,
         "error",
         "清空失败",
-        4500
+        4500,
       );
     }
   }
@@ -3219,7 +3564,7 @@ async function initApp() {
       const progress = Math.min(1, elapsed / LONG_PRESS_DURATION_MS);
       const remainingSeconds = Math.max(
         1,
-        Math.ceil((LONG_PRESS_DURATION_MS - elapsed) / 1000)
+        Math.ceil((LONG_PRESS_DURATION_MS - elapsed) / 1000),
       );
       setLongPressProgress(progress, `${remainingSeconds}s`);
       event.preventDefault();
@@ -3255,7 +3600,7 @@ async function initApp() {
         event.preventDefault();
       }
     },
-    { passive: false }
+    { passive: false },
   );
 
   document.addEventListener("dragstart", (event) => {
@@ -3293,7 +3638,7 @@ async function initApp() {
     () => {
       closeBatchContextMenu();
     },
-    true
+    true,
   );
 
   document.addEventListener("selectstart", (event) => {
@@ -3313,7 +3658,8 @@ async function initApp() {
       return;
     }
     if (event.key === "Escape" && batchContextMenu) {
-      const isBatchContextMenuOpen = !batchContextMenu.classList.contains("hidden");
+      const isBatchContextMenuOpen =
+        !batchContextMenu.classList.contains("hidden");
       if (isBatchContextMenuOpen) {
         closeBatchContextMenu();
         return;
@@ -3327,7 +3673,8 @@ async function initApp() {
       }
     }
     if (event.key === "Escape" && moveTargetModalRoot) {
-      const isMoveTargetOpen = !moveTargetModalRoot.classList.contains("hidden");
+      const isMoveTargetOpen =
+        !moveTargetModalRoot.classList.contains("hidden");
       if (isMoveTargetOpen) {
         closeMoveTargetModal();
         return;
@@ -3399,11 +3746,7 @@ async function initApp() {
         document.getElementById("add-category-form").style.display = "none";
         document.getElementById("add-category-btn").style.display = "block";
         await refreshUi({ emojis: true, syncStatus: true });
-        showToast(
-          `类别「${categoryName}」已添加。`,
-          "success",
-          "添加成功"
-        );
+        showToast(`类别「${categoryName}」已添加。`, "success", "添加成功");
       } catch (error) {
         console.error("添加类别失败:", error);
         showToast(error.message, "error", "添加失败");
@@ -3440,7 +3783,9 @@ async function initApp() {
 
   function normalizeSyncDifferences(payload) {
     const source =
-      payload && typeof payload.differences === "object" && payload.differences !== null
+      payload &&
+      typeof payload.differences === "object" &&
+      payload.differences !== null
         ? payload.differences
         : payload;
 
@@ -3469,8 +3814,8 @@ async function initApp() {
               className: "sync-btn",
               text: "同步配置",
               onClick: () => syncConfig(),
-            })
-        )
+            }),
+        ),
       );
     }
 
@@ -3487,18 +3832,18 @@ async function initApp() {
                 className: "restore-btn",
                 text: "恢复类别",
                 onClick: () => restoreCategory(category),
-              })
+              }),
             );
             actions.appendChild(
               createButton({
                 className: "remove-btn",
                 text: "从配置中删除",
                 onClick: () => removeFromConfig(category),
-              })
+              }),
             );
             return actions;
-          }
-        )
+          },
+        ),
       );
     }
 
@@ -3520,7 +3865,7 @@ async function initApp() {
         className: "main-sync-btn",
         text: "同步所有配置",
         onClick: () => syncConfig(),
-      })
+      }),
     );
     statusDiv.appendChild(syncActions);
   }
@@ -3538,7 +3883,7 @@ async function initApp() {
         className: "retry-btn",
         text: "重试",
         onClick: () => checkSyncStatus(),
-      })
+      }),
     );
   }
 
@@ -3679,7 +4024,7 @@ async function initApp() {
       showToast(
         `类别「${category}」已恢复。\n描述：${data.description || "请补充描述"}`,
         "success",
-        "恢复成功"
+        "恢复成功",
       );
     } catch (error) {
       console.error("恢复类别失败:", error);
@@ -3703,11 +4048,7 @@ async function initApp() {
       await apiPost("category/remove_from_config", { category });
 
       await refreshUi({ syncStatus: true });
-      showToast(
-        `类别「${category}」已从配置中移除。`,
-        "success",
-        "移除成功"
-      );
+      showToast(`类别「${category}」已从配置中移除。`, "success", "移除成功");
     } catch (error) {
       console.error("从配置中删除类别失败:", error);
       showToast(error.message, "error", "移除失败");
@@ -3798,11 +4139,7 @@ async function initApp() {
 
       await refreshUi({ emojis: true, syncStatus: true });
       closeCategoryEditModal();
-      showToast(
-        `类别「${newName}」已保存。`,
-        "success",
-        "保存成功"
-      );
+      showToast(`类别「${newName}」已保存。`, "success", "保存成功");
     } catch (error) {
       console.error("保存类别修改失败:", error);
       showToast(error.message, "error", "保存失败");
@@ -3827,7 +4164,14 @@ async function initApp() {
     closeBatchContextMenu();
   });
 
+  await loadManagePackSwitcher();
   await fetchEmojis();
+  switchManagePackBtn?.addEventListener("click", () => {
+    void switchManagePack();
+  });
+  deleteManagePackBtn?.addEventListener("click", () => {
+    void deleteCurrentManagePack();
+  });
   initialStatusTimerId = window.setTimeout(() => {
     initialStatusTimerId = null;
     void checkSyncStatus(false);
@@ -3842,15 +4186,18 @@ async function initApp() {
       document.getElementById("remote-extra-count");
     const localExtraCountElement = document.getElementById("local-extra-count");
     const providerElement = document.getElementById("img-host-provider");
-    const remoteImageCountElement = document.getElementById("remote-image-count");
-    const remoteStorageSizeElement =
-      document.getElementById("remote-storage-size");
+    const remoteImageCountElement =
+      document.getElementById("remote-image-count");
+    const remoteStorageSizeElement = document.getElementById(
+      "remote-storage-size",
+    );
 
     try {
       const data = await apiGet("img_host/sync/status");
 
       const uploadCount = data.upload_count ?? data.to_upload?.length ?? 0;
-      const downloadCount = data.download_count ?? data.to_download?.length ?? 0;
+      const downloadCount =
+        data.download_count ?? data.to_download?.length ?? 0;
       const remoteExtraCount =
         data.remote_extra_count ?? data.to_delete_remote?.length ?? 0;
       const localExtraCount =
@@ -3893,7 +4240,7 @@ async function initApp() {
         showToast(
           `${data.provider_label || "图床"}：云端 ${remoteImageCount} 张，待上传 ${uploadCount} 个，待下载 ${downloadCount} 个，云端多出 ${remoteExtraCount} 个。`,
           "info",
-          "图床状态已刷新"
+          "图床状态已刷新",
         );
       }
     } catch (error) {

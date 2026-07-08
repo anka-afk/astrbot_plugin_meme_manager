@@ -87,19 +87,15 @@ h1 {
   padding: 16px;
 }
 
-.controls {
-  grid-column: span 7;
-}
-
-.install-options {
-  grid-column: span 5;
-}
-
 .manual-source {
   grid-column: span 12;
 }
 
 .catalog-list {
+  grid-column: span 12;
+}
+
+.log-panel {
   grid-column: span 12;
 }
 
@@ -188,6 +184,54 @@ button:disabled {
   margin: 10px 0 0;
   color: var(--muted);
   font-size: 13px;
+}
+
+.dialog-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(12, 25, 20, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.dialog-mask.hidden {
+  display: none;
+}
+
+.dialog-card {
+  width: min(460px, 100%);
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: #fff;
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+
+.dialog-card h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.dialog-meta {
+  margin: 8px 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.dialog-tip {
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dialog-actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .triple-grid {
@@ -305,12 +349,13 @@ button:disabled {
   overflow: auto;
   display: grid;
   gap: 8px;
+  width: 100%;
 }
 
 .log-item {
-  font-size: 13px;
+  font-size: 14px;
   border-left: 3px solid #a5c8ba;
-  padding: 8px 10px;
+  padding: 10px 12px;
   background: #f8fcfa;
   border-radius: 8px;
 }
@@ -321,8 +366,6 @@ button:disabled {
 }
 
 @media (max-width: 980px) {
-  .controls,
-  .install-options,
   .manual-source,
   .catalog-list {
     grid-column: span 12;

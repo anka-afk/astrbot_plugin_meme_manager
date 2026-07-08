@@ -317,7 +317,9 @@ input:focus {
   border-radius: 12px;
   color: #495057;
   text-decoration: none;
-  transition: background-color 0.3s ease, transform 0.3s ease;
+  transition:
+    background-color 0.3s ease,
+    transform 0.3s ease;
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
 }
@@ -454,26 +456,23 @@ button:hover {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  background:
-    conic-gradient(
-      #2ecc71 var(--drag-progress),
-      rgba(15, 23, 42, 0.18) 0deg
-    );
+  background: conic-gradient(
+    #2ecc71 var(--drag-progress),
+    rgba(15, 23, 42, 0.18) 0deg
+  );
   box-shadow:
     0 8px 18px rgba(15, 23, 42, 0.22),
     inset 0 0 0 1px rgba(255, 255, 255, 0.25);
-  -webkit-mask:
-    radial-gradient(
-      farthest-side,
-      transparent calc(100% - 7px),
-      #000 calc(100% - 6px)
-    );
-  mask:
-    radial-gradient(
-      farthest-side,
-      transparent calc(100% - 7px),
-      #000 calc(100% - 6px)
-    );
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 7px),
+    #000 calc(100% - 6px)
+  );
+  mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 7px),
+    #000 calc(100% - 6px)
+  );
 }
 
 .drag-progress-center {
@@ -483,8 +482,11 @@ button:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  background:
-    radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.94), rgba(231, 244, 255, 0.84));
+  background: radial-gradient(
+    circle at 30% 30%,
+    rgba(255, 255, 255, 0.94),
+    rgba(231, 244, 255, 0.84)
+  );
   color: #123b29;
   font-size: 12px;
   font-weight: 800;
@@ -544,7 +546,9 @@ button:hover {
   font-size: 12px;
   position: relative;
   border-radius: 8px;
-  transition: background-color 0.3s ease, border-color 0.3s ease;
+  transition:
+    background-color 0.3s ease,
+    border-color 0.3s ease;
 }
 
 .upload-emoji.dragover {
@@ -613,8 +617,11 @@ input[type="file"] {
   border: 2px dashed rgba(52, 152, 219, 0.34);
   border-radius: 16px;
   cursor: pointer;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(240, 247, 255, 0.94));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.96),
+    rgba(240, 247, 255, 0.94)
+  );
   color: #2c3e50;
   text-align: center;
   transition:
@@ -627,8 +634,11 @@ input[type="file"] {
 .emoji-upload:hover,
 .emoji-upload:focus-visible {
   border-color: rgba(52, 152, 219, 0.7);
-  background:
-    linear-gradient(180deg, rgba(248, 252, 255, 0.98), rgba(228, 241, 255, 0.96));
+  background: linear-gradient(
+    180deg,
+    rgba(248, 252, 255, 0.98),
+    rgba(228, 241, 255, 0.96)
+  );
   box-shadow: 0 14px 28px rgba(52, 152, 219, 0.14);
   transform: translateY(-2px);
   outline: none;
@@ -636,8 +646,11 @@ input[type="file"] {
 
 .emoji-upload.drag-active {
   border-color: #3498db;
-  background:
-    linear-gradient(180deg, rgba(231, 244, 255, 1), rgba(214, 235, 255, 0.98));
+  background: linear-gradient(
+    180deg,
+    rgba(231, 244, 255, 1),
+    rgba(214, 235, 255, 0.98)
+  );
   box-shadow: 0 18px 36px rgba(52, 152, 219, 0.2);
   transform: translateY(-3px) scale(1.01);
 }
@@ -645,8 +658,11 @@ input[type="file"] {
 .emoji-upload.uploading {
   cursor: progress;
   border-color: rgba(37, 99, 235, 0.5);
-  background:
-    linear-gradient(180deg, rgba(239, 246, 255, 0.98), rgba(219, 234, 254, 0.96));
+  background: linear-gradient(
+    180deg,
+    rgba(239, 246, 255, 0.98),
+    rgba(219, 234, 254, 0.96)
+  );
   box-shadow: 0 16px 32px rgba(37, 99, 235, 0.16);
   transform: none;
 }
@@ -738,7 +754,11 @@ input[type="file"] {
   padding: 12px;
   border: 1px solid rgba(52, 152, 219, 0.12);
   border-radius: 10px;
-  background: linear-gradient(180deg, rgba(248, 251, 255, 0.95), rgba(241, 247, 255, 0.92));
+  background: linear-gradient(
+    180deg,
+    rgba(248, 251, 255, 0.95),
+    rgba(241, 247, 255, 0.92)
+  );
 }
 
 .sync-provider-summary p {
@@ -1107,7 +1127,6 @@ input[type="file"] {
   flex: 0 0 auto;
 }
 
-
 .edit-buttons {
   display: flex;
   gap: 8px;
@@ -1164,7 +1183,11 @@ button:disabled {
   padding: 18px 20px;
   border: 1px solid rgba(220, 53, 69, 0.12);
   border-radius: 14px;
-  background: linear-gradient(135deg, rgba(255, 250, 250, 0.98), rgba(255, 244, 240, 0.92));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 250, 250, 0.98),
+    rgba(255, 244, 240, 0.92)
+  );
 }
 
 .selection-toolbar-copy h2 {
@@ -1309,8 +1332,11 @@ button:disabled {
 
 .category.category-drop-active .emoji-upload {
   border-color: #3498db;
-  background:
-    linear-gradient(180deg, rgba(231, 244, 255, 1), rgba(214, 235, 255, 0.98));
+  background: linear-gradient(
+    180deg,
+    rgba(231, 244, 255, 1),
+    rgba(214, 235, 255, 0.98)
+  );
   box-shadow: 0 18px 36px rgba(52, 152, 219, 0.2);
 }
 
@@ -1593,14 +1619,22 @@ button:disabled {
   padding: 14px 16px;
   border: 1px solid rgba(37, 99, 235, 0.14);
   border-radius: 14px;
-  background: linear-gradient(180deg, rgba(248, 251, 255, 0.98), rgba(241, 247, 255, 0.94));
+  background: linear-gradient(
+    180deg,
+    rgba(248, 251, 255, 0.98),
+    rgba(241, 247, 255, 0.94)
+  );
   color: #1f2937;
   text-align: left;
 }
 
 .move-target-option:hover,
 .move-target-option:focus-visible {
-  background: linear-gradient(180deg, rgba(241, 247, 255, 1), rgba(225, 238, 255, 0.98));
+  background: linear-gradient(
+    180deg,
+    rgba(241, 247, 255, 1),
+    rgba(225, 238, 255, 0.98)
+  );
   border-color: rgba(37, 99, 235, 0.26);
 }
 
@@ -1758,8 +1792,16 @@ body.app-page {
   min-height: 100svh;
   padding: clamp(14px, 2vw, 24px);
   background:
-    radial-gradient(circle at top left, rgba(46, 204, 113, 0.14), transparent 30%),
-    radial-gradient(circle at top right, rgba(52, 152, 219, 0.12), transparent 28%),
+    radial-gradient(
+      circle at top left,
+      rgba(46, 204, 113, 0.14),
+      transparent 30%
+    ),
+    radial-gradient(
+      circle at top right,
+      rgba(52, 152, 219, 0.12),
+      transparent 28%
+    ),
     linear-gradient(180deg, #f5f9fc 0%, #edf3f8 100%);
   color: #243447;
 }
@@ -1790,6 +1832,39 @@ body.app-page {
   margin: 10px 0 0;
   color: #64748b;
   line-height: 1.6;
+}
+
+.manage-pack-switch-row {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.manage-pack-switch-row label {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.manage-pack-switch-row select {
+  min-width: 260px;
+  max-width: min(460px, 85vw);
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #1f2937;
+}
+
+.manage-pack-switch-row button {
+  margin: 0;
+}
+
+.manage-pack-switch-meta {
+  font-size: 12px;
+  color: #64748b;
 }
 
 .sidebar-toggle,
@@ -2120,26 +2195,23 @@ body.sidebar-collapsed .directory-panel {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  background:
-    conic-gradient(
-      #2ecc71 var(--drag-hud-progress),
-      rgba(15, 23, 42, 0.18) 0deg
-    );
+  background: conic-gradient(
+    #2ecc71 var(--drag-hud-progress),
+    rgba(15, 23, 42, 0.18) 0deg
+  );
   box-shadow:
     0 14px 30px rgba(15, 23, 42, 0.22),
     inset 0 0 0 1px rgba(255, 255, 255, 0.22);
-  -webkit-mask:
-    radial-gradient(
-      farthest-side,
-      transparent calc(100% - 8px),
-      #000 calc(100% - 7px)
-    );
-  mask:
-    radial-gradient(
-      farthest-side,
-      transparent calc(100% - 8px),
-      #000 calc(100% - 7px)
-    );
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 8px),
+    #000 calc(100% - 7px)
+  );
+  mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 8px),
+    #000 calc(100% - 7px)
+  );
 }
 
 .drag-hud-center {
@@ -2149,8 +2221,11 @@ body.sidebar-collapsed .directory-panel {
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background:
-    radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.96), rgba(236, 248, 255, 0.88));
+  background: radial-gradient(
+    circle at 30% 30%,
+    rgba(255, 255, 255, 0.96),
+    rgba(236, 248, 255, 0.88)
+  );
   color: #123b29;
   font-size: 14px;
   font-weight: 800;
@@ -2175,11 +2250,10 @@ body.sidebar-collapsed .directory-panel {
 
 .drag-hud[data-state="target"] .drag-hud-ring,
 .drag-hud[data-state="ready"] .drag-hud-ring {
-  background:
-    conic-gradient(
-      #3498db var(--drag-hud-progress),
-      rgba(15, 23, 42, 0.16) 0deg
-    );
+  background: conic-gradient(
+    #3498db var(--drag-hud-progress),
+    rgba(15, 23, 42, 0.16) 0deg
+  );
 }
 
 .drag-hud[data-state="target"] .drag-hud-caption {
@@ -2193,7 +2267,6 @@ body.sidebar-collapsed .directory-panel {
   max-height: min(88svh, 760px);
   overflow-y: auto;
 }
-
 
 body.drag-session-active,
 body.drag-session-active * {

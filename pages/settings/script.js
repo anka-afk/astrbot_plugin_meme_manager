@@ -1,9 +1,62 @@
 async function initSettingsPage() {
   await window.AstrBotPluginPage.ready();
 
+  function withCurrentAuthParams(targetPath, extraParams = {}) {
+    const nextUrl = new URL(targetPath, window.location.href);
+    const currentParams = new URLSearchParams(window.location.search);
+    for (const [key, value] of currentParams.entries()) {
+      if (key === "asset_token") {
+        continue;
+      }
+      if (!nextUrl.searchParams.has(key)) {
+        nextUrl.searchParams.set(key, value);
+      }
+    }
+    for (const [key, value] of Object.entries(extraParams)) {
+      if (value === null || value === undefined || value === "") {
+        nextUrl.searchParams.delete(key);
+      } else {
+        nextUrl.searchParams.set(key, String(value));
+      }
+    }
+    return nextUrl;
+  }
+
+  let navAuthToken = "";
+  async function ensureNavAuthToken() {
+    if (navAuthToken) {
+      return navAuthToken;
+    }
+    try {
+      const response =
+        await window.AstrBotPluginPage.apiGet("bridge/auth_token");
+      navAuthToken = String(response?.token || "").trim();
+    } catch (_) {
+      navAuthToken = "";
+    }
+    return navAuthToken;
+  }
+
+  async function applySecureNavLinks() {
+    const token = await ensureNavAuthToken();
+    document.querySelectorAll("a[data-nav-target]").forEach((link) => {
+      const targetPath = link.getAttribute("data-nav-target");
+      if (!targetPath) {
+        return;
+      }
+      const navView = link.getAttribute("data-nav-view") || "";
+      const nextUrl = withCurrentAuthParams(targetPath, {
+        view: navView || null,
+        asset_token: token || null,
+      });
+      link.href = nextUrl.toString();
+    });
+  }
+
+  await applySecureNavLinks();
+
   const rulesList = document.getElementById("rules-list");
-  const addPersonaRuleBtn = document.getElementById("add-persona-rule-btn");
-  const addSessionRuleBtn = document.getElementById("add-session-rule-btn");
+  const addRuleBtn = document.getElementById("add-rule-btn");
   const reloadRulesBtn = document.getElementById("reload-rules-btn");
   const saveRulesBtn = document.getElementById("save-rules-btn");
   const rulesValidation = document.getElementById("rules-validation");
@@ -102,6 +155,13 @@ async function initSettingsPage() {
 
   function updateRuleFromInput(index, key, value) {
     if (!rules[index]) {
+      return;
+    }
+    if (
+      key === "scope" &&
+      String(value || "") === "default" &&
+      String(rules[index].scope || "") !== "default"
+    ) {
       return;
     }
     rules[index][key] = value;
@@ -256,7 +316,7 @@ async function initSettingsPage() {
         <select data-role="scope">
           <option value="persona" ${rule.scope === "persona" ? "selected" : ""}>persona</option>
           <option value="session" ${rule.scope === "session" ? "selected" : ""}>session</option>
-          <option value="default" ${rule.scope === "default" ? "selected" : ""}>default</option>
+          ${isDefault ? '<option value="default" selected>default</option>' : ""}
         </select>
       `;
 
@@ -305,16 +365,17 @@ async function initSettingsPage() {
 
       scopeSelect.disabled = isDefault;
       scopeSelect.addEventListener("change", () => {
+        const selectedScope = scopeSelect.value;
         updateRuleFromInput(index, "scope", scopeSelect.value);
-        if (scopeSelect.value === "default") {
-          delete rules[index].target;
-        } else if (!rules[index].target) {
-          const firstSuggestion =
-            getTargetSuggestions(scopeSelect.value)[0] || "";
-          if (firstSuggestion) {
-            rules[index].target = firstSuggestion;
-          }
+        if (!rules[index] || rules[index].scope === "default") {
+          renderRules();
+          return;
         }
+
+        // scope 切换后重置 target 和 pack_id，避免旧值残留
+        const firstSuggestion = getTargetSuggestions(selectedScope)[0] || "";
+        rules[index].target = firstSuggestion;
+        rules[index].pack_id = installedPacks[0]?.id || "";
         renderRules();
       });
 
@@ -483,9 +544,19 @@ async function initSettingsPage() {
 
     setLoading(importBackupBtn, "导入中...");
     try {
-      const overwrite = importOverwriteCheckbox.checked ? "1" : "0";
-      const endpoint = `settings/backup/import?overwrite=${overwrite}`;
-      const response = await window.AstrBotPluginPage.upload(endpoint, file);
+      const bytes = await file.arrayBuffer();
+      let binary = "";
+      const view = new Uint8Array(bytes);
+      const chunkSize = 0x8000;
+      for (let offset = 0; offset < view.length; offset += chunkSize) {
+        const chunk = view.subarray(offset, offset + chunkSize);
+        binary += String.fromCharCode(...chunk);
+      }
+      const response = await apiPost("settings/backup/import", {
+        overwrite: importOverwriteCheckbox.checked,
+        file_name: file.name,
+        file_b64: btoa(binary),
+      });
       importResult.textContent = `导入成功: 恢复 ${response?.restored_packs ?? 0} 个 pack`;
       addLog(`备份导入成功，恢复 ${response?.restored_packs ?? 0} 个 pack`);
       await refreshPacksAndRules();
@@ -497,13 +568,8 @@ async function initSettingsPage() {
     }
   }
 
-  addPersonaRuleBtn.addEventListener("click", () => {
+  addRuleBtn.addEventListener("click", () => {
     rules.splice(Math.max(rules.length - 1, 0), 0, buildNewRule("persona"));
-    renderRules();
-  });
-
-  addSessionRuleBtn.addEventListener("click", () => {
-    rules.splice(Math.max(rules.length - 1, 0), 0, buildNewRule("session"));
     renderRules();
   });
 

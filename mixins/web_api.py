@@ -1,9 +1,11 @@
 import asyncio
 import base64
+import binascii
 import io
 import json
 import mimetypes
 import time
+from pathlib import Path
 
 from PIL import Image as PILImage
 from quart import jsonify, make_response, request, send_file
@@ -38,7 +40,7 @@ from ..backend.pack_storage import (
     set_default_pack,
     uninstall_pack,
 )
-from ..config import MEMES_DIR, TEMP_DIR
+from ..config import COMMUNITY_INDEX_URL, MEMES_DIR, PACKS_DIR, TEMP_DIR
 
 PLUGIN_NAME = "meme_manager"
 WEBUI_LOG_PREFIX = f"[{PLUGIN_NAME}][WebUI]"
@@ -262,6 +264,12 @@ class WebAPIMixin:
             ["POST"],
             "导入运行时全量备份",
         )
+        self._register_webui_api(
+            "bridge/auth_token",
+            self._api_bridge_auth_token,
+            ["GET"],
+            "获取当前会话 Bearer Token（用于插件页安全跳转）",
+        )
 
     def _register_webui_api(self, route, handler, methods, desc):
         route_path = f"/{PLUGIN_NAME}/{route.strip('/')}"
@@ -294,15 +302,135 @@ class WebAPIMixin:
             return response[1]
         return getattr(response, "status_code", "unknown")
 
+    @staticmethod
+    def _resolve_webui_pack_view_context() -> dict | None:
+        managed_pack_id = str(request.args.get("managed_pack_id") or "").strip()
+        if not managed_pack_id:
+            return None
+
+        pack_dir = (PACKS_DIR / managed_pack_id).resolve()
+        packs_root = PACKS_DIR.resolve()
+        try:
+            pack_dir.relative_to(packs_root)
+        except ValueError:
+            return None
+        if not pack_dir.is_dir():
+            return None
+
+        return {
+            "pack_id": managed_pack_id,
+            "pack_dir": pack_dir,
+            "memes_dir": pack_dir / "memes",
+            "memes_data_path": pack_dir / "memes_data.json",
+            "manifest_path": pack_dir / "manifest.json",
+        }
+
+    @staticmethod
+    def _scan_pack_emojis(memes_dir: Path) -> dict:
+        emojis = {}
+        if not memes_dir.is_dir():
+            return emojis
+        for category_dir in memes_dir.iterdir():
+            if not category_dir.is_dir():
+                continue
+            category = category_dir.name
+            files = []
+            for file_path in category_dir.iterdir():
+                if file_path.is_file() and file_path.suffix.lower() in {
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".gif",
+                    ".webp",
+                }:
+                    files.append(file_path.name)
+            emojis[category] = files
+        return emojis
+
+    @staticmethod
+    def _load_pack_descriptions(view_context: dict) -> dict:
+        descriptions = {}
+        memes_data_path = view_context["memes_data_path"]
+        if memes_data_path.is_file():
+            try:
+                with memes_data_path.open(encoding="utf-8-sig") as file_obj:
+                    data = json.load(file_obj)
+                if isinstance(data, dict):
+                    descriptions.update(
+                        {
+                            str(key): str(value)
+                            for key, value in data.items()
+                            if str(key).strip()
+                        }
+                    )
+            except Exception:
+                pass
+
+        manifest_path = view_context["manifest_path"]
+        if manifest_path.is_file():
+            try:
+                with manifest_path.open(encoding="utf-8-sig") as file_obj:
+                    manifest = json.load(file_obj)
+                categories = (
+                    manifest.get("categories", {}) if isinstance(manifest, dict) else {}
+                )
+                if isinstance(categories, dict):
+                    for category_name, category_meta in categories.items():
+                        key = str(category_name or "").strip()
+                        if not key or key in descriptions:
+                            continue
+                        if isinstance(category_meta, dict):
+                            descriptions[key] = str(
+                                category_meta.get("description") or "请添加描述"
+                            )
+                        else:
+                            descriptions[key] = str(category_meta or "请添加描述")
+            except Exception:
+                pass
+
+        return descriptions
+
     async def _api_get_emojis(self):
-        emoji_data = await scan_emoji_folder()
+        view_context = self._resolve_webui_pack_view_context()
+        if view_context:
+            emoji_data = self._scan_pack_emojis(view_context["memes_dir"])
+        else:
+            emoji_data = await scan_emoji_folder()
         for category in emoji_data:
             if not isinstance(emoji_data[category], list):
                 emoji_data[category] = []
         return jsonify(emoji_data)
 
+    async def _api_bridge_auth_token(self):
+        auth_header = request.headers.get("Authorization", "").strip()
+        if auth_header.startswith("Bearer "):
+            token = auth_header.removeprefix("Bearer ").strip()
+            if token:
+                return jsonify({"token": token}), 200
+        return jsonify({"message": "当前请求缺少 Bearer Token"}), 401
+
     async def _api_get_emoji_by_category(self, category):
-        emojis = get_emoji_by_category(category)
+        view_context = self._resolve_webui_pack_view_context()
+        if view_context:
+            category_path = view_context["memes_dir"] / category
+            if not category_path.is_dir():
+                emojis = []
+            else:
+                emojis = [
+                    file_path.name
+                    for file_path in category_path.iterdir()
+                    if file_path.is_file()
+                    and file_path.suffix.lower()
+                    in {
+                        ".png",
+                        ".jpg",
+                        ".jpeg",
+                        ".gif",
+                        ".webp",
+                    }
+                ]
+        else:
+            emojis = get_emoji_by_category(category)
         if emojis is None:
             return jsonify({"message": "分类未找到"}), 404
         return jsonify(emojis if isinstance(emojis, list) else []), 200
@@ -501,7 +629,11 @@ class WebAPIMixin:
 
     async def _api_get_emotions(self):
         try:
-            descriptions = self.category_manager.get_descriptions()
+            view_context = self._resolve_webui_pack_view_context()
+            if view_context:
+                descriptions = self._load_pack_descriptions(view_context)
+            else:
+                descriptions = self.category_manager.get_descriptions()
             return jsonify(descriptions)
         except Exception as e:
             logger.error(f"获取标签描述失败: {e}")
@@ -785,8 +917,12 @@ class WebAPIMixin:
     async def _api_serve_meme_image(self):
         category = request.args.get("category", "")
         filename = request.args.get("filename", "")
-        file_path = (MEMES_DIR / category / filename).resolve()
-        if not str(file_path).startswith(str(MEMES_DIR.resolve())):
+        view_context = self._resolve_webui_pack_view_context()
+        memes_root = (
+            view_context["memes_dir"].resolve() if view_context else MEMES_DIR.resolve()
+        )
+        file_path = (memes_root / category / filename).resolve()
+        if not str(file_path).startswith(str(memes_root)):
             return jsonify({"status": "error", "message": "非法路径"}), 403
         if not file_path.exists():
             return jsonify({"status": "error", "message": "文件不存在"}), 404
@@ -796,8 +932,11 @@ class WebAPIMixin:
         category = request.args.get("category", "")
         filename = request.args.get("filename", "")
         size = request.args.get("size", "preview")
-        file_path = (MEMES_DIR / category / filename).resolve()
-        memes_root = MEMES_DIR.resolve()
+        view_context = self._resolve_webui_pack_view_context()
+        memes_root = (
+            view_context["memes_dir"].resolve() if view_context else MEMES_DIR.resolve()
+        )
+        file_path = (memes_root / category / filename).resolve()
 
         try:
             file_path.relative_to(memes_root)
@@ -997,10 +1136,7 @@ class WebAPIMixin:
 
     async def _api_fetch_community_index(self):
         try:
-            data = await request.get_json()
-            index_url = str((data or {}).get("index_url") or "").strip()
-            if not index_url:
-                return jsonify({"message": "index_url 不能为空"}), 400
+            index_url = COMMUNITY_INDEX_URL
             cache_data = fetch_and_cache_community_index(index_url)
             packs = cache_data.get("index", {}).get("packs", [])
             return (
@@ -1045,15 +1181,16 @@ class WebAPIMixin:
             return jsonify({"message": f"读取社区索引缓存失败: {str(e)}"}), 500
 
     async def _api_install_community_pack(self):
+        data = None
         try:
             data = await request.get_json()
             payload = data or {}
             overwrite = bool(payload.get("overwrite", False))
             set_as_default = bool(payload.get("set_as_default", False))
+            pack_id = str(payload.get("pack_id") or "").strip()
 
             source = payload.get("source")
             if not isinstance(source, dict):
-                pack_id = str(payload.get("pack_id") or "").strip()
                 if not pack_id:
                     return (
                         jsonify(
@@ -1077,6 +1214,12 @@ class WebAPIMixin:
         except FileExistsError as e:
             return jsonify({"message": str(e)}), 409
         except (FileNotFoundError, ValueError) as e:
+            logger.warning(
+                "社区表情包安装参数或资源错误: %s | pack_id=%s | payload_source=%s",
+                e,
+                str((data or {}).get("pack_id") or "").strip(),
+                bool(isinstance((data or {}).get("source"), dict)),
+            )
             return jsonify({"message": str(e)}), 400
         except Exception as e:
             logger.error(f"安装社区表情包失败: {e}", exc_info=True)
@@ -1171,31 +1314,53 @@ class WebAPIMixin:
         try:
             overwrite_param = request.args.get("overwrite")
             form = await request.form
-            overwrite_raw = (
-                overwrite_param
-                if overwrite_param is not None
-                else form.get("overwrite", "false")
-            )
+            json_payload = await request.get_json(silent=True)
+
+            overwrite_raw = overwrite_param
+            if overwrite_raw is None:
+                if isinstance(form, dict) and form.get("overwrite") is not None:
+                    overwrite_raw = form.get("overwrite")
+                elif isinstance(json_payload, dict):
+                    overwrite_raw = json_payload.get("overwrite", "false")
+                else:
+                    overwrite_raw = "false"
+
             overwrite = str(overwrite_raw).lower() in {
                 "1",
                 "true",
                 "yes",
                 "on",
             }
-            files = await request.files
-            if not files or "file" not in files:
-                return jsonify({"message": "缺少上传文件字段 file"}), 400
-
-            archive_file = files["file"]
-            if not archive_file or not archive_file.filename:
-                return jsonify({"message": "无效的备份文件"}), 400
-            if not str(archive_file.filename).lower().endswith(".zip"):
-                return jsonify({"message": "仅支持 zip 备份文件"}), 400
 
             TEMP_DIR.mkdir(parents=True, exist_ok=True)
             safe_name = f"runtime_restore_{int(time.time() * 1000)}.zip"
             temp_zip_path = (TEMP_DIR / safe_name).resolve()
-            archive_file.save(str(temp_zip_path))
+
+            files = await request.files
+            if files and "file" in files:
+                archive_file = files["file"]
+                if not archive_file or not archive_file.filename:
+                    return jsonify({"message": "无效的备份文件"}), 400
+                if not str(archive_file.filename).lower().endswith(".zip"):
+                    return jsonify({"message": "仅支持 zip 备份文件"}), 400
+                archive_file.save(str(temp_zip_path))
+            elif isinstance(json_payload, dict):
+                file_name = str(json_payload.get("file_name") or "").strip()
+                file_b64 = str(json_payload.get("file_b64") or "").strip()
+                if not file_name or not file_name.lower().endswith(".zip"):
+                    return jsonify({"message": "仅支持 zip 备份文件"}), 400
+                if not file_b64:
+                    return jsonify({"message": "缺少 file_b64"}), 400
+                try:
+                    raw_bytes = base64.b64decode(file_b64, validate=True)
+                except (ValueError, binascii.Error):
+                    return jsonify({"message": "file_b64 非法"}), 400
+                temp_zip_path.write_bytes(raw_bytes)
+            else:
+                return (
+                    jsonify({"message": "缺少上传文件字段 file 或 JSON file_b64"}),
+                    400,
+                )
 
             result = import_runtime_backup(temp_zip_path, overwrite=overwrite)
             self._reload_personas()

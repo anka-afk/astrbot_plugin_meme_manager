@@ -17,6 +17,7 @@ from .pack_protocol import (
 from ..config import (
     BACKUP_DIR,
     COMMUNITY_CACHE_PATH,
+    DEFAULT_CATEGORY_DESCRIPTIONS,
     DEFAULT_PACK_ID,
     LEGACY_MIGRATED_PACK_ID,
     PACKS_DIR,
@@ -30,7 +31,7 @@ from ..config import (
 
 def _load_json(path: Path, default):
     try:
-        with path.open(encoding="utf-8") as file_obj:
+        with path.open(encoding="utf-8-sig") as file_obj:
             return json.load(file_obj)
     except Exception:
         return default
@@ -144,6 +145,40 @@ def _current_default_pack_id() -> str:
     return DEFAULT_PACK_ID
 
 
+def _create_empty_pack(pack_id: str) -> str:
+    pack_id = str(pack_id or "").strip() or DEFAULT_PACK_ID
+    pack_dir = PACKS_DIR / pack_id
+    memes_dir = pack_dir / "memes"
+    empty_category = "empty"
+    category_descriptions = {
+        empty_category: str(
+            DEFAULT_CATEGORY_DESCRIPTIONS.get(empty_category) or "请添加描述"
+        )
+    }
+
+    pack_dir.mkdir(parents=True, exist_ok=True)
+    (memes_dir / empty_category).mkdir(parents=True, exist_ok=True)
+    _save_json(pack_dir / "memes_data.json", category_descriptions)
+    _save_json(
+        pack_dir / "manifest.json",
+        {
+            "schema_version": 1,
+            "id": pack_id,
+            "name": f"Runtime Empty Pack ({pack_id})",
+            "version": "1.0.0",
+            "description": "Auto-created empty meme pack",
+            "tags": ["runtime", "auto-created"],
+            "categories": {
+                empty_category: {
+                    "description": category_descriptions[empty_category],
+                }
+            },
+        },
+    )
+
+    return pack_id
+
+
 def list_installed_packs() -> list[dict]:
     registry = _load_registry()
     default_pack_id = _current_default_pack_id()
@@ -255,7 +290,9 @@ def _find_manifest_root(extract_root: Path) -> Path:
     raise ValueError("压缩包中未找到 manifest.json")
 
 
-def _extract_zip_safely(zip_path: Path, target_dir: Path) -> None:
+def _extract_zip_safely(
+    zip_path: Path, target_dir: Path, block_executable_scripts: bool = True
+) -> None:
     with zipfile.ZipFile(zip_path, "r") as zip_file:
         for member in zip_file.infolist():
             member_path = Path(member.filename)
@@ -264,9 +301,27 @@ def _extract_zip_safely(zip_path: Path, target_dir: Path) -> None:
             if member.filename.endswith("/"):
                 continue
             suffix = member_path.suffix.lower()
-            if suffix and suffix in {".exe", ".bat", ".cmd", ".ps1", ".sh"}:
+            if (
+                block_executable_scripts
+                and suffix
+                and suffix in {".exe", ".bat", ".cmd", ".ps1", ".sh"}
+            ):
                 raise ValueError("压缩包包含不允许的可执行脚本文件")
         zip_file.extractall(target_dir)
+
+
+def _allocate_pack_id(base_pack_id: str) -> str:
+    base = str(base_pack_id or "").strip()
+    if not base:
+        raise ValueError("pack_id 不能为空")
+    if not (PACKS_DIR / base).exists():
+        return base
+    index = 2
+    while True:
+        candidate = f"{base}-{index}"
+        if not (PACKS_DIR / candidate).exists():
+            return candidate
+        index += 1
 
 
 def import_pack_archive(
@@ -287,12 +342,14 @@ def import_pack_archive(
             raise ValueError("manifest.json 格式无效")
 
         normalized_manifest = validate_pack_manifest(manifest)
-        pack_id = str(normalized_manifest.get("id") or "").strip()
+        original_pack_id = str(normalized_manifest.get("id") or "").strip()
+        pack_id = original_pack_id if overwrite else _allocate_pack_id(original_pack_id)
+        if pack_id != original_pack_id:
+            normalized_manifest["id"] = pack_id
+            current_name = str(normalized_manifest.get("name") or original_pack_id)
+            normalized_manifest["name"] = f"{current_name} ({pack_id})"
 
         target_pack_dir = PACKS_DIR / pack_id
-        if target_pack_dir.exists() and not overwrite:
-            raise FileExistsError(f"表情包 {pack_id} 已存在")
-
         if target_pack_dir.exists() and overwrite:
             shutil.rmtree(target_pack_dir)
 
@@ -366,8 +423,7 @@ def uninstall_pack(pack_id: str) -> dict:
     if not pack_id:
         raise ValueError("pack_id 不能为空")
 
-    if pack_id == _current_default_pack_id():
-        raise ValueError("不能卸载当前默认表情包，请先切换默认包")
+    previous_default_pack_id = _current_default_pack_id()
 
     pack_dir = PACKS_DIR / pack_id
     if not pack_dir.is_dir():
@@ -381,28 +437,88 @@ def uninstall_pack(pack_id: str) -> dict:
         for item in registry["installed_packs"]
         if str(item.get("id") or "") != pack_id
     ]
+
+    existing_pack_ids = (
+        {path.name for path in PACKS_DIR.iterdir() if path.is_dir()}
+        if PACKS_DIR.is_dir()
+        else set()
+    )
+
+    if not existing_pack_ids:
+        created_pack_id = _create_empty_pack(DEFAULT_PACK_ID)
+        existing_pack_ids.add(created_pack_id)
+    else:
+        created_pack_id = ""
+
+    normalized_installed = []
+    seen_pack_ids = set()
+    for item in registry["installed_packs"]:
+        installed_pack_id = str(item.get("id") or "").strip()
+        if (
+            not installed_pack_id
+            or installed_pack_id not in existing_pack_ids
+            or installed_pack_id in seen_pack_ids
+        ):
+            continue
+        normalized_installed.append(item)
+        seen_pack_ids.add(installed_pack_id)
+
+    for missing_pack_id in sorted(existing_pack_ids):
+        if missing_pack_id in seen_pack_ids:
+            continue
+        manifest = _load_manifest(missing_pack_id)
+        normalized_installed.append(
+            {
+                "id": missing_pack_id,
+                "name": str(manifest.get("name") or missing_pack_id),
+                "version": str(manifest.get("version") or "1.0.0"),
+                "enabled": True,
+                "installed_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    registry["installed_packs"] = normalized_installed
     _save_registry(registry)
 
     selection_rules = _load_selection_rules()
-    selection_rules["rules"] = [
-        rule
-        for rule in selection_rules.get("rules", [])
-        if str(rule.get("pack_id") or "") != pack_id
-    ]
-    if not any(
-        str(rule.get("scope") or "") == "default" for rule in selection_rules["rules"]
+    next_default_pack_id = ""
+    if (
+        previous_default_pack_id
+        and previous_default_pack_id != pack_id
+        and (PACKS_DIR / previous_default_pack_id).is_dir()
     ):
-        fallback = (
-            DEFAULT_PACK_ID
-            if (PACKS_DIR / DEFAULT_PACK_ID).is_dir()
-            else LEGACY_MIGRATED_PACK_ID
-        )
-        selection_rules["rules"].append(
-            {"id": "default", "scope": "default", "pack_id": fallback}
-        )
+        next_default_pack_id = previous_default_pack_id
+    elif normalized_installed:
+        next_default_pack_id = str(normalized_installed[0].get("id") or "").strip()
+    if not next_default_pack_id:
+        next_default_pack_id = DEFAULT_PACK_ID
+
+    normalized_rules = []
+    for rule in selection_rules.get("rules", []):
+        if not isinstance(rule, dict):
+            continue
+        scope = str(rule.get("scope") or "").strip().lower()
+        rule_pack_id = str(rule.get("pack_id") or "").strip()
+        if not rule_pack_id or rule_pack_id == pack_id:
+            continue
+        if scope == "default":
+            continue
+        if not (PACKS_DIR / rule_pack_id).is_dir():
+            continue
+        normalized_rules.append(rule)
+
+    normalized_rules.append(
+        {"id": "default", "scope": "default", "pack_id": next_default_pack_id}
+    )
+    selection_rules["rules"] = normalized_rules
     _save_selection_rules(selection_rules)
 
-    return {"pack_id": pack_id}
+    return {
+        "pack_id": pack_id,
+        "switched_default_to": next_default_pack_id,
+        "auto_created_empty_pack": bool(created_pack_id),
+        "created_pack_id": created_pack_id or None,
+    }
 
 
 def _download_github_archive(repo: str, ref: str, target_zip_path: Path) -> None:
@@ -488,7 +604,12 @@ def install_pack_from_github_source(
 
         extract_dir = tmp_root / "extract"
         extract_dir.mkdir(parents=True, exist_ok=True)
-        _extract_zip_safely(remote_zip, extract_dir)
+        # 远程仓库可能包含与 pack 无关的脚本文件；这里只做路径安全校验。
+        _extract_zip_safely(
+            remote_zip,
+            extract_dir,
+            block_executable_scripts=False,
+        )
 
         roots = [child for child in extract_dir.iterdir() if child.is_dir()]
         if len(roots) != 1:

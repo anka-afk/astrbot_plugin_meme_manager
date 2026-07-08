@@ -1,22 +1,14 @@
-import asyncio
-import logging
-import os
 import re
-import ssl
-import time
-import traceback
+import functools
 from typing import Optional
 
-import aiohttp
 from astrbot.api import logger
 from astrbot.api.all import *
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import EventMessageType
 from astrbot.api.message_components import *
-from astrbot.api.provider import LLMResponse, ProviderRequest
+from astrbot.api.provider import ProviderRequest, LLMResponse
 from astrbot.api.star import Context, Star
-from astrbot.core.message.components import Plain
-from astrbot.core.message.message_event_result import MessageChain, ResultContentType
 
 from .backend.category_manager import CategoryManager
 from .config import MEMES_DATA_PATH, MEMES_DIR, DEFAULT_CATEGORY_DESCRIPTIONS
@@ -158,6 +150,27 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
 
         # 注册 WebUI API
         self._register_web_apis()
+
+    @filter.event_message_type(EventMessageType.ALL)
+    async def handle_upload_image(self, event: AstrMessageEvent):
+        async for result in self._handle_upload_image_impl(event):
+            yield result
+
+    @filter.on_llm_request(priority=99999)
+    async def inject_meme_prompt(self, event: AstrMessageEvent, req: ProviderRequest):
+        return await self._inject_meme_prompt_impl(event, req)
+
+    @filter.on_llm_response(priority=99999)
+    async def resp(self, event: AstrMessageEvent, response: LLMResponse):
+        return await self._resp_impl(event, response)
+
+    @filter.on_decorating_result(priority=99999)
+    async def on_decorating_result(self, event: AstrMessageEvent):
+        return await self._on_decorating_result_impl(event)
+
+    @filter.after_message_sent()
+    async def after_message_sent(self, event: AstrMessageEvent):
+        return await self._after_message_sent_impl(event)
 
     def _get_image_host_type(self) -> str:
         image_host = self.config.get("image_host", "stardots")

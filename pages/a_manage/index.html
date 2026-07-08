@@ -20,6 +20,40 @@
       .fa-cloud-arrow-down {
         color: #3498db;
       }
+      .empty-pack-hint {
+        margin-bottom: 16px;
+        padding: 14px 16px;
+        border-radius: 12px;
+        border: 1px solid #d7e8dd;
+        background: #f4fbf7;
+      }
+      .empty-pack-hint-title {
+        margin: 0;
+        font-size: 15px;
+        color: #235a43;
+      }
+      .empty-pack-hint-meta {
+        margin: 8px 0 0;
+        color: #476958;
+        font-size: 13px;
+      }
+      .empty-pack-hint-actions {
+        margin-top: 10px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .empty-pack-hint-actions a,
+      .empty-pack-hint-actions button {
+        border-radius: 999px;
+        border: 1px solid #2f7d5c;
+        background: #fff;
+        color: #2f7d5c;
+        padding: 6px 12px;
+        text-decoration: none;
+        font-size: 13px;
+        cursor: pointer;
+      }
     </style>
   </head>
   <body class="app-page">
@@ -40,11 +74,36 @@
           <p class="page-subtitle">
             支持批量选择、拖拽移动、图床同步和移动端管理。
           </p>
+          <div class="manage-pack-switch-row">
+            <label for="manage-pack-select">管理表情包</label>
+            <select
+              id="manage-pack-select"
+              aria-label="选择管理的表情包"
+            ></select>
+            <button id="switch-manage-pack-btn" type="button" class="secondary">
+              切换
+            </button>
+            <button id="delete-manage-pack-btn" type="button" class="danger">
+              删除当前表情包
+            </button>
+            <span id="manage-pack-switch-meta" class="manage-pack-switch-meta"
+              >当前: --</span
+            >
+          </div>
           <p class="page-subtitle">
-            <a href="../catalog/index.html">前往表情包资源广场</a>
+            <a
+              href="../catalog/index.html"
+              data-nav-target="../catalog/index.html"
+              data-nav-view="catalog"
+              >前往表情包资源广场</a
+            >
           </p>
           <p class="page-subtitle">
-            <a href="../settings/index.html">前往表情包设置中心</a>
+            <a
+              href="../settings/index.html"
+              data-nav-target="../settings/index.html"
+              >前往表情包设置中心</a
+            >
           </p>
         </div>
       </div>

@@ -1,25 +1,88 @@
 async function initCatalogPage() {
   await window.AstrBotPluginPage.ready();
 
-  const indexUrlInput = document.getElementById("index-url-input");
-  const fetchIndexBtn = document.getElementById("fetch-index-btn");
-  const loadCacheBtn = document.getElementById("load-cache-btn");
-  const indexMeta = document.getElementById("index-meta");
-  const overwriteCheckbox = document.getElementById("overwrite-checkbox");
-  const defaultCheckbox = document.getElementById("default-checkbox");
-  const refreshInstalledBtn = document.getElementById("refresh-installed-btn");
+  const FIXED_INDEX_URL =
+    "https://raw.githubusercontent.com/anka-afk/astrbot-meme-pack-index/main/community-index.json";
+
+  function withCurrentAuthParams(targetPath, extraParams = {}) {
+    const nextUrl = new URL(targetPath, window.location.href);
+    const currentParams = new URLSearchParams(window.location.search);
+    for (const [key, value] of currentParams.entries()) {
+      if (key === "asset_token") {
+        continue;
+      }
+      if (!nextUrl.searchParams.has(key)) {
+        nextUrl.searchParams.set(key, value);
+      }
+    }
+    for (const [key, value] of Object.entries(extraParams)) {
+      if (value === null || value === undefined || value === "") {
+        nextUrl.searchParams.delete(key);
+      } else {
+        nextUrl.searchParams.set(key, String(value));
+      }
+    }
+    return nextUrl;
+  }
+
+  let navAuthToken = "";
+  async function ensureNavAuthToken() {
+    if (navAuthToken) {
+      return navAuthToken;
+    }
+    try {
+      const response =
+        await window.AstrBotPluginPage.apiGet("bridge/auth_token");
+      navAuthToken = String(response?.token || "").trim();
+    } catch (_) {
+      navAuthToken = "";
+    }
+    return navAuthToken;
+  }
+
+  async function applySecureNavLinks() {
+    const token = await ensureNavAuthToken();
+    document.querySelectorAll("a[data-nav-target]").forEach((link) => {
+      const targetPath = link.getAttribute("data-nav-target");
+      if (!targetPath) {
+        return;
+      }
+      const nextUrl = withCurrentAuthParams(targetPath, {
+        asset_token: token || null,
+      });
+      link.href = nextUrl.toString();
+    });
+  }
+
   const sourceRepoInput = document.getElementById("source-repo-input");
   const sourceRefInput = document.getElementById("source-ref-input");
   const sourceSubpathInput = document.getElementById("source-subpath-input");
   const installSourceBtn = document.getElementById("install-source-btn");
+  const installDialog = document.getElementById("install-dialog");
+  const installDialogPackName = document.getElementById(
+    "install-dialog-pack-name",
+  );
+  const installDialogOverwriteCheckbox = document.getElementById(
+    "install-overwrite-checkbox",
+  );
+  const installDialogDefaultCheckbox = document.getElementById(
+    "install-default-checkbox",
+  );
+  const installDialogCancel = document.getElementById("install-dialog-cancel");
+  const installDialogConfirm = document.getElementById(
+    "install-dialog-confirm",
+  );
   const officialGrid = document.getElementById("official-grid");
   const communityGrid = document.getElementById("community-grid");
   const officialPackCount = document.getElementById("official-pack-count");
   const communityPackCount = document.getElementById("community-pack-count");
   const logList = document.getElementById("log-list");
 
+  await applySecureNavLinks();
+
   let cachedIndex = null;
   let installedPackIds = new Set();
+  let pendingInstallAction = null;
 
   async function apiGet(endpoint, params = {}) {
     return window.AstrBotPluginPage.apiGet(endpoint, params);
@@ -50,6 +113,36 @@ async function initCatalogPage() {
     if (button.dataset.originalHtml) {
       button.innerHTML = button.dataset.originalHtml;
     }
+  }
+
+  function openInstallDialog(packName, onConfirm) {
+    pendingInstallAction = onConfirm;
+    installDialogPackName.textContent = `目标: ${packName || "未命名"}`;
+    installDialogOverwriteCheckbox.checked = false;
+    installDialogDefaultCheckbox.checked = false;
+    installDialog.classList.remove("hidden");
+    installDialog.setAttribute("aria-hidden", "false");
+  }
+
+  function closeInstallDialog() {
+    pendingInstallAction = null;
+    installDialog.classList.add("hidden");
+    installDialog.setAttribute("aria-hidden", "true");
+  }
+
+  async function confirmInstallDialog() {
+    if (!pendingInstallAction) {
+      closeInstallDialog();
+      return;
+    }
+    const handler = pendingInstallAction;
+    pendingInstallAction = null;
+    const options = {
+      overwrite: installDialogOverwriteCheckbox.checked,
+      setAsDefault: installDialogDefaultCheckbox.checked,
+    };
+    closeInstallDialog();
+    await handler(options);
   }
 
   async function refreshInstalledSet() {
@@ -112,9 +205,11 @@ async function initCatalogPage() {
     installBtn.textContent = isInstalled ? "已安装" : "安装";
     installBtn.className = isInstalled ? "ghost" : "";
     installBtn.disabled = isInstalled;
-    installBtn.addEventListener("click", () =>
-      installByPackId(pack.id, installBtn),
-    );
+    installBtn.addEventListener("click", () => {
+      openInstallDialog(pack.name || pack.id || "未命名", async (options) => {
+        await installByPack(pack, installBtn, options);
+      });
+    });
 
     titleRow.appendChild(titleWrap);
     titleRow.appendChild(installBtn);
@@ -177,7 +272,7 @@ async function initCatalogPage() {
 
     if (!officialPacks.length) {
       officialGrid.classList.add("empty");
-      officialGrid.innerHTML = "<p>暂无官方包，请先拉取索引。</p>";
+      officialGrid.innerHTML = "<p>暂无官方包。</p>";
     } else {
       officialGrid.classList.remove("empty");
       officialGrid.innerHTML = "";
@@ -188,7 +283,7 @@ async function initCatalogPage() {
 
     if (!communityPacks.length) {
       communityGrid.classList.add("empty");
-      communityGrid.innerHTML = "<p>暂无社区包，请先拉取或读取缓存索引。</p>";
+      communityGrid.innerHTML = "<p>暂无社区包。</p>";
       return;
     }
 
@@ -199,30 +294,10 @@ async function initCatalogPage() {
     }
   }
 
-  function updateIndexMeta() {
-    if (!cachedIndex) {
-      indexMeta.textContent = "尚未加载索引。";
-      return;
-    }
-    const sourceUrl = cachedIndex.source_url || "未知来源";
-    const fetchedAt = cachedIndex.fetched_at || "未知时间";
-    const count = Array.isArray(cachedIndex?.index?.packs)
-      ? cachedIndex.index.packs.length
-      : 0;
-    indexMeta.textContent = `来源: ${sourceUrl} | 缓存时间: ${fetchedAt} | 条目: ${count}`;
-  }
-
   async function fetchIndex() {
-    const indexUrl = String(indexUrlInput.value || "").trim();
-    if (!indexUrl) {
-      addLog("请先填写索引 URL", true);
-      return;
-    }
-
-    setLoading(fetchIndexBtn, "拉取中...");
     try {
       const response = await apiPost("community/index/fetch", {
-        index_url: indexUrl,
+        index_url: FIXED_INDEX_URL,
       });
       cachedIndex = {
         fetched_at: response.fetched_at,
@@ -230,18 +305,14 @@ async function initCatalogPage() {
         index: response.index,
       };
       await refreshInstalledSet();
-      updateIndexMeta();
       renderCatalog();
       addLog(`索引拉取成功，共 ${response.pack_count || 0} 个条目`);
     } catch (error) {
       addLog(`索引拉取失败: ${error?.message || String(error)}`, true);
-    } finally {
-      clearLoading(fetchIndexBtn);
     }
   }
 
-  async function loadCachedIndex() {
-    setLoading(loadCacheBtn, "读取中...");
+  async function loadCachedIndex({ silentOnMissing = false } = {}) {
     try {
       const response = await apiGet("community/index/cache");
       cachedIndex = {
@@ -250,17 +321,25 @@ async function initCatalogPage() {
         index: response.index,
       };
       await refreshInstalledSet();
-      updateIndexMeta();
       renderCatalog();
       addLog(`已读取缓存索引，共 ${response.pack_count || 0} 个条目`);
+      return true;
     } catch (error) {
-      addLog(`读取缓存失败: ${error?.message || String(error)}`, true);
-    } finally {
-      clearLoading(loadCacheBtn);
+      const errorMessage = error?.message || String(error);
+      const isMissingCache = errorMessage.includes("缓存不存在");
+      if (!(silentOnMissing && isMissingCache)) {
+        addLog(`读取缓存失败: ${errorMessage}`, true);
+      }
+      return false;
     }
   }
 
-  async function installByPackId(packId, button) {
+  async function installByPack(pack, button, options = {}) {
+    const packId = String(pack?.id || "").trim();
+    const source =
+      pack && typeof pack.source === "object" && pack.source
+        ? pack.source
+        : null;
     if (!packId) {
       addLog("无效的 pack_id", true);
       return;
@@ -268,11 +347,16 @@ async function initCatalogPage() {
 
     setLoading(button, "安装中...");
     try {
-      const response = await apiPost("community/install", {
+      const payload = {
         pack_id: packId,
-        overwrite: overwriteCheckbox.checked,
-        set_as_default: defaultCheckbox.checked,
-      });
+        overwrite: Boolean(options.overwrite),
+        set_as_default: Boolean(options.setAsDefault),
+      };
+      if (source) {
+        payload.source = source;
+      }
+
+      const response = await apiPost("community/install", payload);
       addLog(`安装成功: ${response.pack_id} ${response.version || ""}`);
       await refreshInstalledSet();
       renderCatalog();
@@ -283,7 +367,7 @@ async function initCatalogPage() {
     }
   }
 
-  async function installBySource() {
+  async function installBySource(options = {}) {
     const repo = String(sourceRepoInput.value || "").trim();
     const ref = String(sourceRefInput.value || "").trim();
     const subpath = String(sourceSubpathInput.value || "").trim();
@@ -302,8 +386,8 @@ async function initCatalogPage() {
           ref,
           subpath,
         },
-        overwrite: overwriteCheckbox.checked,
-        set_as_default: defaultCheckbox.checked,
+        overwrite: Boolean(options.overwrite),
+        set_as_default: Boolean(options.setAsDefault),
       });
       addLog(`按来源安装成功: ${response.pack_id} ${response.version || ""}`);
       await refreshInstalledSet();
@@ -315,36 +399,35 @@ async function initCatalogPage() {
     }
   }
 
-  fetchIndexBtn.addEventListener("click", () => {
-    void fetchIndex();
-  });
-
-  loadCacheBtn.addEventListener("click", () => {
-    void loadCachedIndex();
-  });
-
-  refreshInstalledBtn.addEventListener("click", async () => {
-    setLoading(refreshInstalledBtn, "刷新中...");
-    await refreshInstalledSet();
-    renderCatalog();
-    addLog("已刷新安装状态");
-    clearLoading(refreshInstalledBtn);
-  });
-
   installSourceBtn.addEventListener("click", () => {
-    void installBySource();
+    openInstallDialog("手动来源安装", async (options) => {
+      await installBySource(options);
+    });
+  });
+
+  installDialogCancel.addEventListener("click", () => {
+    closeInstallDialog();
+  });
+
+  installDialogConfirm.addEventListener("click", () => {
+    void confirmInstallDialog();
+  });
+
+  installDialog.addEventListener("click", (event) => {
+    if (event.target === installDialog) {
+      closeInstallDialog();
+    }
   });
 
   await refreshInstalledSet();
-  updateIndexMeta();
   renderCatalog();
   addLog("资源广场已就绪");
-
-  try {
-    await loadCachedIndex();
-  } catch (_) {
-    // 首次进入时允许没有缓存
+  const hasCache = await loadCachedIndex({ silentOnMissing: true });
+  if (hasCache) {
+    await fetchIndex();
+    return;
   }
+  await fetchIndex();
 }
 
 void initCatalogPage();

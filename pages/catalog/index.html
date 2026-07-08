@@ -18,50 +18,40 @@
         <p class="subtitle">下载官方与社区表情包，支持缓存索引与一键安装。</p>
       </div>
       <div class="nav-actions">
-        <a class="nav-link" href="../manage/index.html"
+        <a
+          class="nav-link"
+          href="../a_manage/index.html"
+          data-nav-target="../a_manage/index.html"
           ><i class="fas fa-gear icon"></i>返回管理页</a
         >
-        <a class="nav-link" href="../settings/index.html"
+        <a
+          class="nav-link"
+          href="../settings/index.html"
+          data-nav-target="../settings/index.html"
           ><i class="fas fa-sliders icon"></i>设置中心</a
         >
       </div>
     </header>
 
     <main class="layout">
-      <section class="panel controls">
-        <h2><i class="fas fa-link icon"></i>索引控制</h2>
-        <div class="field-row">
-          <label for="index-url-input">社区索引 URL</label>
-          <input
-            id="index-url-input"
-            type="text"
-            placeholder="https://example.com/community-index.json"
-          />
+      <section class="panel catalog-list official-zone">
+        <div class="panel-header">
+          <h2><i class="fas fa-crown icon"></i>官方包</h2>
+          <span id="official-pack-count" class="badge">0</span>
         </div>
-        <div class="button-row">
-          <button id="fetch-index-btn">
-            <i class="fas fa-cloud-arrow-down icon"></i>拉取并缓存索引
-          </button>
-          <button id="load-cache-btn" class="secondary">
-            <i class="fas fa-database icon"></i>读取缓存索引
-          </button>
+        <div id="official-grid" class="catalog-grid empty">
+          <p>暂无官方包。</p>
         </div>
-        <p id="index-meta" class="meta">尚未加载索引。</p>
       </section>
 
-      <section class="panel install-options">
-        <h2><i class="fas fa-screwdriver-wrench icon"></i>安装选项</h2>
-        <label class="checkbox">
-          <input id="overwrite-checkbox" type="checkbox" />
-          <span>覆盖同名表情包</span>
-        </label>
-        <label class="checkbox">
-          <input id="default-checkbox" type="checkbox" />
-          <span>安装后设为默认</span>
-        </label>
-        <button id="refresh-installed-btn" class="ghost">
-          <i class="fas fa-rotate icon"></i>刷新已安装列表
-        </button>
+      <section class="panel catalog-list community-zone">
+        <div class="panel-header">
+          <h2><i class="fas fa-users icon"></i>社区包</h2>
+          <span id="community-pack-count" class="badge">0</span>
+        </div>
+        <div id="community-grid" class="catalog-grid empty">
+          <p>暂无社区包。</p>
+        </div>
       </section>
 
       <section class="panel manual-source">
@@ -95,32 +85,33 @@
         </div>
       </section>
 
-      <section class="panel catalog-list official-zone">
-        <div class="panel-header">
-          <h2><i class="fas fa-crown icon"></i>官方包置顶专区</h2>
-          <span id="official-pack-count" class="badge">0</span>
-        </div>
-        <p class="meta">该区域只展示官方包，不与社区包混排。</p>
-        <div id="official-grid" class="catalog-grid empty">
-          <p>暂无官方包，请先拉取索引。</p>
-        </div>
-      </section>
-
-      <section class="panel catalog-list community-zone">
-        <div class="panel-header">
-          <h2><i class="fas fa-users icon"></i>社区包列表</h2>
-          <span id="community-pack-count" class="badge">0</span>
-        </div>
-        <div id="community-grid" class="catalog-grid empty">
-          <p>暂无社区包，请先拉取或读取缓存索引。</p>
-        </div>
-      </section>
-
-      <section class="panel">
+      <section class="panel log-panel">
         <h2><i class="fas fa-list-check icon"></i>操作日志</h2>
         <div id="log-list" class="log-list"></div>
       </section>
     </main>
+
+    <div id="install-dialog" class="dialog-mask hidden" aria-hidden="true">
+      <div class="dialog-card" role="dialog" aria-modal="true">
+        <h3><i class="fas fa-download icon"></i>安装选项</h3>
+        <p id="install-dialog-pack-name" class="dialog-meta"></p>
+        <label class="checkbox">
+          <input id="install-overwrite-checkbox" type="checkbox" />
+          <span>覆盖同名表情包</span>
+        </label>
+        <p class="dialog-tip">未勾选覆盖时，将自动为新安装包追加后缀。</p>
+        <label class="checkbox">
+          <input id="install-default-checkbox" type="checkbox" />
+          <span>安装后设为默认</span>
+        </label>
+        <div class="dialog-actions">
+          <button id="install-dialog-cancel" class="ghost" type="button">
+            取消
+          </button>
+          <button id="install-dialog-confirm" type="button">确认安装</button>
+        </div>
+      </div>
+    </div>
 
     <script type="module" src="./script.js"></script>
   </body>

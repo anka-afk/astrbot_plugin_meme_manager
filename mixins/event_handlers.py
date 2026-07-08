@@ -19,7 +19,6 @@ from astrbot.api.message_components import *
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.core.message.components import Plain
 from astrbot.core.message.message_event_result import MessageChain, ResultContentType
-from astrbot.core.utils.session_waiter import SessionController, session_waiter
 
 from ..config import MEMES_DIR
 
@@ -27,8 +26,7 @@ from ..config import MEMES_DIR
 class EventHandlerMixin:
     """处理图片上传、LLM 响应解析、消息装饰等事件"""
 
-    @filter.event_message_type(EventMessageType.ALL)
-    async def handle_upload_image(self, event: AstrMessageEvent):
+    async def _handle_upload_image_impl(self, event: AstrMessageEvent):
         user_key = f"{event.session_id}_{event.get_sender_id()}"
         upload_state = self.upload_states.get(user_key)
         if not upload_state or time.time() > upload_state["expire_time"]:
@@ -97,14 +95,12 @@ class EventHandlerMixin:
         except Exception as e:
             yield event.plain_result(f"保存失败了：{str(e)}")
 
-    @filter.on_llm_request(priority=99999)
-    async def inject_meme_prompt(
+    async def _inject_meme_prompt_impl(
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
         self._apply_request_prompt(req, event)
 
-    @filter.on_llm_response(priority=99999)
-    async def resp(self, event: AstrMessageEvent, response: LLMResponse):
+    async def _resp_impl(self, event: AstrMessageEvent, response: LLMResponse):
         """处理 LLM 响应，识别表情"""
 
         if not response or not response.completion_text:
@@ -352,8 +348,7 @@ class EventHandlerMixin:
             except Exception as e:
                 logger.error(f"[meme_manager] webchat 流式文本替换失败: {e}")
 
-    @filter.on_decorating_result(priority=99999)
-    async def on_decorating_result(self, event: AstrMessageEvent):
+    async def _on_decorating_result_impl(self, event: AstrMessageEvent):
         """在消息发送前清理文本中的表情标签，并添加表情图片"""
         logger.debug("[meme_manager] on_decorating_result 开始处理")
 
@@ -519,7 +514,7 @@ class EventHandlerMixin:
             logger.error(traceback.format_exc())
 
     @filter.after_message_sent()
-    async def after_message_sent(self, event: AstrMessageEvent):
+    async def _after_message_sent_impl(self, event: AstrMessageEvent):
         """消息发送后处理。用于发送未混合的表情图片。"""
         pending_images = event.get_extra("meme_manager_pending_images")
 
