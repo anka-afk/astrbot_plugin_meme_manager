@@ -300,7 +300,7 @@ async function initApp() {
     firstUseCatalogGuideShown = true;
     const confirmed = await showConfirm({
       title: "第一次使用？",
-      description: "可以前往资源广场下载官方表情包？",
+      description: "可以前往资源广场下载官方表情包哦。",
       confirmLabel: "前往广场",
     });
     if (!confirmed) {
