@@ -301,6 +301,46 @@ button:disabled {
   transition: transform 0.2s ease;
 }
 
+.pack-cover {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(214, 229, 225, 0.9);
+  background:
+    radial-gradient(
+      circle at 14% 20%,
+      rgba(29, 138, 102, 0.18),
+      transparent 38%
+    ),
+    radial-gradient(
+      circle at 84% 18%,
+      rgba(31, 111, 176, 0.16),
+      transparent 34%
+    ),
+    linear-gradient(140deg, #f2f8f6 0%, #edf6fb 100%);
+}
+
+.pack-cover.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pack-cover.empty::after {
+  content: "暂无封面";
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: #5c7378;
+}
+
+.pack-cover-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
 .pack-card:hover {
   transform: translateY(-2px);
 }
