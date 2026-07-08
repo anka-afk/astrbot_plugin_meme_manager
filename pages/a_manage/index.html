@@ -59,22 +59,23 @@
   <body class="app-page">
     <header class="page-header">
       <div class="page-header-main">
-        <button
-          id="sidebar-toggle-btn"
-          class="sidebar-toggle"
-          type="button"
-          aria-expanded="true"
-          aria-controls="app-sidebar-panel app-directory-panel"
-          aria-label="切换侧边栏"
-        >
-          <i class="fas fa-bars icon"></i>侧栏
-        </button>
         <div class="page-title-block">
+          <p class="eyebrow">Meme Pack Manager</p>
           <h1><i class="fas fa-face-grin-beam icon"></i>表情包管理</h1>
           <p class="page-subtitle">
             支持批量选择、拖拽移动、图床同步和移动端管理。
           </p>
           <div class="manage-pack-switch-row">
+            <button
+              id="sidebar-toggle-btn"
+              class="sidebar-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-controls="app-sidebar-panel app-directory-panel"
+              aria-label="切换侧边栏"
+            >
+              <i class="fas fa-bars icon"></i>侧栏
+            </button>
             <label for="manage-pack-select">管理表情包</label>
             <select
               id="manage-pack-select"
@@ -90,22 +91,22 @@
               >当前: --</span
             >
           </div>
-          <p class="page-subtitle">
-            <a
-              href="../catalog/index.html"
-              data-nav-target="../catalog/index.html"
-              data-nav-view="catalog"
-              >前往表情包资源广场</a
-            >
-          </p>
-          <p class="page-subtitle">
-            <a
-              href="../settings/index.html"
-              data-nav-target="../settings/index.html"
-              >前往表情包设置中心</a
-            >
-          </p>
         </div>
+      </div>
+      <div class="nav-actions">
+        <a
+          class="nav-link"
+          href="../catalog/index.html"
+          data-nav-target="../catalog/index.html"
+          data-nav-view="catalog"
+          >资源广场</a
+        >
+        <a
+          class="nav-link"
+          href="../settings/index.html"
+          data-nav-target="../settings/index.html"
+          >设置中心</a
+        >
       </div>
     </header>
 
@@ -165,22 +166,36 @@
                 <span id="remote-storage-size">--</span>
               </p>
             </div>
-            <p>
-              <i class="fas fa-upload icon"></i>待上传:
-              <span id="upload-count">0</span> 个文件
-            </p>
-            <p>
-              <i class="fas fa-download icon"></i>待下载:
-              <span id="download-count">0</span> 个文件
-            </p>
-            <p>
-              <i class="fas fa-cloud icon"></i>云端多出:
-              <span id="remote-extra-count">0</span> 个文件
-            </p>
-            <p>
-              <i class="fas fa-folder-plus icon"></i>本地多出:
-              <span id="local-extra-count">0</span> 个文件
-            </p>
+            <div class="sync-metrics-summary">
+              <p class="sync-metric-item">
+                <i class="fas fa-upload icon"></i>
+                <span class="sync-metric-label">待上传</span>
+                <span class="sync-metric-value"
+                  ><span id="upload-count">0</span> 个文件</span
+                >
+              </p>
+              <p class="sync-metric-item">
+                <i class="fas fa-download icon"></i>
+                <span class="sync-metric-label">待下载</span>
+                <span class="sync-metric-value"
+                  ><span id="download-count">0</span> 个文件</span
+                >
+              </p>
+              <p class="sync-metric-item">
+                <i class="fas fa-cloud icon"></i>
+                <span class="sync-metric-label">云端多出</span>
+                <span class="sync-metric-value"
+                  ><span id="remote-extra-count">0</span> 个文件</span
+                >
+              </p>
+              <p class="sync-metric-item">
+                <i class="fas fa-folder-plus icon"></i>
+                <span class="sync-metric-label">本地多出</span>
+                <span class="sync-metric-value"
+                  ><span id="local-extra-count">0</span> 个文件</span
+                >
+              </p>
+            </div>
             <p id="img-host-sync-progress" class="sync-progress-message hidden">
               <i class="fas fa-spinner fa-spin icon"></i>
               <span id="img-host-sync-progress-text">同步准备中...</span>

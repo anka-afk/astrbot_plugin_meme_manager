@@ -1,17 +1,24 @@
 :root {
-  --brand: #1862a7;
-  --brand-2: #1f8f6b;
-  --danger: #c63f33;
-  --ink: #1f2a34;
-  --muted: #637487;
-  --line: #d6e1eb;
-  --panel: #ffffff;
-  --bg: radial-gradient(
-    circle at 16% 20%,
-    #eef6ff 0%,
-    #e9f2ff 32%,
-    #f5fbff 100%
-  );
+  --brand: #1d8a66;
+  --brand-strong: #176d51;
+  --brand-soft: #e7f5ef;
+  --accent: #1f6fb0;
+  --danger: #cb3f31;
+  --ink: #1b2a2f;
+  --muted: #5d6f74;
+  --line: #d6e5e1;
+  --panel: rgba(255, 255, 255, 0.96);
+  --bg:
+    radial-gradient(circle at 8% 12%, rgba(29, 138, 102, 0.2), transparent 34%),
+    radial-gradient(
+      circle at 92% 10%,
+      rgba(31, 111, 176, 0.2),
+      transparent 30%
+    ),
+    linear-gradient(130deg, #f4faf7 0%, #ecf6f9 50%, #f8fcff 100%);
+  --shadow-sm: 0 12px 24px rgba(20, 56, 59, 0.08);
+  --shadow-md: 0 18px 42px rgba(20, 56, 59, 0.12);
+  --radius: 16px;
 }
 
 * {
@@ -21,31 +28,35 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family:
+    "Noto Sans SC", "Segoe UI Variable", "PingFang SC", "Microsoft YaHei",
+    sans-serif;
   color: var(--ink);
   background: var(--bg);
 }
 
 .page-header {
-  max-width: 1260px;
+  max-width: 1280px;
   margin: 0 auto;
-  padding: 24px 22px 10px;
+  padding: 26px 22px 10px;
   display: flex;
   justify-content: space-between;
-  gap: 12px;
+  align-items: flex-start;
+  gap: 14px;
 }
 
 .eyebrow {
   margin: 0 0 8px;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   font-size: 12px;
   color: var(--muted);
 }
 
 h1 {
   margin: 0;
-  font-size: 30px;
+  font-size: clamp(26px, 2.9vw, 34px);
+  letter-spacing: 0.01em;
 }
 
 .subtitle {
@@ -54,26 +65,31 @@ h1 {
 }
 
 .icon {
-  margin-right: 6px;
+  margin-right: 8px;
 }
 
 .nav-actions {
   display: flex;
   gap: 10px;
-  align-items: flex-start;
+  flex-wrap: wrap;
 }
 
 .nav-link {
   text-decoration: none;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(214, 229, 225, 0.94);
   border-radius: 999px;
-  padding: 8px 13px;
-  color: var(--brand);
-  background: rgba(255, 255, 255, 0.85);
+  padding: 9px 14px;
+  color: var(--brand-strong);
+  background: rgba(255, 255, 255, 0.88);
+  transition: transform 0.2s ease;
+}
+
+.nav-link:hover {
+  transform: translateY(-1px);
 }
 
 .layout {
-  max-width: 1260px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 10px 22px 24px;
   display: grid;
@@ -82,11 +98,12 @@ h1 {
 }
 
 .panel {
-  border: 1px solid var(--line);
-  border-radius: 14px;
+  border: 1px solid rgba(214, 229, 225, 0.94);
+  border-radius: var(--radius);
   background: var(--panel);
   padding: 16px;
-  box-shadow: 0 12px 28px rgba(23, 55, 89, 0.1);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(8px);
 }
 
 .rules-panel {
@@ -134,9 +151,9 @@ h1 {
 
 .validation {
   margin-bottom: 10px;
-  border: 1px solid #efc7bb;
-  background: #fff5f2;
-  color: #8a2d1f;
+  border: 1px solid #f2cbc4;
+  background: #fff7f5;
+  color: #8b3225;
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 13px;
@@ -147,19 +164,20 @@ h1 {
 }
 
 .rule-item {
-  border: 1px solid var(--line);
+  border: 1px solid rgba(214, 229, 225, 0.96);
   border-radius: 12px;
   padding: 12px;
   display: grid;
   gap: 10px;
+  background: #fff;
 }
 
 .rule-item.dragging {
-  opacity: 0.55;
+  opacity: 0.58;
 }
 
 .rule-item.drop-target {
-  outline: 2px dashed #5b88bb;
+  outline: 2px dashed rgba(31, 111, 176, 0.72);
   outline-offset: 2px;
 }
 
@@ -171,9 +189,9 @@ h1 {
 }
 
 .drag-handle {
-  border: 1px solid var(--line);
-  background: #f0f6fc;
-  color: #3e5f80;
+  border: 1px solid rgba(214, 229, 225, 0.96);
+  background: #f1f8f5;
+  color: #305a62;
   border-radius: 8px;
   padding: 5px 9px;
   font-size: 12px;
@@ -186,7 +204,7 @@ h1 {
 
 .rule-item.default {
   border-style: dashed;
-  background: #f7fbff;
+  background: linear-gradient(180deg, #f8fcfa, #f3fbff);
 }
 
 .rule-grid {
@@ -209,10 +227,19 @@ input[type="text"],
 select,
 input[type="file"] {
   width: 100%;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(214, 229, 225, 0.96);
   border-radius: 10px;
-  padding: 9px 10px;
+  padding: 10px;
   font-size: 14px;
+  background: rgba(255, 255, 255, 0.95);
+}
+
+input[type="text"]:focus,
+select:focus,
+input[type="file"]:focus {
+  outline: none;
+  border-color: rgba(29, 138, 102, 0.7);
+  box-shadow: 0 0 0 3px rgba(29, 138, 102, 0.14);
 }
 
 .rule-actions {
@@ -224,28 +251,34 @@ input[type="file"] {
 button {
   border: none;
   border-radius: 10px;
-  padding: 9px 13px;
+  padding: 10px 14px;
   color: #fff;
-  background: var(--brand);
+  background: linear-gradient(135deg, var(--brand), var(--brand-strong));
   cursor: pointer;
+  transition: transform 0.2s ease;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
 }
 
 button.secondary {
-  background: var(--brand-2);
+  background: linear-gradient(135deg, #2084a3, #176e88);
 }
 
 button.ghost {
-  color: var(--brand);
-  background: #eaf2fb;
+  color: var(--accent);
+  background: #e9f2fa;
 }
 
 button.danger {
-  background: var(--danger);
+  background: linear-gradient(135deg, #d45244, var(--danger));
 }
 
 button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+  transform: none;
 }
 
 .save-row {
@@ -253,10 +286,11 @@ button:disabled {
 }
 
 .block {
-  border: 1px solid var(--line);
+  border: 1px solid rgba(214, 229, 225, 0.94);
   border-radius: 12px;
   padding: 12px;
   margin-bottom: 12px;
+  background: linear-gradient(180deg, #ffffff, #f8fbfb);
 }
 
 .block h3 {
@@ -269,7 +303,7 @@ button:disabled {
   align-items: center;
   gap: 8px;
   margin: 8px 0 12px;
-  color: #3d4f61;
+  color: #345057;
   font-size: 13px;
 }
 
@@ -288,15 +322,15 @@ button:disabled {
 
 .log-item {
   font-size: 13px;
-  border-left: 3px solid #8eb1d6;
-  background: #f5f9ff;
+  border-left: 3px solid #69a8d1;
+  background: #f5faff;
   padding: 8px 10px;
   border-radius: 8px;
 }
 
 .log-item.error {
   border-left-color: var(--danger);
-  background: #fff3f2;
+  background: #fff3f1;
 }
 
 @media (max-width: 980px) {
@@ -312,5 +346,9 @@ button:disabled {
 
   .rule-grid {
     grid-template-columns: 1fr;
+  }
+
+  .page-header {
+    flex-direction: column;
   }
 }

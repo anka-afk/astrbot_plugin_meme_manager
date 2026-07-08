@@ -1,15 +1,25 @@
 :root {
-  --brand: #1f8f6b;
-  --brand-strong: #166d51;
-  --ink: #1c2a24;
-  --muted: #5f746a;
-  --panel: #ffffff;
-  --bg: linear-gradient(120deg, #f7fbf9 0%, #e9f4ef 52%, #deefe7 100%);
-  --line: #d7e6df;
+  --brand: #1d8a66;
+  --brand-strong: #176d51;
+  --brand-soft: #e7f5ef;
+  --accent: #1f6fb0;
+  --danger: #cb3f31;
   --warn: #d96b2b;
-  --danger: #cb3f2f;
-  --shadow: 0 12px 30px rgba(17, 54, 39, 0.12);
-  --radius: 14px;
+  --ink: #1b2a2f;
+  --muted: #5d6f74;
+  --line: #d6e5e1;
+  --panel: rgba(255, 255, 255, 0.96);
+  --bg:
+    radial-gradient(circle at 8% 12%, rgba(29, 138, 102, 0.2), transparent 34%),
+    radial-gradient(
+      circle at 92% 10%,
+      rgba(31, 111, 176, 0.2),
+      transparent 30%
+    ),
+    linear-gradient(130deg, #f4faf7 0%, #ecf6f9 50%, #f8fcff 100%);
+  --shadow-sm: 0 12px 24px rgba(20, 56, 59, 0.08);
+  --shadow-md: 0 20px 46px rgba(20, 56, 59, 0.12);
+  --radius: 16px;
 }
 
 * {
@@ -19,7 +29,9 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family:
+    "Noto Sans SC", "Segoe UI Variable", "PingFang SC", "Microsoft YaHei",
+    sans-serif;
   color: var(--ink);
   background: var(--bg);
 }
@@ -37,14 +49,14 @@ body {
 .eyebrow {
   margin: 0 0 8px;
   text-transform: uppercase;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.1em;
   font-size: 12px;
   color: var(--muted);
 }
 
 h1 {
   margin: 0;
-  font-size: 30px;
+  font-size: clamp(26px, 2.9vw, 34px);
 }
 
 .subtitle {
@@ -59,15 +71,21 @@ h1 {
 .nav-actions {
   display: flex;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .nav-link {
   text-decoration: none;
   color: var(--brand-strong);
-  border: 1px solid var(--line);
+  border: 1px solid rgba(214, 229, 225, 0.94);
   border-radius: 999px;
   padding: 10px 14px;
-  background: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.88);
+  transition: transform 0.2s ease;
+}
+
+.nav-link:hover {
+  transform: translateY(-1px);
 }
 
 .layout {
@@ -82,30 +100,25 @@ h1 {
 .panel {
   background: var(--panel);
   border-radius: var(--radius);
-  border: 1px solid var(--line);
-  box-shadow: var(--shadow);
+  border: 1px solid rgba(214, 229, 225, 0.94);
+  box-shadow: var(--shadow-sm);
   padding: 16px;
+  backdrop-filter: blur(8px);
 }
 
-.manual-source {
-  grid-column: span 12;
-}
-
-.catalog-list {
-  grid-column: span 12;
-}
-
+.manual-source,
+.catalog-list,
 .log-panel {
   grid-column: span 12;
 }
 
 .official-zone {
-  border-color: #ecd28a;
-  background: linear-gradient(180deg, #fffdf4 0%, #fff 100%);
+  border-color: #ecd8a2;
+  background: linear-gradient(180deg, #fffdf6 0%, #ffffff 100%);
 }
 
 .community-zone {
-  border-color: #cde2d8;
+  border-color: #cde5da;
 }
 
 .panel h2 {
@@ -127,16 +140,17 @@ h1 {
 
 input[type="text"] {
   width: 100%;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(214, 229, 225, 0.96);
   border-radius: 10px;
   padding: 11px 12px;
   font-size: 14px;
-  transition: border-color 0.2s;
+  background: rgba(255, 255, 255, 0.96);
 }
 
 input[type="text"]:focus {
   outline: none;
-  border-color: var(--brand);
+  border-color: rgba(29, 138, 102, 0.7);
+  box-shadow: 0 0 0 3px rgba(29, 138, 102, 0.14);
 }
 
 .button-row {
@@ -148,29 +162,35 @@ input[type="text"]:focus {
 button {
   border: none;
   border-radius: 10px;
-  background: var(--brand);
+  background: linear-gradient(135deg, var(--brand), var(--brand-strong));
   color: #fff;
   padding: 10px 14px;
   cursor: pointer;
   font-size: 14px;
+  transition: transform 0.2s ease;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
 }
 
 button.secondary {
-  background: #2e6ea8;
+  background: linear-gradient(135deg, #2e7cb3, #246692);
 }
 
 button.ghost {
-  background: #eff6f2;
-  color: var(--brand-strong);
+  background: #e9f2fa;
+  color: var(--accent);
 }
 
 button.danger {
-  background: var(--danger);
+  background: linear-gradient(135deg, #d45244, var(--danger));
 }
 
 button:disabled {
   cursor: not-allowed;
   opacity: 0.6;
+  transform: none;
 }
 
 .checkbox {
@@ -204,9 +224,9 @@ button:disabled {
 .dialog-card {
   width: min(460px, 100%);
   border-radius: 14px;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(214, 229, 225, 0.94);
   background: #fff;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-md);
   padding: 18px;
 }
 
@@ -254,7 +274,7 @@ button:disabled {
   min-width: 28px;
   padding: 4px 10px;
   border-radius: 999px;
-  background: #ebf6f1;
+  background: var(--brand-soft);
   color: var(--brand-strong);
   font-weight: 600;
 }
@@ -271,18 +291,23 @@ button:disabled {
 }
 
 .pack-card {
-  border: 1px solid var(--line);
+  border: 1px solid rgba(214, 229, 225, 0.96);
   border-radius: 12px;
   padding: 12px;
-  background: #fcfefd;
+  background: linear-gradient(180deg, #ffffff, #f9fcfb);
   display: flex;
   flex-direction: column;
   gap: 10px;
+  transition: transform 0.2s ease;
+}
+
+.pack-card:hover {
+  transform: translateY(-2px);
 }
 
 .pack-card.official {
-  border-color: #e2bf58;
-  background: linear-gradient(180deg, #fff9e9 0%, #fff 100%);
+  border-color: #e4c165;
+  background: linear-gradient(180deg, #fff9ea 0%, #fff 100%);
 }
 
 .pack-title-row {
@@ -311,12 +336,12 @@ button:disabled {
   border-radius: 999px;
   padding: 3px 9px;
   font-size: 12px;
-  background: #edf4f0;
+  background: #edf5f1;
   color: #325546;
 }
 
 .tag.verified {
-  background: #e6f4ec;
+  background: #e6f5ed;
   color: #1f744e;
 }
 
@@ -354,10 +379,25 @@ button:disabled {
 
 .log-item {
   font-size: 14px;
-  border-left: 3px solid #a5c8ba;
+  border-left: 3px solid #6eb0d7;
   padding: 10px 12px;
-  background: #f8fcfa;
+  background: #f6fbff;
   border-radius: 8px;
+}
+
+.log-item.error {
+  border-left-color: var(--danger);
+  background: #fff3f1;
+}
+
+@media (max-width: 960px) {
+  .triple-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .page-header {
+    flex-direction: column;
+  }
 }
 
 .log-item.error {
