@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://astrbot.local/schemas/meme-pack-selection-rules.schema.json",
+  "title": "ASTRBOT Meme Pack Selection Rules",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "rules"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/rule"
+      }
+    }
+  },
+  "$defs": {
+    "packId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+    },
+    "baseRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "scope", "pack_id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["persona", "session", "default"]
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "pack_id": {
+          "$ref": "#/$defs/packId"
+        }
+      }
+    },
+    "personaRule": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseRule"
+        },
+        {
+          "properties": {
+            "scope": {
+              "const": "persona"
+            }
+          },
+          "required": ["target"]
+        }
+      ]
+    },
+    "sessionRule": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseRule"
+        },
+        {
+          "properties": {
+            "scope": {
+              "const": "session"
+            }
+          },
+          "required": ["target"]
+        }
+      ]
+    },
+    "defaultRule": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseRule"
+        },
+        {
+          "properties": {
+            "scope": {
+              "const": "default"
+            }
+          },
+          "not": {
+            "required": ["target"]
+          }
+        }
+      ]
+    },
+    "rule": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/personaRule"
+        },
+        {
+          "$ref": "#/$defs/sessionRule"
+        },
+        {
+          "$ref": "#/$defs/defaultRule"
+        }
+      ]
+    }
+  }
+}

@@ -1,8 +1,12 @@
+# Anythin
+AstrBot-master/
+ASTRBOT_MEME_PACK_IMPLEMENTATION_PLAN.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-AstrBot-master/
+
 # C extensions
 *.so
 

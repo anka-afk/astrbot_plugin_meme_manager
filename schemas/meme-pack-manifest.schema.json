@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://astrbot.local/schemas/meme-pack-manifest.schema.json",
+  "title": "ASTRBOT Meme Pack Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "name", "version", "categories"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "homepage": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "uniqueItems": true,
+      "maxItems": 32
+    },
+    "icon": {
+      "$ref": "#/$defs/relativeAssetPath"
+    },
+    "previews": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/relativeAssetPath"
+      },
+      "uniqueItems": true,
+      "maxItems": 32
+    },
+    "source": {
+      "$ref": "#/$defs/sourceDescriptor"
+    },
+    "compat": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_plugin_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "categories": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/categoryDefinition"
+      }
+    }
+  },
+  "$defs": {
+    "relativeAssetPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*\\.\\.)(?!.*\\\\).+"
+    },
+    "sourceDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "repo", "ref", "subpath"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["github"]
+        },
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "maxLength": 200
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "subpath": {
+          "$ref": "#/$defs/relativeDirectoryPath"
+        }
+      }
+    },
+    "relativeDirectoryPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*\\.\\.)(?!.*\\\\).+"
+    },
+    "categoryDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description"],
+      "properties": {
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      }
+    }
+  }
+}
