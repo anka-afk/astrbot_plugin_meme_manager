@@ -1058,21 +1058,61 @@ input[type="file"] {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 10px;
   padding: 5px 0;
 }
 
+.status-section li > span {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
 .action-buttons {
-  display: flex;
-  gap: 5px;
+  margin-left: auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(108px, 108px));
+  gap: 8px;
 }
 
 .sync-btn,
 .restore-btn,
 .remove-btn {
-  padding: 4px 8px;
-  font-size: 12px;
-  border-radius: 4px;
+  min-width: 108px;
+  height: 40px;
+  margin: 0;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  border-radius: 8px;
+  border: none;
   cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .status-section li {
+    align-items: flex-start;
+  }
+
+  .action-buttons {
+    grid-template-columns: repeat(2, minmax(96px, 1fr));
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .sync-btn,
+  .restore-btn,
+  .remove-btn {
+    min-width: 0;
+    width: 100%;
+  }
 }
 
 .sync-btn {

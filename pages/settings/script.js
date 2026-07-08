@@ -292,7 +292,7 @@ async function initSettingsPage() {
       const titleRow = document.createElement("div");
       titleRow.className = "rule-title-row";
       const title = document.createElement("div");
-      title.innerHTML = `<strong>${isDefault ? "默认规则（固定在最后）" : `规则 #${index + 1}`}</strong>`;
+      title.innerHTML = `<strong>${isDefault ? "默认规则" : `规则 #${index + 1}`}</strong>`;
       titleRow.appendChild(title);
 
       if (!isDefault) {

@@ -145,6 +145,56 @@ def _current_default_pack_id() -> str:
     return DEFAULT_PACK_ID
 
 
+def _snapshot_single_empty_pack() -> str | None:
+    """快照当前是否仅存在一个空表情包。"""
+    if not PACKS_DIR.is_dir():
+        return None
+
+    pack_dirs = sorted(path for path in PACKS_DIR.iterdir() if path.is_dir())
+    if len(pack_dirs) != 1:
+        return None
+
+    only_pack = pack_dirs[0]
+    if _count_images(only_pack / "memes") != 0:
+        return None
+    return only_pack.name
+
+
+def _apply_post_install_policy(
+    new_pack_id: str,
+    previous_single_empty_pack_id: str | None,
+    set_as_default: bool,
+) -> dict:
+    """安装完成后执行策略：必要时移除空包并设置默认包。"""
+    result = {
+        "removed_empty_pack_id": None,
+        "forced_set_default": False,
+    }
+
+    normalized_new_pack_id = str(new_pack_id or "").strip()
+    if not normalized_new_pack_id:
+        return result
+
+    previous_empty_pack_id = str(previous_single_empty_pack_id or "").strip()
+
+    should_cleanup_previous_empty = bool(
+        previous_empty_pack_id
+        and previous_empty_pack_id != normalized_new_pack_id
+        and (PACKS_DIR / previous_empty_pack_id).is_dir()
+    )
+
+    if should_cleanup_previous_empty:
+        uninstall_pack(previous_empty_pack_id)
+        result["removed_empty_pack_id"] = previous_empty_pack_id
+
+    should_set_default = bool(set_as_default) or bool(previous_empty_pack_id)
+    if should_set_default and (PACKS_DIR / normalized_new_pack_id).is_dir():
+        set_default_pack(normalized_new_pack_id)
+        result["forced_set_default"] = not bool(set_as_default)
+
+    return result
+
+
 def _create_empty_pack(pack_id: str) -> str:
     pack_id = str(pack_id or "").strip() or DEFAULT_PACK_ID
     pack_dir = PACKS_DIR / pack_id
@@ -332,6 +382,8 @@ def import_pack_archive(
     if not zip_path.is_file():
         raise FileNotFoundError("压缩包不存在")
 
+    previous_single_empty_pack_id = _snapshot_single_empty_pack()
+
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=TEMP_DIR, prefix="pack_import_") as tmp_dir:
         extract_root = Path(tmp_dir)
@@ -389,14 +441,18 @@ def import_pack_archive(
 
     _save_registry(registry)
 
-    if set_as_default:
-        set_default_pack(pack_id)
+    post_install = _apply_post_install_policy(
+        new_pack_id=pack_id,
+        previous_single_empty_pack_id=previous_single_empty_pack_id,
+        set_as_default=set_as_default,
+    )
 
     return {
         "pack_id": pack_id,
         "name": str(manifest.get("name") or pack_id),
         "version": str(manifest.get("version") or "1.0.0"),
         "overwritten": overwrite and replaced,
+        **post_install,
     }
 
 
