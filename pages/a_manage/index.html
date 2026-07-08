@@ -82,14 +82,24 @@
           </p>
           <div class="manage-pack-switch-row">
             <button
-              id="sidebar-toggle-btn"
-              class="sidebar-toggle"
+              id="console-toggle-btn"
+              class="panel-toggle"
               type="button"
               aria-expanded="true"
-              aria-controls="app-sidebar-panel app-directory-panel"
-              aria-label="切换侧边栏"
+              aria-controls="app-sidebar-panel"
+              aria-label="切换控制台"
             >
-              <i class="fas fa-bars icon"></i>侧栏
+              <i class="fas fa-sliders icon"></i>控制台
+            </button>
+            <button
+              id="directory-toggle-btn"
+              class="panel-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-controls="app-directory-panel"
+              aria-label="切换目录"
+            >
+              <i class="fas fa-folder-open icon"></i>目录
             </button>
             <label for="manage-pack-select">管理表情包</label>
             <select
@@ -102,9 +112,6 @@
             <button id="delete-manage-pack-btn" type="button" class="danger">
               删除当前表情包
             </button>
-            <span id="manage-pack-switch-meta" class="manage-pack-switch-meta"
-              >当前: --</span
-            >
           </div>
         </div>
       </div>
@@ -138,14 +145,6 @@
             <p class="left-panel-eyebrow">控制台</p>
             <h2>同步控制</h2>
           </div>
-          <button
-            id="sidebar-close-btn"
-            class="sidebar-close"
-            type="button"
-            aria-label="关闭侧边栏"
-          >
-            <i class="fas fa-xmark"></i>
-          </button>
         </div>
         <div class="sync-buttons">
           <button id="check-sync-btn">

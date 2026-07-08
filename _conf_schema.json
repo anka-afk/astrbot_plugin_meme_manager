@@ -15,39 +15,6 @@
         "description": "图床参数",
         "type": "object",
         "items": {
-          "stardots": {
-            "description": "StarDots 配置",
-            "type": "object",
-            "items": {
-              "key": {
-                "description": "API Key",
-                "type": "string",
-                "hint": "请输入 StarDots 的 API Key"
-              },
-              "secret": {
-                "description": "API Secret",
-                "type": "string",
-                "hint": "请输入 StarDots 的 API Secret"
-              },
-              "space": {
-                "description": "空间名称",
-                "type": "string",
-                "default": "memes",
-                "hint": "请输入 StarDots 的空间名称"
-              },
-              "list_cache_ttl": {
-                "description": "远端列表缓存时长（秒）",
-                "type": "int",
-                "default": 60,
-                "hint": "用于减少状态轮询时的 API 调用次数；0 表示关闭缓存",
-                "slider": {
-                  "min": 0,
-                  "max": 300,
-                  "step": 5
-                }
-              }
-            }
-          },
           "cloudflare_r2": {
             "description": "Cloudflare R2 配置",
             "type": "object",
@@ -122,6 +89,39 @@
                 "type": "int",
                 "default": 30,
                 "hint": "WebDAV 上传、下载、列表请求的超时时间"
+              }
+            }
+          },
+          "stardots": {
+            "description": "StarDots 配置",
+            "type": "object",
+            "items": {
+              "key": {
+                "description": "API Key",
+                "type": "string",
+                "hint": "请输入 StarDots 的 API Key"
+              },
+              "secret": {
+                "description": "API Secret",
+                "type": "string",
+                "hint": "请输入 StarDots 的 API Secret"
+              },
+              "space": {
+                "description": "空间名称",
+                "type": "string",
+                "default": "memes",
+                "hint": "请输入 StarDots 的空间名称"
+              },
+              "list_cache_ttl": {
+                "description": "远端列表缓存时长（秒）",
+                "type": "int",
+                "default": 60,
+                "hint": "用于减少状态轮询时的 API 调用次数；0 表示关闭缓存",
+                "slider": {
+                  "min": 0,
+                  "max": 300,
+                  "step": 5
+                }
               }
             }
           }

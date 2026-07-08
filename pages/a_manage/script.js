@@ -129,8 +129,8 @@ async function initApp() {
   const contextMenuMoveBtn = document.getElementById("context-menu-move-btn");
   const contextMenuCopyBtn = document.getElementById("context-menu-copy-btn");
   const contextMenuPasteBtn = document.getElementById("context-menu-paste-btn");
-  const sidebarToggleBtn = document.getElementById("sidebar-toggle-btn");
-  const sidebarCloseBtn = document.getElementById("sidebar-close-btn");
+  const consoleToggleBtn = document.getElementById("console-toggle-btn");
+  const directoryToggleBtn = document.getElementById("directory-toggle-btn");
   const sidebarBackdrop = document.getElementById("sidebar-backdrop");
   const leftPanel = document.getElementById("app-sidebar-panel");
   const directoryPanel = document.getElementById("app-directory-panel");
@@ -205,9 +205,6 @@ async function initApp() {
   const managePackSelect = document.getElementById("manage-pack-select");
   const switchManagePackBtn = document.getElementById("switch-manage-pack-btn");
   const deleteManagePackBtn = document.getElementById("delete-manage-pack-btn");
-  const managePackSwitchMeta = document.getElementById(
-    "manage-pack-switch-meta",
-  );
   let defaultManagePackId = "";
   let confirmResolver = null;
   const MOBILE_LAYOUT_MEDIA = "(max-width: 960px)";
@@ -330,9 +327,6 @@ async function initApp() {
         if (deleteManagePackBtn) {
           deleteManagePackBtn.disabled = true;
         }
-        if (managePackSwitchMeta) {
-          managePackSwitchMeta.textContent = "当前: --";
-        }
         return packs;
       }
 
@@ -377,20 +371,9 @@ async function initApp() {
       managePackSelect.value = selectedPackId;
       syncManagedPackQuery(selectedPackId);
 
-      if (managePackSwitchMeta) {
-        const selected =
-          packs.find(
-            (item) => String(item?.id || "").trim() === selectedPackId,
-          ) || packs[0];
-        managePackSwitchMeta.textContent = `当前视图: ${String(selected?.name || selected?.id || "--")}`;
-      }
-
       await maybeShowFirstUseCatalogGuide(packs);
       return packs;
     } catch (error) {
-      if (managePackSwitchMeta) {
-        managePackSwitchMeta.textContent = "当前视图: 加载失败";
-      }
       showToast(error?.message || String(error), "error", "加载表情包失败");
       return [];
     }
@@ -410,12 +393,6 @@ async function initApp() {
     try {
       syncManagedPackQuery(targetPackId);
       await refreshUi({ emojis: true });
-      if (managePackSwitchMeta) {
-        const selectedText =
-          managePackSelect.options[managePackSelect.selectedIndex]
-            ?.textContent || targetPackId;
-        managePackSwitchMeta.textContent = `当前视图: ${selectedText}`;
-      }
       showToast(`已切换管理视图到 ${targetPackId}。`, "success", "切换成功");
     } catch (error) {
       showToast(error?.message || String(error), "error", "切换失败");
@@ -881,76 +858,106 @@ async function initApp() {
     return window.matchMedia(MOBILE_LAYOUT_MEDIA).matches;
   }
 
-  function updateSidebarToggleState() {
-    const sidebarExpanded = isCompactViewport()
-      ? document.body.classList.contains("sidebar-open")
-      : !document.body.classList.contains("sidebar-collapsed");
+  function isConsoleVisible() {
+    return isCompactViewport()
+      ? document.body.classList.contains("panel-console-open")
+      : !document.body.classList.contains("panel-console-hidden");
+  }
 
-    if (sidebarToggleBtn) {
-      sidebarToggleBtn.setAttribute("aria-expanded", String(sidebarExpanded));
-      sidebarToggleBtn.setAttribute(
+  function isDirectoryVisible() {
+    return isCompactViewport()
+      ? document.body.classList.contains("panel-directory-open")
+      : !document.body.classList.contains("panel-directory-hidden");
+  }
+
+  function setConsoleVisible(visible) {
+    if (isCompactViewport()) {
+      document.body.classList.toggle("panel-console-open", visible);
+      return;
+    }
+    document.body.classList.toggle("panel-console-hidden", !visible);
+  }
+
+  function setDirectoryVisible(visible) {
+    if (isCompactViewport()) {
+      document.body.classList.toggle("panel-directory-open", visible);
+      return;
+    }
+    document.body.classList.toggle("panel-directory-hidden", !visible);
+  }
+
+  function closeAllPanels() {
+    setConsoleVisible(false);
+    setDirectoryVisible(false);
+  }
+
+  function updatePanelToggleState() {
+    const consoleVisible = isConsoleVisible();
+    const directoryVisible = isDirectoryVisible();
+
+    if (consoleToggleBtn) {
+      consoleToggleBtn.setAttribute("aria-expanded", String(consoleVisible));
+      consoleToggleBtn.setAttribute(
         "aria-label",
-        sidebarExpanded ? "收起侧边栏" : "展开侧边栏",
+        consoleVisible ? "收起控制台" : "展开控制台",
       );
+      consoleToggleBtn.classList.toggle("active", consoleVisible);
+    }
+
+    if (directoryToggleBtn) {
+      directoryToggleBtn.setAttribute(
+        "aria-expanded",
+        String(directoryVisible),
+      );
+      directoryToggleBtn.setAttribute(
+        "aria-label",
+        directoryVisible ? "收起目录" : "展开目录",
+      );
+      directoryToggleBtn.classList.toggle("active", directoryVisible);
     }
 
     if (sidebarBackdrop) {
-      sidebarBackdrop.classList.toggle(
-        "hidden",
-        !(isCompactViewport() && sidebarExpanded),
-      );
-      sidebarBackdrop.setAttribute(
-        "aria-hidden",
-        String(!(isCompactViewport() && sidebarExpanded)),
-      );
+      const showBackdrop =
+        isCompactViewport() && (consoleVisible || directoryVisible);
+      sidebarBackdrop.classList.toggle("hidden", !showBackdrop);
+      sidebarBackdrop.setAttribute("aria-hidden", String(!showBackdrop));
     }
 
-    [leftPanel, directoryPanel].forEach((panel) => {
-      panel?.setAttribute("aria-hidden", String(!sidebarExpanded));
-    });
-  }
-
-  function openSidebar() {
-    if (isCompactViewport()) {
-      document.body.classList.add("sidebar-open");
-    } else {
-      document.body.classList.remove("sidebar-collapsed");
-    }
-    updateSidebarToggleState();
-  }
-
-  function closeSidebar() {
-    if (isCompactViewport()) {
-      document.body.classList.remove("sidebar-open");
-    } else {
-      document.body.classList.add("sidebar-collapsed");
-    }
-    updateSidebarToggleState();
+    leftPanel?.setAttribute("aria-hidden", String(!consoleVisible));
+    directoryPanel?.setAttribute("aria-hidden", String(!directoryVisible));
   }
 
   function syncSidebarLayout() {
     if (isCompactViewport()) {
-      document.body.classList.remove("sidebar-collapsed");
-      closeSidebar();
+      document.body.classList.remove("panel-console-hidden");
+      document.body.classList.remove("panel-directory-hidden");
+      closeAllPanels();
+      updatePanelToggleState();
       return;
     }
 
-    document.body.classList.remove("sidebar-open");
-    updateSidebarToggleState();
+    document.body.classList.remove(
+      "panel-console-open",
+      "panel-directory-open",
+    );
+    if (
+      !document.body.classList.contains("panel-console-hidden") &&
+      !document.body.classList.contains("panel-directory-hidden")
+    ) {
+      setConsoleVisible(true);
+      setDirectoryVisible(true);
+    }
+    updatePanelToggleState();
   }
 
-  function toggleSidebar() {
-    if (isCompactViewport()) {
-      if (document.body.classList.contains("sidebar-open")) {
-        closeSidebar();
-      } else {
-        openSidebar();
-      }
-      return;
-    }
+  function toggleConsolePanel() {
+    setConsoleVisible(!isConsoleVisible());
+    updatePanelToggleState();
+  }
 
-    document.body.classList.toggle("sidebar-collapsed");
-    updateSidebarToggleState();
+  function toggleDirectoryPanel() {
+    setDirectoryVisible(!isDirectoryVisible());
+    updatePanelToggleState();
   }
 
   function formatBytes(bytes) {
@@ -2885,7 +2892,8 @@ async function initApp() {
       a.textContent = category;
       a.addEventListener("click", () => {
         if (isCompactViewport()) {
-          closeSidebar();
+          closeAllPanels();
+          updatePanelToggleState();
         }
       });
       li.appendChild(a);
@@ -3506,21 +3514,22 @@ async function initApp() {
     });
   }
 
-  if (sidebarToggleBtn) {
-    sidebarToggleBtn.addEventListener("click", () => {
-      toggleSidebar();
+  if (consoleToggleBtn) {
+    consoleToggleBtn.addEventListener("click", () => {
+      toggleConsolePanel();
     });
   }
 
-  if (sidebarCloseBtn) {
-    sidebarCloseBtn.addEventListener("click", () => {
-      closeSidebar();
+  if (directoryToggleBtn) {
+    directoryToggleBtn.addEventListener("click", () => {
+      toggleDirectoryPanel();
     });
   }
 
   if (sidebarBackdrop) {
     sidebarBackdrop.addEventListener("click", () => {
-      closeSidebar();
+      closeAllPanels();
+      updatePanelToggleState();
     });
   }
 
@@ -3773,9 +3782,10 @@ async function initApp() {
       }
     }
     if (event.key === "Escape" && isCompactViewport()) {
-      const isSidebarOpen = document.body.classList.contains("sidebar-open");
-      if (isSidebarOpen) {
-        closeSidebar();
+      const isAnyPanelOpen = isConsoleVisible() || isDirectoryVisible();
+      if (isAnyPanelOpen) {
+        closeAllPanels();
+        updatePanelToggleState();
         return;
       }
     }
@@ -4265,7 +4275,7 @@ async function initApp() {
 
   // 初始化加载数据
   syncSidebarLayout();
-  updateSidebarToggleState();
+  updatePanelToggleState();
   window.addEventListener("resize", () => {
     syncSidebarLayout();
     closeBatchContextMenu();
