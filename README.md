@@ -33,6 +33,7 @@
   - [⚙️ 配置说明](#️-配置说明)
   - [📝 使用指令](#-使用指令)
   - [🖥️ WebUI 管理界面](#️-webui-管理界面)
+  - [🔗 联动](#-联动)
   - [📜 更新日志](#-更新日志)
     - [v4.0](#v40)
     - [v3.21](#v321)
@@ -373,6 +374,18 @@ async def send_in_two_steps(context, event, chain: MessageChain):
 >
 > - `清空指定类型`、`清空全部`、`删除类型本身` 都需要在 30 秒内二次确认。
 > - `恢复默认表情包` 会从官方仓库安装首个官方包；若同名包已存在，可先卸载后重试。
+
+## 🔗 联动
+
+如果你有“自动收集群聊表情包 + 日常主动发图”这类组合需求，可以参考社区桥接方案：
+
+- [astrbot_plugin_smart_imagechat_hub](https://github.com/QingchenWait/astrbot_plugin_smart_imagechat_hub)：负责自动收集群聊表情包并进行 AI 标签整理（建议关闭主动发图能力）
+- [astrbot_plugin_meme_manager](https://github.com/anka-afk/astrbot_plugin_meme_manager)：负责日常场景中的主动发图
+- [astrbot_plugin_meme_bridge](https://github.com/konley/astrbot_plugin_meme_bridge)：定时读取 `image_index.json`，按标签映射 + LLM 辅助分类，将图片同步到 meme_manager 的表情包中，并更新分类映射。(2026-07-09 目前并未完全适配 v4.0+ 的多包体系，临时使用[astrbot_plugin_meme_bridge_fork](https://github.com/anka-afk/astrbot_plugin_meme_bridge))
+
+不保证桥接方案的长期可用性与效果，若你有兴趣，可自行 fork 并维护。
+
+我不太信任 ai 生成的标签，新的表情包增长方案正在筹备中。
 
 ## 📜 更新日志
 
