@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>表情包设置中心</title>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">Meme Pack Settings</p>
+        <h1><i class="fas fa-sliders icon"></i>表情包设置中心</h1>
+        <p class="subtitle">
+          管理 persona/session/default 规则，并导出或还原运行时备份。
+        </p>
+      </div>
+      <div class="nav-actions">
+        <a class="nav-link" href="../manage/index.html">管理页</a>
+        <a class="nav-link" href="../catalog/index.html">资源广场</a>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel rules-panel">
+        <div class="panel-head">
+          <h2><i class="fas fa-route icon"></i>选择规则</h2>
+          <div class="head-actions">
+            <button id="add-persona-rule-btn" class="secondary">
+              新增 Persona 规则
+            </button>
+            <button id="add-session-rule-btn" class="secondary">
+              新增 Session 规则
+            </button>
+            <button id="reload-rules-btn" class="ghost">重新加载</button>
+          </div>
+        </div>
+
+        <p class="hint">规则按从上到下匹配，默认规则固定在最后。</p>
+
+        <div id="rules-list" class="rules-list"></div>
+
+        <div class="save-row">
+          <button id="save-rules-btn">
+            <i class="fas fa-floppy-disk icon"></i>保存规则
+          </button>
+        </div>
+      </section>
+
+      <section class="panel backup-panel">
+        <h2><i class="fas fa-box-archive icon"></i>运行时备份</h2>
+
+        <div class="block">
+          <h3>导出</h3>
+          <div class="field-row">
+            <label for="backup-output-dir-input">导出目录（可选）</label>
+            <input
+              id="backup-output-dir-input"
+              type="text"
+              placeholder="留空则导出到默认 backup 目录"
+            />
+          </div>
+          <button id="export-backup-btn">
+            <i class="fas fa-file-export icon"></i>导出全量备份
+          </button>
+          <p id="export-result" class="result"></p>
+        </div>
+
+        <div class="block">
+          <h3>导入</h3>
+          <div class="field-row">
+            <label for="backup-file-input">备份压缩包（zip）</label>
+            <input id="backup-file-input" type="file" accept=".zip" />
+          </div>
+          <label class="checkbox">
+            <input id="import-overwrite-checkbox" type="checkbox" />
+            <span>覆盖同名 pack（恢复时清空并重建冲突目录）</span>
+          </label>
+          <button id="import-backup-btn" class="danger">
+            <i class="fas fa-file-import icon"></i>导入全量备份
+          </button>
+          <p id="import-result" class="result"></p>
+        </div>
+      </section>
+
+      <section class="panel log-panel">
+        <h2><i class="fas fa-list-check icon"></i>操作日志</h2>
+        <div id="log-list" class="log-list"></div>
+      </section>
+    </main>
+
+    <script type="module" src="./script.js"></script>
+  </body>
+</html>

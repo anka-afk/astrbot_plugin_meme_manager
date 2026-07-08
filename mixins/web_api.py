@@ -23,14 +23,18 @@ from ..backend.models import (
     clear_category_emojis,
 )
 from ..backend.pack_storage import (
+    export_runtime_backup,
     export_pack_archive,
     fetch_and_cache_community_index,
     find_cached_pack_entry,
     get_pack_detail,
+    get_selection_rules,
+    import_runtime_backup,
     install_pack_from_github_source,
     import_pack_archive,
     list_installed_packs,
     load_cached_community_index,
+    save_selection_rules,
     set_default_pack,
     uninstall_pack,
 )
@@ -233,6 +237,24 @@ class WebAPIMixin:
             self._api_install_community_pack,
             ["POST"],
             "按社区 source 安装表情包",
+        )
+        self._register_webui_api(
+            "settings/rules",
+            self._api_settings_rules,
+            ["GET", "POST"],
+            "获取或保存表情包选择规则",
+        )
+        self._register_webui_api(
+            "settings/backup/export",
+            self._api_export_runtime_backup,
+            ["POST"],
+            "导出运行时全量备份",
+        )
+        self._register_webui_api(
+            "settings/backup/import",
+            self._api_import_runtime_backup,
+            ["POST"],
+            "导入运行时全量备份",
         )
 
     def _register_webui_api(self, route, handler, methods, desc):
@@ -1053,3 +1075,79 @@ class WebAPIMixin:
         except Exception as e:
             logger.error(f"安装社区表情包失败: {e}", exc_info=True)
             return jsonify({"message": f"安装社区表情包失败: {str(e)}"}), 500
+
+    async def _api_settings_rules(self):
+        if request.method == "GET":
+            try:
+                return jsonify(get_selection_rules()), 200
+            except Exception as e:
+                logger.error(f"获取规则失败: {e}", exc_info=True)
+                return jsonify({"message": f"获取规则失败: {str(e)}"}), 500
+
+        try:
+            data = await request.get_json()
+            rules = (data or {}).get("rules", [])
+            saved = save_selection_rules(rules)
+            self._reload_personas()
+            return jsonify({"message": "规则保存成功", **saved}), 200
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
+        except Exception as e:
+            logger.error(f"保存规则失败: {e}", exc_info=True)
+            return jsonify({"message": f"保存规则失败: {str(e)}"}), 500
+
+    async def _api_export_runtime_backup(self):
+        try:
+            data = await request.get_json()
+            output_dir = (data or {}).get("output_dir")
+            result = export_runtime_backup(output_dir=output_dir)
+            return jsonify({"message": "全量备份导出成功", **result}), 200
+        except Exception as e:
+            logger.error(f"导出全量备份失败: {e}", exc_info=True)
+            return jsonify({"message": f"导出全量备份失败: {str(e)}"}), 500
+
+    async def _api_import_runtime_backup(self):
+        temp_zip_path = None
+        try:
+            overwrite_param = request.args.get("overwrite")
+            form = await request.form
+            overwrite_raw = (
+                overwrite_param
+                if overwrite_param is not None
+                else form.get("overwrite", "false")
+            )
+            overwrite = str(overwrite_raw).lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            files = await request.files
+            if not files or "file" not in files:
+                return jsonify({"message": "缺少上传文件字段 file"}), 400
+
+            archive_file = files["file"]
+            if not archive_file or not archive_file.filename:
+                return jsonify({"message": "无效的备份文件"}), 400
+            if not str(archive_file.filename).lower().endswith(".zip"):
+                return jsonify({"message": "仅支持 zip 备份文件"}), 400
+
+            TEMP_DIR.mkdir(parents=True, exist_ok=True)
+            safe_name = f"runtime_restore_{int(time.time() * 1000)}.zip"
+            temp_zip_path = (TEMP_DIR / safe_name).resolve()
+            archive_file.save(str(temp_zip_path))
+
+            result = import_runtime_backup(temp_zip_path, overwrite=overwrite)
+            self._reload_personas()
+            return jsonify({"message": "全量备份导入成功", **result}), 200
+        except (FileNotFoundError, ValueError) as e:
+            return jsonify({"message": str(e)}), 400
+        except Exception as e:
+            logger.error(f"导入全量备份失败: {e}", exc_info=True)
+            return jsonify({"message": f"导入全量备份失败: {str(e)}"}), 500
+        finally:
+            if temp_zip_path and temp_zip_path.exists():
+                try:
+                    temp_zip_path.unlink()
+                except Exception:
+                    pass

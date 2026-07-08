@@ -13,6 +13,7 @@ from ..config import (
     DEFAULT_PACK_ID,
     LEGACY_MIGRATED_PACK_ID,
     PACKS_DIR,
+    PLUGIN_DATA_DIR,
     REGISTRY_PATH,
     RUNTIME_SCHEMA_VERSION,
     SELECTION_RULES_PATH,
@@ -539,3 +540,164 @@ def install_pack_from_github_source(
         )
         result["source"] = github_source
         return result
+
+
+def get_selection_rules() -> dict:
+    selection_rules = _load_selection_rules()
+    rules = selection_rules.get("rules", [])
+    default_pack_id = _current_default_pack_id()
+    return {
+        "schema_version": RUNTIME_SCHEMA_VERSION,
+        "rules": rules,
+        "default_pack_id": default_pack_id,
+    }
+
+
+def _validate_and_normalize_rules(rules: list[dict]) -> list[dict]:
+    if not isinstance(rules, list) or not rules:
+        raise ValueError("rules 不能为空")
+
+    normalized = []
+    default_count = 0
+    for index, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            raise ValueError(f"第 {index + 1} 条规则格式无效")
+
+        rule_id = str(rule.get("id") or "").strip()
+        scope = str(rule.get("scope") or "").strip().lower()
+        pack_id = str(rule.get("pack_id") or "").strip()
+        target = str(rule.get("target") or "").strip()
+
+        if not rule_id:
+            raise ValueError(f"第 {index + 1} 条规则缺少 id")
+        if scope not in {"persona", "session", "default"}:
+            raise ValueError(f"第 {index + 1} 条规则 scope 非法")
+        if not pack_id:
+            raise ValueError(f"第 {index + 1} 条规则缺少 pack_id")
+        if not (PACKS_DIR / pack_id).is_dir():
+            raise ValueError(f"第 {index + 1} 条规则引用的 pack 不存在: {pack_id}")
+
+        normalized_rule = {"id": rule_id, "scope": scope, "pack_id": pack_id}
+        if scope in {"persona", "session"}:
+            if not target:
+                raise ValueError(f"第 {index + 1} 条规则缺少 target")
+            normalized_rule["target"] = target
+        if scope == "default":
+            default_count += 1
+
+        normalized.append(normalized_rule)
+
+    if default_count != 1:
+        raise ValueError("必须且仅能存在一条 default 规则")
+    if normalized[-1].get("scope") != "default":
+        raise ValueError("default 规则必须位于最后")
+
+    rule_ids = [rule["id"] for rule in normalized]
+    if len(rule_ids) != len(set(rule_ids)):
+        raise ValueError("规则 id 不能重复")
+
+    return normalized
+
+
+def save_selection_rules(rules: list[dict]) -> dict:
+    normalized = _validate_and_normalize_rules(rules)
+    payload = {
+        "schema_version": RUNTIME_SCHEMA_VERSION,
+        "rules": normalized,
+    }
+    _save_selection_rules(payload)
+    return payload
+
+
+def export_runtime_backup(output_dir: str | None = None) -> dict:
+    target_dir = Path(output_dir).expanduser().resolve() if output_dir else BACKUP_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    archive_base = target_dir / f"runtime_backup_{timestamp}"
+
+    with tempfile.TemporaryDirectory(dir=TEMP_DIR, prefix="runtime_backup_") as tmp_dir:
+        tmp_root = Path(tmp_dir)
+        snapshot_root = tmp_root / "runtime_backup"
+        snapshot_root.mkdir(parents=True, exist_ok=True)
+
+        if REGISTRY_PATH.is_file():
+            shutil.copy2(REGISTRY_PATH, snapshot_root / "registry.json")
+        if SELECTION_RULES_PATH.is_file():
+            shutil.copy2(SELECTION_RULES_PATH, snapshot_root / "selection_rules.json")
+        if COMMUNITY_CACHE_PATH.is_file():
+            shutil.copy2(COMMUNITY_CACHE_PATH, snapshot_root / "community_cache.json")
+        if PACKS_DIR.is_dir():
+            shutil.copytree(PACKS_DIR, snapshot_root / "packs", dirs_exist_ok=True)
+
+        archive_path = shutil.make_archive(
+            str(archive_base), "zip", root_dir=snapshot_root
+        )
+
+    return {"archive_path": archive_path}
+
+
+def _find_backup_root(extract_root: Path) -> Path:
+    direct = extract_root / "registry.json"
+    if direct.is_file() or (extract_root / "packs").is_dir():
+        return extract_root
+
+    candidates = [child for child in extract_root.iterdir() if child.is_dir()]
+    for child in candidates:
+        if (child / "registry.json").is_file() or (child / "packs").is_dir():
+            return child
+    raise ValueError("备份包结构无效，缺少 runtime 根目录")
+
+
+def import_runtime_backup(backup_zip_path: Path, overwrite: bool = False) -> dict:
+    if not backup_zip_path.is_file():
+        raise FileNotFoundError("备份压缩包不存在")
+
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        dir=TEMP_DIR, prefix="runtime_restore_"
+    ) as tmp_dir:
+        extract_root = Path(tmp_dir)
+        _extract_zip_safely(backup_zip_path, extract_root)
+        backup_root = _find_backup_root(extract_root)
+
+        backup_packs_dir = backup_root / "packs"
+        backup_registry = backup_root / "registry.json"
+        backup_rules = backup_root / "selection_rules.json"
+        backup_community = backup_root / "community_cache.json"
+
+        if not backup_packs_dir.is_dir() and not backup_registry.is_file():
+            raise ValueError("备份包中没有可恢复的数据")
+
+        if overwrite and PACKS_DIR.is_dir():
+            shutil.rmtree(PACKS_DIR)
+            PACKS_DIR.mkdir(parents=True, exist_ok=True)
+
+        restored_packs = 0
+        if backup_packs_dir.is_dir():
+            PACKS_DIR.mkdir(parents=True, exist_ok=True)
+            for pack_dir in backup_packs_dir.iterdir():
+                if not pack_dir.is_dir():
+                    continue
+                target_pack_dir = PACKS_DIR / pack_dir.name
+                if target_pack_dir.exists() and not overwrite:
+                    continue
+                if target_pack_dir.exists() and overwrite:
+                    shutil.rmtree(target_pack_dir)
+                shutil.copytree(pack_dir, target_pack_dir)
+                restored_packs += 1
+
+        if backup_registry.is_file():
+            shutil.copy2(backup_registry, REGISTRY_PATH)
+        if backup_rules.is_file():
+            rules_data = _load_json(backup_rules, {})
+            if not isinstance(rules_data, dict):
+                raise ValueError("备份中的 selection_rules.json 格式无效")
+            save_selection_rules(rules_data.get("rules", []))
+        if backup_community.is_file():
+            shutil.copy2(backup_community, COMMUNITY_CACHE_PATH)
+
+    return {
+        "restored_packs": restored_packs,
+        "runtime_dir": str(PLUGIN_DATA_DIR),
+    }
