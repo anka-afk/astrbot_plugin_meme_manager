@@ -37,6 +37,7 @@ from .backend.models import (
     clear_category_emojis,
     get_emoji_by_category,
 )
+from .backend.pack_resolver import resolve_pack_context
 from .config import DEFAULT_CATEGORY_DESCRIPTIONS, MEMES_DATA_PATH, MEMES_DIR
 from .image_host.img_sync import ImageSync
 from .init import init_plugin
@@ -103,7 +104,6 @@ class MemeSender(Star):
                 "stardots", {}
             )
             if stardots_config.get("key") and stardots_config.get("secret"):
-                # 添加提供商信息到配置中
                 stardots_config["provider"] = "stardots"
                 self.img_sync_config = {
                     "key": stardots_config["key"],
@@ -128,10 +128,8 @@ class MemeSender(Star):
                 "bucket_name",
             ]
             if all(r2_config.get(field) for field in required_fields):
-                # 确保 public_url 不以斜杠结尾
                 if r2_config.get("public_url"):
                     r2_config["public_url"] = r2_config["public_url"].rstrip("/")
-                # 添加提供商信息到配置中
                 r2_config["provider"] = "cloudflare_r2"
                 self.img_sync_config = dict(r2_config)
                 self.img_sync_provider_type = "cloudflare_r2"
@@ -140,7 +138,6 @@ class MemeSender(Star):
                     local_dir=MEMES_DIR,
                     provider_type=self.img_sync_provider_type,
                 )
-                # 延迟日志记录，避免 logger 未初始化
                 self._r2_bucket_name = r2_config.get("bucket_name")
         elif image_host_type == "webdav":
             required_fields = ["url", "username", "password"]
@@ -168,13 +165,11 @@ class MemeSender(Star):
 
         # 初始化表情状态
         self.found_emotions = []  # 存储找到的表情
-        self.upload_states = {}  # 存储上传状态：{user_session: {"category": str, "expire_time": float}}
+        self.upload_states = (
+            {}
+        )  # 存储上传状态：{user_session: {"category": str, "expire_time": float}}
         self.pending_images = {}  # 存储待发送的图片
 
-        # 读取表情包分隔符
-        self.fault_tolerant_symbols = self.config.get("fault_tolerant_symbols", ["⬡"])
-
-        # 记录 R2 初始化日志（如果已初始化）
         if hasattr(self, "_r2_bucket_name"):
             logger.info(f"Cloudflare R2 图床已初始化: {self._r2_bucket_name}")
             delattr(self, "_r2_bucket_name")
@@ -240,8 +235,10 @@ class MemeSender(Star):
         """读取图床类型，兼容不同配置保存格式。"""
         image_host = self.config.get("image_host", "stardots")
         if isinstance(image_host, dict):
-            image_host = image_host.get("name") or image_host.get("value") or image_host.get(
-                "type", "stardots"
+            image_host = (
+                image_host.get("name")
+                or image_host.get("value")
+                or image_host.get("type", "stardots")
             )
         return str(image_host or "stardots").strip().lower()
 
@@ -285,8 +282,7 @@ class MemeSender(Star):
         return webdav_config
 
     def _register_web_apis(self):
-        # --- Emoji CRUD ---
-        self._register_webui_api(
+71        self._register_webui_api(
             "emoji", self._api_get_emojis, ["GET"], "Get all emojis grouped by category"
         )
         self._register_webui_api(
@@ -444,9 +440,7 @@ class MemeSender(Star):
 
         async def logged_handler(*args, **kwargs):
             started_at = time.monotonic()
-            logger.info(
-                f"{WEBUI_LOG_PREFIX} {request.method} {route_path} start"
-            )
+            logger.info(f"{WEBUI_LOG_PREFIX} {request.method} {route_path} start")
             try:
                 response = await handler(*args, **kwargs)
             except Exception:
@@ -512,24 +506,30 @@ class MemeSender(Star):
                 result = add_emoji_to_category(category, image_file)
                 self.category_manager.sync_with_filesystem()
                 logger.info(f"表情包添加成功: {result['path']}")
-                return jsonify(
-                    {
-                        "message": "表情包添加成功",
-                        "path": result["path"],
-                        "category": category,
-                        "filename": result["filename"],
-                    }
-                ), 201
+                return (
+                    jsonify(
+                        {
+                            "message": "表情包添加成功",
+                            "path": result["path"],
+                            "category": category,
+                            "filename": result["filename"],
+                        }
+                    ),
+                    201,
+                )
             except DuplicateEmojiError as e:
                 logger.info(f"跳过重复表情包: {e}")
-                return jsonify(
-                    {
-                        "message": str(e),
-                        "code": "duplicate_emoji",
-                        "category": category,
-                        "filename": e.existing_filename,
-                    }
-                ), 409
+                return (
+                    jsonify(
+                        {
+                            "message": str(e),
+                            "code": "duplicate_emoji",
+                            "category": category,
+                            "filename": e.existing_filename,
+                        }
+                    ),
+                    409,
+                )
         except Exception as e:
             logger.error(f"处理上传请求时出错: {e}", exc_info=True)
             return jsonify({"message": f"处理上传请求时出错: {str(e)}"}), 500
@@ -543,13 +543,16 @@ class MemeSender(Star):
         if not category or not image_file:
             return jsonify({"message": "Category and image file are required"}), 400
         if delete_emoji_from_category(category, image_file):
-            return jsonify(
-                {
-                    "message": "Emoji deleted successfully",
-                    "category": category,
-                    "filename": image_file,
-                }
-            ), 200
+            return (
+                jsonify(
+                    {
+                        "message": "Emoji deleted successfully",
+                        "category": category,
+                        "filename": image_file,
+                    }
+                ),
+                200,
+            )
         return jsonify({"message": "Emoji not found"}), 404
 
     async def _api_batch_delete_emojis(self):
@@ -563,16 +566,19 @@ class MemeSender(Star):
         result = batch_delete_emojis(category, image_files)
         if not result["category_exists"]:
             return jsonify({"message": "Category not found"}), 404
-        return jsonify(
-            {
-                "message": "Batch delete completed",
-                "category": category,
-                "deleted_files": result["deleted_files"],
-                "missing_files": result["missing_files"],
-                "deleted_count": len(result["deleted_files"]),
-                "missing_count": len(result["missing_files"]),
-            }
-        ), 200
+        return (
+            jsonify(
+                {
+                    "message": "Batch delete completed",
+                    "category": category,
+                    "deleted_files": result["deleted_files"],
+                    "missing_files": result["missing_files"],
+                    "deleted_count": len(result["deleted_files"]),
+                    "missing_count": len(result["missing_files"]),
+                }
+            ),
+            200,
+        )
 
     async def _api_move_emoji(self):
         from .backend.models import move_emoji_to_category
@@ -582,15 +588,19 @@ class MemeSender(Star):
         target_category = data.get("target_category")
         image_file = data.get("image_file")
         if not source_category or not target_category or not image_file:
-            return jsonify(
-                {
-                    "message": "source_category, target_category and image_file are required"
-                }
-            ), 400
+            return (
+                jsonify(
+                    {
+                        "message": "source_category, target_category and image_file are required"
+                    }
+                ),
+                400,
+            )
         if source_category == target_category:
-            return jsonify(
-                {"message": "Source and target category must be different"}
-            ), 400
+            return (
+                jsonify({"message": "Source and target category must be different"}),
+                400,
+            )
         result = move_emoji_to_category(source_category, image_file, target_category)
         if not result["source_category_exists"]:
             return jsonify({"message": "Source category not found"}), 404
@@ -598,14 +608,17 @@ class MemeSender(Star):
             return jsonify({"message": "Target file already exists"}), 409
         if result["missing"]:
             return jsonify({"message": "Emoji not found"}), 404
-        return jsonify(
-            {
-                "message": "Emoji moved successfully",
-                "source_category": result["source_category"],
-                "target_category": result["target_category"],
-                "filename": result["filename"],
-            }
-        ), 200
+        return (
+            jsonify(
+                {
+                    "message": "Emoji moved successfully",
+                    "source_category": result["source_category"],
+                    "target_category": result["target_category"],
+                    "filename": result["filename"],
+                }
+            ),
+            200,
+        )
 
     async def _api_batch_move_emojis(self):
         from .backend.models import batch_move_emojis
@@ -620,31 +633,38 @@ class MemeSender(Star):
             or not isinstance(image_files, list)
             or not image_files
         ):
-            return jsonify(
-                {
-                    "message": "source_category, target_category and image_files are required"
-                }
-            ), 400
+            return (
+                jsonify(
+                    {
+                        "message": "source_category, target_category and image_files are required"
+                    }
+                ),
+                400,
+            )
         if source_category == target_category:
-            return jsonify(
-                {"message": "Source and target category must be different"}
-            ), 400
+            return (
+                jsonify({"message": "Source and target category must be different"}),
+                400,
+            )
         result = batch_move_emojis(source_category, image_files, target_category)
         if not result["source_category_exists"]:
             return jsonify({"message": "Source category not found"}), 404
-        return jsonify(
-            {
-                "message": "Batch move completed",
-                "source_category": source_category,
-                "target_category": target_category,
-                "moved_files": result["moved_files"],
-                "missing_files": result["missing_files"],
-                "conflicting_files": result["conflicting_files"],
-                "moved_count": len(result["moved_files"]),
-                "missing_count": len(result["missing_files"]),
-                "conflict_count": len(result["conflicting_files"]),
-            }
-        ), 200
+        return (
+            jsonify(
+                {
+                    "message": "Batch move completed",
+                    "source_category": source_category,
+                    "target_category": target_category,
+                    "moved_files": result["moved_files"],
+                    "missing_files": result["missing_files"],
+                    "conflicting_files": result["conflicting_files"],
+                    "moved_count": len(result["moved_files"]),
+                    "missing_count": len(result["missing_files"]),
+                    "conflict_count": len(result["conflicting_files"]),
+                }
+            ),
+            200,
+        )
 
     async def _api_batch_copy_emojis(self):
         from .backend.models import batch_copy_emojis
@@ -659,41 +679,50 @@ class MemeSender(Star):
             or not isinstance(image_files, list)
             or not image_files
         ):
-            return jsonify(
-                {
-                    "message": "source_category, target_category and image_files are required"
-                }
-            ), 400
+            return (
+                jsonify(
+                    {
+                        "message": "source_category, target_category and image_files are required"
+                    }
+                ),
+                400,
+            )
         result = batch_copy_emojis(source_category, image_files, target_category)
         if not result["source_category_exists"]:
             return jsonify({"message": "Source category not found"}), 404
-        return jsonify(
-            {
-                "message": "Batch copy completed",
-                "source_category": source_category,
-                "target_category": target_category,
-                "copied_files": result["copied_files"],
-                "missing_files": result["missing_files"],
-                "conflicting_files": result["conflicting_files"],
-                "copied_count": len(result["copied_files"]),
-                "missing_count": len(result["missing_files"]),
-                "conflict_count": len(result["conflicting_files"]),
-            }
-        ), 200
+        return (
+            jsonify(
+                {
+                    "message": "Batch copy completed",
+                    "source_category": source_category,
+                    "target_category": target_category,
+                    "copied_files": result["copied_files"],
+                    "missing_files": result["missing_files"],
+                    "conflicting_files": result["conflicting_files"],
+                    "copied_count": len(result["copied_files"]),
+                    "missing_count": len(result["missing_files"]),
+                    "conflict_count": len(result["conflicting_files"]),
+                }
+            ),
+            200,
+        )
 
     async def _api_clear_all_emojis(self):
         from .backend.models import clear_all_emojis
 
         result = clear_all_emojis()
         deleted_count = sum(result["deleted_by_category"].values())
-        return jsonify(
-            {
-                "message": "All emojis cleared successfully",
-                "deleted_by_category": result["deleted_by_category"],
-                "deleted_count": deleted_count,
-                "affected_categories": len(result["deleted_by_category"]),
-            }
-        ), 200
+        return (
+            jsonify(
+                {
+                    "message": "All emojis cleared successfully",
+                    "deleted_by_category": result["deleted_by_category"],
+                    "deleted_count": deleted_count,
+                    "affected_categories": len(result["deleted_by_category"]),
+                }
+            ),
+            200,
+        )
 
     async def _api_get_emotions(self):
         try:
@@ -725,14 +754,17 @@ class MemeSender(Star):
         result = clear_category_emojis(category)
         if not result["category_exists"]:
             return jsonify({"message": "Category not found"}), 404
-        return jsonify(
-            {
-                "message": "Category cleared successfully",
-                "category": category,
-                "deleted_files": result["deleted_files"],
-                "deleted_count": len(result["deleted_files"]),
-            }
-        ), 200
+        return (
+            jsonify(
+                {
+                    "message": "Category cleared successfully",
+                    "category": category,
+                    "deleted_files": result["deleted_files"],
+                    "deleted_count": len(result["deleted_files"]),
+                }
+            ),
+            200,
+        )
 
     async def _api_restore_category(self):
         try:
@@ -742,12 +774,15 @@ class MemeSender(Star):
             if not category:
                 return jsonify({"message": "Category is required"}), 400
             if self.category_manager.create_category(category, description):
-                return jsonify(
-                    {
-                        "message": "Category created successfully",
-                        "description": description,
-                    }
-                ), 200
+                return (
+                    jsonify(
+                        {
+                            "message": "Category created successfully",
+                            "description": description,
+                        }
+                    ),
+                    200,
+                )
             return jsonify({"message": "Failed to create category"}), 500
         except Exception as e:
             return jsonify({"message": f"Failed to create category: {str(e)}"}), 500
@@ -758,9 +793,10 @@ class MemeSender(Star):
             old_name = data.get("old_name")
             new_name = data.get("new_name")
             if not old_name or not new_name:
-                return jsonify(
-                    {"message": "Old and new category names are required"}
-                ), 400
+                return (
+                    jsonify({"message": "Old and new category names are required"}),
+                    400,
+                )
             if self.category_manager.rename_category(old_name, new_name):
                 return jsonify({"message": "Category renamed successfully"}), 200
             return jsonify({"message": "Failed to rename category"}), 500
@@ -773,16 +809,20 @@ class MemeSender(Star):
             category = data.get("tag")
             description = data.get("description")
             if not category or not description:
-                return jsonify(
-                    {"message": "Category and description are required"}
-                ), 400
+                return (
+                    jsonify({"message": "Category and description are required"}),
+                    400,
+                )
             if self.category_manager.update_description(category, description):
                 return jsonify({"category": category, "description": description}), 200
             return jsonify({"message": "Failed to update category description"}), 500
         except Exception as e:
-            return jsonify(
-                {"message": f"Failed to update category description: {str(e)}"}
-            ), 500
+            return (
+                jsonify(
+                    {"message": f"Failed to update category description: {str(e)}"}
+                ),
+                500,
+            )
 
     async def _api_remove_from_config(self):
         try:
@@ -791,14 +831,18 @@ class MemeSender(Star):
             if not category:
                 return jsonify({"message": "Category is required"}), 400
             if self.category_manager.remove_from_config(category):
-                return jsonify(
-                    {"message": "Category removed from config successfully"}
-                ), 200
+                return (
+                    jsonify({"message": "Category removed from config successfully"}),
+                    200,
+                )
             return jsonify({"message": "Failed to remove category from config"}), 500
         except Exception as e:
-            return jsonify(
-                {"message": f"Failed to remove category from config: {str(e)}"}
-            ), 500
+            return (
+                jsonify(
+                    {"message": f"Failed to remove category from config: {str(e)}"}
+                ),
+                500,
+            )
 
     async def _api_sync_status(self):
         try:
@@ -1019,16 +1063,21 @@ class MemeSender(Star):
         )
         file_size = file_path.stat().st_size
         if file_size > max_bytes:
-            return jsonify(
-                {
-                    "status": "error",
-                    "message": "Image is too large to preview in the plugin page",
-                    "size": file_size,
-                    "max_size": max_bytes,
-                }
-            ), 413
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Image is too large to preview in the plugin page",
+                        "size": file_size,
+                        "max_size": max_bytes,
+                    }
+                ),
+                413,
+            )
 
-        mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        mime_type = (
+            mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        )
         if size == "preview" and mime_type != "image/gif":
             try:
                 data_url, mime_type = self._build_preview_data_url(file_path)
@@ -1203,14 +1252,77 @@ class MemeSender(Star):
         if updated:
             self._reload_personas()
 
-    def _build_meme_prompt(self) -> str:
+    def _build_meme_prompt(self, category_mapping_string: str | None = None) -> str:
+        mapping_string = category_mapping_string or self.category_mapping_string
         return (
             self.prompt_head
-            + self.category_mapping_string
+            + mapping_string
             + self.prompt_tail_1
             + str(self.max_emotions_per_message)
             + self.prompt_tail_2
         )
+
+    def _resolve_persona_id(
+        self,
+        event: AstrMessageEvent | None = None,
+        req: ProviderRequest | None = None,
+    ) -> str | None:
+        if req and req.conversation:
+            persona_id = str(getattr(req.conversation, "persona_id", "") or "").strip()
+            if persona_id:
+                return persona_id
+
+        if event is None:
+            return None
+
+        persona_id = str(getattr(event, "persona_id", "") or "").strip()
+        if persona_id:
+            return persona_id
+
+        if hasattr(event, "get_extra"):
+            persona_id = str(event.get_extra("persona_id") or "").strip()
+            if persona_id:
+                return persona_id
+
+        return None
+
+    def _resolve_runtime_pack_context(
+        self,
+        event: AstrMessageEvent | None = None,
+        req: ProviderRequest | None = None,
+    ) -> dict:
+        session_id = ""
+        if req:
+            session_id = str(req.session_id or "").strip()
+
+        if not session_id and event is not None:
+            session_id = str(getattr(event, "session_id", "") or "").strip()
+
+        persona_id = self._resolve_persona_id(event=event, req=req)
+        context = resolve_pack_context(
+            session_id=session_id or None,
+            persona_id=persona_id,
+        )
+
+        if event is not None and hasattr(event, "set_extra"):
+            event.set_extra(
+                "meme_manager_runtime_memes_dir",
+                str(context.get("memes_dir", MEMES_DIR)),
+            )
+            event.set_extra(
+                "meme_manager_runtime_pack_id", str(context.get("pack_id") or "")
+            )
+
+        return context
+
+    def _get_runtime_memes_dir_for_event(self, event: AstrMessageEvent):
+        if hasattr(event, "get_extra"):
+            runtime_memes_dir = str(
+                event.get_extra("meme_manager_runtime_memes_dir") or ""
+            ).strip()
+            if runtime_memes_dir:
+                return runtime_memes_dir
+        return str(MEMES_DIR)
 
     def _wrap_meme_prompt(self, prompt: str) -> str:
         return f"\n\n{MEME_PROMPT_MARKER_START}\n{prompt}\n{MEME_PROMPT_MARKER_END}"
@@ -1260,33 +1372,34 @@ class MemeSender(Star):
         personas = self.context.provider_manager.personas
         self._sync_persona_base_prompts(personas)
 
-        if self.emotion_llm_enabled:
-            self.sys_prompt_add = ""
-            for index, persona in enumerate(personas):
-                key = self._get_persona_key(persona, index)
-                persona["prompt"] = self.persona_base_prompts[key]
-            return
-
-        self.sys_prompt_add = self._build_meme_prompt()
-        addition = self._wrap_meme_prompt(self.sys_prompt_add)
+        self.sys_prompt_add = ""
         for index, persona in enumerate(personas):
             key = self._get_persona_key(persona, index)
-            persona["prompt"] = self.persona_base_prompts[key] + addition
+            persona["prompt"] = self.persona_base_prompts[key]
 
-    def _apply_request_prompt(self, req: ProviderRequest) -> None:
+    def _apply_request_prompt(
+        self, req: ProviderRequest, event: AstrMessageEvent | None = None
+    ) -> None:
         if self.emotion_llm_enabled:
             req.system_prompt = self._strip_meme_prompt(req.system_prompt)
             return
-        if not self.sys_prompt_add:
+
+        pack_context = self._resolve_runtime_pack_context(event=event, req=req)
+        category_mapping = pack_context.get("category_mapping") or self.category_mapping
+        if not category_mapping:
             return
+
+        category_mapping_string = dict_to_string(category_mapping)
+        sys_prompt_add = self._build_meme_prompt(category_mapping_string)
 
         req.system_prompt = self._strip_meme_prompt(
             req.system_prompt
-        ) + self._wrap_meme_prompt(self.sys_prompt_add)
+        ) + self._wrap_meme_prompt(sys_prompt_add)
 
     def _reload_personas(self):
         """重新加载表情配置并构建提示词并注入全局人格"""
-        self.category_mapping = load_json(
+        pack_context = self._resolve_runtime_pack_context()
+        self.category_mapping = pack_context.get("category_mapping") or load_json(
             MEMES_DATA_PATH, DEFAULT_CATEGORY_DESCRIPTIONS
         )
         self.category_mapping_string = dict_to_string(self.category_mapping)
@@ -1295,7 +1408,8 @@ class MemeSender(Star):
     @meme_manager.command("查看图库")
     async def list_emotions(self, event: AstrMessageEvent):
         """查看所有可用表情包类别"""
-        descriptions = self.category_mapping
+        pack_context = self._resolve_runtime_pack_context(event=event)
+        descriptions = pack_context.get("category_mapping") or self.category_mapping
         categories = "\n".join(
             [f"- {tag}: {desc}" for tag, desc in descriptions.items()]
         )
@@ -1703,7 +1817,7 @@ class MemeSender(Star):
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
         """Ensure edited personas still get the meme prompt before LLM calls."""
-        self._apply_request_prompt(req)
+        self._apply_request_prompt(req, event)
 
     @filter.on_llm_response(priority=99999)
     async def resp(self, event: AstrMessageEvent, response: LLMResponse):
@@ -1714,8 +1828,13 @@ class MemeSender(Star):
 
         text = response.completion_text
 
+        pack_context = self._resolve_runtime_pack_context(event=event)
+        runtime_category_mapping = (
+            pack_context.get("category_mapping") or self.category_mapping
+        )
+
         self.found_emotions = []  # 重置表情列表
-        valid_emoticons = set(self.category_mapping.keys())  # 预加载合法表情集合
+        valid_emoticons = set(runtime_category_mapping.keys())
 
         clean_text = text
 
@@ -2078,6 +2197,8 @@ class MemeSender(Star):
         if not self.found_emotions:
             return
 
+        memes_root = self._get_runtime_memes_dir_for_event(event)
+
         try:
             random_value = random.randint(1, 100)
             if random_value > self.emotions_probability:
@@ -2087,7 +2208,7 @@ class MemeSender(Star):
                 if not emotion:
                     continue
 
-                emotion_path = os.path.join(MEMES_DIR, emotion)
+                emotion_path = os.path.join(memes_root, emotion)
                 if not os.path.exists(emotion_path):
                     continue
 
@@ -2192,6 +2313,7 @@ class MemeSender(Star):
 
             # 第二步：添加表情图片（如果有找到的表情）
             if self.found_emotions:
+                memes_root = self._get_runtime_memes_dir_for_event(event)
                 # 检查概率（注意：概率判断是"小于等于"才发送）
                 random_value = random.randint(1, 100)
                 threshold = self.emotions_probability
@@ -2204,7 +2326,7 @@ class MemeSender(Star):
                         if not emotion:
                             continue
 
-                        emotion_path = os.path.join(MEMES_DIR, emotion)
+                        emotion_path = os.path.join(memes_root, emotion)
                         path_exists = os.path.exists(emotion_path)
 
                         if not path_exists:
@@ -2490,7 +2612,9 @@ class MemeSender(Star):
                     if hasattr(
                         self.img_sync.sync_manager.upload_tracker, "get_uploaded_files"
                     ):
-                        uploaded_files = self.img_sync.sync_manager.upload_tracker.get_uploaded_files()
+                        uploaded_files = (
+                            self.img_sync.sync_manager.upload_tracker.get_uploaded_files()
+                        )
                         result.append("")
                         result.append(
                             f"📝 上传记录: 已记录 {len(uploaded_files)} 个文件"
