@@ -3942,7 +3942,7 @@ async function initApp() {
   async function syncToRemote() {
     const btn = document.getElementById("upload-sync-btn");
     try {
-      setButtonBusy(btn, "上传中...");
+      setButtonBusy(btn, "上传中, 这可能需要很久...");
       setImgHostSyncProgress("正在启动上传同步...", "info");
 
       await apiPost("img_host/sync/upload");

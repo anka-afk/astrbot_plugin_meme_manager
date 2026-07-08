@@ -38,19 +38,51 @@ class SyncManager:
             elif hasattr(self.image_host, "__class__"):
                 provider_name = self.image_host.__class__.__name__.lower()
 
-        # 统一转换为正斜杠
-        normalized_id = remote_id.replace("\\", "/")
+        # 统一转换为正斜杠并移除常见前缀噪音
+        normalized_id = remote_id.replace("\\", "/").strip()
+        while normalized_id.startswith("./"):
+            normalized_id = normalized_id[2:]
+        normalized_id = normalized_id.lstrip("/")
+
+        # 兼容历史或不同 provider 返回的根目录前缀
+        if normalized_id.startswith("memes/"):
+            normalized_id = normalized_id[6:]
 
         # 根据不同提供商处理特定的前缀
         if provider_name:
             if "cloudflare_r2" in provider_name or "r2" in provider_name:
-                # Cloudflare R2: 移除 memes/ 前缀
+                # Cloudflare R2: 早期实现有时返回 memes/ 前缀
                 if normalized_id.startswith("memes/"):
-                    return normalized_id[6:]  # 移除"memes/"前缀
+                    return normalized_id[6:]
+            elif "webdav" in provider_name:
+                # WebDAV 在部分环境下可能返回带 base_path 的 id，做一次兜底去前缀
+                base_path = ""
+                if hasattr(self.image_host, "config") and self.image_host.config:
+                    base_path = str(
+                        self.image_host.config.get("base_path") or ""
+                    ).strip()
+                if base_path:
+                    normalized_base = base_path.replace("\\", "/").strip("/")
+                    prefix = f"{normalized_base}/"
+                    if normalized_id.startswith(prefix):
+                        normalized_id = normalized_id[len(prefix) :]
             elif "stardots" in provider_name:
-                # Stardots: 保持原样（未来可能需要特殊处理）
-                pass
+                # Stardots 可能通过 @@CAT@@ / @@DIR@@ 编码分类路径
+                if "@@CAT@@" in normalized_id:
+                    encoded_category, filename = normalized_id.split("@@CAT@@", 1)
+                    category = encoded_category.replace("@@DIR@@", "/").strip("/")
+                    if category:
+                        return f"{category}/{filename}".replace("\\", "/")
+                    return filename
             # 可以在这里添加其他提供商的处理逻辑
+
+        # 兜底：即便没识别 provider，也尝试解码 Stardots 旧格式
+        if "@@CAT@@" in normalized_id:
+            encoded_category, filename = normalized_id.split("@@CAT@@", 1)
+            category = encoded_category.replace("@@DIR@@", "/").strip("/")
+            if category:
+                return f"{category}/{filename}".replace("\\", "/")
+            return filename
 
         return normalized_id
 

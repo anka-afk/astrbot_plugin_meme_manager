@@ -36,6 +36,12 @@ class NetworkError(StarDotsError):
     pass
 
 
+class RateLimitError(StarDotsError):
+    """调用频率超限错误"""
+
+    pass
+
+
 class InvalidResponseError(StarDotsError):
     """响应格式错误"""
 
@@ -85,6 +91,8 @@ class StarDotsProvider(ImageHostInterface):
         self.space = config["space"]
         self.base_url = self.BASE_URL
         self.server_time_offset = 0  # 服务器时间偏移量
+        self.list_cache_ttl = int(config.get("list_cache_ttl", 60) or 60)
+        self._image_list_cache: dict[str, object] | None = None
 
         # 禁用SSL警告
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -207,6 +215,22 @@ class StarDotsProvider(ImageHostInterface):
                 return int(value)
         return None
 
+    @staticmethod
+    def _is_rate_limit_error(message: str) -> bool:
+        lowered = str(message or "").lower()
+        keywords = (
+            "exceed times limit",
+            "rate limit",
+            "too many requests",
+            "请求频率",
+            "调用频次",
+            "调用次数",
+        )
+        return any(keyword in lowered for keyword in keywords)
+
+    def _invalidate_image_list_cache(self) -> None:
+        self._image_list_cache = None
+
     def upload_image(self, file_path: Path) -> ImageInfo:
         """上传图片到StarDots"""
         max_retries = 3
@@ -261,6 +285,7 @@ class StarDotsProvider(ImageHostInterface):
                     if response.status_code == 200:
                         result = response.json()
                         if result["success"]:
+                            self._invalidate_image_list_cache()
                             logger.info(f"上传成功 URL: {result['data']['url']}")
                             return {
                                 "url": result["data"]["url"],
@@ -300,18 +325,34 @@ class StarDotsProvider(ImageHostInterface):
 
         if response.status_code == 200:
             result = response.json()
-            return result["success"]
+            success = bool(result["success"])
+            if success:
+                self._invalidate_image_list_cache()
+            return success
         return False
 
     def get_image_list(self) -> list[ImageInfo]:
         """获取StarDots空间中的所有图片"""
-        max_retries = 3
-        retry_delay = 1
+        if self._image_list_cache:
+            cached_at = float(self._image_list_cache.get("cached_at", 0.0))
+            cached_images = self._image_list_cache.get("images")
+            if (
+                isinstance(cached_images, list)
+                and self.list_cache_ttl > 0
+                and (time.time() - cached_at) < self.list_cache_ttl
+            ):
+                return list(cached_images)
+
+        max_retries = 2
+        retry_delay = 2
         page = 1
         page_size = 100
-        all_images = []
+        max_pages = 1000
+        all_images: list[ImageInfo] = []
 
-        while True:
+        while page <= max_pages:
+            page_fetched = False
+            last_error: Exception | None = None
             for attempt in range(max_retries):
                 try:
                     # 每次请求前重新同步时间
@@ -332,6 +373,10 @@ class StarDotsProvider(ImageHostInterface):
                             data = result["data"]
                             images = data["list"]
                             if not images:  # 如果没有更多图片了
+                                self._image_list_cache = {
+                                    "cached_at": time.time(),
+                                    "images": list(all_images),
+                                }
                                 return all_images
 
                             # 处理图片列表
@@ -363,43 +408,113 @@ class StarDotsProvider(ImageHostInterface):
 
                             # 如果返回的图片数量小于页大小，说明是最后一页
                             if len(images) < page_size:
+                                self._image_list_cache = {
+                                    "cached_at": time.time(),
+                                    "images": list(all_images),
+                                }
                                 return all_images
 
                             page += 1  # 获取下一页
+                            page_fetched = True
                             break  # 成功获取数据，跳出重试循环
                         else:
-                            if "invalid timestamp" in result.get("message", "").lower():
+                            error_message = result.get("message", "未知错误")
+                            lowered = error_message.lower()
+                            if (
+                                "invalid timestamp" in lowered
+                                or "invalid nonce" in lowered
+                            ):
                                 if attempt < max_retries - 1:
-                                    print("时间戳错误，重试中...")
+                                    logger.warning("StarDots 鉴权字段异常，准备重试")
                                     time.sleep(retry_delay)
                                     continue
-                            if "invalid nonce" in result.get("message", "").lower():
-                                if attempt < max_retries - 1:
-                                    print("nonce错误，重试中...")
-                                    time.sleep(retry_delay)
-                                    continue
-                            # 其他错误，打印消息但继续尝试下一页
-                            print(
-                                f"获取图片列表失败: {result.get('message', '未知错误')}"
+                                last_error = AuthenticationError(error_message)
+                                break
+
+                            if self._is_rate_limit_error(error_message):
+                                last_error = RateLimitError(
+                                    "StarDots API 调用频次超限，请稍后重试"
+                                )
+                                break
+
+                            last_error = InvalidResponseError(
+                                f"获取图片列表失败: {error_message}"
                             )
-                            continue
+                            if attempt < max_retries - 1:
+                                logger.warning(
+                                    "获取图片列表失败（第 %s/%s 次重试）: %s",
+                                    attempt + 1,
+                                    max_retries,
+                                    error_message,
+                                )
+                                time.sleep(retry_delay)
+                                continue
+                            break
 
                     else:
+                        if response.status_code == 429:
+                            last_error = RateLimitError(
+                                "StarDots API 调用频次超限，请稍后重试"
+                            )
+                            break
                         if attempt < max_retries - 1:
-                            print("HTTP错误，重试中...")
+                            logger.warning(
+                                "获取图片列表 HTTP 错误（第 %s/%s 次重试）: %s",
+                                attempt + 1,
+                                max_retries,
+                                response.status_code,
+                            )
                             time.sleep(retry_delay)
                             continue
-                        raise Exception(f"Failed to get image list: {response.text}")
+                        last_error = NetworkError(
+                            f"Failed to get image list: {response.text}"
+                        )
+                        break
 
                 except Exception as e:
+                    if isinstance(e, RateLimitError):
+                        last_error = e
+                        break
                     if attempt < max_retries - 1:
-                        print("网络错误，重试中...")
+                        logger.warning(
+                            "获取图片列表网络异常（第 %s/%s 次重试）: %s",
+                            attempt + 1,
+                            max_retries,
+                            str(e),
+                        )
                         time.sleep(retry_delay)
                         continue
-                    print(f"获取远程文件列表失败: {str(e)}")
-                    if all_images:  # 如果已经获取了一些图片，返回它们
-                        return all_images
-                    raise  # 如果一张图片都没有获取到，抛出异常
+                    last_error = NetworkError(f"获取远程文件列表失败: {str(e)}")
+                    break
+
+            if page_fetched:
+                continue
+
+            if isinstance(last_error, RateLimitError):
+                if all_images:
+                    logger.warning(
+                        "StarDots 限流，返回已获取的 %s 条远程记录", len(all_images)
+                    )
+                    self._image_list_cache = {
+                        "cached_at": time.time(),
+                        "images": list(all_images),
+                    }
+                    return all_images
+                raise last_error
+
+            if last_error is not None:
+                if all_images:
+                    logger.warning(
+                        "分页中断，返回已获取的 %s 条远程记录", len(all_images)
+                    )
+                    self._image_list_cache = {
+                        "cached_at": time.time(),
+                        "images": list(all_images),
+                    }
+                    return all_images
+                raise last_error
+
+            break
 
         return all_images
 

@@ -47,6 +47,7 @@ WEBUI_LOG_PREFIX = f"[{PLUGIN_NAME}][WebUI]"
 MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_ORIGINAL_IMAGE_BYTES = 32 * 1024 * 1024
 PREVIEW_IMAGE_MAX_DIMENSION = 512
+IMG_HOST_STATUS_CACHE_TTL_SECONDS = 15
 
 
 class WebAPIMixin:
@@ -835,6 +836,34 @@ class WebAPIMixin:
         self._last_img_host_sync_task_status = status.copy()
         return status
 
+    def _ensure_img_host_status_cache(self) -> dict[str, dict]:
+        cache = getattr(self, "_img_host_sync_status_cache", None)
+        if isinstance(cache, dict):
+            return cache
+        cache = {}
+        self._img_host_sync_status_cache = cache
+        return cache
+
+    def _invalidate_img_host_status_cache(self, pack_id: str | None = None) -> None:
+        cache = self._ensure_img_host_status_cache()
+        if not pack_id:
+            cache.clear()
+            return
+        target_pack_id = str(pack_id).strip()
+        keys_to_remove = [key for key in cache if key.startswith(f"{target_pack_id}::")]
+        for key in keys_to_remove:
+            cache.pop(key, None)
+
+    @staticmethod
+    def _get_img_host_status_cache_ttl() -> int:
+        return IMG_HOST_STATUS_CACHE_TTL_SECONDS
+
+    @staticmethod
+    def _make_img_host_status_cache_key(pack_id: str, local_dir: Path | str) -> str:
+        normalized_pack_id = str(pack_id or "").strip() or "__default__"
+        normalized_local_dir = str(local_dir or "").replace("\\", "/").rstrip("/")
+        return f"{normalized_pack_id}::{normalized_local_dir}"
+
     def _start_img_host_sync_task(self, task: str, pack_id: str | None = None) -> dict:
         sync_client = self._ensure_img_sync_for_pack(pack_id)
         if not sync_client:
@@ -846,6 +875,7 @@ class WebAPIMixin:
         if status.get("running"):
             raise RuntimeError("已有同步任务正在运行，请等待当前任务完成")
 
+        self._invalidate_img_host_status_cache(pack_id)
         self._last_img_host_sync_task_status = None
         sync_client.sync_process = sync_client._start_sync_process(task)
         return self._get_img_host_sync_task_status()
@@ -856,17 +886,67 @@ class WebAPIMixin:
             sync_client = self._ensure_img_sync_for_pack(pack_id)
             if not sync_client:
                 return jsonify({"error": "图床服务未配置"}), 400
+
+            task_status = self._get_img_host_sync_task_status()
+            cache_ttl = self._get_img_host_status_cache_ttl()
+            cache_key = self._make_img_host_status_cache_key(
+                pack_id, getattr(sync_client, "local_dir", "")
+            )
+            cache_store = self._ensure_img_host_status_cache()
+            now = time.monotonic()
+            if not task_status.get("running") and cache_ttl > 0:
+                cached_entry = cache_store.get(cache_key)
+                if (
+                    cached_entry
+                    and (now - cached_entry.get("created_at", 0.0)) < cache_ttl
+                ):
+                    cached_payload = dict(cached_entry.get("payload") or {})
+                    cached_payload["status_cache_hit"] = True
+                    cached_payload["status_cache_ttl"] = cache_ttl
+                    return jsonify(cached_payload)
+
             status = sync_client.check_status()
             status["upload_count"] = len(status.get("to_upload", []))
             status["download_count"] = len(status.get("to_download", []))
             status["remote_extra_count"] = len(status.get("to_delete_remote", []))
             status["local_extra_count"] = len(status.get("to_delete_local", []))
             status["provider_label"] = self._get_provider_label()
+            status["status_cache_hit"] = False
+            status["status_cache_ttl"] = cache_ttl
             if pack_id:
                 status["managed_pack_id"] = pack_id
+
+            if not task_status.get("running") and cache_ttl > 0:
+                cache_store[cache_key] = {
+                    "created_at": now,
+                    "payload": dict(status),
+                }
             return jsonify(status)
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            error_text = str(e)
+            lower_error_text = error_text.lower()
+            is_rate_limited = any(
+                keyword in lower_error_text
+                for keyword in (
+                    "exceed times limit",
+                    "rate limit",
+                    "too many requests",
+                    "调用频次",
+                    "调用次数",
+                    "请求频率",
+                )
+            )
+            if is_rate_limited:
+                return (
+                    jsonify(
+                        {
+                            "error": "图床接口触发频率限制，请稍后再试",
+                            "details": error_text,
+                        }
+                    ),
+                    429,
+                )
+            return jsonify({"error": error_text}), 500
 
     async def _api_img_host_sync_upload(self):
         try:
