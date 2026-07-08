@@ -122,7 +122,9 @@ class EventHandlerMixin:
                 continue
 
             memes = [
-                f for f in os.listdir(emotion_path) if f.endswith((".jpg", ".png", ".gif"))
+                f
+                for f in os.listdir(emotion_path)
+                if f.endswith((".jpg", ".png", ".gif"))
             ]
             if not memes:
                 continue
@@ -328,7 +330,7 @@ class EventHandlerMixin:
             pack_context.get("category_mapping") or self.category_mapping
         )
 
-        self.found_emotions = []  # 重置表情列表
+        found_emotions: list[str] = []
         valid_emoticons = set(runtime_category_mapping.keys())
 
         clean_text = text
@@ -355,7 +357,7 @@ class EventHandlerMixin:
         for original, emotion in temp_replacements:
             clean_text = clean_text.replace(original, "", 1)  # 每次替换第一个匹配项
             if emotion:
-                self.found_emotions.append(emotion)
+                found_emotions.append(emotion)
 
         # 第二阶段：替代标记处理（如[emotion]、(emotion)等）
         if self._read_config_value(
@@ -385,7 +387,7 @@ class EventHandlerMixin:
 
             for original, emotion in bracket_replacements:
                 clean_text = clean_text.replace(original, "", 1)
-                self.found_emotions.append(emotion)
+                found_emotions.append(emotion)
 
             # 处理(emotion)格式
             paren_pattern = r"\(([^()]+)\)"
@@ -412,7 +414,7 @@ class EventHandlerMixin:
 
             for original, emotion in paren_replacements:
                 clean_text = clean_text.replace(original, "", 1)
-                self.found_emotions.append(emotion)
+                found_emotions.append(emotion)
 
         # 第三阶段：处理重复表情模式（如angryangryangry）
         repeated_emotions = []
@@ -445,7 +447,7 @@ class EventHandlerMixin:
                             continue
                         original = match.group(0)
                         clean_text = clean_text.replace(original, "", 1)
-                        self.found_emotions.append(emotion)
+                        found_emotions.append(emotion)
                         repeated_emotions.append(emotion)
                 else:
                     # 普通表情词需要重复至少3次才识别
@@ -462,7 +464,7 @@ class EventHandlerMixin:
                                 continue
                             original = match.group(0)
                             clean_text = clean_text.replace(original, "", 1)
-                            self.found_emotions.append(emotion)
+                            found_emotions.append(emotion)
                             repeated_emotions.append(emotion)
 
         logger.debug(f"[meme_manager] 重复检测阶段找到的表情: {repeated_emotions}")
@@ -491,7 +493,7 @@ class EventHandlerMixin:
                         word, clean_text, position, valid_emoticons
                     ):
                         # 添加到表情列表
-                        self.found_emotions.append(word)
+                        found_emotions.append(word)
                         loose_emotions.append(word)
                         # 替换文本中的表情词
                         clean_text = (
@@ -537,27 +539,27 @@ class EventHandlerMixin:
                             if isinstance(emotions, list):
                                 for emo in emotions:
                                     if isinstance(emo, str) and emo in valid_emoticons:
-                                        self.found_emotions.append(emo)
+                                        found_emotions.append(emo)
                             elif (
                                 isinstance(emotions, str)
                                 and emotions in valid_emoticons
                             ):
-                                self.found_emotions.append(emotions)
+                                found_emotions.append(emotions)
             except Exception as e:
                 logger.error(f"[meme_manager] 情感模型调用失败: {e}")
 
         # 去重并应用数量限制
         seen = set()
         filtered_emotions = []
-        for emo in self.found_emotions:
+        for emo in found_emotions:
             if emo not in seen:
                 seen.add(emo)
                 filtered_emotions.append(emo)
             if len(filtered_emotions) >= self.max_emotions_per_message:
                 break
 
-        self.found_emotions = filtered_emotions
-        logger.info(f"[meme_manager] 去重后的最终表情列表: {self.found_emotions}")
+        event.set_extra("found_emotions", filtered_emotions)
+        logger.info(f"[meme_manager] 去重后的最终表情列表: {filtered_emotions}")
 
         # 防御性清理残留符号
         clean_text = re.sub(r"&&+", "", clean_text)  # 清除未成对的&&符号
@@ -640,7 +642,8 @@ class EventHandlerMixin:
                             cleaned_components.append(component)
 
             # 第二步：添加表情图片（如果有找到的表情）
-            if self.found_emotions:
+            found_emotions = event.get_extra("found_emotions") or []
+            if found_emotions:
                 memes_root = self._get_runtime_memes_dir_for_event(event)
                 # 检查概率（注意：概率判断是"小于等于"才发送）
                 random_value = random.randint(1, 100)
@@ -650,7 +653,7 @@ class EventHandlerMixin:
                     # 创建表情图片列表
                     emotion_images = []
                     temp_files = []  # 记录临时文件路径
-                    for emotion in self.found_emotions:
+                    for emotion in found_emotions:
                         if not emotion:
                             continue
 
@@ -709,8 +712,8 @@ class EventHandlerMixin:
                     else:
                         pass
 
-                # 清空已处理的表情列表
-                self.found_emotions = []
+            # 清空当前事件已处理的表情列表
+            event.set_extra("found_emotions", None)
 
             # 第三步：更新消息链
             if cleaned_components:
@@ -911,7 +914,8 @@ class EventHandlerMixin:
 
     async def _send_memes_streaming(self, event: AstrMessageEvent):
         """流式传输兼容模式：在流式消息发送完成后，主动发送表情图片作为独立消息。"""
-        if not self.found_emotions:
+        found_emotions = event.get_extra("found_emotions") or []
+        if not found_emotions:
             return
 
         memes_root = self._get_runtime_memes_dir_for_event(event)
@@ -921,7 +925,7 @@ class EventHandlerMixin:
             if random_value > self.emotions_probability:
                 return
 
-            for emotion in self.found_emotions:
+            for emotion in found_emotions:
                 if not emotion:
                     continue
 
@@ -958,7 +962,7 @@ class EventHandlerMixin:
             logger.error(f"[meme_manager] 流式模式处理表情失败: {e}")
             logger.error(traceback.format_exc())
         finally:
-            self.found_emotions = []
+            event.set_extra("found_emotions", None)
 
     async def _send_meme_image(self, event: AstrMessageEvent, image: Image) -> None:
         if event.get_platform_name() in {"gewechat", "webchat"}:

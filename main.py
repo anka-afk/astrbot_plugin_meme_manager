@@ -105,7 +105,6 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             self._ensure_img_sync_for_pack()
 
         # 上传与待发送状态
-        self.found_emotions = []
         self.upload_states = {}
         self.pending_images = {}
 
