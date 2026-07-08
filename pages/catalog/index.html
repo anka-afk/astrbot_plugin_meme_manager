@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>表情包资源广场</title>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">Meme Pack Catalog</p>
+        <h1><i class="fas fa-store icon"></i>表情包资源广场</h1>
+        <p class="subtitle">下载官方与社区表情包，支持缓存索引与一键安装。</p>
+      </div>
+      <div class="nav-actions">
+        <a class="nav-link" href="../manage/index.html"
+          ><i class="fas fa-gear icon"></i>返回管理页</a
+        >
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel controls">
+        <h2><i class="fas fa-link icon"></i>索引控制</h2>
+        <div class="field-row">
+          <label for="index-url-input">社区索引 URL</label>
+          <input
+            id="index-url-input"
+            type="text"
+            placeholder="https://example.com/community-index.json"
+          />
+        </div>
+        <div class="button-row">
+          <button id="fetch-index-btn">
+            <i class="fas fa-cloud-arrow-down icon"></i>拉取并缓存索引
+          </button>
+          <button id="load-cache-btn" class="secondary">
+            <i class="fas fa-database icon"></i>读取缓存索引
+          </button>
+        </div>
+        <p id="index-meta" class="meta">尚未加载索引。</p>
+      </section>
+
+      <section class="panel install-options">
+        <h2><i class="fas fa-screwdriver-wrench icon"></i>安装选项</h2>
+        <label class="checkbox">
+          <input id="overwrite-checkbox" type="checkbox" />
+          <span>覆盖同名表情包</span>
+        </label>
+        <label class="checkbox">
+          <input id="default-checkbox" type="checkbox" />
+          <span>安装后设为默认</span>
+        </label>
+        <button id="refresh-installed-btn" class="ghost">
+          <i class="fas fa-rotate icon"></i>刷新已安装列表
+        </button>
+      </section>
+
+      <section class="panel manual-source">
+        <h2><i class="fab fa-github icon"></i>手动 GitHub 来源安装</h2>
+        <div class="triple-grid">
+          <div class="field-row">
+            <label for="source-repo-input">Repo</label>
+            <input
+              id="source-repo-input"
+              type="text"
+              placeholder="owner/repo"
+            />
+          </div>
+          <div class="field-row">
+            <label for="source-ref-input">Ref</label>
+            <input id="source-ref-input" type="text" placeholder="main" />
+          </div>
+          <div class="field-row">
+            <label for="source-subpath-input">Subpath</label>
+            <input
+              id="source-subpath-input"
+              type="text"
+              placeholder="packs/official-basic"
+            />
+          </div>
+        </div>
+        <div class="button-row">
+          <button id="install-source-btn">
+            <i class="fas fa-download icon"></i>按来源安装
+          </button>
+        </div>
+      </section>
+
+      <section class="panel catalog-list">
+        <div class="panel-header">
+          <h2><i class="fas fa-box-open icon"></i>可安装表情包</h2>
+          <span id="pack-count" class="badge">0</span>
+        </div>
+        <div id="catalog-grid" class="catalog-grid empty">
+          <p>暂无数据，请先拉取或读取缓存索引。</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2><i class="fas fa-list-check icon"></i>操作日志</h2>
+        <div id="log-list" class="log-list"></div>
+      </section>
+    </main>
+
+    <script type="module" src="./script.js"></script>
+  </body>
+</html>

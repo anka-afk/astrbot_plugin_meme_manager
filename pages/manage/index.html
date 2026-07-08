@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
@@ -39,6 +39,9 @@
           <h1><i class="fas fa-face-grin-beam icon"></i>表情包管理</h1>
           <p class="page-subtitle">
             支持批量选择、拖拽移动、图床同步和移动端管理。
+          </p>
+          <p class="page-subtitle">
+            <a href="../catalog/index.html">前往表情包资源广场</a>
           </p>
         </div>
       </div>
@@ -131,7 +134,6 @@
             </button>
           </div>
         </div>
-
       </aside>
 
       <aside class="directory-panel" id="app-directory-panel">
@@ -188,7 +190,12 @@
       </div>
     </div>
 
-    <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+    <div
+      id="toast-container"
+      class="toast-container"
+      aria-live="polite"
+      aria-atomic="true"
+    ></div>
 
     <div
       id="batch-context-menu"
@@ -202,13 +209,28 @@
         <p id="batch-context-menu-subtitle">选择一个操作继续</p>
       </div>
       <div class="batch-context-menu-actions">
-        <button id="context-menu-delete-btn" type="button" class="danger" role="menuitem">
+        <button
+          id="context-menu-delete-btn"
+          type="button"
+          class="danger"
+          role="menuitem"
+        >
           <i class="fas fa-trash-can icon"></i>删除文件
         </button>
-        <button id="context-menu-move-btn" type="button" class="secondary" role="menuitem">
+        <button
+          id="context-menu-move-btn"
+          type="button"
+          class="secondary"
+          role="menuitem"
+        >
           <i class="fas fa-right-left icon"></i>移动文件
         </button>
-        <button id="context-menu-copy-btn" type="button" class="secondary" role="menuitem">
+        <button
+          id="context-menu-copy-btn"
+          type="button"
+          class="secondary"
+          role="menuitem"
+        >
           <i class="fas fa-copy icon"></i>复制文件
         </button>
         <button id="context-menu-paste-btn" type="button" role="menuitem">
@@ -217,11 +239,22 @@
       </div>
     </div>
 
-    <div id="move-target-modal" class="move-target-modal hidden" aria-hidden="true">
-      <div class="move-target-modal-card" role="dialog" aria-modal="true" aria-labelledby="move-target-modal-title">
+    <div
+      id="move-target-modal"
+      class="move-target-modal hidden"
+      aria-hidden="true"
+    >
+      <div
+        class="move-target-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="move-target-modal-title"
+      >
         <p class="move-target-modal-eyebrow">批量移动</p>
         <h2 id="move-target-modal-title">选择目标分类</h2>
-        <p id="move-target-modal-description">选择一个分类，将已选表情包批量移动过去。</p>
+        <p id="move-target-modal-description">
+          选择一个分类，将已选表情包批量移动过去。
+        </p>
         <div id="move-target-list" class="move-target-list"></div>
         <div class="move-target-modal-actions">
           <button id="move-target-cancel-btn" class="secondary">取消</button>
@@ -229,16 +262,35 @@
       </div>
     </div>
 
-    <div id="category-edit-modal" class="category-edit-modal hidden" aria-hidden="true">
-      <div class="category-edit-modal-card" role="dialog" aria-modal="true" aria-labelledby="category-edit-modal-title">
+    <div
+      id="category-edit-modal"
+      class="category-edit-modal hidden"
+      aria-hidden="true"
+    >
+      <div
+        class="category-edit-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="category-edit-modal-title"
+      >
         <p class="category-edit-modal-eyebrow">类别编辑</p>
         <h2 id="category-edit-modal-title">编辑类别</h2>
-        <p id="category-edit-modal-description">修改类别名称和描述，保存后立即生效。</p>
+        <p id="category-edit-modal-description">
+          修改类别名称和描述，保存后立即生效。
+        </p>
         <div class="category-edit-form-panel">
           <label for="category-edit-name-input">类别名称</label>
-          <input id="category-edit-name-input" type="text" placeholder="输入类别名称" />
+          <input
+            id="category-edit-name-input"
+            type="text"
+            placeholder="输入类别名称"
+          />
           <label for="category-edit-desc-input">类别描述</label>
-          <input id="category-edit-desc-input" type="text" placeholder="输入类别描述" />
+          <input
+            id="category-edit-desc-input"
+            type="text"
+            placeholder="输入类别描述"
+          />
         </div>
         <div class="category-edit-modal-actions">
           <button id="category-edit-cancel-btn" class="secondary">取消</button>
@@ -248,7 +300,12 @@
     </div>
 
     <div id="confirm-modal" class="confirm-modal hidden" aria-hidden="true">
-      <div class="confirm-modal-card" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title">
+      <div
+        class="confirm-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-modal-title"
+      >
         <p class="confirm-modal-eyebrow">操作确认</p>
         <h2 id="confirm-modal-title">请确认操作</h2>
         <p id="confirm-modal-description"></p>
@@ -259,8 +316,17 @@
       </div>
     </div>
 
-    <div id="danger-confirm-modal" class="danger-modal hidden" aria-hidden="true">
-      <div class="danger-modal-card" role="dialog" aria-modal="true" aria-labelledby="danger-modal-title">
+    <div
+      id="danger-confirm-modal"
+      class="danger-modal hidden"
+      aria-hidden="true"
+    >
+      <div
+        class="danger-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="danger-modal-title"
+      >
         <p class="danger-modal-eyebrow">危险操作</p>
         <h2 id="danger-modal-title">请确认操作</h2>
         <p id="danger-modal-description"></p>
@@ -285,11 +351,22 @@
       <div class="drag-hud-center">
         <span id="drag-hud-label">2s</span>
       </div>
-      <div id="drag-hud-caption" class="drag-hud-caption">长按 2 秒进入拖拽</div>
+      <div id="drag-hud-caption" class="drag-hud-caption">
+        长按 2 秒进入拖拽
+      </div>
     </div>
 
-    <div id="image-preview-modal" class="image-preview-modal hidden" aria-hidden="true">
-      <div class="image-preview-stage" role="dialog" aria-modal="true" aria-label="表情包预览">
+    <div
+      id="image-preview-modal"
+      class="image-preview-modal hidden"
+      aria-hidden="true"
+    >
+      <div
+        class="image-preview-stage"
+        role="dialog"
+        aria-modal="true"
+        aria-label="表情包预览"
+      >
         <button
           id="image-preview-close-btn"
           class="image-preview-close"

@@ -501,7 +501,9 @@ def install_pack_from_github_source(
     subpath = github_source["subpath"]
 
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=TEMP_DIR, prefix="community_install_") as tmp_dir:
+    with tempfile.TemporaryDirectory(
+        dir=TEMP_DIR, prefix="community_install_"
+    ) as tmp_dir:
         tmp_root = Path(tmp_dir)
         remote_zip = tmp_root / "remote.zip"
         _download_github_archive(repo, ref, remote_zip)
