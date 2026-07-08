@@ -33,15 +33,15 @@ class CategoryManager:
         self.descriptions = self._load_descriptions()
 
     def _ensure_data_file(self) -> None:
-        """确保 memes_data.json 文件存在，不存在则创建并写入默认数据"""
+        """确保 memes_data.json 文件存在，不存在则创建空文件"""
         if not os.path.exists(MEMES_DATA_PATH):
-            save_json(DEFAULT_CATEGORY_DESCRIPTIONS, MEMES_DATA_PATH)
-            logger.info(f"创建默认类别描述文件: {MEMES_DATA_PATH}")
-            sync_active_pack_metadata(DEFAULT_CATEGORY_DESCRIPTIONS)
+            save_json({}, MEMES_DATA_PATH)
+            logger.info(f"创建空类别描述文件: {MEMES_DATA_PATH}")
+            sync_active_pack_metadata({})
 
     def _load_descriptions(self) -> dict[str, str]:
         """加载类别描述配置"""
-        return load_json(MEMES_DATA_PATH, DEFAULT_CATEGORY_DESCRIPTIONS)
+        return load_json(MEMES_DATA_PATH, {})
 
     def reload_descriptions(self) -> dict[str, str]:
         """Reload category descriptions from disk."""
@@ -169,7 +169,7 @@ class CategoryManager:
         return self.descriptions.copy()  # 返回字典的副本
 
     def sync_with_filesystem(self) -> bool:
-        """同步文件系统和配置"""
+        """同步文件系统和配置：将配置强制对齐为实际文件夹结构"""
         try:
             self.reload_descriptions()
             local_categories = self.get_local_categories()
@@ -180,6 +180,12 @@ class CategoryManager:
                 if category not in self.descriptions:
                     self.descriptions[category] = "请添加描述"
                     changed = True
+
+            # 删除配置中不存在对应文件夹的条目
+            stale = [c for c in list(self.descriptions) if c not in local_categories]
+            for category in stale:
+                del self.descriptions[category]
+                changed = True
 
             if changed:
                 saved = save_json(self.descriptions, MEMES_DATA_PATH)
