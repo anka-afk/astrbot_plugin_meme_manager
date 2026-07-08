@@ -12,8 +12,10 @@ async function initCatalogPage() {
   const sourceRefInput = document.getElementById("source-ref-input");
   const sourceSubpathInput = document.getElementById("source-subpath-input");
   const installSourceBtn = document.getElementById("install-source-btn");
-  const catalogGrid = document.getElementById("catalog-grid");
-  const packCount = document.getElementById("pack-count");
+  const officialGrid = document.getElementById("official-grid");
+  const communityGrid = document.getElementById("community-grid");
+  const officialPackCount = document.getElementById("official-pack-count");
+  const communityPackCount = document.getElementById("community-pack-count");
   const logList = document.getElementById("log-list");
 
   let cachedIndex = null;
@@ -70,91 +72,130 @@ async function initCatalogPage() {
     return packs.filter((item) => item && typeof item === "object");
   }
 
+  function isOfficialPack(pack) {
+    const packId = String(pack?.id || "")
+      .trim()
+      .toLowerCase();
+    const tags = Array.isArray(pack?.tags)
+      ? pack.tags.map((tag) =>
+          String(tag || "")
+            .trim()
+            .toLowerCase(),
+        )
+      : [];
+    return packId.startsWith("official-") || tags.includes("official");
+  }
+
+  function createPackCard(pack, { forceOfficial = false } = {}) {
+    const card = document.createElement("article");
+    card.className = `pack-card${forceOfficial ? " official" : ""}`;
+
+    const isInstalled = installedPackIds.has(String(pack.id || "").trim());
+    const tags = Array.isArray(pack.tags) ? pack.tags : [];
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "pack-title-row";
+
+    const titleWrap = document.createElement("div");
+    const title = document.createElement("h3");
+    title.className = "pack-title";
+    title.textContent = pack.name || pack.id || "未命名";
+
+    const id = document.createElement("p");
+    id.className = "pack-id";
+    id.textContent = `ID: ${pack.id || "-"}`;
+    titleWrap.appendChild(title);
+    titleWrap.appendChild(id);
+
+    const installBtn = document.createElement("button");
+    installBtn.type = "button";
+    installBtn.textContent = isInstalled ? "已安装" : "安装";
+    installBtn.className = isInstalled ? "ghost" : "";
+    installBtn.disabled = isInstalled;
+    installBtn.addEventListener("click", () =>
+      installByPackId(pack.id, installBtn),
+    );
+
+    titleRow.appendChild(titleWrap);
+    titleRow.appendChild(installBtn);
+
+    const tagRow = document.createElement("div");
+    tagRow.className = "tag-row";
+
+    const verifyTag = document.createElement("span");
+    verifyTag.className = `tag ${pack.verified ? "verified" : "unverified"}`;
+    verifyTag.textContent = pack.verified ? "已验证" : "未验证";
+    tagRow.appendChild(verifyTag);
+
+    if (forceOfficial) {
+      const officialTag = document.createElement("span");
+      officialTag.className = "tag verified";
+      officialTag.textContent = "官方";
+      tagRow.appendChild(officialTag);
+    }
+
+    if (isInstalled) {
+      const installedTag = document.createElement("span");
+      installedTag.className = "tag installed";
+      installedTag.textContent = "已安装";
+      tagRow.appendChild(installedTag);
+    }
+
+    for (const tag of tags.slice(0, 4)) {
+      const span = document.createElement("span");
+      span.className = "tag";
+      span.textContent = String(tag);
+      tagRow.appendChild(span);
+    }
+
+    const desc = document.createElement("p");
+    desc.className = "pack-desc";
+    desc.textContent = pack.description || "暂无描述";
+
+    const meta = document.createElement("div");
+    meta.className = "pack-meta";
+    meta.innerHTML = `
+      <span>维护者: ${pack.maintainer || "未知"}</span>
+      <span>协议: ${pack.license || "未知"}</span>
+      <span>来源: ${pack.source?.repo || "-"}@${pack.source?.ref || "-"}</span>
+    `;
+
+    card.appendChild(titleRow);
+    card.appendChild(tagRow);
+    card.appendChild(desc);
+    card.appendChild(meta);
+    return card;
+  }
+
   function renderCatalog() {
     const packs = readPacksFromCache();
-    packCount.textContent = String(packs.length);
+    const officialPacks = packs.filter((pack) => isOfficialPack(pack));
+    const communityPacks = packs.filter((pack) => !isOfficialPack(pack));
 
-    if (!packs.length) {
-      catalogGrid.classList.add("empty");
-      catalogGrid.innerHTML = "<p>暂无数据，请先拉取或读取缓存索引。</p>";
+    officialPackCount.textContent = String(officialPacks.length);
+    communityPackCount.textContent = String(communityPacks.length);
+
+    if (!officialPacks.length) {
+      officialGrid.classList.add("empty");
+      officialGrid.innerHTML = "<p>暂无官方包，请先拉取索引。</p>";
+    } else {
+      officialGrid.classList.remove("empty");
+      officialGrid.innerHTML = "";
+      for (const pack of officialPacks) {
+        officialGrid.appendChild(createPackCard(pack, { forceOfficial: true }));
+      }
+    }
+
+    if (!communityPacks.length) {
+      communityGrid.classList.add("empty");
+      communityGrid.innerHTML = "<p>暂无社区包，请先拉取或读取缓存索引。</p>";
       return;
     }
 
-    catalogGrid.classList.remove("empty");
-    catalogGrid.innerHTML = "";
-
-    for (const pack of packs) {
-      const card = document.createElement("article");
-      card.className = "pack-card";
-
-      const isInstalled = installedPackIds.has(String(pack.id || "").trim());
-      const tags = Array.isArray(pack.tags) ? pack.tags : [];
-
-      const titleRow = document.createElement("div");
-      titleRow.className = "pack-title-row";
-
-      const titleWrap = document.createElement("div");
-      const title = document.createElement("h3");
-      title.className = "pack-title";
-      title.textContent = pack.name || pack.id || "未命名";
-
-      const id = document.createElement("p");
-      id.className = "pack-id";
-      id.textContent = `ID: ${pack.id || "-"}`;
-      titleWrap.appendChild(title);
-      titleWrap.appendChild(id);
-
-      const installBtn = document.createElement("button");
-      installBtn.type = "button";
-      installBtn.textContent = isInstalled ? "已安装" : "安装";
-      installBtn.className = isInstalled ? "ghost" : "";
-      installBtn.disabled = isInstalled;
-      installBtn.addEventListener("click", () =>
-        installByPackId(pack.id, installBtn),
-      );
-
-      titleRow.appendChild(titleWrap);
-      titleRow.appendChild(installBtn);
-
-      const tagRow = document.createElement("div");
-      tagRow.className = "tag-row";
-
-      const verifyTag = document.createElement("span");
-      verifyTag.className = `tag ${pack.verified ? "verified" : "unverified"}`;
-      verifyTag.textContent = pack.verified ? "已验证" : "未验证";
-      tagRow.appendChild(verifyTag);
-
-      if (isInstalled) {
-        const installedTag = document.createElement("span");
-        installedTag.className = "tag installed";
-        installedTag.textContent = "已安装";
-        tagRow.appendChild(installedTag);
-      }
-
-      for (const tag of tags.slice(0, 4)) {
-        const span = document.createElement("span");
-        span.className = "tag";
-        span.textContent = String(tag);
-        tagRow.appendChild(span);
-      }
-
-      const desc = document.createElement("p");
-      desc.className = "pack-desc";
-      desc.textContent = pack.description || "暂无描述";
-
-      const meta = document.createElement("div");
-      meta.className = "pack-meta";
-      meta.innerHTML = `
-        <span>维护者: ${pack.maintainer || "未知"}</span>
-        <span>协议: ${pack.license || "未知"}</span>
-        <span>来源: ${pack.source?.repo || "-"}@${pack.source?.ref || "-"}</span>
-      `;
-
-      card.appendChild(titleRow);
-      card.appendChild(tagRow);
-      card.appendChild(desc);
-      card.appendChild(meta);
-      catalogGrid.appendChild(card);
+    communityGrid.classList.remove("empty");
+    communityGrid.innerHTML = "";
+    for (const pack of communityPacks) {
+      communityGrid.appendChild(createPackCard(pack));
     }
   }
 

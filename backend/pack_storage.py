@@ -7,6 +7,13 @@ from pathlib import Path
 
 import requests
 
+from .pack_protocol import (
+    validate_community_index,
+    validate_pack_directory,
+    validate_pack_manifest,
+    validate_source_descriptor,
+)
+
 from ..config import (
     BACKUP_DIR,
     COMMUNITY_CACHE_PATH,
@@ -97,7 +104,12 @@ def _save_selection_rules(selection_rules: dict) -> None:
 def _load_manifest(pack_id: str) -> dict:
     manifest_path = PACKS_DIR / pack_id / "manifest.json"
     manifest = _load_json(manifest_path, {})
-    return manifest if isinstance(manifest, dict) else {}
+    if not isinstance(manifest, dict):
+        return {}
+    try:
+        return validate_pack_manifest(manifest)
+    except Exception:
+        return manifest
 
 
 def _count_images(memes_dir: Path) -> int:
@@ -224,15 +236,6 @@ def set_default_pack(pack_id: str) -> dict:
     return {"pack_id": pack_id}
 
 
-def _ensure_manifest_basics(manifest: dict) -> None:
-    required_fields = ["id", "name", "version", "categories"]
-    for field_name in required_fields:
-        if field_name not in manifest:
-            raise ValueError(f"manifest 缺少字段: {field_name}")
-    if not isinstance(manifest.get("categories"), dict) or not manifest["categories"]:
-        raise ValueError("manifest.categories 不能为空")
-
-
 def _find_manifest_root(extract_root: Path) -> Path:
     direct_manifest = extract_root / "manifest.json"
     if direct_manifest.is_file():
@@ -283,10 +286,8 @@ def import_pack_archive(
         if not isinstance(manifest, dict):
             raise ValueError("manifest.json 格式无效")
 
-        _ensure_manifest_basics(manifest)
-        pack_id = str(manifest.get("id") or "").strip()
-        if not pack_id:
-            raise ValueError("manifest.id 不能为空")
+        normalized_manifest = validate_pack_manifest(manifest)
+        pack_id = str(normalized_manifest.get("id") or "").strip()
 
         target_pack_dir = PACKS_DIR / pack_id
         if target_pack_dir.exists() and not overwrite:
@@ -296,6 +297,8 @@ def import_pack_archive(
             shutil.rmtree(target_pack_dir)
 
         shutil.copytree(pack_root, target_pack_dir)
+    _save_json(target_pack_dir / "manifest.json", normalized_manifest)
+    validate_pack_directory(target_pack_dir, context=f"导入包 {pack_id}")
 
     registry = _load_registry()
     installed = registry["installed_packs"]
@@ -402,29 +405,6 @@ def uninstall_pack(pack_id: str) -> dict:
     return {"pack_id": pack_id}
 
 
-def _validate_github_source(source: dict) -> dict:
-    if not isinstance(source, dict):
-        raise ValueError("source 必须是对象")
-
-    source_type = str(source.get("type") or "").strip().lower()
-    if source_type != "github":
-        raise ValueError("目前仅支持 github 来源")
-
-    repo = str(source.get("repo") or "").strip()
-    ref = str(source.get("ref") or "").strip()
-    subpath = str(source.get("subpath") or "").strip().strip("/")
-    if not repo or "/" not in repo:
-        raise ValueError("source.repo 无效，格式应为 owner/repo")
-    if not ref:
-        raise ValueError("source.ref 不能为空")
-    if not subpath:
-        raise ValueError("source.subpath 不能为空")
-    if ".." in Path(subpath).parts or "\\" in subpath:
-        raise ValueError("source.subpath 非法")
-
-    return {"type": "github", "repo": repo, "ref": ref, "subpath": subpath}
-
-
 def _download_github_archive(repo: str, ref: str, target_zip_path: Path) -> None:
     archive_url = f"https://github.com/{repo}/archive/{ref}.zip"
     response = requests.get(archive_url, timeout=30)
@@ -448,11 +428,8 @@ def fetch_and_cache_community_index(index_url: str) -> dict:
     except Exception as exc:
         raise ValueError(f"社区索引不是有效 JSON: {exc}") from exc
 
-    if not isinstance(index_data, dict):
-        raise ValueError("社区索引必须是 JSON 对象")
-    packs = index_data.get("packs")
-    if not isinstance(packs, list):
-        raise ValueError("社区索引缺少 packs 数组")
+    index_data = validate_community_index(index_data)
+    packs = index_data.get("packs", [])
 
     cache_payload = {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
@@ -496,7 +473,7 @@ def install_pack_from_github_source(
     overwrite: bool = False,
     set_as_default: bool = False,
 ) -> dict:
-    github_source = _validate_github_source(source)
+    github_source = validate_source_descriptor(source)
     repo = github_source["repo"]
     ref = github_source["ref"]
     subpath = github_source["subpath"]
@@ -524,6 +501,7 @@ def install_pack_from_github_source(
             raise ValueError("source.subpath 越界") from exc
         if not source_pack_dir.is_dir():
             raise FileNotFoundError("source.subpath 对应目录不存在")
+        validate_pack_directory(source_pack_dir, context="GitHub 包目录")
 
         local_zip = tmp_root / "pack.zip"
         with zipfile.ZipFile(local_zip, "w", zipfile.ZIP_DEFLATED) as zip_file:

@@ -103,6 +103,15 @@ h1 {
   grid-column: span 12;
 }
 
+.official-zone {
+  border-color: #ecd28a;
+  background: linear-gradient(180deg, #fffdf4 0%, #fff 100%);
+}
+
+.community-zone {
+  border-color: #cde2d8;
+}
+
 .panel h2 {
   margin-top: 0;
   margin-bottom: 14px;
@@ -225,6 +234,11 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.pack-card.official {
+  border-color: #e2bf58;
+  background: linear-gradient(180deg, #fff9e9 0%, #fff 100%);
 }
 
 .pack-title-row {
