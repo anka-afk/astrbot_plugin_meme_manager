@@ -3,10 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from backend.semantic_caption import prepare_visual_inputs
 from backend.semantic_index import EmbeddingAdapter, build_index
 from backend.semantic_models import parse_caption_result
 from backend.semantic_query import search_memes, validate_selected_id
 from backend.semantic_storage import reconcile_metadata, save_metadata
+from PIL import Image
 
 
 class FakeEmbedding:
@@ -29,6 +31,38 @@ class FakeEvent:
 
 
 class SemanticMvpTest(unittest.TestCase):
+    def test_gif_uses_first_middle_and_last_frames(self):
+        with tempfile.TemporaryDirectory() as temp:
+            gif_path = Path(temp) / "animated.gif"
+            colors = [
+                (255, 0, 0),
+                (0, 255, 0),
+                (0, 0, 255),
+                (255, 255, 255),
+                (0, 0, 0),
+            ]
+            frames = [Image.new("RGB", (4, 4), color) for color in colors]
+            frames[0].save(
+                gif_path,
+                save_all=True,
+                append_images=frames[1:],
+                duration=100,
+                loop=0,
+                disposal=2,
+            )
+
+            visual_paths, temp_paths = prepare_visual_inputs(gif_path)
+            try:
+                self.assertEqual(len(visual_paths), 3)
+                sampled_colors = []
+                for path in visual_paths:
+                    with Image.open(path) as sampled:
+                        sampled_colors.append(sampled.convert("RGB").getpixel((0, 0)))
+                self.assertEqual(sampled_colors, [colors[0], colors[2], colors[4]])
+            finally:
+                for path in temp_paths:
+                    Path(path).unlink(missing_ok=True)
+
     def test_scan_deduplicates_and_reuses_metadata(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

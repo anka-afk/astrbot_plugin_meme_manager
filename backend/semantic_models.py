@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 SCHEMA_VERSION = "1.0"
-PROMPT_VERSION = "meme-semantic-v1"
+PROMPT_VERSION = "meme-semantic-v2"
 IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif"})
 CAPTION_STATUSES = frozenset({"pending", "running", "done", "failed"})
 EMBEDDING_STATUSES = frozenset({"pending", "running", "done", "failed"})
