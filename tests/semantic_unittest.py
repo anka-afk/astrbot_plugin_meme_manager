@@ -88,6 +88,11 @@ class FakeContext:
 
 
 class SemanticMvpTest(unittest.TestCase):
+    def test_semantic_config_uses_astrbot_supported_types(self):
+        schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        self.assertEqual(schema["semantic"]["items"]["min_score"]["type"], "float")
+
     def test_full_task_embeds_once_and_builds_faiss(self):
         async def run():
             with tempfile.TemporaryDirectory() as temp:

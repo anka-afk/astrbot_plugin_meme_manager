@@ -370,7 +370,7 @@
       },
       "min_score": {
         "description": "最低相似度",
-        "type": "number",
+        "type": "float",
         "default": 0.25,
         "hint": "低于此值的结果不会返回"
       }
