@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .semantic_caption import generate_caption
-from .semantic_index import EmbeddingAdapter, build_index
+from .semantic_index import EmbeddingAdapter, build_index, faiss_is_available
 from .semantic_models import PROMPT_VERSION, SemanticImage, text_hash, utc_now
 from .semantic_storage import (
     load_metadata,
@@ -100,6 +100,7 @@ class SemanticTaskManager:
                 and (vision_id or getattr(self.context, "llm_generate", None))
             ),
             "embedding_provider_ready": EmbeddingAdapter(provider).ready,
+            "faiss_ready": faiss_is_available(),
             "semantic_metadata_ready": bool(metadata.get("images")),
             "task_status": str(state.get("task_status") or "idle"),
         }
@@ -108,13 +109,23 @@ class SemanticTaskManager:
         if self.config.get("embedding_provider") is not None:
             return self.config.get("embedding_provider")
         context = self.context
-        if context is None or not callable(
-            getattr(context, "get_registered_star", None)
-        ):
+        if context is None:
+            return None
+        provider_id = str(self.config.get("embedding_provider_id") or "").strip()
+        if provider_id:
+            resolver = getattr(context, "get_provider_by_id", None)
+            if not callable(resolver):
+                return None
+            try:
+                return resolver(provider_id)
+            except Exception:
+                return None
+        resolver = getattr(context, "get_all_embedding_providers", None)
+        if not callable(resolver):
             return None
         try:
-            metadata = context.get_registered_star("astrbot_plugin_embedding_adapter")
-            return getattr(metadata, "star_cls", None)
+            providers = resolver()
+            return providers[0] if providers else None
         except Exception:
             return None
 
@@ -356,44 +367,46 @@ class SemanticTaskManager:
                         item.caption_status = "done"
                         item.embedding_status = "pending"
                         item.text_hash = text_hash(item.vector_text)
-                    if force or item.embedding_status != "done":
-                        if not embedding.ready:
-                            raise RuntimeError("未配置向量模型")
-                        item.embedding_status = "running"
-                        raw_item.update(item.to_dict())
-                        save_metadata(pack_dir, metadata)
-                        await embedding.embed(item.vector_text)
-                        item.embedding_status = "done"
-                    item.error = None
+                        item.error = None
                 except Exception as exc:
                     item.error = self._safe_error(exc, pack_id)
                     if item.caption_status != "done":
                         item.caption_status = "failed"
-                    elif item.embedding_status != "done":
-                        item.embedding_status = "failed"
                 item.updated_at = utc_now()
                 raw_item.update(item.to_dict())
                 save_metadata(pack_dir, metadata)
+            has_caption = any(
+                isinstance(item, dict) and item.get("caption_status") == "done"
+                for item in metadata.get("images", {}).values()
+            )
+            if embedding.ready and has_caption:
+                # build_index 会从旧 FAISS 复用未变化向量，只补充新增或变化的图片。
+                await build_index(
+                    pack_dir,
+                    self.plugin_data_dir,
+                    pack_id,
+                    embedding,
+                    force=force,
+                )
+            elif has_caption:
+                for item in metadata.get("images", {}).values():
+                    if (
+                        not isinstance(item, dict)
+                        or item.get("caption_status") != "done"
+                    ):
+                        continue
+                    item["embedding_status"] = "failed"
+                    item["error"] = "未配置 AstrBot 核心向量模型"
+                save_metadata(pack_dir, metadata)
+            latest = load_metadata(pack_dir)
             failed = any(
                 isinstance(item, dict)
                 and (
                     item.get("caption_status") != "done"
                     or item.get("embedding_status") != "done"
                 )
-                for item in metadata.get("images", {}).values()
+                for item in latest.get("images", {}).values()
             )
-            if not failed and embedding.ready:
-                # 完整任务成功后自动建立索引；单独重建仍可通过 WebUI 调用。
-                await build_index(pack_dir, self.plugin_data_dir, pack_id, embedding)
-                latest = load_metadata(pack_dir)
-                failed = any(
-                    isinstance(item, dict)
-                    and (
-                        item.get("caption_status") != "done"
-                        or item.get("embedding_status") != "done"
-                    )
-                    for item in latest.get("images", {}).values()
-                )
             self._save_state(
                 pack_id,
                 {

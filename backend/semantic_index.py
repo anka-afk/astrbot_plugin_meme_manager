@@ -1,8 +1,4 @@
-"""每个资源包独立的本地语义索引。
-
-优先使用 FAISS；服务器没有安装 FAISS 时使用同样的 `index.faiss` 文件保存 JSON
-向量，检索行为保持一致，不会让旧模式因可选依赖缺失而启动失败。
-"""
+"""使用 AstrBot 核心 EmbeddingProvider 和真实 FAISS 的本地语义索引。"""
 
 from __future__ import annotations
 
@@ -10,88 +6,138 @@ import json
 import os
 import re
 import tempfile
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 from .semantic_models import (
     SemanticImage,
     build_id_map,
-    cosine_similarity,
     normalize_vector,
     text_hash,
     utc_now,
 )
 from .semantic_storage import load_metadata, save_metadata
 
+INDEX_FORMAT = "faiss-indexflatip-v1"
+QUERY_CACHE_SIZE = 128
+INDEX_CACHE_SIZE = 16
+_QUERY_VECTOR_CACHE: OrderedDict[tuple[str, str], tuple[float, ...]] = OrderedDict()
+_FAISS_INDEX_CACHE: OrderedDict[str, tuple[tuple[int, int], Any]] = OrderedDict()
+
+
+def _import_faiss_modules():
+    try:
+        import faiss
+        import numpy as np
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("AstrBot 当前环境缺少 faiss-cpu，无法建立语义索引") from exc
+    return faiss, np
+
+
+def faiss_is_available() -> bool:
+    try:
+        _import_faiss_modules()
+        return True
+    except RuntimeError:
+        return False
+
 
 class EmbeddingAdapter:
-    """兼容同步/异步 EmbeddingProvider 与 embedding_adapter 插件。"""
+    """为 AstrBot 核心 EmbeddingProvider 提供统一调用和小型查询缓存。"""
 
     def __init__(self, provider: Any, provider_id: str = ""):
         self.provider = provider
         self.provider_id = provider_id or self._read_provider_id(provider)
+        self.model_name = self._read_model_name(provider)
 
     @staticmethod
     def _read_provider_id(provider: Any) -> str:
-        for name in ("get_model_name", "get_provider_name", "get_model_id"):
-            method = getattr(provider, name, None)
-            if callable(method):
-                try:
-                    value = method()
-                    if value:
-                        return str(value)
-                except Exception:
-                    continue
-        return provider.__class__.__name__ if provider is not None else ""
+        meta = getattr(provider, "meta", None)
+        if callable(meta):
+            try:
+                value = getattr(meta(), "id", "")
+                if value:
+                    return str(value)
+            except Exception:
+                pass
+        config = getattr(provider, "provider_config", None)
+        if isinstance(config, dict) and config.get("id"):
+            return str(config["id"])
+        return ""
+
+    @staticmethod
+    def _read_model_name(provider: Any) -> str:
+        method = getattr(provider, "get_model", None)
+        if callable(method):
+            try:
+                return str(method() or "")
+            except Exception:
+                return ""
+        return ""
+
+    @property
+    def dimension(self) -> int:
+        method = getattr(self.provider, "get_dim", None)
+        if not callable(method):
+            return 0
+        try:
+            return int(method() or 0)
+        except Exception:
+            return 0
 
     @property
     def ready(self) -> bool:
-        if self.provider is None:
-            return False
-        availability = getattr(self.provider, "is_available", None)
-        if callable(availability):
-            try:
-                if availability() is False:
-                    return False
-            except Exception:
-                return False
-        return any(
-            callable(getattr(self.provider, name, None))
-            for name in (
-                "get_embedding",
-                "get_embedding_async",
-                "get_embeddings",
-                "get_embeddings_async",
-            )
+        return bool(
+            self.provider is not None
+            and self.provider_id
+            and self.dimension > 0
+            and callable(getattr(self.provider, "get_embedding", None))
         )
 
-    async def embed(self, text: str) -> list[float]:
+    @property
+    def signature(self) -> str:
+        return f"{self.provider_id}:{self.model_name}:{self.dimension}"
+
+    async def embed(self, text: str, *, use_cache: bool = True) -> list[float]:
         if not self.ready:
-            raise RuntimeError("未配置向量模型")
-        for name in ("get_embedding_async", "get_embedding"):
-            method = getattr(self.provider, name, None)
-            if not callable(method):
-                continue
-            result = method(text)
-            if hasattr(result, "__await__"):
-                result = await result
-            return normalize_vector(result)
-        raise RuntimeError("向量模型不支持单文本向量化")
+            raise RuntimeError("未配置 AstrBot 核心向量模型")
+        normalized_text = str(text or "").strip()
+        cache_key = (self.signature, normalized_text)
+        if use_cache and cache_key in _QUERY_VECTOR_CACHE:
+            vector = _QUERY_VECTOR_CACHE.pop(cache_key)
+            _QUERY_VECTOR_CACHE[cache_key] = vector
+            return list(vector)
+
+        result = self.provider.get_embedding(normalized_text)
+        if hasattr(result, "__await__"):
+            result = await result
+        vector = normalize_vector(result)
+        if len(vector) != self.dimension:
+            raise RuntimeError(
+                f"向量模型返回维度不一致：期望 {self.dimension}，实际 {len(vector)}"
+            )
+        if use_cache:
+            _QUERY_VECTOR_CACHE[cache_key] = tuple(vector)
+            while len(_QUERY_VECTOR_CACHE) > QUERY_CACHE_SIZE:
+                _QUERY_VECTOR_CACHE.popitem(last=False)
+        return vector
 
     async def embed_many(self, texts: list[str]) -> list[list[float]]:
         if not self.ready:
-            raise RuntimeError("未配置向量模型")
-        for name in ("get_embeddings_async", "get_embeddings"):
-            method = getattr(self.provider, name, None)
-            if not callable(method):
-                continue
+            raise RuntimeError("未配置 AstrBot 核心向量模型")
+        method = getattr(self.provider, "get_embeddings", None)
+        if callable(method):
             result = method(texts)
             if hasattr(result, "__await__"):
                 result = await result
             if not isinstance(result, (list, tuple)):
                 raise RuntimeError("向量模型返回格式无效")
-            return [normalize_vector(item) for item in result]
-        return [await self.embed(text) for text in texts]
+            vectors = [normalize_vector(item) for item in result]
+            if any(len(vector) != self.dimension for vector in vectors):
+                raise RuntimeError("向量模型返回维度不一致")
+            return vectors
+        return [await self.embed(text, use_cache=False) for text in texts]
 
 
 def index_dir(plugin_data_dir: Path | str, pack_id: str) -> Path:
@@ -109,43 +155,6 @@ def _index_file(plugin_data_dir: Path | str, pack_id: str) -> Path:
     return index_dir(plugin_data_dir, pack_id) / "index.faiss"
 
 
-def _load_vectors(plugin_data_dir: Path | str, pack_id: str) -> dict[str, list[float]]:
-    path = _index_file(plugin_data_dir, pack_id)
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        vectors = data.get("vectors", {}) if isinstance(data, dict) else {}
-        return {
-            str(key): normalize_vector(value)
-            for key, value in vectors.items()
-            if isinstance(value, list)
-        }
-    except (OSError, ValueError, json.JSONDecodeError):
-        return {}
-
-
-def _save_vectors(
-    plugin_data_dir: Path | str, pack_id: str, vectors: dict[str, list[float]]
-) -> None:
-    path = _index_file(plugin_data_dir, pack_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(prefix=".index.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as file_obj:
-            json.dump(
-                {"format": "meme-manager-json-faiss-fallback-v1", "vectors": vectors},
-                file_obj,
-                ensure_ascii=False,
-            )
-            file_obj.flush()
-            os.fsync(file_obj.fileno())
-        os.replace(temp_name, path)
-    finally:
-        if os.path.exists(temp_name):
-            os.unlink(temp_name)
-
-
 def load_index_manifest(plugin_data_dir: Path | str, pack_id: str) -> dict[str, Any]:
     path = index_manifest_path(plugin_data_dir, pack_id)
     if not path.is_file():
@@ -157,50 +166,153 @@ def load_index_manifest(plugin_data_dir: Path | str, pack_id: str) -> dict[str, 
         return {}
 
 
+def _read_faiss_index(plugin_data_dir: Path | str, pack_id: str):
+    path = _index_file(plugin_data_dir, pack_id)
+    if not path.is_file():
+        return None
+    try:
+        stat = path.stat()
+        cache_key = str(path)
+        fingerprint = (stat.st_mtime_ns, stat.st_size)
+        cached = _FAISS_INDEX_CACHE.get(cache_key)
+        if cached and cached[0] == fingerprint:
+            _FAISS_INDEX_CACHE.move_to_end(cache_key)
+            return cached[1]
+        faiss, _ = _import_faiss_modules()
+        index = faiss.read_index(str(path))
+        _FAISS_INDEX_CACHE[cache_key] = (fingerprint, index)
+        while len(_FAISS_INDEX_CACHE) > INDEX_CACHE_SIZE:
+            _FAISS_INDEX_CACHE.popitem(last=False)
+        return index
+    except Exception:
+        return None
+
+
+def _write_faiss_index(plugin_data_dir: Path | str, pack_id: str, index: Any) -> None:
+    faiss, _ = _import_faiss_modules()
+    path = _index_file(plugin_data_dir, pack_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=".index.", suffix=".faiss", dir=path.parent)
+    os.close(fd)
+    try:
+        faiss.write_index(index, temp_name)
+        os.replace(temp_name, path)
+        stat = path.stat()
+        cache_key = str(path)
+        _FAISS_INDEX_CACHE[cache_key] = ((stat.st_mtime_ns, stat.st_size), index)
+        _FAISS_INDEX_CACHE.move_to_end(cache_key)
+        while len(_FAISS_INDEX_CACHE) > INDEX_CACHE_SIZE:
+            _FAISS_INDEX_CACHE.popitem(last=False)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def _write_manifest(
+    plugin_data_dir: Path | str, pack_id: str, manifest: dict[str, Any]
+) -> None:
+    path = index_manifest_path(plugin_data_dir, pack_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=".manifest.", suffix=".json", dir=path.parent
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file_obj:
+            json.dump(manifest, file_obj, ensure_ascii=False, indent=2)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
 def index_is_ready(
     plugin_data_dir: Path | str,
     pack_id: str,
     metadata: dict[str, Any] | None = None,
     embedding_provider_id: str | None = None,
+    embedding_model: str | None = None,
+    embedding_dimension: int | None = None,
 ) -> bool:
     manifest = load_index_manifest(plugin_data_dir, pack_id)
-    if not manifest or not _index_file(plugin_data_dir, pack_id).is_file():
+    if manifest.get("index_format") != INDEX_FORMAT:
         return False
-    if int(manifest.get("item_count", 0)) <= 0:
+    item_count = int(manifest.get("item_count", 0) or 0)
+    if item_count <= 0:
         return False
     if embedding_provider_id and str(
         manifest.get("embedding_provider_id") or ""
     ) != str(embedding_provider_id):
         return False
+    if embedding_model is not None and str(
+        manifest.get("embedding_model") or ""
+    ) != str(embedding_model):
+        return False
+    if embedding_dimension and int(manifest.get("embedding_dimension", 0) or 0) != int(
+        embedding_dimension
+    ):
+        return False
+
+    index = _read_faiss_index(plugin_data_dir, pack_id)
+    if index is None or int(index.ntotal) != item_count:
+        return False
+    if int(index.d) != int(manifest.get("embedding_dimension", 0) or 0):
+        return False
+
     current = metadata or {}
-    done = {
-        digest: item
-        for digest, item in current.get("images", {}).items()
-        if isinstance(item, dict)
-        and item.get("embedding_status") == "done"
-        and item.get("text_hash")
-    }
+    images = current.get("images", {})
     if any(
         isinstance(item, dict)
         and (
             item.get("caption_status") != "done"
             or item.get("embedding_status") != "done"
         )
-        for item in current.get("images", {}).values()
+        for item in images.values()
     ):
         return False
-    if (
-        int(manifest.get("item_count", -1)) != len(done)
-        or str(manifest.get("metadata_schema_version")) != "1.0"
-    ):
+    manifest_items = manifest.get("items", {})
+    if not isinstance(manifest_items, dict) or len(manifest_items) != item_count:
         return False
-    stored_hashes = manifest.get("text_hashes")
-    if isinstance(stored_hashes, dict):
-        return all(
-            str(stored_hashes.get(digest) or "") == str(item.get("text_hash") or "")
-            for digest, item in done.items()
-        )
-    return True
+    done = {
+        digest: item
+        for digest, item in images.items()
+        if isinstance(item, dict)
+        and item.get("embedding_status") == "done"
+        and item.get("text_hash")
+    }
+    if done and len(done) != item_count:
+        return False
+    return all(
+        str(manifest_items.get(digest, {}).get("text_hash") or "")
+        == str(item.get("text_hash") or "")
+        for digest, item in done.items()
+    )
+
+
+def _reconstruct_reusable_vectors(
+    old_index: Any,
+    old_manifest: dict[str, Any],
+    candidates: list[tuple[str, dict[str, Any]]],
+) -> dict[str, list[float]]:
+    if old_index is None or old_manifest.get("index_format") != INDEX_FORMAT:
+        return {}
+    old_items = old_manifest.get("items", {})
+    if not isinstance(old_items, dict):
+        return {}
+    vectors: dict[str, list[float]] = {}
+    for digest, item in candidates:
+        old_item = old_items.get(digest)
+        if not isinstance(old_item, dict):
+            continue
+        if str(old_item.get("text_hash") or "") != str(item.get("text_hash") or ""):
+            continue
+        try:
+            vector = old_index.reconstruct(int(old_item["faiss_id"]))
+            vectors[digest] = normalize_vector(vector.tolist())
+        except Exception:
+            continue
+    return vectors
 
 
 async def build_index(
@@ -211,45 +323,48 @@ async def build_index(
     *,
     force: bool = False,
 ) -> dict[str, Any]:
-    """为已完成视觉语义的记录建立索引，并回写每张图片的向量状态。"""
-    old_manifest = load_index_manifest(plugin_data_dir, pack_id)
-    if (
-        old_manifest
-        and old_manifest.get("embedding_provider_id")
-        and str(old_manifest.get("embedding_provider_id")) != str(embedding.provider_id)
-    ):
-        force = True
+    """建立真实 FAISS 精确索引，只重新向量化新增或语义变化的图片。"""
+    if not embedding.ready:
+        raise RuntimeError("未配置 AstrBot 核心向量模型")
+    faiss, np = _import_faiss_modules()
     metadata = load_metadata(pack_dir)
-    images = metadata.get("images", {})
     candidates: list[tuple[str, dict[str, Any]]] = []
-    for digest, value in images.items():
+    for digest, value in metadata.get("images", {}).items():
         if not isinstance(value, dict) or value.get("caption_status") != "done":
             continue
         if not value.get("caption") or not value.get("tags"):
             continue
-        semantic_text = SemanticImage.from_dict(value).vector_text
-        current_hash = text_hash(semantic_text)
-        if (
-            force
-            or value.get("text_hash") != current_hash
-            or value.get("embedding_status") != "done"
-        ):
-            value["embedding_status"] = "running"
+        current_hash = text_hash(SemanticImage.from_dict(value).vector_text)
         value["text_hash"] = current_hash
         candidates.append((str(digest), value))
+
+    old_manifest = load_index_manifest(plugin_data_dir, pack_id)
+    same_provider = bool(
+        old_manifest.get("index_format") == INDEX_FORMAT
+        and old_manifest.get("embedding_provider_id") == embedding.provider_id
+        and old_manifest.get("embedding_model", "") == embedding.model_name
+        and int(old_manifest.get("embedding_dimension", 0) or 0) == embedding.dimension
+    )
+    old_index = (
+        _read_faiss_index(plugin_data_dir, pack_id)
+        if same_provider and not force
+        else None
+    )
+    vectors = (
+        _reconstruct_reusable_vectors(old_index, old_manifest, candidates)
+        if old_index is not None
+        else {}
+    )
+
+    pending = [(digest, item) for digest, item in candidates if digest not in vectors]
+    for _, item in pending:
+        item["embedding_status"] = "running"
+    for digest, item in candidates:
+        if digest in vectors:
+            item["embedding_status"] = "done"
+            item["error"] = None
     save_metadata(pack_dir, metadata)
-    vectors = {} if force else _load_vectors(plugin_data_dir, pack_id)
-    allowed_digests = {digest for digest, _ in candidates}
-    vectors = {
-        digest: vector
-        for digest, vector in vectors.items()
-        if digest in allowed_digests
-    }
-    pending = [
-        (digest, value)
-        for digest, value in candidates
-        if force or digest not in vectors or value.get("embedding_status") != "done"
-    ]
+
     if pending:
         try:
             generated = await embedding.embed_many(
@@ -257,56 +372,61 @@ async def build_index(
             )
             if len(generated) != len(pending):
                 raise RuntimeError("向量模型返回数量与输入不一致")
-            for (digest, value), vector in zip(pending, generated):
+            for (digest, item), vector in zip(pending, generated):
                 vectors[digest] = vector
-                value["embedding_status"] = "done"
-                value["error"] = None
-                value["updated_at"] = utc_now()
+                item["embedding_status"] = "done"
+                item["error"] = None
+                item["updated_at"] = utc_now()
         except Exception as batch_error:
-            # 批量接口失败时逐张重试，确保单张失败不会抹掉其他已完成结果。
-            for digest, value in pending:
+            for digest, item in pending:
                 try:
                     vectors[digest] = await embedding.embed(
-                        SemanticImage.from_dict(value).vector_text
+                        SemanticImage.from_dict(item).vector_text,
+                        use_cache=False,
                     )
-                    value["embedding_status"] = "done"
-                    value["error"] = None
+                    item["embedding_status"] = "done"
+                    item["error"] = None
                 except Exception as item_error:
-                    value["embedding_status"] = "failed"
-                    value["error"] = str(item_error or batch_error)[:500]
-                value["updated_at"] = utc_now()
-    for digest, value in candidates:
-        if digest in vectors:
-            value["embedding_status"] = "done"
+                    item["embedding_status"] = "failed"
+                    item["error"] = str(item_error or batch_error)[:500]
+                item["updated_at"] = utc_now()
     save_metadata(pack_dir, metadata)
-    dimensions = len(next(iter(vectors.values()))) if vectors else 0
-    _save_vectors(plugin_data_dir, pack_id, vectors)
+
+    successful = [
+        (digest, item)
+        for digest, item in sorted(candidates)
+        if digest in vectors and item.get("embedding_status") == "done"
+    ]
+    base_index = faiss.IndexFlatIP(embedding.dimension)
+    index = faiss.IndexIDMap2(base_index)
+    manifest_items: dict[str, dict[str, Any]] = {}
+    if successful:
+        matrix = np.asarray(
+            [vectors[digest] for digest, _ in successful], dtype="float32"
+        )
+        faiss.normalize_L2(matrix)
+        ids = np.arange(1, len(successful) + 1, dtype="int64")
+        index.add_with_ids(matrix, ids)
+        for faiss_id, (digest, item) in zip(ids.tolist(), successful):
+            manifest_items[digest] = {
+                "faiss_id": faiss_id,
+                "text_hash": str(item.get("text_hash") or ""),
+            }
+
+    _write_faiss_index(plugin_data_dir, pack_id, index)
     manifest = {
         "pack_id": pack_id,
         "metadata_schema_version": "1.0",
+        "index_format": INDEX_FORMAT,
         "embedding_provider_id": embedding.provider_id,
-        "embedding_dimension": dimensions,
+        "embedding_model": embedding.model_name,
+        "embedding_dimension": embedding.dimension,
         "distance": "cosine",
-        "item_count": len(vectors),
-        "text_hashes": {
-            digest: str(item.get("text_hash") or "")
-            for digest, item in candidates
-            if digest in vectors
-        },
+        "item_count": len(successful),
+        "items": manifest_items,
         "built_at": utc_now(),
     }
-    manifest_path = index_manifest_path(plugin_data_dir, pack_id)
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(prefix=".manifest.", dir=manifest_path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as file_obj:
-            json.dump(manifest, file_obj, ensure_ascii=False, indent=2)
-            file_obj.flush()
-            os.fsync(file_obj.fileno())
-        os.replace(temp_name, manifest_path)
-    finally:
-        if os.path.exists(temp_name):
-            os.unlink(temp_name)
+    _write_manifest(plugin_data_dir, pack_id, manifest)
     return manifest
 
 
@@ -321,35 +441,49 @@ async def search_index(
     min_score: float = 0.25,
 ) -> list[dict[str, Any]]:
     manifest = load_index_manifest(plugin_data_dir, pack_id)
-    vectors = _load_vectors(plugin_data_dir, pack_id)
-    if not manifest or not vectors:
+    if manifest.get("index_format") != INDEX_FORMAT:
         return []
-    query_vector = await embedding.embed(str(query or ""))
+    if (
+        manifest.get("embedding_provider_id") != embedding.provider_id
+        or manifest.get("embedding_model", "") != embedding.model_name
+        or int(manifest.get("embedding_dimension", 0) or 0) != embedding.dimension
+    ):
+        return []
+    index = _read_faiss_index(plugin_data_dir, pack_id)
+    if index is None or int(index.ntotal) <= 0:
+        return []
+    faiss, np = _import_faiss_modules()
+    query_vector = np.asarray(
+        [await embedding.embed(str(query or ""))], dtype="float32"
+    )
+    faiss.normalize_L2(query_vector)
+    result_limit = min(max(0, int(top_k)), int(index.ntotal))
+    if result_limit <= 0:
+        return []
+    scores, ids = index.search(query_vector, result_limit)
+    id_to_digest = {
+        int(item.get("faiss_id")): digest
+        for digest, item in manifest.get("items", {}).items()
+        if isinstance(item, dict) and item.get("faiss_id") is not None
+    }
     data = metadata or {}
-    candidates = []
-    for digest, vector in vectors.items():
-        try:
-            score = cosine_similarity(query_vector, vector)
-        except ValueError:
-            continue
-        item = data.get("images", {}).get(digest)
+    ranked = []
+    for score, faiss_id in zip(scores[0].tolist(), ids[0].tolist()):
+        digest = id_to_digest.get(int(faiss_id))
+        item = data.get("images", {}).get(digest) if digest else None
         if not isinstance(item, dict) or item.get("caption_status") != "done":
             continue
-        candidates.append((score, digest, item))
-    candidates.sort(key=lambda row: (-row[0], row[1]))
-    result = []
-    id_map = build_id_map(digest for _, digest, _ in candidates)
-    for score, digest, item in candidates[: max(0, int(top_k))]:
-        if score < float(min_score):
+        if float(score) < float(min_score):
             continue
-        meme_id = id_map[digest]
-        result.append(
-            {
-                "id": meme_id,
-                "content_sha256": digest,
-                "caption": str(item.get("caption") or ""),
-                "tags": item.get("tags") or [],
-                "score": score,
-            }
-        )
-    return result
+        ranked.append((float(score), digest, item))
+    id_map = build_id_map(digest for _, digest, _ in ranked)
+    return [
+        {
+            "id": id_map[digest],
+            "content_sha256": digest,
+            "caption": str(item.get("caption") or ""),
+            "tags": item.get("tags") or [],
+            "score": score,
+        }
+        for score, digest, item in ranked
+    ]

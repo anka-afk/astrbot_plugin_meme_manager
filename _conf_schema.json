@@ -357,10 +357,10 @@
         "hint": "仅用于离线批量生成描述，留空时尝试当前聊天模型"
       },
       "embedding_provider_id": {
-        "description": "向量模型标识",
+        "description": "AstrBot Embedding Provider ID",
         "type": "string",
         "default": "",
-        "hint": "复用 embedding_adapter 插件；留空使用当前提供商"
+        "hint": "填写模型提供商页面中类型为 Embedding 的 Provider ID；留空时使用第一个可用的核心 Embedding Provider"
       },
       "top_k": {
         "description": "每次返回候选数",

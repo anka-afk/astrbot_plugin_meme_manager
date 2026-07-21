@@ -43,7 +43,11 @@ from ..backend.pack_storage import (
 )
 from ..config import COMMUNITY_INDEX_URL, MEMES_DIR, PACKS_DIR, TEMP_DIR
 from ..config import PLUGIN_DATA_DIR, SEMANTIC_INDEXES_DIR
-from ..backend.semantic_storage import load_metadata, metadata_items, import_metadata_file
+from ..backend.semantic_storage import (
+    load_metadata,
+    metadata_items,
+    import_metadata_file,
+)
 from ..backend.semantic_index import EmbeddingAdapter, index_is_ready
 
 PLUGIN_NAME = "meme_manager"
@@ -300,7 +304,10 @@ class WebAPIMixin:
             "semantic/retry", self._api_semantic_retry, ["POST"], "重试失败语义项"
         )
         self._register_webui_api(
-            "semantic/rebuild-index", self._api_semantic_rebuild_index, ["POST"], "重建语义向量索引"
+            "semantic/rebuild-index",
+            self._api_semantic_rebuild_index,
+            ["POST"],
+            "重建语义向量索引",
         )
 
     def _register_webui_api(self, route, handler, methods, desc):
@@ -336,9 +343,19 @@ class WebAPIMixin:
 
     async def _semantic_request_pack_id(self, data: dict | None = None) -> str:
         payload = data or {}
-        pack_id = str(payload.get("pack_id") or request.args.get("pack_id") or request.args.get("managed_pack_id") or "").strip()
+        pack_id = str(
+            payload.get("pack_id")
+            or request.args.get("pack_id")
+            or request.args.get("managed_pack_id")
+            or ""
+        ).strip()
         if not pack_id:
-            pack_id = str(getattr(self, "_resolve_runtime_pack_context", lambda: {})().get("pack_id") or "")
+            pack_id = str(
+                getattr(self, "_resolve_runtime_pack_context", lambda: {})().get(
+                    "pack_id"
+                )
+                or ""
+            )
         if not pack_id:
             raise ValueError("pack_id 不能为空")
         pack_dir = (PACKS_DIR / pack_id).resolve()
@@ -1204,7 +1221,14 @@ class WebAPIMixin:
                 self.semantic_task_manager._resolve_embedding_provider(),
                 str(getattr(self, "semantic_embedding_provider_id", "") or ""),
             )
-            result["index_ready"] = index_is_ready(SEMANTIC_INDEXES_DIR, pack_id, metadata, provider.provider_id)
+            result["index_ready"] = index_is_ready(
+                SEMANTIC_INDEXES_DIR,
+                pack_id,
+                metadata,
+                provider.provider_id,
+                provider.model_name,
+                provider.dimension,
+            )
             result["semantic_enabled"] = bool(getattr(self, "semantic_enabled", False))
             return jsonify(result), 200
         except FileNotFoundError as exc:
@@ -1218,7 +1242,14 @@ class WebAPIMixin:
     async def _api_semantic_items(self):
         try:
             pack_id = await self._semantic_request_pack_id()
-            return jsonify({"pack_id": pack_id, "items": metadata_items(PACKS_DIR / pack_id, request.args.get("status"))}), 200
+            return jsonify(
+                {
+                    "pack_id": pack_id,
+                    "items": metadata_items(
+                        PACKS_DIR / pack_id, request.args.get("status")
+                    ),
+                }
+            ), 200
         except (FileNotFoundError, ValueError) as exc:
             return jsonify({"message": str(exc)}), 400
         except Exception as exc:
@@ -1229,12 +1260,18 @@ class WebAPIMixin:
         try:
             data = await request.get_json() or {}
             pack_id = await self._semantic_request_pack_id(data)
-            external_data = data.get("external_metadata") if isinstance(data.get("external_metadata"), dict) else None
+            external_data = (
+                data.get("external_metadata")
+                if isinstance(data.get("external_metadata"), dict)
+                else None
+            )
             external_path = data.get("external_metadata_path")
             if external_path:
                 source = Path(str(external_path)).expanduser().resolve()
                 allowed_roots = [PLUGIN_DATA_DIR.resolve(), TEMP_DIR.resolve()]
-                if not any(source == root or root in source.parents for root in allowed_roots):
+                if not any(
+                    source == root or root in source.parents for root in allowed_roots
+                ):
                     raise ValueError("外部语义文件必须位于插件数据目录或临时目录")
                 external_data = import_metadata_file(source)
             result = await self.semantic_task_manager.start(
@@ -1285,7 +1322,9 @@ class WebAPIMixin:
         try:
             data = await request.get_json() or {}
             pack_id = await self._semantic_request_pack_id(data)
-            result = await self.semantic_task_manager.rebuild_index(pack_id, force=bool(data.get("force", False)))
+            result = await self.semantic_task_manager.rebuild_index(
+                pack_id, force=bool(data.get("force", False))
+            )
             return jsonify({"message": "向量索引已建立", **result}), 200
         except (FileNotFoundError, ValueError, RuntimeError) as exc:
             return jsonify({"message": str(exc)}), 400
@@ -1316,9 +1355,18 @@ class WebAPIMixin:
             payload = data or {}
             pack_id = str(payload.get("pack_id") or "").strip()
             output_dir = payload.get("output_dir")
-            include_value = payload.get("include_semantic", payload.get("semantic", True))
-            include_semantic = str(include_value).lower() not in {"0", "false", "no", "off"}
-            result = export_pack_archive(pack_id, output_dir=output_dir, include_semantic=include_semantic)
+            include_value = payload.get(
+                "include_semantic", payload.get("semantic", True)
+            )
+            include_semantic = str(include_value).lower() not in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }
+            result = export_pack_archive(
+                pack_id, output_dir=output_dir, include_semantic=include_semantic
+            )
             return jsonify({"message": "导出成功", **result}), 200
         except FileNotFoundError as e:
             return jsonify({"message": str(e)}), 404

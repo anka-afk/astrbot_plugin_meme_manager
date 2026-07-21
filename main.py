@@ -19,7 +19,12 @@ from .mixins.web_api import WebAPIMixin
 from .mixins.commands import CommandMixin
 from .mixins.event_handlers import EventHandlerMixin
 from .backend.semantic_task import SemanticTaskManager
-from .backend.semantic_query import candidate_records, dumps_result, remember_candidates, search_memes
+from .backend.semantic_query import (
+    candidate_records,
+    dumps_result,
+    remember_candidates,
+    search_memes,
+)
 from .backend.semantic_index import EmbeddingAdapter, index_is_ready
 from .backend.semantic_storage import load_metadata
 
@@ -37,16 +42,34 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
 
         # 语义任务管理器只负责在实际操作时调用模型；缺少模型不会阻止旧版插件启动。
         self.semantic_enabled = bool(
-            self._read_config_value(("semantic", "enabled"), default=False, legacy_keys=("semantic_enabled",))
+            self._read_config_value(
+                ("semantic", "enabled"),
+                default=False,
+                legacy_keys=("semantic_enabled",),
+            )
         )
         self.semantic_vision_provider_id = str(
-            self._read_config_value(("semantic", "vision_provider_id"), default="", legacy_keys=("vision_provider_id",)) or ""
+            self._read_config_value(
+                ("semantic", "vision_provider_id"),
+                default="",
+                legacy_keys=("vision_provider_id",),
+            )
+            or ""
         )
         self.semantic_embedding_provider_id = str(
-            self._read_config_value(("semantic", "embedding_provider_id"), default="", legacy_keys=("embedding_provider_id",)) or ""
+            self._read_config_value(
+                ("semantic", "embedding_provider_id"),
+                default="",
+                legacy_keys=("embedding_provider_id",),
+            )
+            or ""
         )
-        self.semantic_top_k = int(self._read_config_value(("semantic", "top_k"), default=5) or 5)
-        self.semantic_min_score = float(self._read_config_value(("semantic", "min_score"), default=0.25) or 0.25)
+        self.semantic_top_k = int(
+            self._read_config_value(("semantic", "top_k"), default=5) or 5
+        )
+        self.semantic_min_score = float(
+            self._read_config_value(("semantic", "min_score"), default=0.25) or 0.25
+        )
         self.semantic_task_manager = SemanticTaskManager(
             PLUGIN_DATA_DIR,
             context=context,
@@ -418,12 +441,18 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
     def _resolve_embedding_provider(self):
         return self.semantic_task_manager._resolve_embedding_provider()
 
-    def _semantic_pack_ready(self, event: AstrMessageEvent | None = None, req: ProviderRequest | None = None) -> bool:
+    def _semantic_pack_ready(
+        self, event: AstrMessageEvent | None = None, req: ProviderRequest | None = None
+    ) -> bool:
         if not self.semantic_enabled:
             return False
         if req is not None:
             tool_set = getattr(req, "func_tool", None)
-            if tool_set is None or not callable(getattr(tool_set, "get_tool", None)) or not tool_set.get_tool("search_memes"):
+            if (
+                tool_set is None
+                or not callable(getattr(tool_set, "get_tool", None))
+                or not tool_set.get_tool("search_memes")
+            ):
                 return False
         context = self._resolve_runtime_pack_context(event=event, req=req)
         pack_id = str(context.get("pack_id") or "")
@@ -433,9 +462,19 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         if not metadata.get("images"):
             return False
         provider = self._resolve_embedding_provider()
-        embedding = EmbeddingAdapter(provider)
+        embedding = EmbeddingAdapter(provider, self.semantic_embedding_provider_id)
         provider_id = self.semantic_embedding_provider_id or embedding.provider_id
-        return index_is_ready(SEMANTIC_INDEXES_DIR, pack_id, metadata, provider_id) and embedding.ready
+        return (
+            index_is_ready(
+                SEMANTIC_INDEXES_DIR,
+                pack_id,
+                metadata,
+                provider_id,
+                embedding.model_name,
+                embedding.dimension,
+            )
+            and embedding.ready
+        )
 
     def _semantic_system_prompt(self) -> str:
         return (
@@ -569,7 +608,10 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         self, req: ProviderRequest, event: AstrMessageEvent | None = None
     ) -> None:
         if self._semantic_pack_ready(event=event, req=req):
-            req.system_prompt = self._strip_meme_prompt(req.system_prompt) + self._semantic_system_prompt()
+            req.system_prompt = (
+                self._strip_meme_prompt(req.system_prompt)
+                + self._semantic_system_prompt()
+            )
             return
         if self.emotion_llm_enabled:
             req.system_prompt = self._strip_meme_prompt(req.system_prompt)
@@ -619,7 +661,10 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 top_k=self.semantic_top_k,
                 min_score=self.semantic_min_score,
             )
-            remember_candidates(event, candidate_records(context["pack_dir"], result.get("candidates") or []))
+            remember_candidates(
+                event,
+                candidate_records(context["pack_dir"], result.get("candidates") or []),
+            )
             event.set_extra("meme_manager_semantic_query", str(query or ""))
             return dumps_result(result)
         except Exception as exc:

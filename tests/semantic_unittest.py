@@ -1,22 +1,40 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
+import faiss
 from backend.semantic_caption import prepare_visual_inputs
-from backend.semantic_index import EmbeddingAdapter, build_index
+from backend.semantic_index import EmbeddingAdapter, build_index, index_is_ready
 from backend.semantic_models import parse_caption_result
 from backend.semantic_query import search_memes, validate_selected_id
-from backend.semantic_storage import reconcile_metadata, save_metadata
+from backend.semantic_storage import load_metadata, reconcile_metadata, save_metadata
+from backend.semantic_task import SemanticTaskManager
 from PIL import Image
 
 
 class FakeEmbedding:
-    async def get_embeddings_async(self, texts):
+    def __init__(self):
+        self.single_calls = 0
+        self.batch_calls = 0
+
+    async def get_embeddings(self, texts):
+        self.batch_calls += 1
         return [[1.0, 0.0] if "心虚" in text else [0.0, 1.0] for text in texts]
 
-    async def get_embedding_async(self, text):
-        return (await self.get_embeddings_async([text]))[0]
+    async def get_embedding(self, text):
+        self.single_calls += 1
+        return [1.0, 0.0] if "心虚" in text else [0.0, 1.0]
+
+    def get_dim(self):
+        return 2
+
+    def get_model(self):
+        return "fake-semantic-v1"
+
+    def meta(self):
+        return type("ProviderMeta", (), {"id": "fake-embedding"})()
 
 
 class FakeEvent:
@@ -30,7 +48,69 @@ class FakeEvent:
         self.extra[key] = value
 
 
+class FakeContext:
+    def __init__(self, provider):
+        self.provider = provider
+
+    def get_provider_by_id(self, provider_id):
+        return self.provider if provider_id == "fake-embedding" else None
+
+    def get_all_embedding_providers(self):
+        return [self.provider]
+
+    async def llm_generate(self, **kwargs):
+        return type(
+            "VisionResponse",
+            (),
+            {
+                "completion_text": (
+                    '{"caption":"我有点心虚想装傻",'
+                    '"tags":["心虚","装傻"],"visible_text":""}'
+                )
+            },
+        )()
+
+
 class SemanticMvpTest(unittest.TestCase):
+    def test_full_task_embeds_once_and_builds_faiss(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                (pack / "memes" / "a").mkdir(parents=True)
+                (pack / "memes" / "a" / "one.png").write_bytes(b"one")
+                provider = FakeEmbedding()
+                manager = SemanticTaskManager(
+                    root,
+                    context=FakeContext(provider),
+                    config={
+                        "embedding_provider_id": "fake-embedding",
+                        "vision_provider_id": "fake-vision",
+                    },
+                )
+                await manager.start("demo")
+                await manager._tasks["demo"]
+                self.assertEqual(manager.status("demo")["task_status"], "completed")
+                self.assertEqual(provider.batch_calls, 1)
+                self.assertEqual(provider.single_calls, 0)
+                index_path = root / "semantic_indexes" / "demo" / "index.faiss"
+                self.assertEqual(faiss.read_index(str(index_path)).ntotal, 1)
+
+        asyncio.run(run())
+
+    def test_task_manager_uses_core_embedding_provider(self):
+        provider = FakeEmbedding()
+        with tempfile.TemporaryDirectory() as temp:
+            configured = SemanticTaskManager(
+                temp,
+                context=FakeContext(provider),
+                config={"embedding_provider_id": "fake-embedding"},
+            )
+            self.assertIs(configured._resolve_embedding_provider(), provider)
+
+            automatic = SemanticTaskManager(temp, context=FakeContext(provider))
+            self.assertIs(automatic._resolve_embedding_provider(), provider)
+
     def test_gif_uses_first_middle_and_last_frames(self):
         with tempfile.TemporaryDirectory() as temp:
             gif_path = Path(temp) / "animated.gif"
@@ -110,23 +190,62 @@ class SemanticMvpTest(unittest.TestCase):
                 pack = root / "packs" / "demo"
                 (pack / "memes" / "a").mkdir(parents=True)
                 (pack / "memes" / "a" / "one.png").write_bytes(b"one")
+                (pack / "memes" / "a" / "two.png").write_bytes(b"two")
                 metadata = reconcile_metadata(pack)
-                item = next(iter(metadata["images"].values()))
-                item.update(
-                    {
-                        "caption": "我有点心虚想装傻",
-                        "tags": ["心虚", "装傻"],
-                        "caption_status": "done",
-                    }
-                )
+                for item in metadata["images"].values():
+                    is_target = item["relative_path"].endswith("one.png")
+                    item.update(
+                        {
+                            "caption": "我有点心虚想装傻"
+                            if is_target
+                            else "开心庆祝成功",
+                            "tags": ["心虚", "装傻"] if is_target else ["开心", "庆祝"],
+                            "caption_status": "done",
+                        }
+                    )
                 save_metadata(pack, metadata)
-                await build_index(pack, root, "demo", EmbeddingAdapter(FakeEmbedding()))
+                fake_embedding = FakeEmbedding()
+                adapter = EmbeddingAdapter(fake_embedding)
+                manifest = await build_index(pack, root, "demo", adapter)
+                index_path = root / "semantic_indexes" / "demo" / "index.faiss"
+                self.assertEqual(manifest["index_format"], "faiss-indexflatip-v1")
+                self.assertEqual(faiss.read_index(str(index_path)).ntotal, 2)
+                with self.assertRaises((UnicodeDecodeError, json.JSONDecodeError)):
+                    json.loads(index_path.read_text(encoding="utf-8"))
+
+                await build_index(pack, root, "demo", adapter)
+                self.assertEqual(fake_embedding.batch_calls, 1)
+                indexed_metadata = load_metadata(pack)
+                self.assertTrue(
+                    index_is_ready(
+                        root,
+                        "demo",
+                        indexed_metadata,
+                        adapter.provider_id,
+                        adapter.model_name,
+                        adapter.dimension,
+                    )
+                )
+                self.assertFalse(
+                    index_is_ready(
+                        root,
+                        "demo",
+                        indexed_metadata,
+                        "another-provider",
+                        adapter.model_name,
+                        adapter.dimension,
+                    )
+                )
                 result = await search_memes(
-                    pack, root, "demo", "我有点心虚", FakeEmbedding()
+                    pack, root, "demo", "我有点心虚", fake_embedding
                 )
                 self.assertTrue(result["ok"])
                 self.assertTrue(result["candidates"])
+                self.assertEqual(result["candidates"][0]["caption"], "我有点心虚想装傻")
                 self.assertNotIn("content_sha256", result["candidates"][0])
+                self.assertEqual(fake_embedding.single_calls, 1)
+                await search_memes(pack, root, "demo", "我有点心虚", fake_embedding)
+                self.assertEqual(fake_embedding.single_calls, 1)
 
         asyncio.run(run())
 
