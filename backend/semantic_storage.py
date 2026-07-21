@@ -24,11 +24,14 @@ def metadata_path(pack_dir: Path | str) -> Path:
 
 def safe_relative_path(pack_dir: Path | str, relative_path: str) -> Path | None:
     """将相对路径安全地解析到资源包内，拒绝绝对路径和 .. 穿越。"""
-    root = Path(pack_dir).resolve()
-    candidate = (root / str(relative_path or "")).resolve()
     try:
+        root = Path(pack_dir).resolve()
+        raw_path = Path(str(relative_path or ""))
+        if not raw_path.parts or raw_path.is_absolute() or ".." in raw_path.parts:
+            return None
+        candidate = (root / raw_path).resolve()
         candidate.relative_to(root)
-    except ValueError:
+    except (OSError, RuntimeError, TypeError, ValueError):
         return None
     return candidate
 
@@ -53,6 +56,10 @@ def scan_images(pack_dir: Path | str) -> list[dict[str, str]]:
     found: dict[str, dict[str, str]] = {}
     for path in sorted(memes_root.rglob("*")):
         if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        try:
+            path.resolve().relative_to(memes_root.resolve())
+        except ValueError:
             continue
         digest = file_sha256(path)
         relative = path.relative_to(root).as_posix()
@@ -137,13 +144,42 @@ def reconcile_metadata(
     )
     if not isinstance(external_images, dict):
         external_images = {}
+    normalized_external: dict[str, dict[str, Any]] = {}
+    for key, value in external_images.items():
+        if not isinstance(value, dict):
+            continue
+        digest = str(value.get("content_sha256") or key).lower()
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            continue
+        normalized_external[digest] = dict(value)
+    external_images = normalized_external
     images: dict[str, dict[str, Any]] = {}
     scanned = scan_images(root)
     scanned_by_hash = {item["content_sha256"]: item for item in scanned}
     for digest, scan in scanned_by_hash.items():
-        previous = (
-            existing.get("images", {}).get(digest) or external_images.get(digest) or {}
+        local_item = existing.get("images", {}).get(digest) or {}
+        external_item = external_images.get(digest) or {}
+        local_is_reusable = bool(
+            isinstance(local_item, dict)
+            and local_item.get("caption_status") == "done"
+            and local_item.get("caption")
+            and local_item.get("tags")
         )
+        external_is_reusable = bool(
+            isinstance(external_item, dict)
+            and external_item.get("caption")
+            and external_item.get("tags")
+            and external_item.get("caption_status") in {None, "done"}
+        )
+        if (
+            isinstance(local_item, dict)
+            and local_item.get("provenance") in {"manual", "mixed"}
+        ) or local_is_reusable:
+            previous = local_item
+        elif external_is_reusable:
+            previous = external_item
+        else:
+            previous = local_item or external_item
         if not isinstance(previous, dict):
             previous = {}
         item = dict(previous)
@@ -193,6 +229,8 @@ def reconcile_metadata(
                 continue
             item = dict(value)
             item["content_sha256"] = str(digest).lower()
+            if safe_relative_path(root, item.get("relative_path", "")) is None:
+                item["relative_path"] = ""
             item["caption_status"] = "pending"
             item["embedding_status"] = "pending"
             item["error"] = "图片不存在或内容哈希不匹配"

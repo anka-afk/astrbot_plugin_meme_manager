@@ -65,6 +65,8 @@ def normalize_vector(vector: Any) -> list[float]:
     if not isinstance(vector, (list, tuple)):
         raise ValueError("向量必须是数组")
     values = [float(value) for value in vector]
+    if any(not math.isfinite(value) for value in values):
+        raise ValueError("向量不能包含无效数值")
     norm = math.sqrt(sum(value * value for value in values))
     if not values or norm == 0:
         raise ValueError("向量不能为空且不能是全零向量")

@@ -8,7 +8,7 @@ from typing import Any
 
 from .semantic_index import EmbeddingAdapter, search_index
 from .semantic_models import parse_meme_id
-from .semantic_storage import load_metadata, safe_relative_path
+from .semantic_storage import file_sha256, load_metadata, safe_relative_path
 
 
 async def search_memes(
@@ -52,6 +52,8 @@ def candidate_records(
     for candidate in candidates:
         value = str(candidate.get("id") or "")
         prefix = parse_meme_id(value)
+        if not prefix:
+            continue
         matches = [
             (digest, item)
             for digest, item in metadata.get("images", {}).items()
@@ -73,9 +75,18 @@ def candidate_records(
 
 def remember_candidates(event: Any, candidates: list[dict[str, Any]]) -> None:
     if hasattr(event, "set_extra"):
+        existing = (
+            event.get_extra("meme_manager_semantic_candidates")
+            if hasattr(event, "get_extra")
+            else None
+        )
+        candidate_map = dict(existing) if isinstance(existing, dict) else {}
+        candidate_map.update(
+            {str(item.get("id")): item for item in candidates if item.get("id")}
+        )
         event.set_extra(
             "meme_manager_semantic_candidates",
-            {str(item.get("id")): item for item in candidates if item.get("id")},
+            candidate_map,
         )
 
 
@@ -104,6 +115,11 @@ def validate_selected_id(event: Any, value: str, pack_dir: Path | str) -> Path |
         return None
     path = safe_relative_path(pack_dir, record.get("relative_path", ""))
     if path is None or not path.is_file():
+        return None
+    try:
+        if file_sha256(path) != digest:
+            return None
+    except OSError:
         return None
     return path
 

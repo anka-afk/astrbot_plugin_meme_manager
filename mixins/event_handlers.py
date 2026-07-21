@@ -327,7 +327,7 @@ class EventHandlerMixin:
         text = response.completion_text
 
         # 语义模式只接受本轮 search_memes 返回的候选 ID，不再运行旧分类猜测逻辑。
-        if self._semantic_pack_ready(event=event):
+        if self._semantic_mode_active(event):
             return await self._resp_semantic_impl(event, response, text)
 
         pack_context = self._resolve_runtime_pack_context(event=event)
@@ -586,7 +586,9 @@ class EventHandlerMixin:
             except Exception as e:
                 logger.error(f"[meme_manager] webchat 流式文本替换失败: {e}")
 
-    async def _resp_semantic_impl(self, event: AstrMessageEvent, response: LLMResponse, text: str):
+    async def _resp_semantic_impl(
+        self, event: AstrMessageEvent, response: LLMResponse, text: str
+    ):
         """清理语义图片标记并记录本轮经过候选校验的精确 ID。"""
         pack_context = self._resolve_runtime_pack_context(event=event)
         marker_pattern = re.compile(r"&&\s*(meme:[0-9a-fA-F]{12,64})\s*&&")
@@ -679,14 +681,18 @@ class EventHandlerMixin:
                             cleaned_components.append(component)
 
             # 第二步：语义模式按候选 ID 精确取图，不走概率、分类目录和 random.choice。
-            semantic_selected_ids = event.get_extra("meme_manager_semantic_selected_ids") or []
-            if semantic_selected_ids and self._semantic_pack_ready(event=event):
+            semantic_selected_ids = (
+                event.get_extra("meme_manager_semantic_selected_ids") or []
+            )
+            if semantic_selected_ids and self._semantic_mode_active(event):
                 memes_root = self._get_runtime_memes_dir_for_event(event)
                 pack_context = self._resolve_runtime_pack_context(event=event)
                 semantic_images = []
                 semantic_temp_files = []
                 for selected_id in semantic_selected_ids[:1]:
-                    image_path = validate_selected_id(event, selected_id, pack_context.get("pack_dir"))
+                    image_path = validate_selected_id(
+                        event, selected_id, pack_context.get("pack_dir")
+                    )
                     if image_path is None:
                         continue
                     try:
@@ -983,17 +989,23 @@ class EventHandlerMixin:
 
     async def _send_memes_streaming(self, event: AstrMessageEvent):
         """流式传输兼容模式：在流式消息发送完成后，主动发送表情图片作为独立消息。"""
-        semantic_selected_ids = event.get_extra("meme_manager_semantic_selected_ids") or []
-        if semantic_selected_ids and self._semantic_pack_ready(event=event):
+        semantic_selected_ids = (
+            event.get_extra("meme_manager_semantic_selected_ids") or []
+        )
+        if semantic_selected_ids and self._semantic_mode_active(event):
             pack_context = self._resolve_runtime_pack_context(event=event)
             try:
                 for selected_id in semantic_selected_ids[:1]:
-                    image_path = validate_selected_id(event, selected_id, pack_context.get("pack_dir"))
+                    image_path = validate_selected_id(
+                        event, selected_id, pack_context.get("pack_dir")
+                    )
                     if image_path is None:
                         continue
                     final_path = self._convert_to_gif(str(image_path))
                     try:
-                        await self._send_meme_image(event, Image.fromFileSystem(final_path))
+                        await self._send_meme_image(
+                            event, Image.fromFileSystem(final_path)
+                        )
                     finally:
                         if final_path != str(image_path) and os.path.exists(final_path):
                             os.remove(final_path)

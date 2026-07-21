@@ -5,52 +5,231 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>语义表情包</title>
     <style>
-      body { max-width: 900px; margin: 32px auto; padding: 0 16px; font-family: system-ui, sans-serif; color: #263238; }
-      button, select { padding: 8px 12px; margin: 4px; }
-      .cards { display: grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); gap: 8px; }
-      .card { border: 1px solid #d9e1e8; border-radius: 8px; padding: 10px; }
-      .error { color: #b3261e; }
+      :root {
+        color-scheme: light;
+        font-family: system-ui, sans-serif;
+        color: #20262d;
+        background: #f4f6f8;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      main { max-width: 1080px; margin: 0 auto; padding: 24px 20px 48px; }
+      h1 { margin: 0 0 20px; font-size: 24px; letter-spacing: 0; }
+      h2 { margin: 28px 0 12px; font-size: 17px; letter-spacing: 0; }
+      .toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; }
+      .field { display: grid; gap: 6px; min-width: min(280px, 100%); }
+      label { font-size: 13px; color: #52606d; }
+      select, button {
+        min-height: 38px;
+        border: 1px solid #b8c2cc;
+        border-radius: 6px;
+        background: #fff;
+        color: #20262d;
+        font: inherit;
+      }
+      select { width: 100%; padding: 0 10px; }
+      button { padding: 0 12px; cursor: pointer; }
+      button:hover:not(:disabled) { border-color: #1769aa; color: #0d568f; }
+      button:disabled { cursor: wait; opacity: .55; }
+      button.danger { border-color: #c65d57; color: #9f2f2a; }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+      .status-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+        gap: 1px;
+        overflow: hidden;
+        border: 1px solid #d6dde3;
+        border-radius: 6px;
+        background: #d6dde3;
+      }
+      .metric { min-height: 78px; padding: 12px; background: #fff; }
+      .metric span { display: block; margin-bottom: 6px; color: #64717d; font-size: 12px; }
+      .metric strong { font-size: 19px; font-weight: 650; overflow-wrap: anywhere; }
+      .notice { min-height: 22px; margin: 12px 0 0; color: #52606d; font-size: 13px; }
+      .notice.error { color: #a72b25; }
+      .records { display: grid; gap: 8px; }
+      .record {
+        display: grid;
+        grid-template-columns: minmax(180px, 1fr) minmax(240px, 2fr) minmax(150px, 1fr);
+        gap: 12px;
+        padding: 12px 0;
+        border-bottom: 1px solid #dce2e7;
+      }
+      .record-path { font-weight: 600; overflow-wrap: anywhere; }
+      .record-copy, .record-state { color: #52606d; font-size: 13px; overflow-wrap: anywhere; }
+      .empty { padding: 18px 0; color: #64717d; }
+      @media (max-width: 720px) {
+        main { padding: 18px 14px 36px; }
+        .field { width: 100%; }
+        .record { grid-template-columns: 1fr; gap: 5px; }
+      }
     </style>
   </head>
   <body>
-    <h1>语义表情包</h1>
-    <p>按图片内容去重生成描述，再建立本地向量索引。缺少模型时不会影响旧分类模式。</p>
-    <label>资源包 <select id="pack"></select></label>
-    <div>
-      <button data-action="start">一键完整语义化</button>
-      <button data-action="resume">继续未完成</button>
-      <button data-action="retry">重试失败项</button>
-      <button data-action="pause">暂停</button>
-      <button data-action="index">建立/重建索引</button>
-    </div>
-    <pre id="status">正在读取...</pre>
-    <h2>最近记录</h2><div id="items" class="cards"></div>
+    <main>
+      <h1>语义表情包</h1>
+      <div class="toolbar">
+        <div class="field">
+          <label for="pack">资源包</label>
+          <select id="pack"></select>
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" data-action="start">一键完整语义化</button>
+        <button type="button" data-action="resume">继续未完成</button>
+        <button type="button" data-action="retry">重试失败项</button>
+        <button type="button" data-action="pause">暂停</button>
+        <button type="button" data-action="index">建立或重建索引</button>
+        <button type="button" class="danger" data-action="force">强制重新生成</button>
+      </div>
+      <p id="notice" class="notice" aria-live="polite"></p>
+
+      <h2>任务状态</h2>
+      <div id="status" class="status-grid" aria-live="polite"></div>
+
+      <h2>最近记录</h2>
+      <div id="items" class="records"></div>
+    </main>
     <script>
-      const apiGet = (path) => window.AstrBotPluginPage.apiGet(path);
-      const apiPost = (path, body) => window.AstrBotPluginPage.apiPost(path, body);
-      const pack = document.querySelector('#pack');
-      const status = document.querySelector('#status');
-      const items = document.querySelector('#items');
+      const pageApi = window.AstrBotPluginPage;
+      const packSelect = document.querySelector("#pack");
+      const statusBox = document.querySelector("#status");
+      const recordsBox = document.querySelector("#items");
+      const notice = document.querySelector("#notice");
+      const buttons = Array.from(document.querySelectorAll("button[data-action]"));
+      let requestRunning = false;
+
+      const apiGet = (path, params = {}) => pageApi.apiGet(path, params);
+      const apiPost = (path, body = {}) => pageApi.apiPost(path, body);
+
+      function setBusy(value) {
+        requestRunning = value;
+        buttons.forEach((button) => { button.disabled = value || !packSelect.value; });
+        packSelect.disabled = value;
+      }
+
+      function showNotice(message, isError = false) {
+        notice.textContent = String(message || "");
+        notice.classList.toggle("error", isError);
+      }
+
+      function addMetric(label, value) {
+        const metric = document.createElement("div");
+        metric.className = "metric";
+        const name = document.createElement("span");
+        name.textContent = label;
+        const content = document.createElement("strong");
+        content.textContent = String(value ?? "-");
+        metric.append(name, content);
+        statusBox.append(metric);
+      }
+
+      function renderStatus(data) {
+        statusBox.replaceChildren();
+        const metrics = [
+          ["任务", data.task_status],
+          ["文件", data.file_total],
+          ["独立图片", data.unique_total],
+          ["重复复用", data.reused_duplicate_files],
+          ["描述完成", data.caption_done],
+          ["描述失败", data.caption_failed],
+          ["向量完成", data.embedding_done],
+          ["向量失败", data.embedding_failed],
+          ["待处理", data.pending],
+          ["视觉模型", data.vision_provider_ready ? "可用" : "不可用"],
+          ["向量模型", data.embedding_provider_ready ? "可用" : "不可用"],
+          ["向量索引", data.index_ready ? "可用" : "不可用"],
+          ["当前图片", data.current || "-"],
+        ];
+        metrics.forEach(([label, value]) => addMetric(label, value));
+        if (data.last_error) showNotice(data.last_error, true);
+      }
+
+      function renderRecords(data) {
+        recordsBox.replaceChildren();
+        const records = (data.items || []).slice(-20).reverse();
+        if (!records.length) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "暂无语义记录";
+          recordsBox.append(empty);
+          return;
+        }
+        records.forEach((item) => {
+          const row = document.createElement("div");
+          row.className = "record";
+          const path = document.createElement("div");
+          path.className = "record-path";
+          path.textContent = item.relative_path || "路径不可用";
+          const copy = document.createElement("div");
+          copy.className = "record-copy";
+          const tags = Array.isArray(item.tags) ? item.tags.join("、") : "";
+          copy.textContent = [item.caption || "待处理", tags].filter(Boolean).join(" · ");
+          const state = document.createElement("div");
+          state.className = "record-state";
+          state.textContent = `描述：${item.caption_status || "-"} / 向量：${item.embedding_status || "-"}`;
+          row.append(path, copy, state);
+          recordsBox.append(row);
+        });
+      }
+
       async function loadPacks() {
-        const data = await apiGet('packs');
-        (data.packs || []).forEach((item) => { const option = document.createElement('option'); option.value = item.id; option.textContent = item.name || item.id; pack.appendChild(option); });
+        const data = await apiGet("packs");
+        packSelect.replaceChildren();
+        (data.packs || []).forEach((item) => {
+          const option = document.createElement("option");
+          option.value = item.id;
+          option.textContent = item.name || item.id;
+          packSelect.append(option);
+        });
+        setBusy(false);
       }
+
       async function loadStatus() {
-        if (!pack.value) return;
-        const data = await apiGet('semantic/status', { pack_id: pack.value });
-        status.textContent = JSON.stringify(data, null, 2);
-        const list = await apiGet('semantic/items', { pack_id: pack.value });
-        items.innerHTML = (list.items || []).slice(-20).map((item) => `<div class="card"><strong>${item.relative_path || ''}</strong><br>${item.caption || '待处理'}<br>${(item.tags || []).join('、')}<br>描述：${item.caption_status || ''} / 向量：${item.embedding_status || ''}</div>`).join('');
+        if (!packSelect.value || requestRunning) return;
+        const params = { pack_id: packSelect.value };
+        const [statusData, recordsData] = await Promise.all([
+          apiGet("semantic/status", params),
+          apiGet("semantic/items", params),
+        ]);
+        renderStatus(statusData);
+        renderRecords(recordsData);
       }
-      async function action(name) {
-        const path = name === 'index' ? 'semantic/rebuild-index' : `semantic/${name}`;
-        const body = { pack_id: pack.value, mode: 'full' };
-        await apiPost(path, body);
-        await loadStatus();
+
+      async function runAction(name) {
+        if (!packSelect.value || requestRunning) return;
+        if (name === "force" && !window.confirm("这会重新调用视觉模型处理全部图片，是否继续？")) return;
+        const route = name === "index" ? "semantic/rebuild-index" : `semantic/${name === "force" ? "start" : name}`;
+        const body = { pack_id: packSelect.value, mode: "full", force: name === "force" };
+        setBusy(true);
+        showNotice("正在提交操作...");
+        try {
+          const result = await apiPost(route, body);
+          showNotice(result.message || "操作已提交");
+        } catch (error) {
+          showNotice(error?.message || String(error), true);
+        } finally {
+          setBusy(false);
+          await loadStatus();
+        }
       }
-      document.querySelectorAll('button[data-action]').forEach((button) => button.addEventListener('click', () => action(button.dataset.action)));
-      pack.addEventListener('change', loadStatus);
-      (async () => { try { await loadPacks(); await loadStatus(); setInterval(loadStatus, 3000); } catch (error) { status.className = 'error'; status.textContent = String(error); } })();
+
+      buttons.forEach((button) => {
+        button.addEventListener("click", () => runAction(button.dataset.action));
+      });
+      packSelect.addEventListener("change", () => loadStatus().catch((error) => showNotice(error, true)));
+
+      (async () => {
+        try {
+          await pageApi.ready();
+          await loadPacks();
+          await loadStatus();
+          window.setInterval(() => loadStatus().catch((error) => showNotice(error, true)), 3000);
+        } catch (error) {
+          setBusy(false);
+          showNotice(error?.message || String(error), true);
+        }
+      })();
     </script>
   </body>
 </html>

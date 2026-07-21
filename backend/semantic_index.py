@@ -262,32 +262,28 @@ def index_is_ready(
 
     current = metadata or {}
     images = current.get("images", {})
-    if any(
-        isinstance(item, dict)
-        and (
-            item.get("caption_status") != "done"
-            or item.get("embedding_status") != "done"
-        )
-        for item in images.values()
-    ):
-        return False
     manifest_items = manifest.get("items", {})
     if not isinstance(manifest_items, dict) or len(manifest_items) != item_count:
         return False
-    done = {
+    indexable = {
         digest: item
         for digest, item in images.items()
         if isinstance(item, dict)
+        and item.get("caption_status") == "done"
         and item.get("embedding_status") == "done"
+        and item.get("caption")
+        and item.get("tags")
         and item.get("text_hash")
     }
-    if done and len(done) != item_count:
+    if not indexable or len(indexable) != item_count:
         return False
-    return all(
-        str(manifest_items.get(digest, {}).get("text_hash") or "")
-        == str(item.get("text_hash") or "")
-        for digest, item in done.items()
-    )
+    for digest, item in indexable.items():
+        current_hash = text_hash(SemanticImage.from_dict(item).vector_text)
+        if str(item.get("text_hash") or "") != current_hash:
+            return False
+        if str(manifest_items.get(digest, {}).get("text_hash") or "") != current_hash:
+            return False
+    return True
 
 
 def _reconstruct_reusable_vectors(
@@ -337,6 +333,8 @@ async def build_index(
         current_hash = text_hash(SemanticImage.from_dict(value).vector_text)
         value["text_hash"] = current_hash
         candidates.append((str(digest), value))
+    if not candidates:
+        raise RuntimeError("没有已完成的语义描述，无法建立索引")
 
     old_manifest = load_index_manifest(plugin_data_dir, pack_id)
     same_provider = bool(
@@ -377,7 +375,7 @@ async def build_index(
                 item["embedding_status"] = "done"
                 item["error"] = None
                 item["updated_at"] = utc_now()
-        except Exception as batch_error:
+        except Exception:
             for digest, item in pending:
                 try:
                     vectors[digest] = await embedding.embed(
@@ -386,9 +384,9 @@ async def build_index(
                     )
                     item["embedding_status"] = "done"
                     item["error"] = None
-                except Exception as item_error:
+                except Exception:
                     item["embedding_status"] = "failed"
-                    item["error"] = str(item_error or batch_error)[:500]
+                    item["error"] = "向量生成失败"
                 item["updated_at"] = utc_now()
     save_metadata(pack_dir, metadata)
 
@@ -476,7 +474,8 @@ async def search_index(
         if float(score) < float(min_score):
             continue
         ranked.append((float(score), digest, item))
-    id_map = build_id_map(digest for _, digest, _ in ranked)
+    # ID 必须针对整个索引检查碰撞，不能只看当前 Top-K。
+    id_map = build_id_map(manifest.get("items", {}).keys())
     return [
         {
             "id": id_map[digest],

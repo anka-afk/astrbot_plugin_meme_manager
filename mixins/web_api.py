@@ -9,46 +9,52 @@ from pathlib import Path
 
 from PIL import Image as PILImage
 from quart import jsonify, make_response, request, send_file
+
 from astrbot.api import logger
 
 from ..backend.models import (
-    scan_emoji_folder,
-    get_emoji_by_category,
-    add_emoji_to_category,
     DuplicateEmojiError,
-    delete_emoji_from_category,
-    batch_delete_emojis,
-    move_emoji_to_category,
-    batch_move_emojis,
+    add_emoji_to_category,
     batch_copy_emojis,
+    batch_delete_emojis,
+    batch_move_emojis,
     clear_all_emojis,
     clear_category_emojis,
+    delete_emoji_from_category,
+    get_emoji_by_category,
+    move_emoji_to_category,
+    scan_emoji_folder,
 )
 from ..backend.pack_storage import (
-    export_runtime_backup,
     export_pack_archive,
+    export_runtime_backup,
     fetch_and_cache_community_index,
     find_cached_pack_entry,
     get_pack_detail,
     get_selection_rules,
-    import_runtime_backup,
-    install_pack_from_github_source,
     import_pack_archive,
+    import_runtime_backup,
     install_first_official_pack_from_index,
+    install_pack_from_github_source,
     list_installed_packs,
     load_cached_community_index,
     save_selection_rules,
     set_default_pack,
     uninstall_pack,
 )
-from ..config import COMMUNITY_INDEX_URL, MEMES_DIR, PACKS_DIR, TEMP_DIR
-from ..config import PLUGIN_DATA_DIR, SEMANTIC_INDEXES_DIR
+from ..backend.semantic_index import EmbeddingAdapter, index_is_ready
 from ..backend.semantic_storage import (
+    import_metadata_file,
     load_metadata,
     metadata_items,
-    import_metadata_file,
 )
-from ..backend.semantic_index import EmbeddingAdapter, index_is_ready
+from ..config import (
+    COMMUNITY_INDEX_URL,
+    MEMES_DIR,
+    PACKS_DIR,
+    PLUGIN_DATA_DIR,
+    TEMP_DIR,
+)
 
 PLUGIN_NAME = "meme_manager"
 WEBUI_LOG_PREFIX = f"[{PLUGIN_NAME}][WebUI]"
@@ -1222,7 +1228,7 @@ class WebAPIMixin:
                 str(getattr(self, "semantic_embedding_provider_id", "") or ""),
             )
             result["index_ready"] = index_is_ready(
-                SEMANTIC_INDEXES_DIR,
+                PLUGIN_DATA_DIR,
                 pack_id,
                 metadata,
                 provider.provider_id,

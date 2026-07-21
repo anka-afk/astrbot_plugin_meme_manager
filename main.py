@@ -6,27 +6,31 @@ from astrbot.api.all import *
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import EventMessageType
 from astrbot.api.message_components import *
-from astrbot.api.provider import ProviderRequest, LLMResponse
+from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star
 
 from .backend.category_manager import CategoryManager
-from .config import MEMES_DATA_PATH, MEMES_DIR, DEFAULT_CATEGORY_DESCRIPTIONS
-from .config import PLUGIN_DATA_DIR, SEMANTIC_INDEXES_DIR
-from .image_host.img_sync import ImageSync
-from .init import init_plugin
-from .utils import dict_to_string, load_json
-from .mixins.web_api import WebAPIMixin
-from .mixins.commands import CommandMixin
-from .mixins.event_handlers import EventHandlerMixin
-from .backend.semantic_task import SemanticTaskManager
+from .backend.semantic_index import EmbeddingAdapter, index_is_ready
 from .backend.semantic_query import (
     candidate_records,
     dumps_result,
     remember_candidates,
     search_memes,
 )
-from .backend.semantic_index import EmbeddingAdapter, index_is_ready
 from .backend.semantic_storage import load_metadata
+from .backend.semantic_task import SemanticTaskManager
+from .config import (
+    DEFAULT_CATEGORY_DESCRIPTIONS,
+    MEMES_DATA_PATH,
+    MEMES_DIR,
+    PLUGIN_DATA_DIR,
+)
+from .image_host.img_sync import ImageSync
+from .init import init_plugin
+from .mixins.commands import CommandMixin
+from .mixins.event_handlers import EventHandlerMixin
+from .mixins.web_api import WebAPIMixin
+from .utils import dict_to_string, load_json
 
 MEME_PROMPT_MARKER_START = "<!-- meme_manager_prompt:start -->"
 MEME_PROMPT_MARKER_END = "<!-- meme_manager_prompt:end -->"
@@ -441,10 +445,37 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
     def _resolve_embedding_provider(self):
         return self.semantic_task_manager._resolve_embedding_provider()
 
+    def _reply_model_supports_tools(self, event: AstrMessageEvent | None) -> bool:
+        """仅在模型明确声明不支持工具时关闭语义模式。"""
+        if event is None:
+            return True
+        try:
+            selected = event.get_extra("selected_provider")
+            provider = (
+                self.context.get_provider_by_id(selected)
+                if isinstance(selected, str) and selected
+                else self.context.get_using_provider(event.unified_msg_origin)
+            )
+            provider_config = getattr(provider, "provider_config", {})
+            modalities = (
+                provider_config.get("modalities")
+                if isinstance(provider_config, dict)
+                else None
+            )
+            if not isinstance(modalities, list) or not modalities:
+                return True
+            return "tool_use" in {
+                str(modality or "").strip().lower() for modality in modalities
+            }
+        except Exception:
+            return True
+
     def _semantic_pack_ready(
         self, event: AstrMessageEvent | None = None, req: ProviderRequest | None = None
     ) -> bool:
         if not self.semantic_enabled:
+            return False
+        if req is not None and not self._reply_model_supports_tools(event):
             return False
         if req is not None:
             tool_set = getattr(req, "func_tool", None)
@@ -466,7 +497,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         provider_id = self.semantic_embedding_provider_id or embedding.provider_id
         return (
             index_is_ready(
-                SEMANTIC_INDEXES_DIR,
+                PLUGIN_DATA_DIR,
                 pack_id,
                 metadata,
                 provider_id,
@@ -474,6 +505,25 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 embedding.dimension,
             )
             and embedding.ready
+        )
+
+    @staticmethod
+    def _remove_semantic_tool(req: ProviderRequest) -> None:
+        """语义模式不可用时，从当前请求的工具集中移除搜索工具。"""
+        tool_set = getattr(req, "func_tool", None)
+        get_full_tool_set = getattr(tool_set, "get_full_tool_set", None)
+        if callable(get_full_tool_set):
+            req.func_tool = get_full_tool_set()
+            tool_set = req.func_tool
+        remove_tool = getattr(tool_set, "remove_tool", None)
+        if callable(remove_tool):
+            remove_tool("search_memes")
+
+    def _semantic_mode_active(self, event: AstrMessageEvent | None) -> bool:
+        if event is None or not hasattr(event, "get_extra"):
+            return False
+        return bool(event.get_extra("meme_manager_semantic_active")) and bool(
+            self._semantic_pack_ready(event=event)
         )
 
     def _semantic_system_prompt(self) -> str:
@@ -607,12 +657,16 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
     def _apply_request_prompt(
         self, req: ProviderRequest, event: AstrMessageEvent | None = None
     ) -> None:
-        if self._semantic_pack_ready(event=event, req=req):
+        semantic_active = self._semantic_pack_ready(event=event, req=req)
+        if event is not None and hasattr(event, "set_extra"):
+            event.set_extra("meme_manager_semantic_active", semantic_active)
+        if semantic_active:
             req.system_prompt = (
                 self._strip_meme_prompt(req.system_prompt)
                 + self._semantic_system_prompt()
             )
             return
+        self._remove_semantic_tool(req)
         if self.emotion_llm_enabled:
             req.system_prompt = self._strip_meme_prompt(req.system_prompt)
             return
@@ -648,7 +702,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         Args:
             query(string): Bot 自己准备表达的情绪、态度、动作和潜台词，不要直接复制用户原话。
         """
-        if not self._semantic_pack_ready(event=event):
+        if not self._semantic_mode_active(event):
             return dumps_result({"ok": False, "reason": "语义查询未启用或索引不可用"})
         context = self._resolve_runtime_pack_context(event=event)
         try:

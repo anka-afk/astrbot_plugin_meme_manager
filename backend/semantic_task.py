@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -68,9 +70,18 @@ class SemanticTaskManager:
     def _save_state(self, pack_id: str, state: dict[str, Any]) -> None:
         path = self._state_path(pack_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+        fd, temp_name = tempfile.mkstemp(
+            prefix=".task_state.", suffix=".json", dir=path.parent
         )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as file_obj:
+                json.dump(state, file_obj, ensure_ascii=False, indent=2)
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+            os.replace(temp_name, path)
+        finally:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)
 
     def _pack_dir(self, pack_id: str) -> Path:
         return self.plugin_data_dir / "packs" / str(pack_id)
@@ -82,6 +93,39 @@ class SemanticTaskManager:
                 message = message.replace(secret_path, "<本地资源>")
         return message[:500]
 
+    def _vision_provider_ready(self) -> bool:
+        if self.context is None or not callable(
+            getattr(self.context, "llm_generate", None)
+        ):
+            return False
+        provider_id = str(
+            self.config.get("vision_provider_id")
+            or self.config.get("visual_provider_id")
+            or ""
+        ).strip()
+        if not provider_id:
+            return True
+        resolver = getattr(self.context, "get_provider_by_id", None)
+        if not callable(resolver):
+            return False
+        try:
+            provider = resolver(provider_id)
+        except Exception:
+            return False
+        if provider is None:
+            return False
+        provider_config = getattr(provider, "provider_config", {})
+        modalities = (
+            provider_config.get("modalities")
+            if isinstance(provider_config, dict)
+            else None
+        )
+        if isinstance(modalities, list) and modalities:
+            return "image" in {
+                str(modality or "").strip().lower() for modality in modalities
+            }
+        return True
+
     def capabilities(
         self, pack_id: str, *, embedding_provider: Any = None
     ) -> dict[str, Any]:
@@ -89,17 +133,11 @@ class SemanticTaskManager:
         metadata = load_metadata(pack_dir)
         state = self._load_state(pack_id)
         provider = embedding_provider or self._resolve_embedding_provider()
-        vision_id = str(
-            self.config.get("vision_provider_id")
-            or self.config.get("visual_provider_id")
-            or ""
-        )
         return {
-            "vision_provider_ready": bool(
-                self.context
-                and (vision_id or getattr(self.context, "llm_generate", None))
-            ),
-            "embedding_provider_ready": EmbeddingAdapter(provider).ready,
+            "vision_provider_ready": self._vision_provider_ready(),
+            "embedding_provider_ready": EmbeddingAdapter(
+                provider, str(self.config.get("embedding_provider_id") or "")
+            ).ready,
             "faiss_ready": faiss_is_available(),
             "semantic_metadata_ready": bool(metadata.get("images")),
             "task_status": str(state.get("task_status") or "idle"),
@@ -242,10 +280,7 @@ class SemanticTaskManager:
                 isinstance(item, dict) and item.get("caption_status") != "done"
                 for item in metadata.get("images", {}).values()
             )
-            if needs_caption and (
-                self.context is None
-                or not callable(getattr(self.context, "llm_generate", None))
-            ):
+            if needs_caption and not self._vision_provider_ready():
                 raise RuntimeError("未配置视觉模型，无法生成图片描述")
             save_metadata(pack_dir, metadata)
             state = {
@@ -273,18 +308,25 @@ class SemanticTaskManager:
 
     async def resume(self, pack_id: str) -> dict[str, Any]:
         pack_id = self._validate_pack_id(pack_id)
-        state = self._load_state(pack_id)
-        if state.get("task_status") in {"paused", "failed"}:
-            state["task_status"] = "running"
-            state["updated_at"] = utc_now()
-            self._save_state(pack_id, state)
-            event = self._pause_events.setdefault(pack_id, asyncio.Event())
-            event.set()
+        async with self._lock(pack_id):
+            state = self._load_state(pack_id)
             task = self._tasks.get(pack_id)
-            if not task or task.done():
-                self._tasks[pack_id] = asyncio.create_task(
-                    self._run(pack_id, mode="full", force=False)
-                )
+            task_is_running = bool(task and not task.done())
+            if state.get("task_status") in {
+                "running",
+                "paused",
+                "failed",
+                "completed_with_errors",
+            }:
+                state["task_status"] = "running"
+                state["updated_at"] = utc_now()
+                self._save_state(pack_id, state)
+                event = self._pause_events.setdefault(pack_id, asyncio.Event())
+                event.set()
+                if not task_is_running:
+                    self._tasks[pack_id] = asyncio.create_task(
+                        self._run(pack_id, mode="full", force=False)
+                    )
         return self.status(pack_id)
 
     async def retry(self, pack_id: str) -> dict[str, Any]:
@@ -296,15 +338,21 @@ class SemanticTaskManager:
     ) -> dict[str, Any]:
         pack_id = self._validate_pack_id(pack_id)
         pack_dir = self._pack_dir(pack_id)
-        provider = EmbeddingAdapter(
-            self._resolve_embedding_provider(),
-            str(self.config.get("embedding_provider_id") or ""),
-        )
-        if not provider.ready:
-            raise RuntimeError("未配置向量模型，无法建立索引")
-        return await build_index(
-            pack_dir, self.plugin_data_dir, pack_id, provider, force=force
-        )
+        if not pack_dir.is_dir():
+            raise FileNotFoundError(f"表情包 {pack_id} 不存在")
+        async with self._lock(pack_id):
+            active_task = self._tasks.get(pack_id)
+            if active_task and not active_task.done():
+                raise RuntimeError("语义化任务尚未结束，请等待任务完成后再重建索引")
+            provider = EmbeddingAdapter(
+                self._resolve_embedding_provider(),
+                str(self.config.get("embedding_provider_id") or ""),
+            )
+            if not provider.ready:
+                raise RuntimeError("未配置向量模型，无法建立索引")
+            return await build_index(
+                pack_dir, self.plugin_data_dir, pack_id, provider, force=force
+            )
 
     async def _run(self, pack_id: str, *, mode: str, force: bool) -> None:
         pack_dir = self._pack_dir(pack_id)
