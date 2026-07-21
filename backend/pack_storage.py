@@ -28,6 +28,7 @@ from ..config import (
     SELECTION_RULES_PATH,
     TEMP_DIR,
 )
+from .semantic_storage import reconcile_metadata, save_metadata
 
 
 def _load_json(path: Path, default):
@@ -259,6 +260,7 @@ def list_installed_packs() -> list[dict]:
                     if memes_dir.is_dir()
                     else 0
                 ),
+                "has_semantic_metadata": (pack_dir / "semantic_metadata.json").is_file(),
             }
         )
     return packs
@@ -300,6 +302,7 @@ def get_pack_detail(pack_id: str) -> dict:
         "pack_dir": str(pack_dir),
         "categories": categories,
         "total_images": _count_images(memes_dir),
+        "has_semantic_metadata": (pack_dir / "semantic_metadata.json").is_file(),
     }
 
 
@@ -409,6 +412,11 @@ def import_pack_archive(
         shutil.copytree(pack_root, target_pack_dir)
     _save_json(target_pack_dir / "manifest.json", normalized_manifest)
     validate_pack_directory(target_pack_dir, context=f"导入包 {pack_id}")
+    semantic_file = target_pack_dir / "semantic_metadata.json"
+    if semantic_file.is_file():
+        # 导入时重新按图片内容校验哈希；缺图/错图只保留为待处理状态。
+        reconciled = reconcile_metadata(target_pack_dir)
+        save_metadata(target_pack_dir, reconciled)
 
     registry = _load_registry()
     installed = registry["installed_packs"]
@@ -457,7 +465,12 @@ def import_pack_archive(
     }
 
 
-def export_pack_archive(pack_id: str, output_dir: str | None = None) -> dict:
+def export_pack_archive(
+    pack_id: str,
+    output_dir: str | None = None,
+    *,
+    include_semantic: bool = True,
+) -> dict:
     pack_id = str(pack_id or "").strip()
     if not pack_id:
         raise ValueError("pack_id 不能为空")
@@ -470,9 +483,19 @@ def export_pack_archive(pack_id: str, output_dir: str | None = None) -> dict:
     target_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     archive_base = target_dir / f"{pack_id}_{timestamp}"
-    archive_path = shutil.make_archive(str(archive_base), "zip", root_dir=pack_dir)
+    if include_semantic:
+        archive_path = shutil.make_archive(str(archive_base), "zip", root_dir=pack_dir)
+    else:
+        # 兼容版导出不带语义文件，原始资源包目录不做任何修改。
+        with tempfile.TemporaryDirectory(dir=TEMP_DIR, prefix="pack_export_") as tmp_dir:
+            staging = Path(tmp_dir) / pack_id
+            shutil.copytree(pack_dir, staging)
+            semantic_file = staging / "semantic_metadata.json"
+            if semantic_file.exists():
+                semantic_file.unlink()
+            archive_path = shutil.make_archive(str(archive_base), "zip", root_dir=staging)
 
-    return {"pack_id": pack_id, "archive_path": archive_path}
+    return {"pack_id": pack_id, "archive_path": archive_path, "include_semantic": include_semantic}
 
 
 def uninstall_pack(pack_id: str) -> dict:

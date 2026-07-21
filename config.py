@@ -5,10 +5,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from astrbot.core.utils.astrbot_path import (
-    get_astrbot_data_path,
-    get_astrbot_plugin_data_path,
-)
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+try:
+    from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+except ImportError:
+    # AstrBot 4.5.6 尚未提供这个接口，保持与新版插件的数据目录约定一致。
+    def get_astrbot_plugin_data_path() -> str:
+        return os.path.realpath(os.path.join(get_astrbot_data_path(), "plugin_data"))
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 CURRENT_DIR = str(PLUGIN_DIR)
@@ -387,6 +391,7 @@ COMMUNITY_INDEX_URL = "https://raw.githubusercontent.com/anka-afk/astrbot-meme-p
 BACKUP_DIR = PLUGIN_DATA_DIR / "backup"
 MIGRATION_DIR = PLUGIN_DATA_DIR / "migration"
 TEMP_DIR = PLUGIN_DATA_DIR / "temp"
+SEMANTIC_INDEXES_DIR = PLUGIN_DATA_DIR / "semantic_indexes"
 ACTIVE_PACK_ID = _resolve_default_pack_id(PLUGIN_DATA_DIR)
 ACTIVE_PACK_DIR = PACKS_DIR / ACTIVE_PACK_ID
 MEMES_DIR = ACTIVE_PACK_DIR / "memes"
@@ -398,6 +403,7 @@ os.makedirs(MEMES_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(BACKUP_DIR, exist_ok=True)
 os.makedirs(MIGRATION_DIR, exist_ok=True)
+os.makedirs(SEMANTIC_INDEXES_DIR, exist_ok=True)
 
 print(f"插件目录: {PLUGIN_DIR}", file=sys.stderr)
 print(f"插件数据目录: {PLUGIN_DATA_DIR}", file=sys.stderr)

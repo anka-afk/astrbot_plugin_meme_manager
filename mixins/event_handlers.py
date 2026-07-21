@@ -22,6 +22,7 @@ from astrbot.core.message.components import Plain, Image
 from astrbot.core.message.message_event_result import MessageChain, ResultContentType
 
 from ..config import MEMES_DIR
+from ..backend.semantic_query import validate_selected_id
 
 
 class EventHandlerMixin:
@@ -325,6 +326,10 @@ class EventHandlerMixin:
 
         text = response.completion_text
 
+        # 语义模式只接受本轮 search_memes 返回的候选 ID，不再运行旧分类猜测逻辑。
+        if self._semantic_pack_ready(event=event):
+            return await self._resp_semantic_impl(event, response, text)
+
         pack_context = self._resolve_runtime_pack_context(event=event)
         runtime_category_mapping = (
             pack_context.get("category_mapping") or self.category_mapping
@@ -581,6 +586,38 @@ class EventHandlerMixin:
             except Exception as e:
                 logger.error(f"[meme_manager] webchat 流式文本替换失败: {e}")
 
+    async def _resp_semantic_impl(self, event: AstrMessageEvent, response: LLMResponse, text: str):
+        """清理语义图片标记并记录本轮经过候选校验的精确 ID。"""
+        pack_context = self._resolve_runtime_pack_context(event=event)
+        marker_pattern = re.compile(r"&&\s*(meme:[0-9a-fA-F]{12,64})\s*&&")
+        selected_ids: list[str] = []
+
+        def replace(match: re.Match) -> str:
+            value = match.group(1).strip()
+            if validate_selected_id(event, value, pack_context.get("pack_dir")):
+                if value not in selected_ids:
+                    selected_ids.append(value)
+            else:
+                logger.warning("忽略不在本轮候选中的语义图片 ID: %s", value)
+            return ""
+
+        clean_text = marker_pattern.sub(replace, text or "")
+        # 不让模型写出的畸形标记泄漏到用户消息中。
+        clean_text = re.sub(r"&&\s*meme:[^&]+&&", "", clean_text, flags=re.IGNORECASE)
+        event.set_extra("meme_manager_semantic_selected_ids", selected_ids)
+        event.set_extra("found_emotions", None)
+        response.completion_text = clean_text.strip()
+        result = event.get_result()
+        if (
+            event.get_platform_name() == "webchat"
+            and result is not None
+            and result.result_content_type == ResultContentType.STREAMING_RESULT
+        ):
+            try:
+                await event.send(MessageChain([Plain(response.completion_text)]))
+            except Exception as exc:
+                logger.error("webchat 语义文本替换失败: %s", exc)
+
     async def _on_decorating_result_impl(self, event: AstrMessageEvent):
         """在消息发送前清理文本中的表情标签，并添加表情图片"""
         logger.debug("[meme_manager] on_decorating_result 开始处理")
@@ -641,9 +678,32 @@ class EventHandlerMixin:
                         else:
                             cleaned_components.append(component)
 
-            # 第二步：添加表情图片（如果有找到的表情）
+            # 第二步：语义模式按候选 ID 精确取图，不走概率、分类目录和 random.choice。
+            semantic_selected_ids = event.get_extra("meme_manager_semantic_selected_ids") or []
+            if semantic_selected_ids and self._semantic_pack_ready(event=event):
+                memes_root = self._get_runtime_memes_dir_for_event(event)
+                pack_context = self._resolve_runtime_pack_context(event=event)
+                semantic_images = []
+                semantic_temp_files = []
+                for selected_id in semantic_selected_ids[:1]:
+                    image_path = validate_selected_id(event, selected_id, pack_context.get("pack_dir"))
+                    if image_path is None:
+                        continue
+                    try:
+                        final_path = self._convert_to_gif(str(image_path))
+                        if final_path != str(image_path):
+                            semantic_temp_files.append(final_path)
+                        semantic_images.append(Image.fromFileSystem(final_path))
+                    except Exception as exc:
+                        logger.error("构建语义表情图片失败: %s", exc)
+                if semantic_temp_files:
+                    event.set_extra("meme_manager_temp_files", semantic_temp_files)
+                if semantic_images:
+                    # 语义模式不再随机丢弃模型已经选择的候选。
+                    event.set_extra("meme_manager_pending_images", semantic_images)
+            # 第三步：旧模式添加表情图片（如果有找到的表情）
             found_emotions = event.get_extra("found_emotions") or []
-            if found_emotions:
+            if found_emotions and not semantic_selected_ids:
                 memes_root = self._get_runtime_memes_dir_for_event(event)
                 # 检查概率（注意：概率判断是"小于等于"才发送）
                 random_value = random.randint(1, 100)
@@ -722,6 +782,7 @@ class EventHandlerMixin:
 
             # 清空当前事件已处理的表情列表
             event.set_extra("found_emotions", None)
+            event.set_extra("meme_manager_semantic_selected_ids", None)
 
             # 第三步：更新消息链
             if cleaned_components:
@@ -922,6 +983,25 @@ class EventHandlerMixin:
 
     async def _send_memes_streaming(self, event: AstrMessageEvent):
         """流式传输兼容模式：在流式消息发送完成后，主动发送表情图片作为独立消息。"""
+        semantic_selected_ids = event.get_extra("meme_manager_semantic_selected_ids") or []
+        if semantic_selected_ids and self._semantic_pack_ready(event=event):
+            pack_context = self._resolve_runtime_pack_context(event=event)
+            try:
+                for selected_id in semantic_selected_ids[:1]:
+                    image_path = validate_selected_id(event, selected_id, pack_context.get("pack_dir"))
+                    if image_path is None:
+                        continue
+                    final_path = self._convert_to_gif(str(image_path))
+                    try:
+                        await self._send_meme_image(event, Image.fromFileSystem(final_path))
+                    finally:
+                        if final_path != str(image_path) and os.path.exists(final_path):
+                            os.remove(final_path)
+            except Exception as exc:
+                logger.error("流式语义表情发送失败: %s", exc, exc_info=True)
+            finally:
+                event.set_extra("meme_manager_semantic_selected_ids", None)
+            return
         found_emotions = event.get_extra("found_emotions") or []
         if not found_emotions:
             return

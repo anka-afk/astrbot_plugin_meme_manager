@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>语义表情包</title>
+    <style>
+      body { max-width: 900px; margin: 32px auto; padding: 0 16px; font-family: system-ui, sans-serif; color: #263238; }
+      button, select { padding: 8px 12px; margin: 4px; }
+      .cards { display: grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); gap: 8px; }
+      .card { border: 1px solid #d9e1e8; border-radius: 8px; padding: 10px; }
+      .error { color: #b3261e; }
+    </style>
+  </head>
+  <body>
+    <h1>语义表情包</h1>
+    <p>按图片内容去重生成描述，再建立本地向量索引。缺少模型时不会影响旧分类模式。</p>
+    <label>资源包 <select id="pack"></select></label>
+    <div>
+      <button data-action="start">一键完整语义化</button>
+      <button data-action="resume">继续未完成</button>
+      <button data-action="retry">重试失败项</button>
+      <button data-action="pause">暂停</button>
+      <button data-action="index">建立/重建索引</button>
+    </div>
+    <pre id="status">正在读取...</pre>
+    <h2>最近记录</h2><div id="items" class="cards"></div>
+    <script>
+      const apiGet = (path) => window.AstrBotPluginPage.apiGet(path);
+      const apiPost = (path, body) => window.AstrBotPluginPage.apiPost(path, body);
+      const pack = document.querySelector('#pack');
+      const status = document.querySelector('#status');
+      const items = document.querySelector('#items');
+      async function loadPacks() {
+        const data = await apiGet('packs');
+        (data.packs || []).forEach((item) => { const option = document.createElement('option'); option.value = item.id; option.textContent = item.name || item.id; pack.appendChild(option); });
+      }
+      async function loadStatus() {
+        if (!pack.value) return;
+        const data = await apiGet('semantic/status', { pack_id: pack.value });
+        status.textContent = JSON.stringify(data, null, 2);
+        const list = await apiGet('semantic/items', { pack_id: pack.value });
+        items.innerHTML = (list.items || []).slice(-20).map((item) => `<div class="card"><strong>${item.relative_path || ''}</strong><br>${item.caption || '待处理'}<br>${(item.tags || []).join('、')}<br>描述：${item.caption_status || ''} / 向量：${item.embedding_status || ''}</div>`).join('');
+      }
+      async function action(name) {
+        const path = name === 'index' ? 'semantic/rebuild-index' : `semantic/${name}`;
+        const body = { pack_id: pack.value, mode: 'full' };
+        await apiPost(path, body);
+        await loadStatus();
+      }
+      document.querySelectorAll('button[data-action]').forEach((button) => button.addEventListener('click', () => action(button.dataset.action)));
+      pack.addEventListener('change', loadStatus);
+      (async () => { try { await loadPacks(); await loadStatus(); setInterval(loadStatus, 3000); } catch (error) { status.className = 'error'; status.textContent = String(error); } })();
+    </script>
+  </body>
+</html>

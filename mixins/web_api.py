@@ -42,6 +42,9 @@ from ..backend.pack_storage import (
     uninstall_pack,
 )
 from ..config import COMMUNITY_INDEX_URL, MEMES_DIR, PACKS_DIR, TEMP_DIR
+from ..config import PLUGIN_DATA_DIR, SEMANTIC_INDEXES_DIR
+from ..backend.semantic_storage import load_metadata, metadata_items, import_metadata_file
+from ..backend.semantic_index import EmbeddingAdapter, index_is_ready
 
 PLUGIN_NAME = "meme_manager"
 WEBUI_LOG_PREFIX = f"[{PLUGIN_NAME}][WebUI]"
@@ -278,6 +281,27 @@ class WebAPIMixin:
             ["GET"],
             "获取当前会话 Bearer Token（用于插件页安全跳转）",
         )
+        self._register_webui_api(
+            "semantic/status", self._api_semantic_status, ["GET"], "获取语义化任务状态"
+        )
+        self._register_webui_api(
+            "semantic/items", self._api_semantic_items, ["GET"], "获取语义图片记录"
+        )
+        self._register_webui_api(
+            "semantic/start", self._api_semantic_start, ["POST"], "开始语义化任务"
+        )
+        self._register_webui_api(
+            "semantic/pause", self._api_semantic_pause, ["POST"], "暂停语义化任务"
+        )
+        self._register_webui_api(
+            "semantic/resume", self._api_semantic_resume, ["POST"], "继续语义化任务"
+        )
+        self._register_webui_api(
+            "semantic/retry", self._api_semantic_retry, ["POST"], "重试失败语义项"
+        )
+        self._register_webui_api(
+            "semantic/rebuild-index", self._api_semantic_rebuild_index, ["POST"], "重建语义向量索引"
+        )
 
     def _register_webui_api(self, route, handler, methods, desc):
         route_path = f"/{PLUGIN_NAME}/{route.strip('/')}"
@@ -309,6 +333,22 @@ class WebAPIMixin:
         if isinstance(response, tuple) and len(response) > 1:
             return response[1]
         return getattr(response, "status_code", "unknown")
+
+    async def _semantic_request_pack_id(self, data: dict | None = None) -> str:
+        payload = data or {}
+        pack_id = str(payload.get("pack_id") or request.args.get("pack_id") or request.args.get("managed_pack_id") or "").strip()
+        if not pack_id:
+            pack_id = str(getattr(self, "_resolve_runtime_pack_context", lambda: {})().get("pack_id") or "")
+        if not pack_id:
+            raise ValueError("pack_id 不能为空")
+        pack_dir = (PACKS_DIR / pack_id).resolve()
+        try:
+            pack_dir.relative_to(PACKS_DIR.resolve())
+        except ValueError as exc:
+            raise ValueError("pack_id 无效") from exc
+        if not pack_dir.is_dir():
+            raise FileNotFoundError(f"表情包 {pack_id} 不存在")
+        return pack_id
 
     @staticmethod
     def _resolve_webui_pack_view_context() -> dict | None:
@@ -1155,6 +1195,104 @@ class WebAPIMixin:
             logger.error(f"获取表情包详情失败: {e}", exc_info=True)
             return jsonify({"message": f"获取表情包详情失败: {str(e)}"}), 500
 
+    async def _api_semantic_status(self):
+        try:
+            pack_id = await self._semantic_request_pack_id()
+            result = self.semantic_task_manager.status(pack_id)
+            metadata = load_metadata(PACKS_DIR / pack_id)
+            provider = EmbeddingAdapter(
+                self.semantic_task_manager._resolve_embedding_provider(),
+                str(getattr(self, "semantic_embedding_provider_id", "") or ""),
+            )
+            result["index_ready"] = index_is_ready(SEMANTIC_INDEXES_DIR, pack_id, metadata, provider.provider_id)
+            result["semantic_enabled"] = bool(getattr(self, "semantic_enabled", False))
+            return jsonify(result), 200
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("读取语义状态失败: %s", exc, exc_info=True)
+            return jsonify({"message": "读取语义状态失败"}), 500
+
+    async def _api_semantic_items(self):
+        try:
+            pack_id = await self._semantic_request_pack_id()
+            return jsonify({"pack_id": pack_id, "items": metadata_items(PACKS_DIR / pack_id, request.args.get("status"))}), 200
+        except (FileNotFoundError, ValueError) as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("读取语义记录失败: %s", exc, exc_info=True)
+            return jsonify({"message": "读取语义记录失败"}), 500
+
+    async def _api_semantic_start(self):
+        try:
+            data = await request.get_json() or {}
+            pack_id = await self._semantic_request_pack_id(data)
+            external_data = data.get("external_metadata") if isinstance(data.get("external_metadata"), dict) else None
+            external_path = data.get("external_metadata_path")
+            if external_path:
+                source = Path(str(external_path)).expanduser().resolve()
+                allowed_roots = [PLUGIN_DATA_DIR.resolve(), TEMP_DIR.resolve()]
+                if not any(source == root or root in source.parents for root in allowed_roots):
+                    raise ValueError("外部语义文件必须位于插件数据目录或临时目录")
+                external_data = import_metadata_file(source)
+            result = await self.semantic_task_manager.start(
+                pack_id,
+                mode=str(data.get("mode") or "full"),
+                force=bool(data.get("force", False)),
+                external_data=external_data,
+            )
+            return jsonify(result), 202
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except (ValueError, RuntimeError) as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("启动语义任务失败: %s", exc, exc_info=True)
+            return jsonify({"message": "启动语义任务失败"}), 500
+
+    async def _api_semantic_pause(self):
+        return await self._api_semantic_task_action("pause")
+
+    async def _api_semantic_resume(self):
+        return await self._api_semantic_task_action("resume")
+
+    async def _api_semantic_retry(self):
+        try:
+            data = await request.get_json() or {}
+            pack_id = await self._semantic_request_pack_id(data)
+            return jsonify(await self.semantic_task_manager.retry(pack_id)), 202
+        except (FileNotFoundError, ValueError, RuntimeError) as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("重试语义任务失败: %s", exc, exc_info=True)
+            return jsonify({"message": "重试语义任务失败"}), 500
+
+    async def _api_semantic_task_action(self, action: str):
+        try:
+            data = await request.get_json() or {}
+            pack_id = await self._semantic_request_pack_id(data)
+            result = await getattr(self.semantic_task_manager, action)(pack_id)
+            return jsonify(result), 200
+        except (FileNotFoundError, ValueError, RuntimeError) as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("语义任务操作失败: %s", exc, exc_info=True)
+            return jsonify({"message": "语义任务操作失败"}), 500
+
+    async def _api_semantic_rebuild_index(self):
+        try:
+            data = await request.get_json() or {}
+            pack_id = await self._semantic_request_pack_id(data)
+            result = await self.semantic_task_manager.rebuild_index(pack_id, force=bool(data.get("force", False)))
+            return jsonify({"message": "向量索引已建立", **result}), 200
+        except (FileNotFoundError, ValueError, RuntimeError) as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("重建语义索引失败: %s", exc, exc_info=True)
+            return jsonify({"message": "重建语义索引失败"}), 500
+
     async def _api_set_default_pack(self):
         try:
             data = await request.get_json()
@@ -1178,7 +1316,9 @@ class WebAPIMixin:
             payload = data or {}
             pack_id = str(payload.get("pack_id") or "").strip()
             output_dir = payload.get("output_dir")
-            result = export_pack_archive(pack_id, output_dir=output_dir)
+            include_value = payload.get("include_semantic", payload.get("semantic", True))
+            include_semantic = str(include_value).lower() not in {"0", "false", "no", "off"}
+            result = export_pack_archive(pack_id, output_dir=output_dir, include_semantic=include_semantic)
             return jsonify({"message": "导出成功", **result}), 200
         except FileNotFoundError as e:
             return jsonify({"message": str(e)}), 404

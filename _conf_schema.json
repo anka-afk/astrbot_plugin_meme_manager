@@ -340,6 +340,42 @@
       }
     }
   },
+  "semantic": {
+    "description": "语义表情包（MVP）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用语义查询",
+        "type": "bool",
+        "default": false,
+        "hint": "需要先完成语义化并建立索引；关闭后完全使用旧分类逻辑"
+      },
+      "vision_provider_id": {
+        "description": "视觉模型 Provider ID",
+        "type": "string",
+        "default": "",
+        "hint": "仅用于离线批量生成描述，留空时尝试当前聊天模型"
+      },
+      "embedding_provider_id": {
+        "description": "向量模型标识",
+        "type": "string",
+        "default": "",
+        "hint": "复用 embedding_adapter 插件；留空使用当前提供商"
+      },
+      "top_k": {
+        "description": "每次返回候选数",
+        "type": "int",
+        "default": 5,
+        "hint": "只把少量候选交给回复模型"
+      },
+      "min_score": {
+        "description": "最低相似度",
+        "type": "number",
+        "default": 0.25,
+        "hint": "低于此值的结果不会返回"
+      }
+    }
+  },
   "prompt": {
     "description": "旧版提示词（兼容）",
     "type": "object",
