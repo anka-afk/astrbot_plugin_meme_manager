@@ -20,7 +20,7 @@ from .semantic_index import (
     index_is_ready,
     load_index_manifest,
 )
-from .semantic_models import PROMPT_VERSION, SemanticImage, text_hash, utc_now
+from .semantic_models import SemanticImage, text_hash, utc_now
 from .semantic_storage import (
     load_metadata,
     reconcile_metadata,
@@ -934,25 +934,9 @@ class SemanticTaskManager:
                     if item.get("caption_status") == "failed":
                         item["caption_status"] = "pending"
                     item["error"] = None
-            expected_prompt = str(self.config.get("prompt_version") or PROMPT_VERSION)
-            expected_vision = str(self.config.get("vision_provider_id") or "")
-            if not force:
-                for item in metadata.get("images", {}).values():
-                    if not isinstance(item, dict) or item.get("provenance") == "manual":
-                        continue
-                    if item.get("caption_status") == "done" and item.get(
-                        "prompt_version"
-                    ) not in {None, expected_prompt}:
-                        item["caption_status"] = "pending"
-                        item["embedding_status"] = "pending"
-                    if (
-                        expected_vision
-                        and item.get("caption_status") == "done"
-                        and item.get("vision_model")
-                        and item.get("vision_model") != expected_vision
-                    ):
-                        item["caption_status"] = "pending"
-                        item["embedding_status"] = "pending"
+            # 普通“一键语义化”只处理没有描述或之前失败的图片。提示词升级、
+            # 视觉模型切换都不能静默覆盖已有描述；需要重做时只能由操作者明确
+            # 点击“强制重新生成”（force=True）。
             needs_caption = any(
                 isinstance(item, dict) and item.get("caption_status") != "done"
                 for item in metadata.get("images", {}).values()

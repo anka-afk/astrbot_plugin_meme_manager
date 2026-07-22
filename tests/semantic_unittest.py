@@ -843,7 +843,7 @@ class SemanticMvpTest(unittest.TestCase):
 
         asyncio.run(run())
 
-    def test_old_prompt_caption_is_regenerated_with_current_prompt(self):
+    def test_normal_start_preserves_existing_caption_until_force_is_requested(self):
         async def run():
             with tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
@@ -861,21 +861,37 @@ class SemanticMvpTest(unittest.TestCase):
                         "caption_status": "done",
                         "embedding_status": "cleared",
                         "prompt_version": "meme-semantic-v4",
+                        "vision_model": "old-vision-provider",
                     }
                 )
                 save_metadata(pack, metadata)
+                provider = FakeEmbedding()
                 manager = SemanticTaskManager(
                     root,
-                    context=FakeContext(FakeEmbedding()),
-                    config={"vision_provider_id": "fake-vision"},
+                    context=FakeContext(provider),
+                    config={
+                        "vision_provider_id": "fake-vision",
+                        "embedding_provider_id": "fake-embedding",
+                    },
                 )
 
-                await manager.start("demo", mode="caption_only")
+                await manager.start("demo")
                 await manager._tasks["demo"]
 
                 current = next(iter(load_metadata(pack)["images"].values()))
-                self.assertEqual(current["caption"], "我有点心虚想装傻")
-                self.assertEqual(current["prompt_version"], PROMPT_VERSION)
+                self.assertEqual(current["caption"], "旧提示词生成的错误描述")
+                self.assertEqual(current["prompt_version"], "meme-semantic-v4")
+                self.assertEqual(current["vision_model"], "old-vision-provider")
+                state = manager.status("demo")
+                self.assertEqual(state["vision_calls"], 0)
+                self.assertTrue(state["index_ready"])
+                self.assertEqual(provider.batch_calls, 1)
+
+                await manager.start("demo", force=True)
+                await manager._tasks["demo"]
+                regenerated = next(iter(load_metadata(pack)["images"].values()))
+                self.assertEqual(regenerated["caption"], "我有点心虚想装傻")
+                self.assertEqual(regenerated["prompt_version"], PROMPT_VERSION)
 
         asyncio.run(run())
 
