@@ -3552,3 +3552,306 @@ button.compact {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* 控制台内的迁移工具：保持常用能力可见，不再占用主内容区。 */
+.left-panel .left-panel-header {
+  margin-bottom: 0;
+}
+
+.left-panel .pack-transfer-panel {
+  width: 100%;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid rgba(29, 138, 102, 0.2);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #f7fcfa 0%, #f2f8f6 100%);
+  box-shadow: none;
+}
+
+.left-panel .pack-transfer-heading {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  margin: 0;
+}
+
+.pack-transfer-heading-icon {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  background: #dff4ea;
+  color: #177653;
+  font-size: 15px;
+}
+
+.left-panel .pack-transfer-heading h3 {
+  margin: 0;
+  color: #1f3b32;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.left-panel .pack-transfer-heading p {
+  margin: 2px 0 0;
+  color: #70837c;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.left-panel .transfer-current-pack {
+  display: block;
+  max-width: 100%;
+  margin: 10px 0;
+  padding: 6px 9px;
+  border-color: rgba(29, 138, 102, 0.16);
+  background: rgba(255, 255, 255, 0.78);
+  color: #366759;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.pack-transfer-section {
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.pack-transfer-section + .pack-transfer-section {
+  margin-top: 8px;
+}
+
+.pack-transfer-section > summary {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  padding: 10px;
+  color: #2c493f;
+  cursor: pointer;
+  list-style: none;
+}
+
+.pack-transfer-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.pack-transfer-section > summary:hover {
+  background: rgba(240, 250, 246, 0.7);
+}
+
+.pack-transfer-section > summary:focus-visible {
+  outline: 2px solid rgba(29, 138, 102, 0.45);
+  outline-offset: -2px;
+}
+
+.pack-transfer-summary-icon {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  font-size: 13px;
+}
+
+.pack-transfer-section > summary strong,
+.pack-transfer-section > summary small {
+  display: block;
+}
+
+.pack-transfer-section > summary strong {
+  color: #273f37;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.pack-transfer-section > summary small {
+  margin-top: 2px;
+  color: #71847d;
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.pack-transfer-chevron {
+  color: #8aa097;
+  font-size: 9px;
+  transition: transform 0.2s ease;
+}
+
+.pack-transfer-section[open] > summary {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.pack-transfer-section[open] .pack-transfer-chevron {
+  transform: rotate(180deg);
+}
+
+.pack-transfer-section-body {
+  padding: 10px;
+}
+
+.left-panel .export-mode-list {
+  gap: 7px;
+  margin-bottom: 9px;
+}
+
+.left-panel .export-mode-option {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 9px;
+  border-radius: 10px;
+}
+
+.left-panel .export-mode-option input {
+  margin-top: 2px;
+}
+
+.left-panel .export-mode-option strong {
+  font-size: 11px;
+}
+
+.left-panel .export-mode-option small {
+  margin-top: 2px;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.left-panel .export-mode-option em {
+  padding: 2px 5px;
+  font-size: 8px;
+}
+
+.pack-transfer-section-body > button,
+.left-panel .pack-import-preview > button {
+  width: 100%;
+  min-height: 36px;
+  justify-content: center;
+  padding: 8px 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.left-panel .pack-transfer-result {
+  min-height: 0;
+  margin: 7px 1px 0;
+  font-size: 10px;
+}
+
+.left-panel .pack-transfer-result:empty {
+  display: none;
+}
+
+.left-panel .pack-import-dropzone {
+  min-height: 74px;
+  flex-direction: row;
+  gap: 10px;
+  justify-content: flex-start;
+  padding: 12px;
+  border-width: 1.5px;
+  border-radius: 11px;
+  text-align: left;
+}
+
+.left-panel .pack-import-dropzone > i {
+  flex: 0 0 auto;
+  font-size: 20px;
+}
+
+.left-panel .pack-import-dropzone > span {
+  min-width: 0;
+}
+
+.left-panel .pack-import-dropzone strong,
+.left-panel .pack-import-dropzone small {
+  display: block;
+}
+
+.left-panel .pack-import-dropzone strong {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.left-panel .pack-import-dropzone small {
+  margin-top: 3px;
+  font-size: 9px;
+}
+
+.left-panel .pack-import-preview {
+  padding: 9px;
+  border-radius: 11px;
+}
+
+.left-panel .pack-import-preview-header {
+  gap: 7px;
+}
+
+.left-panel .pack-import-preview-header strong {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.left-panel .pack-import-preview-header span {
+  font-size: 9px;
+}
+
+.left-panel button.compact {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 5px 7px;
+  font-size: 9px;
+}
+
+.left-panel .pack-import-preview-stats {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  margin: 9px 0;
+}
+
+.left-panel .pack-import-preview-stats > div {
+  padding: 6px;
+}
+
+.left-panel .pack-import-options {
+  gap: 5px;
+  margin: 8px 0 9px;
+}
+
+.left-panel .pack-import-options label {
+  align-items: flex-start;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.console-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #577069;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.console-section-heading::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: rgba(148, 163, 184, 0.25);
+}
+
+.console-section-heading i {
+  margin-right: 6px;
+  color: #1d8a66;
+}
+
+@media (max-width: 960px) {
+  .left-panel .pack-transfer-panel {
+    width: 100%;
+    padding: 12px;
+  }
+}

@@ -147,122 +147,6 @@
       </div>
     </header>
 
-    <section class="pack-transfer-panel" aria-labelledby="pack-transfer-title">
-      <div class="pack-transfer-heading">
-        <div>
-          <p class="pack-transfer-eyebrow">Import &amp; Export</p>
-          <h2 id="pack-transfer-title">
-            <i class="fas fa-box-open icon"></i>表情包导入与导出
-          </h2>
-          <p>
-            分享版可上传资源广场；带向量备份仅用于自己的相同语义环境。
-          </p>
-        </div>
-        <span id="transfer-current-pack" class="transfer-current-pack"
-          >正在读取当前表情包…</span
-        >
-      </div>
-
-      <div class="pack-transfer-grid">
-        <article class="pack-transfer-card export-card">
-          <div class="pack-transfer-card-title">
-            <span class="pack-transfer-icon share-icon"
-              ><i class="fas fa-file-export"></i
-            ></span>
-            <div>
-              <h3>导出并下载</h3>
-              <p>选择适合用途的压缩包。</p>
-            </div>
-          </div>
-
-          <div class="export-mode-list" role="radiogroup" aria-label="导出类型">
-            <label class="export-mode-option selected" for="export-mode-share">
-              <input
-                id="export-mode-share"
-                name="export-mode"
-                type="radio"
-                value="share"
-                checked
-              />
-              <span>
-                <strong>分享版（不带向量）</strong>
-                <small>保留图片与语义描述，移除本机向量；上传资源广场必须使用此版本。</small>
-              </span>
-              <em>推荐</em>
-            </label>
-            <label class="export-mode-option" for="export-mode-backup">
-              <input
-                id="export-mode-backup"
-                name="export-mode"
-                type="radio"
-                value="backup"
-              />
-              <span>
-                <strong>自用备份（带向量）</strong>
-                <small id="vector-backup-hint">正在检查当前表情包的向量状态…</small>
-              </span>
-            </label>
-          </div>
-          <button id="export-pack-download-btn" type="button">
-            <i class="fas fa-download icon"></i>导出并下载分享版
-          </button>
-          <p id="export-pack-result" class="pack-transfer-result" aria-live="polite"></p>
-        </article>
-
-        <article class="pack-transfer-card import-card">
-          <div class="pack-transfer-card-title">
-            <span class="pack-transfer-icon import-icon"
-              ><i class="fas fa-file-import"></i
-            ></span>
-            <div>
-              <h3>从压缩包导入</h3>
-              <p>兼容新版语义包与旧版无语义包。</p>
-            </div>
-          </div>
-
-          <label id="pack-import-dropzone" class="pack-import-dropzone" for="pack-import-file">
-            <input id="pack-import-file" type="file" accept=".zip,application/zip" />
-            <i class="fas fa-cloud-arrow-up"></i>
-            <strong id="pack-import-file-label">选择或拖入 zip 压缩包</strong>
-            <small>先检查内容，不会立即覆盖现有表情包。</small>
-          </label>
-
-          <div id="pack-import-preview" class="pack-import-preview hidden" aria-live="polite">
-            <div class="pack-import-preview-header">
-              <div>
-                <strong id="pack-import-preview-name">待导入表情包</strong>
-                <span id="pack-import-preview-format">正在识别格式</span>
-              </div>
-              <button id="pack-import-reset-btn" type="button" class="secondary compact">
-                重新选择
-              </button>
-            </div>
-            <dl class="pack-import-preview-stats">
-              <div><dt>图片</dt><dd id="pack-import-image-count">0</dd></div>
-              <div><dt>分类</dt><dd id="pack-import-category-count">0</dd></div>
-              <div><dt>语义描述</dt><dd id="pack-import-semantic-count">无</dd></div>
-              <div><dt>向量</dt><dd id="pack-import-vector-state">不包含</dd></div>
-            </dl>
-            <p id="pack-import-warning" class="pack-import-warning hidden"></p>
-            <div class="pack-import-options">
-              <label>
-                <input id="pack-import-set-default" type="checkbox" />
-                导入后设为默认表情包
-              </label>
-              <label>
-                <input id="pack-import-overwrite" type="checkbox" />
-                同名时覆盖现有表情包
-              </label>
-            </div>
-            <button id="pack-import-confirm-btn" type="button">
-              <i class="fas fa-circle-check icon"></i>确认导入
-            </button>
-          </div>
-          <p id="pack-import-result" class="pack-transfer-result" aria-live="polite"></p>
-        </article>
-      </div>
-    </section>
-
     <div
       id="sidebar-backdrop"
       class="sidebar-backdrop hidden"
@@ -274,8 +158,130 @@
         <div class="left-panel-header">
           <div>
             <p class="left-panel-eyebrow">控制台</p>
-            <h2>同步控制</h2>
+            <h2>管理控制台</h2>
           </div>
+        </div>
+
+        <section class="pack-transfer-panel" aria-labelledby="pack-transfer-title">
+          <div class="pack-transfer-heading">
+            <span class="pack-transfer-heading-icon">
+              <i class="fas fa-box-open"></i>
+            </span>
+            <div>
+              <h3 id="pack-transfer-title">表情包迁移</h3>
+              <p>导入、分享与自用备份</p>
+            </div>
+          </div>
+          <span id="transfer-current-pack" class="transfer-current-pack"
+            >正在读取当前表情包…</span
+          >
+
+          <details class="pack-transfer-section" open>
+            <summary>
+              <span class="pack-transfer-summary-icon share-icon">
+                <i class="fas fa-file-export"></i>
+              </span>
+              <span>
+                <strong>导出当前表情包</strong>
+                <small>分享或迁回自己的环境</small>
+              </span>
+              <i class="fas fa-chevron-down pack-transfer-chevron"></i>
+            </summary>
+            <div class="pack-transfer-section-body">
+              <div class="export-mode-list" role="radiogroup" aria-label="导出类型">
+                <label class="export-mode-option selected" for="export-mode-share">
+                  <input
+                    id="export-mode-share"
+                    name="export-mode"
+                    type="radio"
+                    value="share"
+                    checked
+                  />
+                  <span>
+                    <strong>分享版</strong>
+                    <small>不带向量，可上传资源广场</small>
+                  </span>
+                  <em>推荐</em>
+                </label>
+                <label class="export-mode-option" for="export-mode-backup">
+                  <input
+                    id="export-mode-backup"
+                    name="export-mode"
+                    type="radio"
+                    value="backup"
+                  />
+                  <span>
+                    <strong>自用备份</strong>
+                    <small id="vector-backup-hint">正在检查向量状态…</small>
+                  </span>
+                </label>
+              </div>
+              <button id="export-pack-download-btn" type="button">
+                <i class="fas fa-download icon"></i>下载分享版
+              </button>
+              <p id="export-pack-result" class="pack-transfer-result" aria-live="polite"></p>
+            </div>
+          </details>
+
+          <details class="pack-transfer-section">
+            <summary>
+              <span class="pack-transfer-summary-icon import-icon">
+                <i class="fas fa-file-import"></i>
+              </span>
+              <span>
+                <strong>从压缩包导入</strong>
+                <small>兼容新版与旧版表情包</small>
+              </span>
+              <i class="fas fa-chevron-down pack-transfer-chevron"></i>
+            </summary>
+            <div class="pack-transfer-section-body">
+              <label id="pack-import-dropzone" class="pack-import-dropzone" for="pack-import-file">
+                <input id="pack-import-file" type="file" accept=".zip,application/zip" />
+                <i class="fas fa-cloud-arrow-up"></i>
+                <span>
+                  <strong id="pack-import-file-label">选择或拖入 zip 文件</strong>
+                  <small>先检查，不会立即覆盖</small>
+                </span>
+              </label>
+
+              <div id="pack-import-preview" class="pack-import-preview hidden" aria-live="polite">
+                <div class="pack-import-preview-header">
+                  <div>
+                    <strong id="pack-import-preview-name">待导入表情包</strong>
+                    <span id="pack-import-preview-format">正在识别格式</span>
+                  </div>
+                  <button id="pack-import-reset-btn" type="button" class="secondary compact">
+                    重选
+                  </button>
+                </div>
+                <dl class="pack-import-preview-stats">
+                  <div><dt>图片</dt><dd id="pack-import-image-count">0</dd></div>
+                  <div><dt>分类</dt><dd id="pack-import-category-count">0</dd></div>
+                  <div><dt>语义</dt><dd id="pack-import-semantic-count">无</dd></div>
+                  <div><dt>向量</dt><dd id="pack-import-vector-state">不包含</dd></div>
+                </dl>
+                <p id="pack-import-warning" class="pack-import-warning hidden"></p>
+                <div class="pack-import-options">
+                  <label>
+                    <input id="pack-import-set-default" type="checkbox" />
+                    导入后设为默认表情包
+                  </label>
+                  <label>
+                    <input id="pack-import-overwrite" type="checkbox" />
+                    同名时覆盖现有表情包
+                  </label>
+                </div>
+                <button id="pack-import-confirm-btn" type="button">
+                  <i class="fas fa-circle-check icon"></i>确认导入
+                </button>
+              </div>
+              <p id="pack-import-result" class="pack-transfer-result" aria-live="polite"></p>
+            </div>
+          </details>
+        </section>
+
+        <div class="console-section-heading">
+          <span><i class="fas fa-arrows-rotate"></i>同步管理</span>
         </div>
         <div class="sync-buttons">
           <button id="check-sync-btn">
