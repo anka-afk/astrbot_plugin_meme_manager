@@ -20,6 +20,12 @@ from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.core.message.components import Image, Plain
 from astrbot.core.message.message_event_result import MessageChain, ResultContentType
 
+from ..backend.semantic_models import (
+    compact_semantic_query,
+    extract_and_clean_semantic_meme_references,
+    extract_visible_semantic_reply,
+    parse_semantic_query_result,
+)
 from ..backend.semantic_query import (
     candidate_records,
     remember_candidates,
@@ -331,6 +337,49 @@ class EventHandlerMixin:
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
         self._apply_request_prompt(req, event)
+        if (
+            self.emotion_llm_enabled
+            and not str(self.emotion_llm_provider_id or "").strip()
+            and str(event.get_extra("meme_manager_semantic_mode") or "") == "llm"
+        ):
+            # 在回复请求发出前记录本轮实际选用的回复 Provider。
+            # 后续情感选图直接复用，避免把“留空”解释成没有可用模型。
+            await self._resolve_emotion_llm_provider_id(event)
+
+    async def _resolve_emotion_llm_provider_id(self, event: AstrMessageEvent) -> str:
+        """返回情感辅助模型；配置留空时复用本轮回复模型。"""
+        configured_id = str(self.emotion_llm_provider_id or "").strip()
+        if configured_id:
+            return configured_id
+
+        cached_id = str(event.get_extra("meme_manager_reply_provider_id") or "").strip()
+        if cached_id:
+            return cached_id
+
+        try:
+            provider_id = str(
+                await self.context.get_current_chat_provider_id(
+                    umo=event.unified_msg_origin
+                )
+                or ""
+            ).strip()
+        except Exception as exc:
+            logger.warning(
+                "[meme_manager] 情感模型未配置，且无法取得当前回复模型: %s",
+                exc,
+            )
+            return ""
+
+        if not provider_id:
+            logger.warning("[meme_manager] 情感模型未配置，当前回复模型也不可用")
+            return ""
+
+        event.set_extra("meme_manager_reply_provider_id", provider_id)
+        logger.info(
+            "[meme_manager] 情感模型未单独配置，本轮复用回复模型: %s",
+            provider_id,
+        )
+        return provider_id
 
     async def _resp_semantic_llm_impl(
         self, event: AstrMessageEvent, response: LLMResponse, text: str
@@ -342,6 +391,8 @@ class EventHandlerMixin:
             response: Reply model response that will be cleaned in place.
             text: Reply text used as the semantic query and selection context.
         """
+        visible_text = extract_visible_semantic_reply(text)
+        query = await self._build_emotion_semantic_query(event, visible_text)
         pack_context = self._resolve_runtime_pack_context(event=event)
         pack_id = str(pack_context.get("pack_id") or "")
         verified_pack_id = str(
@@ -353,7 +404,7 @@ class EventHandlerMixin:
                 pack_context["pack_dir"],
                 PLUGIN_DATA_DIR,
                 pack_id,
-                text,
+                query,
                 self._resolve_embedding_provider(pack_id),
                 top_k=self.semantic_top_k,
                 min_score=self.semantic_min_score,
@@ -362,16 +413,9 @@ class EventHandlerMixin:
             candidates = result.get("candidates") or []
             records = candidate_records(pack_context["pack_dir"], candidates)
             remember_candidates(event, records)
-            event.set_extra("meme_manager_semantic_query", str(text or ""))
+            event.set_extra("meme_manager_semantic_query", query)
             if candidates:
-                provider_id = str(self.emotion_llm_provider_id or "").strip()
-                if not provider_id:
-                    provider_id = str(
-                        await self.context.get_current_chat_provider_id(
-                            umo=event.unified_msg_origin
-                        )
-                        or ""
-                    ).strip()
+                provider_id = await self._resolve_emotion_llm_provider_id(event)
                 if provider_id:
                     visible_candidates = [
                         {
@@ -387,7 +431,7 @@ class EventHandlerMixin:
                         "只输出JSON，格式为："
                         '{"meme_id":"meme:候选ID"}；不使用则返回'
                         '{"meme_id":""}。\n'
-                        f"机器人回复：{text}\n"
+                        f"机器人可见回复：{visible_text}\n"
                         "候选图片："
                         + json.dumps(visible_candidates, ensure_ascii=False)
                     )
@@ -425,6 +469,44 @@ class EventHandlerMixin:
         marked_text = text + (f"\n&&{selected_id}&&" if selected_id else "")
         return await self._resp_semantic_impl(event, response, marked_text)
 
+    async def _build_emotion_semantic_query(
+        self, event: AstrMessageEvent, visible_text: str
+    ) -> str:
+        """让情感模型先把可见回复压缩为短语义检索词。"""
+        fallback = compact_semantic_query(visible_text)
+        if not visible_text:
+            return fallback
+
+        provider_id = await self._resolve_emotion_llm_provider_id(event)
+        if not provider_id:
+            logger.warning("[meme_manager] 无可用情感模型，使用截短后的可见回复检索")
+            return fallback
+
+        prompt = (
+            "你是表情包语义检索词生成器。根据机器人准备发送的可见回复，"
+            "提炼3到5个简短关键词或短语，总长度不超过30个汉字。"
+            "重点描述聊天用途、情绪、语气、氛围或典型动作；不要复述具体事实，"
+            "不要写分析过程，也不必严格区分画面人物主体。\n"
+            '只输出JSON：{"query":"关键词1 关键词2 关键词3"}。\n'
+            f"机器人可见回复：{visible_text}"
+        )
+        try:
+            llm_resp = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=prompt,
+            )
+            raw_text = str(getattr(llm_resp, "completion_text", "") or "").strip()
+            query = parse_semantic_query_result(raw_text, fallback)
+        except Exception as exc:
+            logger.warning(
+                "[meme_manager] 生成短检索词失败，使用截短后的可见回复: %s",
+                exc,
+            )
+            query = fallback
+
+        logger.info(f"[meme_manager] 情感模型语义检索词（{len(query)}字）: {query}")
+        return query
+
     async def _resp_impl(self, event: AstrMessageEvent, response: LLMResponse):
         """处理 LLM 响应，识别表情"""
 
@@ -432,8 +514,6 @@ class EventHandlerMixin:
             return
 
         text = response.completion_text
-        pack_context = self._resolve_runtime_pack_context(event=event)
-
         # Semantic packs use one exclusive route: reply-model Tool calls or
         # emotion-assistant candidate selection. Neither uses legacy guessing.
         semantic_mode = (
@@ -441,11 +521,19 @@ class EventHandlerMixin:
             if self._semantic_mode_active(event)
             else ""
         )
+        if semantic_mode:
+            if bool(event.get_extra("meme_manager_semantic_response_processed")):
+                logger.info("[meme_manager] 本轮语义回复已经处理，忽略重复响应钩子")
+                return
+            # 必须在任何异步检索或情感模型调用前占位，确保并发或重复钩子
+            # 都不会再次进入并覆盖第一次的有效选择。
+            event.set_extra("meme_manager_semantic_response_processed", True)
         if semantic_mode == "llm":
             return await self._resp_semantic_llm_impl(event, response, text)
         if semantic_mode == "tool":
             return await self._resp_semantic_impl(event, response, text)
 
+        pack_context = self._resolve_runtime_pack_context(event=event)
         runtime_category_mapping = (
             pack_context.get("category_mapping") or self.category_mapping
         )
@@ -624,14 +712,7 @@ class EventHandlerMixin:
 
         if self.emotion_llm_enabled:
             try:
-                provider_id = str(self.emotion_llm_provider_id or "").strip()
-                if not provider_id:
-                    provider_id = str(
-                        await self.context.get_current_chat_provider_id(
-                            umo=event.unified_msg_origin
-                        )
-                        or ""
-                    ).strip()
+                provider_id = await self._resolve_emotion_llm_provider_id(event)
                 if provider_id:
                     valid_list = sorted(valid_emoticons)
                     prompt = (
@@ -709,19 +790,36 @@ class EventHandlerMixin:
     ):
         """清理语义图片标记并记录本轮经过候选校验的精确 ID。"""
         pack_context = self._resolve_runtime_pack_context(event=event)
-        marker_pattern = re.compile(r"&&\s*(meme:[0-9a-fA-F]{12,64})\s*&&")
         selected_ids: list[str] = []
 
-        def replace(match: re.Match) -> str:
-            value = match.group(1).strip()
+        clean_text, referenced_ids = extract_and_clean_semantic_meme_references(
+            text or ""
+        )
+        for value in referenced_ids:
             if validate_selected_id(event, value, pack_context.get("pack_dir")):
                 if value not in selected_ids:
                     selected_ids.append(value)
             else:
                 logger.warning("忽略不在本轮候选中的语义图片 ID: %s", value)
-            return ""
-
-        clean_text = marker_pattern.sub(replace, text or "")
+        if (
+            not selected_ids
+            and str(event.get_extra("meme_manager_semantic_mode") or "") == "tool"
+        ):
+            default_id = str(
+                event.get_extra("meme_manager_semantic_default_id") or ""
+            ).strip()
+            if default_id and validate_selected_id(
+                event, default_id, pack_context.get("pack_dir")
+            ):
+                selected_ids.append(default_id)
+                logger.info(
+                    "[meme_manager] 回复模型未显式选图，自动使用语义检索首候选: %s",
+                    default_id,
+                )
+        if selected_ids:
+            logger.info("[meme_manager] 本轮最终语义表情: %s", selected_ids[0])
+        else:
+            logger.warning("[meme_manager] 本轮语义检索没有可发送的有效候选")
         # 不让模型写出的畸形标记泄漏到用户消息中。
         clean_text = re.sub(r"&&\s*meme:[^&]+&&", "", clean_text, flags=re.IGNORECASE)
         event.set_extra("meme_manager_semantic_selected_ids", selected_ids)

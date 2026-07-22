@@ -182,17 +182,6 @@
         "default": "",
         "_special": "select_provider_embedding",
         "hint": "可留空自动选择第一个可用的 Embedding 模型；实际选择的 Provider ID 会保存到本机 provider_selection.json"
-      },
-      "concurrency": {
-        "description": "语义化：图片描述并发数",
-        "type": "int",
-        "default": 1,
-        "hint": "同时调用视觉模型的图片数量；建议按模型限流设置为 1 到 4",
-        "slider": {
-          "min": 1,
-          "max": 16,
-          "step": 1
-        }
       }
     }
   },
@@ -216,10 +205,10 @@
                 "hint": "开启后不再向回复模型提供 search_memes Tool，而是调用这里配置的模型完成选图"
               },
               "provider_id": {
-                "description": "情感辅助模型 Provider ID",
+                "description": "情感辅助模型 Provider ID（留空使用回复模型）",
                 "type": "string",
                 "default": "",
-                "hint": "留空则使用当前对话模型；此模型同时负责新版语义候选选择和旧版分类标签选择",
+                "hint": "无需单独配置：留空时会自动复用本轮当前对话的回复模型；填写后才使用指定模型。此模型同时负责新版语义候选选择和旧版分类标签选择",
                 "_special": "select_provider"
               }
             }
@@ -234,7 +223,7 @@
             "description": "表情出现概率",
             "type": "int",
             "default": 50,
-            "hint": "每次发送表情出现的概率，范围为 1-100",
+            "hint": "语义 Tool 模式下，每轮按此概率决定是否注入并要求回复模型调用 search_memes，范围为 1-100",
             "slider": {
               "min": 1,
               "max": 100,

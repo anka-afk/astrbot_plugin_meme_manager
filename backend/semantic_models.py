@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -22,6 +23,36 @@ EMBEDDING_STATUSES = frozenset({"pending", "running", "done", "failed"})
 TASK_STATUSES = frozenset(
     {"idle", "running", "paused", "completed", "completed_with_errors", "failed"}
 )
+SEMANTIC_MARKER_PATTERN = re.compile(
+    r"&&\s*(meme:[0-9a-f]{12,64})\s*&&",
+    re.IGNORECASE,
+)
+SEMANTIC_BARE_REFERENCE_PATTERN = re.compile(
+    r"(?<![&\w])(?:`{1,3})?\s*(meme:[0-9a-f]{12,64})\s*(?:`{1,3})?(?![&\w])",
+    re.IGNORECASE,
+)
+SEMANTIC_META_HINTS = (
+    "候选",
+    "图片",
+    "表情",
+    "动作",
+    "表达",
+    "说明",
+    "标签",
+    "通过",
+    "caption",
+    "tag",
+)
+HIDDEN_REASONING_BLOCK_PATTERN = re.compile(
+    r"<(?P<tag>think|thinking|analysis|reasoning)\b[^>]*>.*?</(?P=tag)\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+UNCLOSED_REASONING_BLOCK_PATTERN = re.compile(
+    r"<(?:think|thinking|analysis|reasoning)\b[^>]*>.*$",
+    re.IGNORECASE | re.DOTALL,
+)
+GENERIC_MEME_MARKER_PATTERN = re.compile(r"&&[^&\r\n]{1,100}&&")
+SEMANTIC_QUERY_MAX_CHARS = 48
 
 
 def utc_now() -> str:
@@ -120,6 +151,113 @@ def parse_meme_id(value: str) -> str:
     ):
         return ""
     return prefix
+
+
+def extract_and_clean_semantic_meme_references(text: str) -> tuple[str, list[str]]:
+    """提取语义图片 ID，并清理模型误输出的机器标记和候选说明。"""
+    references: list[str] = []
+
+    def remember(value: str) -> None:
+        prefix = parse_meme_id(str(value or "").lower())
+        normalized = f"meme:{prefix}" if prefix else ""
+        if normalized and normalized not in references:
+            references.append(normalized)
+
+    def remove_wrapped(match: re.Match) -> str:
+        remember(match.group(1))
+        return ""
+
+    clean_text = SEMANTIC_MARKER_PATTERN.sub(remove_wrapped, str(text or ""))
+    cleaned_lines: list[str] = []
+    for line in clean_text.splitlines():
+        matches = list(SEMANTIC_BARE_REFERENCE_PATTERN.finditer(line))
+        if not matches:
+            cleaned_lines.append(line)
+            continue
+
+        for match in matches:
+            remember(match.group(1))
+
+        first_match = matches[0]
+        prefix_text = line[: first_match.start()].strip(" \t`")
+        if not prefix_text:
+            remainder = line[first_match.end() :].lstrip()
+            remainder = re.sub(r"^[,，:：;；\-—]+\s*", "", remainder)
+            sentence_end = re.search(r"[。！？!?\.]", remainder)
+            first_sentence = (
+                remainder[: sentence_end.end()] if sentence_end else remainder
+            )
+            if not remainder or any(
+                hint.lower() in first_sentence.lower() for hint in SEMANTIC_META_HINTS
+            ):
+                if sentence_end:
+                    remainder = remainder[sentence_end.end() :].lstrip()
+                    if remainder:
+                        cleaned_lines.append(remainder)
+                continue
+
+        cleaned_line = SEMANTIC_BARE_REFERENCE_PATTERN.sub("", line)
+        cleaned_line = re.sub(r"^\s*[,，:：;；\-—]+\s*", "", cleaned_line)
+        cleaned_lines.append(cleaned_line)
+
+    cleaned = "\n".join(cleaned_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, references
+
+
+def extract_visible_semantic_reply(text: str) -> str:
+    """移除隐藏思考与机器标记，只保留适合生成检索词的可见回复。"""
+    value = str(text or "")
+    value = HIDDEN_REASONING_BLOCK_PATTERN.sub("", value)
+    value = UNCLOSED_REASONING_BLOCK_PATTERN.sub("", value)
+    value = GENERIC_MEME_MARKER_PATTERN.sub("", value)
+    value = re.sub(r"```(?:json)?\s*|```", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"[\t\r\f\v]+", " ", value)
+    value = re.sub(r" *\n+ *", "\n", value)
+    return value.strip()
+
+
+def compact_semantic_query(
+    value: Any, max_chars: int = SEMANTIC_QUERY_MAX_CHARS
+) -> str:
+    """把模型生成的检索词压成单行短文本，避免整段回复进入向量模型。"""
+    query = str(value or "").strip()
+    query = re.sub(r"^```(?:json)?\s*|```$", "", query, flags=re.IGNORECASE)
+    query = re.sub(r"^(?:query|检索词|搜索词)\s*[:：]\s*", "", query, flags=re.I)
+    query = re.sub(r"\s+", " ", query).strip(" \t\r\n\"'`，,。；;")
+    limit = max(8, int(max_chars or SEMANTIC_QUERY_MAX_CHARS))
+    return query[:limit].rstrip(" ，,。；;")
+
+
+def parse_semantic_query_result(value: Any, fallback: str = "") -> str:
+    """解析短检索词 JSON；异常或空结果时使用严格截短的可见文本。"""
+    raw = str(value or "").strip()
+    query = ""
+    data: Any = None
+    if raw:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            decoder = json.JSONDecoder()
+            query_objects = []
+            for start, character in enumerate(raw):
+                if character != "{":
+                    continue
+                try:
+                    candidate, _ = decoder.raw_decode(raw[start:])
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(candidate, dict) and (
+                    "query" in candidate or "keywords" in candidate
+                ):
+                    query_objects.append(candidate)
+            if query_objects:
+                data = query_objects[-1]
+        if isinstance(data, dict):
+            query = str(data.get("query") or data.get("keywords") or "")
+        elif not raw.startswith("{"):
+            query = raw
+    return compact_semantic_query(query or fallback)
 
 
 @dataclass

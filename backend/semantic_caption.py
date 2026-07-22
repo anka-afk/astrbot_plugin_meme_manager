@@ -55,9 +55,14 @@ CAPTION_PROMPT = """你是中文互联网表情包语义分析员。你的任务
 """
 
 CAPTION_SYSTEM_PROMPT = (
-    "你只能直接完成图片分析并返回一个 JSON 对象。"
-    "禁止联网，禁止调用或模拟任何工具，禁止输出分析过程。"
+    "你只能完成图片分析并提交一个包含 caption、tags、visible_text 的结果。"
+    "请求中提供结果提交工具时，必须调用该工具；没有工具时，直接返回一个 JSON 对象。"
+    "禁止联网，禁止调用或模拟结果提交工具之外的任何工具，禁止输出分析过程。"
 )
+
+CAPTION_TOOL_PROMPT_SUFFIX = """
+当前请求提供了 submit_meme_caption 结果提交工具。请调用这个唯一工具提交最终结果，
+不要把工具参数写成普通文本，不要调用其他工具。"""
 
 CAPTION_RETRY_PROMPT = """上一次输出不是可用的 JSON。请重新直接分析这张表情包。
 不得联网，不得调用或模拟 web_search，不得输出思考过程、Markdown 或代码块。
@@ -65,6 +70,68 @@ CAPTION_RETRY_PROMPT = """上一次输出不是可用的 JSON。请重新直接�
 只返回：{"caption":"一到两句中文核心梗义和使用场景","tags":["6到10个细粒度中文标签"],"visible_text":"图中原文或空字符串"}"""
 
 MAX_GIF_FRAMES = 5
+CAPTION_TOOL_NAME = "submit_meme_caption"
+CAPTION_OUTPUT_MODE_CACHE_ATTR = "_meme_manager_caption_output_modes"
+
+
+class _LightweightToolSet:
+    """仅供未安装完整 AstrBot 依赖的仓库单元测试承载工具描述。"""
+
+    def __init__(self, tools: list[Any]):
+        self.tools = tools
+
+    def empty(self) -> bool:
+        return not self.tools
+
+
+def _build_caption_tool_set() -> Any:
+    """使用 AstrBot 通用 ToolSet 描述结果，不绑定某一家供应商协议。"""
+    parameters = {
+        "type": "object",
+        "properties": {
+            "caption": {
+                "type": "string",
+                "description": "一到两句自然中文，概括核心梗义、复合语气和典型用法。",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "6 到 10 个细粒度中文检索标签。",
+            },
+            "visible_text": {
+                "type": "string",
+                "description": "图片中清晰可见的原始文字，没有则为空字符串。",
+            },
+        },
+        "required": ["caption", "tags", "visible_text"],
+        "additionalProperties": False,
+    }
+    try:
+        # 生产环境使用 AstrBot 自己的 ToolSet；它会按当前 Provider 转换为
+        # OpenAI、Anthropic 或 Gemini 所需的工具协议。
+        from astrbot.api import FunctionTool, ToolSet
+
+        tool = FunctionTool(
+            name=CAPTION_TOOL_NAME,
+            description="提交表情包的中文语义描述、检索标签和图片原文。",
+            parameters=parameters,
+            handler=None,
+        )
+        return ToolSet(tools=[tool])
+    except ModuleNotFoundError:
+        # tests/semantic_unittest.py 会在不含 AstrBot 完整运行依赖的轻量
+        # 虚拟环境执行；这里不让一个类型导入阻断纯后端测试。
+        tool = type(
+            "LightweightFunctionTool",
+            (),
+            {
+                "name": CAPTION_TOOL_NAME,
+                "description": "提交表情包的中文语义描述、检索标签和图片原文。",
+                "parameters": parameters,
+                "handler": None,
+            },
+        )()
+        return _LightweightToolSet([tool])
 
 
 def build_caption_prompt(frame_count: int = 1) -> str:
@@ -138,9 +205,7 @@ def _read_usage_number(usage: Any, *names: str) -> int:
         return 0
     for name in names:
         value = (
-            usage.get(name)
-            if isinstance(usage, dict)
-            else getattr(usage, name, None)
+            usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
         )
         if value is None:
             continue
@@ -164,9 +229,7 @@ def extract_token_usage(response: Any) -> dict[str, int]:
         raw_completion = getattr(response, "raw_completion", None)
         usage = getattr(raw_completion, "usage", None)
     raw_input = (
-        usage.get("input")
-        if isinstance(usage, dict)
-        else getattr(usage, "input", None)
+        usage.get("input") if isinstance(usage, dict) else getattr(usage, "input", None)
     )
     if raw_input is not None:
         input_tokens = _read_usage_number(usage, "input")
@@ -209,18 +272,162 @@ def _merge_token_usage(usages: list[dict[str, int]]) -> dict[str, int]:
 
 def _structured_output_is_unsupported(exc: Exception) -> bool:
     message = str(exc or "").lower()
-    return "response_format" in message and any(
+    return any(
         marker in message
-        for marker in ("unsupported", "not support", "unknown", "unexpected", "invalid")
+        for marker in ("response_format", "response format", "结构化输出")
+    ) and any(
+        marker in message
+        for marker in (
+            "unsupported",
+            "not support",
+            "does not support",
+            "unknown",
+            "unrecognized",
+            "unexpected",
+            "invalid",
+            "not allowed",
+            "not permitted",
+            "not implemented",
+            "不支持",
+            "未知",
+            "无效",
+            "不允许",
+            "不可用",
+            "未实现",
+        )
     )
 
 
-async def _request_caption_response(
+def _tool_call_is_unsupported(exc: Exception) -> bool:
+    """只把明确的工具能力或参数不兼容错误识别为可降级错误。"""
+    message = str(exc or "").lower()
+    mentions_tool = any(
+        marker in message
+        for marker in (
+            "tool_choice",
+            "tool choice",
+            "tools",
+            "function_call",
+            "function call",
+            "function-calling",
+            "function calling",
+            "工具调用",
+            "函数调用",
+        )
+    )
+    unsupported = any(
+        marker in message
+        for marker in (
+            "unsupported",
+            "not support",
+            "does not support",
+            "doesn't support",
+            "not enabled",
+            "unknown",
+            "unrecognized",
+            "unexpected",
+            "invalid parameter",
+            "invalid field",
+            "not allowed",
+            "only allowed",
+            "not permitted",
+            "not implemented",
+            "extra inputs are not permitted",
+            "不支持",
+            "不具备",
+            "未启用",
+            "未知",
+            "无法识别",
+            "无效参数",
+            "不允许",
+            "不可用",
+            "未实现",
+        )
+    )
+    return mentions_tool and unsupported
+
+
+def _caption_output_mode(context: Any, provider_id: str) -> str:
+    cache = getattr(context, CAPTION_OUTPUT_MODE_CACHE_ATTR, None)
+    if not isinstance(cache, dict):
+        return ""
+    return str(cache.get(provider_id) or "")
+
+
+def _remember_caption_output_mode(context: Any, provider_id: str, mode: str) -> None:
+    cache = getattr(context, CAPTION_OUTPUT_MODE_CACHE_ATTR, None)
+    if not isinstance(cache, dict):
+        cache = {}
+        try:
+            setattr(context, CAPTION_OUTPUT_MODE_CACHE_ATTR, cache)
+        except (AttributeError, TypeError):
+            return
+    cache[provider_id] = mode
+
+
+def _caption_tool_call_payload(response: Any) -> tuple[bool, Any]:
+    """读取指定结果工具；布尔值用于区分工具结果与普通文本。"""
+    names = (
+        response.get("tools_call_name", [])
+        if isinstance(response, dict)
+        else getattr(response, "tools_call_name", [])
+    ) or []
+    arguments = (
+        response.get("tools_call_args", [])
+        if isinstance(response, dict)
+        else getattr(response, "tools_call_args", [])
+    ) or []
+    if isinstance(names, str):
+        names = [names]
+    if isinstance(arguments, (str, dict)):
+        arguments = [arguments]
+    for index, name in enumerate(names):
+        if str(name or "") != CAPTION_TOOL_NAME or index >= len(arguments):
+            continue
+        return True, arguments[index]
+    return False, None
+
+
+def _caption_response_payload(response: Any) -> Any:
+    """优先读取 AstrBot 已归一化的工具参数，也兼容模型直接返回 JSON。"""
+    has_tool_call, payload = _caption_tool_call_payload(response)
+    if has_tool_call:
+        return payload
+    if isinstance(response, dict):
+        return response.get("completion_text") or response.get("text") or response
+    return (
+        getattr(response, "completion_text", None)
+        or getattr(response, "text", None)
+        or response
+    )
+
+
+async def _request_caption_tool_response(
     context: Any,
     provider_id: str,
     prompt: str,
     visual_paths: list[str],
 ) -> Any:
+    """优先走 AstrBot 通用工具调用，由各 Provider 适配器转换协议。"""
+    return await context.llm_generate(
+        chat_provider_id=provider_id,
+        prompt=prompt + CAPTION_TOOL_PROMPT_SUFFIX,
+        image_urls=visual_paths,
+        tools=_build_caption_tool_set(),
+        tool_choice="required",
+        system_prompt=CAPTION_SYSTEM_PROMPT,
+        temperature=0,
+        max_tokens=900,
+    )
+
+
+async def _request_caption_json_response(
+    context: Any,
+    provider_id: str,
+    prompt: str,
+    visual_paths: list[str],
+) -> Any:
+    """工具不可用时改用 JSON；结构化输出也不可用时再退回普通提示词。"""
     request = {
         "chat_provider_id": provider_id,
         "prompt": prompt,
@@ -234,7 +441,7 @@ async def _request_caption_response(
         return await context.llm_generate(**request)
     except Exception as exc:
         # 部分非 OpenAI Provider 不支持 response_format。只在明确报参数
-        # 不支持时降级，避免吞掉真实的模型或网络错误。
+        # 不兼容时去掉它，其他模型或网络错误继续上抛。
         if not _structured_output_is_unsupported(exc):
             raise
         request.pop("response_format", None)
@@ -251,25 +458,51 @@ async def generate_caption(
     try:
         selected_provider = provider_id
         if not selected_provider:
-            raise RuntimeError("未配置视觉模型，请先选择支持图片输入的视觉模型 Provider")
+            raise RuntimeError(
+                "未配置视觉模型，请先选择支持图片输入的视觉模型 Provider"
+            )
         usages = []
-        response = await _request_caption_response(
-            context,
-            selected_provider,
-            build_caption_prompt(len(visual_paths)),
-            visual_paths,
-        )
+        prompt = build_caption_prompt(len(visual_paths))
+        used_tool_mode = _caption_output_mode(context, selected_provider) != "json"
+        if not used_tool_mode:
+            response = await _request_caption_json_response(
+                context,
+                selected_provider,
+                prompt,
+                visual_paths,
+            )
+        else:
+            try:
+                response = await _request_caption_tool_response(
+                    context,
+                    selected_provider,
+                    prompt,
+                    visual_paths,
+                )
+            except Exception as exc:
+                if not _tool_call_is_unsupported(exc):
+                    raise
+                _remember_caption_output_mode(context, selected_provider, "json")
+                used_tool_mode = False
+                response = await _request_caption_json_response(
+                    context,
+                    selected_provider,
+                    prompt,
+                    visual_paths,
+                )
         usages.append(extract_token_usage(response))
-        raw = getattr(response, "completion_text", None) or getattr(
-            response, "text", None
-        ) or response
+        if used_tool_mode and not _caption_tool_call_payload(response)[0]:
+            # AstrBot 的部分 Provider 会在发现模型不支持工具时，自动用同一
+            # 请求改走普通文本。记住这个结果，避免后续每张图重复试错。
+            _remember_caption_output_mode(context, selected_provider, "json")
+        raw = _caption_response_payload(response)
         try:
             caption, tags, visible_text = parse_caption_result(raw)
         except Exception:
-            # 中转站偶尔会把模型的工具调用意图当成普通文本返回。
-            # 第二次使用精简提示重试，不携带旧回复，避免重复工具调用过程。
+            # Provider 没有返回指定工具参数，或返回了不可解析的普通文本：
+            # 第二次明确改走 JSON，不携带旧回复，避免重复错误输出。
             try:
-                response = await _request_caption_response(
+                response = await _request_caption_json_response(
                     context,
                     selected_provider,
                     CAPTION_RETRY_PROMPT,
@@ -280,9 +513,7 @@ async def generate_caption(
                 setattr(exc, "result_preview", str(raw or "")[:1000])
                 raise
             usages.append(extract_token_usage(response))
-            raw = getattr(response, "completion_text", None) or getattr(
-                response, "text", None
-            ) or response
+            raw = _caption_response_payload(response)
             try:
                 caption, tags, visible_text = parse_caption_result(raw)
             except Exception as exc:

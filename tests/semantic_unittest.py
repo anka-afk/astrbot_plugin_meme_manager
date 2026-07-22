@@ -19,8 +19,12 @@ from backend.semantic_index import (
 from backend.semantic_models import (
     PROMPT_VERSION,
     SemanticImage,
+    compact_semantic_query,
+    extract_and_clean_semantic_meme_references,
+    extract_visible_semantic_reply,
     normalize_vector,
     parse_caption_result,
+    parse_semantic_query_result,
 )
 from backend.semantic_query import (
     candidate_records,
@@ -41,6 +45,7 @@ from backend.semantic_storage import (
 from backend.semantic_task import SemanticTaskManager
 from image_host.img_sync import ImageSync
 from PIL import Image
+from utils import normalize_probability, probability_hit
 
 
 class FakeEmbedding:
@@ -178,7 +183,123 @@ class RetryVisionContext:
         )()
 
 
+class ToolCaptionContext:
+    def __init__(self):
+        self.requests = []
+
+    async def llm_generate(self, **kwargs):
+        self.requests.append(kwargs)
+        return type(
+            "VisionResponse",
+            (),
+            {
+                "completion_text": "",
+                "tools_call_name": ["submit_meme_caption"],
+                "tools_call_args": [
+                    {
+                        "caption": "假装镇定地承认自己心虚",
+                        "tags": ["心虚", "装镇定", "自嘲", "聊天反应", "承认", "嘴硬"],
+                        "visible_text": "我才不慌",
+                    }
+                ],
+                "usage": {"prompt_tokens": 80, "completion_tokens": 20},
+            },
+        )()
+
+
+class UnsupportedToolCaptionContext:
+    def __init__(self, *, reject_response_format=False):
+        self.requests = []
+        self.reject_response_format = reject_response_format
+
+    async def llm_generate(self, **kwargs):
+        self.requests.append(kwargs)
+        if "tools" in kwargs:
+            raise RuntimeError("This model does not support function calling")
+        if self.reject_response_format and "response_format" in kwargs:
+            raise RuntimeError("response_format is unsupported")
+        return type(
+            "VisionResponse",
+            (),
+            {
+                "completion_text": (
+                    '{"caption":"无奈地摆手拒绝","tags":["无奈","拒绝",'
+                    '"摆手","聊天反应","婉拒","退让"],"visible_text":"不了"}'
+                )
+            },
+        )()
+
+
+class FailedToolCaptionContext:
+    def __init__(self):
+        self.requests = []
+
+    async def llm_generate(self, **kwargs):
+        self.requests.append(kwargs)
+        raise TimeoutError("vision provider request timed out")
+
+
 class SemanticMvpTest(unittest.TestCase):
+    def test_semantic_reference_cleanup_accepts_wrapped_and_bare_model_output(self):
+        meme_id = "meme:" + "7" * 12
+        wrapped_text, wrapped_ids = extract_and_clean_semantic_meme_references(
+            f"我会陪着你。\n&&{meme_id}&&"
+        )
+        self.assertEqual(wrapped_text, "我会陪着你。")
+        self.assertEqual(wrapped_ids, [meme_id])
+
+        leaked_text, leaked_ids = extract_and_clean_semantic_meme_references(
+            f"`{meme_id}`，通过闭眼晃头的动作来表达撒娇式安抚。"
+            "我知道你只是对自己要求很高。"
+        )
+        self.assertEqual(leaked_text, "我知道你只是对自己要求很高。")
+        self.assertEqual(leaked_ids, [meme_id])
+
+        inline_text, inline_ids = extract_and_clean_semantic_meme_references(
+            f"我会陪着你，{meme_id}"
+        )
+        self.assertEqual(inline_text, "我会陪着你，")
+        self.assertEqual(inline_ids, [meme_id])
+
+    def test_emotion_query_removes_reasoning_and_machine_markers(self):
+        raw = (
+            "<thinking>这里有非常长的分析、用户历史和回复策略。</thinking>"
+            "先别急着否定自己的努力，我是真的替你骄傲。\n"
+            "&&meow&&"
+        )
+        visible = extract_visible_semantic_reply(raw)
+        self.assertEqual(
+            visible,
+            "先别急着否定自己的努力，我是真的替你骄傲。",
+        )
+        self.assertNotIn("thinking", visible)
+        self.assertNotIn("meow", visible)
+
+    def test_emotion_query_parser_enforces_short_vector_input(self):
+        raw = (
+            '<think>内部分析可能出现 {"other":"value"}</think>\n'
+            '{"query":"温柔安慰 肯定努力 陪伴鼓励"}'
+        )
+        self.assertEqual(
+            parse_semantic_query_result(raw, "备用文本"),
+            "温柔安慰 肯定努力 陪伴鼓励",
+        )
+        long_query = compact_semantic_query("安慰 " * 40)
+        self.assertLessEqual(len(long_query), 48)
+        self.assertEqual(
+            parse_semantic_query_result('{"query":""}', "这是备用可见回复"),
+            "这是备用可见回复",
+        )
+
+    def test_probability_gate_supports_zero_middle_and_full_percent(self):
+        self.assertFalse(probability_hit(0, roll=1))
+        self.assertFalse(probability_hit("invalid", roll=1))
+        self.assertTrue(probability_hit(50, roll=50))
+        self.assertFalse(probability_hit(50, roll=51))
+        self.assertTrue(probability_hit(100, roll=100))
+        self.assertEqual(normalize_probability(-1), 0)
+        self.assertEqual(normalize_probability(101), 100)
+
     def test_homepage_semantic_summary_and_duplicate_image_detail(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -284,11 +405,15 @@ class SemanticMvpTest(unittest.TestCase):
         )
         self.assertNotIn("可选", semantic_items["embedding_provider_id"]["description"])
         self.assertEqual(list(semantic_items)[:3], ["enabled", "top_k", "min_score"])
+        self.assertNotIn("concurrency", semantic_items)
         generation_items = schema["generation"]["items"]
         self.assertEqual(next(iter(generation_items)), "emotion")
         emotion_items = generation_items["emotion"]["items"]
         self.assertEqual(next(iter(emotion_items)), "llm")
         self.assertIn("接管 Tool", emotion_items["llm"]["description"])
+        provider_item = emotion_items["llm"]["items"]["provider_id"]
+        self.assertIn("留空使用回复模型", provider_item["description"])
+        self.assertIn("自动复用", provider_item["hint"])
 
     def test_full_task_embeds_once_and_builds_faiss(self):
         async def run():
@@ -918,14 +1043,96 @@ class SemanticMvpTest(unittest.TestCase):
                 self.assertEqual(result["token_usage"]["calls"], 2)
                 self.assertEqual(result["token_usage"]["total"], 175)
                 self.assertEqual(len(context.requests), 2)
+                self.assertNotIn("response_format", context.requests[0])
+                self.assertEqual(context.requests[0]["tool_choice"], "required")
                 self.assertEqual(
-                    context.requests[0]["response_format"], {"type": "json_object"}
+                    context.requests[0]["tools"].tools[0].name,
+                    "submit_meme_caption",
                 )
                 self.assertEqual(context.requests[0]["temperature"], 0)
                 self.assertIn("禁止联网", context.requests[0]["system_prompt"])
+                self.assertNotIn("tools", context.requests[1])
+                self.assertEqual(
+                    context.requests[1]["response_format"], {"type": "json_object"}
+                )
                 self.assertIn(
                     "上一次输出不是可用的 JSON", context.requests[1]["prompt"]
                 )
+
+        asyncio.run(run())
+
+    def test_caption_prefers_astrbot_generic_tool_call(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                image_path = Path(temp) / "one.jpg"
+                image_path.write_bytes(b"fake-image")
+                context = ToolCaptionContext()
+                result = await generate_caption(context, image_path, "fake-vision")
+                self.assertEqual(result["caption"], "假装镇定地承认自己心虚")
+                self.assertEqual(result["visible_text"], "我才不慌")
+                self.assertEqual(result["token_usage"]["calls"], 1)
+                request = context.requests[0]
+                self.assertEqual(request["tool_choice"], "required")
+                self.assertNotIn("response_format", request)
+                tool = request["tools"].tools[0]
+                self.assertEqual(tool.name, "submit_meme_caption")
+                self.assertEqual(
+                    tool.parameters["required"],
+                    ["caption", "tags", "visible_text"],
+                )
+
+        asyncio.run(run())
+
+    def test_caption_falls_back_to_structured_json_when_tools_are_unsupported(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                image_path = Path(temp) / "one.jpg"
+                image_path.write_bytes(b"fake-image")
+                context = UnsupportedToolCaptionContext()
+                result = await generate_caption(context, image_path, "fake-vision")
+                self.assertEqual(result["caption"], "无奈地摆手拒绝")
+                self.assertEqual(len(context.requests), 2)
+                self.assertIn("tools", context.requests[0])
+                self.assertEqual(
+                    context.requests[1]["response_format"], {"type": "json_object"}
+                )
+                self.assertNotIn("tools", context.requests[1])
+
+                await generate_caption(context, image_path, "fake-vision")
+                self.assertEqual(len(context.requests), 3)
+                self.assertNotIn("tools", context.requests[2])
+                self.assertEqual(
+                    context.requests[2]["response_format"], {"type": "json_object"}
+                )
+
+        asyncio.run(run())
+
+    def test_caption_falls_back_to_plain_json_when_both_features_are_unsupported(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                image_path = Path(temp) / "one.jpg"
+                image_path.write_bytes(b"fake-image")
+                context = UnsupportedToolCaptionContext(reject_response_format=True)
+                result = await generate_caption(context, image_path, "fake-vision")
+                self.assertEqual(result["caption"], "无奈地摆手拒绝")
+                self.assertEqual(len(context.requests), 3)
+                self.assertIn("tools", context.requests[0])
+                self.assertIn("response_format", context.requests[1])
+                self.assertNotIn("tools", context.requests[2])
+                self.assertNotIn("response_format", context.requests[2])
+
+        asyncio.run(run())
+
+    def test_caption_does_not_hide_unrelated_provider_errors(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                image_path = Path(temp) / "one.jpg"
+                image_path.write_bytes(b"fake-image")
+                context = FailedToolCaptionContext()
+                with self.assertRaisesRegex(TimeoutError, "timed out"):
+                    await generate_caption(context, image_path, "fake-vision")
+                self.assertEqual(len(context.requests), 1)
+                self.assertIn("tools", context.requests[0])
 
         asyncio.run(run())
 

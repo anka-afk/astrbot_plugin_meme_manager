@@ -31,7 +31,7 @@ from .init import init_plugin
 from .mixins.commands import CommandMixin
 from .mixins.event_handlers import EventHandlerMixin
 from .mixins.web_api import WebAPIMixin
-from .utils import dict_to_string, load_json
+from .utils import dict_to_string, load_json, normalize_probability, probability_hit
 
 MEME_PROMPT_MARKER_START = "<!-- meme_manager_prompt:start -->"
 MEME_PROMPT_MARKER_END = "<!-- meme_manager_prompt:end -->"
@@ -71,13 +71,6 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             )
             or ""
         )
-        try:
-            configured_concurrency = int(
-                self._read_config_value(("semantic", "concurrency"), default=1) or 1
-            )
-        except (TypeError, ValueError):
-            configured_concurrency = 1
-        self.semantic_concurrency = max(1, min(16, configured_concurrency))
         self.semantic_top_k = int(
             self._read_config_value(("semantic", "top_k"), default=5) or 5
         )
@@ -90,7 +83,6 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             config={
                 "vision_provider_id": self.semantic_vision_provider_id,
                 "embedding_provider_id": self.semantic_embedding_provider_id,
-                "concurrency": self.semantic_concurrency,
             },
         )
 
@@ -292,10 +284,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             adjusted_count += 1
 
         if adjusted_count:
-            logger.info(
-                "已将 %d 个 Mixin 指令处理器绑定到插件主模块。",
-                adjusted_count,
-            )
+            logger.info(f"已将 {adjusted_count} 个 Mixin 指令处理器绑定到插件主模块。")
 
     @filter.event_message_type(EventMessageType.ALL)
     async def handle_upload_image(self, event: AstrMessageEvent):
@@ -665,10 +654,13 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
     def _semantic_system_prompt(self) -> str:
         return (
             f"\n\n{SEMANTIC_PROMPT_MARKER_START}\n"
-            "你可以使用 search_memes 搜索表情包。只有确实想使用表情包时才调用它；不要直接复制用户原话，"
+            "本轮必须调用且只能调用一次 search_memes，然后才能给出最终回复。不要直接复制用户原话，"
             "先判断你准备如何回应，再用第一人称描述自己的情绪、态度、动作和潜台词作为查询词。"
-            "工具只返回少量候选，最终是否使用由你决定。若选择候选，请在最终文本中使用 &&meme:候选ID&&，"
-            "不要捏造候选列表之外的 ID；不需要表情时不要调用工具。\n"
+            "工具返回候选后：若候选列表非空，必须选择最贴合的一张，并在最终文本中使用 "
+            "&&meme:候选ID&&；该机器标记必须独占最后一行，不能加反引号。"
+            "例如候选 id 是 meme:123456789abc，最后一行就写 &&meme:123456789abc&&。"
+            "最终可见正文绝对不要复述候选 ID、图片说明、caption 或 tags。"
+            "只有候选列表为空时才可以不添加表情。不要捏造候选列表之外的 ID，也不要重复调用工具。\n"
             f"{SEMANTIC_PROMPT_MARKER_END}"
         )
 
@@ -799,15 +791,32 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         self, req: ProviderRequest, event: AstrMessageEvent | None = None
     ) -> None:
         semantic_mode = ""
+        semantic_tool_ready = False
+        semantic_probability_hit = None
         if self.emotion_llm_enabled:
             if self._semantic_pack_ready(event=event, req=req):
                 semantic_mode = "llm"
-        elif self._semantic_pack_ready(event=event, req=req, require_tool=True):
-            semantic_mode = "tool"
+        else:
+            semantic_tool_ready = self._semantic_pack_ready(
+                event=event, req=req, require_tool=True
+            )
+            if semantic_tool_ready:
+                semantic_probability_hit = probability_hit(self.emotions_probability)
+                if semantic_probability_hit:
+                    semantic_mode = "tool"
+                logger.info(
+                    "[meme_manager] 语义表情触发判定: 概率=%s%%, 结果=%s",
+                    normalize_probability(self.emotions_probability),
+                    "命中" if semantic_probability_hit else "跳过",
+                )
         semantic_active = bool(semantic_mode)
         if event is not None and hasattr(event, "set_extra"):
             event.set_extra("meme_manager_semantic_active", semantic_active)
             event.set_extra("meme_manager_semantic_mode", semantic_mode)
+            event.set_extra(
+                "meme_manager_semantic_probability_hit",
+                semantic_probability_hit,
+            )
             event.set_extra(
                 "meme_manager_semantic_verified_pack_id",
                 str(event.get_extra("meme_manager_runtime_pack_id") or "")
@@ -817,6 +826,10 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             event.set_extra("meme_manager_semantic_selected_ids", [])
             event.set_extra("meme_manager_semantic_candidates", {})
             event.set_extra("meme_manager_semantic_query", "")
+            event.set_extra("meme_manager_semantic_search_completed", False)
+            event.set_extra("meme_manager_semantic_default_id", "")
+            event.set_extra("meme_manager_semantic_response_processed", False)
+            event.set_extra("meme_manager_reply_provider_id", "")
         if semantic_mode == "tool":
             req.system_prompt = (
                 self._strip_meme_prompt(req.system_prompt)
@@ -824,6 +837,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             )
             return
         self._remove_semantic_tool(req)
+        if semantic_tool_ready:
+            # 本轮概率未命中：既不暴露工具，也不回退到旧版标签提示，
+            # 避免绕过本轮概率判定后仍然产生表情。
+            req.system_prompt = self._strip_meme_prompt(req.system_prompt)
+            return
         if semantic_mode == "llm" or self.emotion_llm_enabled:
             req.system_prompt = self._strip_meme_prompt(req.system_prompt)
             return
@@ -864,6 +882,17 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             or str(event.get_extra("meme_manager_semantic_mode") or "") != "tool"
         ):
             return dumps_result({"ok": False, "reason": "语义查询未启用或索引不可用"})
+        if bool(event.get_extra("meme_manager_semantic_search_completed")):
+            return dumps_result(
+                {
+                    "ok": False,
+                    "reason": "本轮已经完成唯一一次搜索，请直接根据上次候选完成最终回复",
+                }
+            )
+        event.set_extra("meme_manager_semantic_search_completed", True)
+        provider_request = event.get_extra("provider_request")
+        if provider_request is not None:
+            self._remove_semantic_tool(provider_request)
         context = self._resolve_runtime_pack_context(event=event)
         if str(context.get("pack_id") or "") != str(
             event.get_extra("meme_manager_semantic_verified_pack_id") or ""
@@ -880,12 +909,25 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 min_score=self.semantic_min_score,
                 _verified_complete=True,
             )
-            remember_candidates(
-                event,
-                candidate_records(context["pack_dir"], result.get("candidates") or []),
+            records = candidate_records(
+                context["pack_dir"], result.get("candidates") or []
+            )
+            remember_candidates(event, records)
+            event.set_extra(
+                "meme_manager_semantic_default_id",
+                str(records[0].get("id") or "") if records else "",
             )
             event.set_extra("meme_manager_semantic_query", str(query or ""))
-            return dumps_result(result)
+            return dumps_result(
+                {
+                    **result,
+                    "instruction": (
+                        "本轮唯一一次搜索已经完成，禁止再次调用 search_memes。"
+                        "候选非空时选择一张，只在最终回复最后一行输出 "
+                        "&&meme:候选ID&&，不要解释 ID、caption 或 tags。"
+                    ),
+                }
+            )
         except Exception as exc:
             logger.error("语义表情查询失败: %s", exc, exc_info=True)
             return dumps_result({"ok": False, "reason": "语义查询失败"})
