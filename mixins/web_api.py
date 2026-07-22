@@ -432,6 +432,52 @@ class WebAPIMixin:
         if manager is not None:
             manager.assert_pack_mutation_allowed(pack_id, operation)
 
+    def _semantic_rebuild_guidance(self, pack_id: str) -> dict:
+        """返回切换或导入资源包后是否需要补建本机向量。"""
+        guidance = {
+            "semantic_rebuild_required": False,
+            "semantic_rebuild_pack_id": str(pack_id or "").strip(),
+        }
+        if not guidance["semantic_rebuild_pack_id"] or not bool(
+            getattr(self, "semantic_enabled", False)
+        ):
+            return guidance
+        manager = getattr(self, "semantic_task_manager", None)
+        if manager is None:
+            return guidance
+        try:
+            status = manager.status(guidance["semantic_rebuild_pack_id"])
+        except Exception as exc:
+            logger.warning(
+                "读取资源包向量重建提示失败: %s | pack_id=%s",
+                exc,
+                guidance["semantic_rebuild_pack_id"],
+            )
+            return guidance
+        task_status = str(status.get("task_status") or "")
+        guidance.update(
+            {
+                "semantic_rebuild_required": bool(
+                    status.get("dimension_rebuild_required")
+                    and status.get("semantic_caption_complete")
+                    and task_status not in {"running", "paused"}
+                ),
+                "semantic_task_status": task_status,
+                "semantic_caption_complete": bool(
+                    status.get("semantic_caption_complete")
+                ),
+                "semantic_index_ready": bool(status.get("index_ready")),
+                "semantic_embedding_provider_id": str(
+                    status.get("embedding_provider_id") or ""
+                ),
+                "semantic_embedding_model": str(status.get("embedding_model") or ""),
+                "semantic_embedding_dimension": int(
+                    status.get("embedding_configured_dimension", 0) or 0
+                ),
+            }
+        )
+        return guidance
+
     async def _run_guarded_pack_file_operation(
         self,
         pack_id: str,
@@ -1707,21 +1753,9 @@ class WebAPIMixin:
             pack_id = str((data or {}).get("pack_id") or "").strip()
             if not pack_id:
                 return jsonify({"message": "pack_id 不能为空"}), 400
-            previous_pack_id = str(
-                get_selection_rules().get("default_pack_id") or ""
-            ).strip()
             result = set_default_pack(pack_id)
             self._reload_personas()
-            if (
-                bool(getattr(self, "semantic_enabled", False))
-                and previous_pack_id != pack_id
-            ):
-                status = self.semantic_task_manager.status(pack_id)
-                result["semantic_rebuild_required"] = bool(
-                    status.get("dimension_rebuild_required")
-                    and status.get("semantic_caption_complete")
-                )
-                result["semantic_rebuild_pack_id"] = pack_id
+            result.update(self._semantic_rebuild_guidance(pack_id))
             return jsonify({"message": "默认表情包设置成功", **result}), 200
         except FileNotFoundError as e:
             return jsonify({"message": str(e)}), 404
@@ -2009,6 +2043,9 @@ class WebAPIMixin:
             archive_path.unlink(missing_ok=True)
             metadata_path.unlink(missing_ok=True)
             self._reload_personas()
+            result.update(
+                self._semantic_rebuild_guidance(str(result.get("pack_id") or ""))
+            )
             return jsonify({"message": "表情包导入成功", **result}), 200
         except RuntimeError as exc:
             return jsonify({"message": str(exc)}), 409

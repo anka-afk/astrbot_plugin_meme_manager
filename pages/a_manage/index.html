@@ -81,26 +81,28 @@
             支持批量选择、拖拽移动、图床同步和移动端管理。
           </p>
           <div class="manage-pack-switch-row">
-            <button
-              id="console-toggle-btn"
-              class="panel-toggle"
-              type="button"
-              aria-expanded="true"
-              aria-controls="app-sidebar-panel"
-              aria-label="切换控制台"
-            >
-              <i class="fas fa-sliders icon"></i>控制台
-            </button>
-            <button
-              id="directory-toggle-btn"
-              class="panel-toggle"
-              type="button"
-              aria-expanded="true"
-              aria-controls="app-directory-panel"
-              aria-label="切换目录"
-            >
-              <i class="fas fa-folder-open icon"></i>目录
-            </button>
+            <div class="panel-toggle-group" role="group" aria-label="页面视图">
+              <button
+                id="console-toggle-btn"
+                class="panel-toggle"
+                type="button"
+                aria-expanded="true"
+                aria-controls="app-sidebar-panel"
+                aria-label="切换控制台"
+              >
+                <i class="fas fa-sliders icon"></i>控制台
+              </button>
+              <button
+                id="directory-toggle-btn"
+                class="panel-toggle"
+                type="button"
+                aria-expanded="true"
+                aria-controls="app-directory-panel"
+                aria-label="切换目录"
+              >
+                <i class="fas fa-folder-open icon"></i>目录
+              </button>
+            </div>
             <label for="manage-pack-select">管理表情包</label>
             <select
               id="manage-pack-select"
@@ -378,19 +380,40 @@
               <h2>批量管理</h2>
               <p id="selection-summary">未开启批量选择</p>
             </div>
-            <div class="selection-toolbar-actions">
-              <button id="batch-move-btn" class="secondary" disabled>
-                <i class="fas fa-right-left icon"></i>移动已选
-              </button>
-              <button id="toggle-selection-mode-btn" class="secondary">
-                <i class="fas fa-list-check icon"></i>开启批量选择
-              </button>
-              <button id="batch-delete-btn" class="danger" disabled>
-                <i class="fas fa-trash-can icon"></i>删除已选
-              </button>
-              <button id="clear-all-btn" class="danger">
-                <i class="fas fa-radiation icon"></i>清空全部表情包
-              </button>
+            <div class="selection-toolbar-controls">
+              <div class="pack-index-toolbar" aria-label="当前表情包向量状态">
+                <span
+                  id="pack-vector-status"
+                  class="pack-vector-status hidden"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <i class="fas fa-cubes-stacked"></i>
+                  <span id="pack-vector-status-text">正在读取向量维度…</span>
+                </span>
+                <button
+                  id="rebuild-pack-vectors-btn"
+                  type="button"
+                  class="secondary vector-rebuild-btn hidden"
+                  disabled
+                >
+                  <i class="fas fa-arrows-rotate icon"></i>按当前维度重建
+                </button>
+              </div>
+              <div class="selection-toolbar-actions">
+                <button id="batch-move-btn" class="secondary" disabled>
+                  <i class="fas fa-right-left icon"></i>移动已选
+                </button>
+                <button id="toggle-selection-mode-btn" class="secondary">
+                  <i class="fas fa-list-check icon"></i>开启批量选择
+                </button>
+                <button id="batch-delete-btn" class="danger" disabled>
+                  <i class="fas fa-trash-can icon"></i>删除已选
+                </button>
+                <button id="clear-all-btn" class="danger">
+                  <i class="fas fa-radiation icon"></i>清空全部表情包
+                </button>
+              </div>
             </div>
           </div>
         </div>

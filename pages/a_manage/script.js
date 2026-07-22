@@ -239,6 +239,13 @@ async function initApp() {
   const packSemanticStatusText = document.getElementById(
     "pack-semantic-status-text",
   );
+  const packVectorStatus = document.getElementById("pack-vector-status");
+  const packVectorStatusText = document.getElementById(
+    "pack-vector-status-text",
+  );
+  const rebuildPackVectorsBtn = document.getElementById(
+    "rebuild-pack-vectors-btn",
+  );
   const switchManagePackBtn = document.getElementById("switch-manage-pack-btn");
   const deleteManagePackBtn = document.getElementById("delete-manage-pack-btn");
   const transferCurrentPack = document.getElementById("transfer-current-pack");
@@ -288,6 +295,9 @@ async function initApp() {
   let managePacksById = new Map();
   let pendingPackImportToken = "";
   let exportCapabilityRequestId = 0;
+  let managePackVectorStatusRequestId = 0;
+  let latestManagePackVectorStatus = null;
+  let latestManagePackVectorStatusId = "";
   let confirmResolver = null;
   const MOBILE_LAYOUT_MEDIA = "(max-width: 960px)";
   const DRAG_HUD_OFFSET_X = 18;
@@ -480,6 +490,325 @@ async function initApp() {
     }
   }
 
+  function packSupportsVectorStatus(packId) {
+    const pack = managePacksById.get(String(packId || "").trim());
+    return pack?.supports_vector_rebuild === true;
+  }
+
+  function hideManagePackVectorStatus() {
+    packVectorStatus?.classList.add("hidden");
+    rebuildPackVectorsBtn?.classList.add("hidden");
+    latestManagePackVectorStatus = null;
+    latestManagePackVectorStatusId = "";
+  }
+
+  function renderManagePackVectorStatus(packId, status, state = "ready") {
+    const normalizedPackId = String(packId || "").trim();
+    if (!normalizedPackId || !packSupportsVectorStatus(normalizedPackId)) {
+      hideManagePackVectorStatus();
+      return;
+    }
+
+    packVectorStatus?.classList.remove(
+      "hidden",
+      "vector-ready",
+      "vector-rebuild",
+      "vector-unconfigured",
+      "vector-pending",
+      "vector-loading",
+    );
+    rebuildPackVectorsBtn?.classList.remove("hidden");
+
+    if (state === "loading") {
+      packVectorStatus?.classList.add("vector-loading");
+      if (packVectorStatusText) {
+        packVectorStatusText.textContent = "正在读取向量维度…";
+      }
+      if (rebuildPackVectorsBtn) {
+        rebuildPackVectorsBtn.disabled = true;
+        rebuildPackVectorsBtn.innerHTML =
+          '<i class="fas fa-spinner fa-spin icon"></i>读取中';
+      }
+      return;
+    }
+
+    if (state === "error" || !status) {
+      packVectorStatus?.classList.add("vector-pending");
+      if (packVectorStatusText) {
+        packVectorStatusText.textContent = "向量状态读取失败";
+      }
+      if (packVectorStatus) {
+        packVectorStatus.title = "暂时无法读取当前包的向量状态，请稍后重试。";
+      }
+      if (rebuildPackVectorsBtn) {
+        rebuildPackVectorsBtn.disabled = true;
+        rebuildPackVectorsBtn.innerHTML =
+          '<i class="fas fa-arrows-rotate icon"></i>状态不可用';
+      }
+      return;
+    }
+
+    const providerReady = Boolean(status.embedding_provider_ready);
+    const captionComplete = Boolean(status.semantic_caption_complete);
+    const indexReady = Boolean(status.index_ready);
+    const rebuildRequired = Boolean(status.dimension_rebuild_required);
+    const configuredDimension = Number(
+      status.embedding_configured_dimension || 0,
+    );
+    const indexDimension = Number(status.index_embedding_dimension || 0);
+    const taskStatus = String(status.task_status || "idle");
+    const taskBusy = ["running", "paused"].includes(taskStatus);
+    const currentDimensionLabel = configuredDimension
+      ? `${configuredDimension} 维`
+      : "维度待检测";
+    const modelLabel = [
+      String(status.embedding_provider_id || "").trim(),
+      String(status.embedding_model || "").trim(),
+    ]
+      .filter(Boolean)
+      .join(" / ");
+
+    if (!providerReady) {
+      packVectorStatus?.classList.add("vector-unconfigured");
+      if (packVectorStatusText) {
+        packVectorStatusText.textContent = indexDimension
+          ? `索引 ${indexDimension} 维 · 未配置向量模型`
+          : "未配置向量模型";
+      }
+      if (packVectorStatus) {
+        packVectorStatus.title =
+          "当前没有可用的向量模型。已有语义描述不会丢失，配置模型后即可在此重建。";
+      }
+      if (rebuildPackVectorsBtn) {
+        rebuildPackVectorsBtn.disabled = true;
+        rebuildPackVectorsBtn.title =
+          "请先在插件配置中选择并启用向量模型。";
+        rebuildPackVectorsBtn.innerHTML =
+          '<i class="fas fa-circle-exclamation icon"></i>先配置向量模型';
+      }
+      return;
+    }
+
+    if (taskBusy) {
+      packVectorStatus?.classList.add("vector-pending");
+      if (packVectorStatusText) {
+        packVectorStatusText.textContent =
+          taskStatus === "paused"
+            ? `当前 ${currentDimensionLabel} · 任务已暂停`
+            : `当前 ${currentDimensionLabel} · 正在处理`;
+      }
+    } else if (!captionComplete) {
+      packVectorStatus?.classList.add("vector-pending");
+      if (packVectorStatusText) {
+        packVectorStatusText.textContent =
+          `当前 ${currentDimensionLabel} · 描述未完成`;
+      }
+    } else if (indexReady && !rebuildRequired) {
+      packVectorStatus?.classList.add("vector-ready");
+      if (packVectorStatusText) {
+        packVectorStatusText.textContent =
+          `向量 ${indexDimension || configuredDimension || "未知"} 维`;
+      }
+    } else {
+      packVectorStatus?.classList.add("vector-rebuild");
+      if (packVectorStatusText) {
+        const oldIndexHint =
+          indexDimension && indexDimension !== configuredDimension
+            ? ` · 原索引 ${indexDimension} 维`
+            : "";
+        packVectorStatusText.textContent =
+          `当前 ${currentDimensionLabel}${oldIndexHint} · 待重建`;
+      }
+    }
+
+    if (packVectorStatus) {
+      const indexHint = indexDimension
+        ? `包内索引为 ${indexDimension} 维。`
+        : "当前包还没有可用的本机向量索引。";
+      packVectorStatus.title =
+        `${modelLabel ? `当前模型：${modelLabel}；` : ""}` +
+        `模型维度：${currentDimensionLabel}；${indexHint}`;
+    }
+    if (rebuildPackVectorsBtn) {
+      rebuildPackVectorsBtn.disabled = taskBusy || !captionComplete;
+      rebuildPackVectorsBtn.title = taskBusy
+        ? "语义任务进行中，结束后才能重建向量。"
+        : !captionComplete
+          ? "请先完成当前包的全部语义描述。"
+          : "使用当前向量模型重新建立本机向量索引。";
+      rebuildPackVectorsBtn.innerHTML = taskBusy
+        ? '<i class="fas fa-spinner fa-spin icon"></i>正在处理'
+        : !captionComplete
+          ? '<i class="fas fa-clock icon"></i>等待语义描述'
+          : `<i class="fas fa-arrows-rotate icon"></i>按${
+              configuredDimension ? ` ${configuredDimension} 维` : "当前维度"
+            }重建`;
+    }
+  }
+
+  async function refreshManagePackVectorStatus(packId = activeManagePackId) {
+    const normalizedPackId = String(packId || "").trim();
+    const requestId = ++managePackVectorStatusRequestId;
+    if (!normalizedPackId || !packSupportsVectorStatus(normalizedPackId)) {
+      hideManagePackVectorStatus();
+      return null;
+    }
+
+    renderManagePackVectorStatus(normalizedPackId, null, "loading");
+    try {
+      const status = await apiGet("semantic/status", {
+        pack_id: normalizedPackId,
+      });
+      if (requestId !== managePackVectorStatusRequestId) {
+        return null;
+      }
+      latestManagePackVectorStatus = status;
+      latestManagePackVectorStatusId = normalizedPackId;
+      renderManagePackVectorStatus(normalizedPackId, status);
+      return status;
+    } catch (error) {
+      if (requestId === managePackVectorStatusRequestId) {
+        latestManagePackVectorStatus = null;
+        latestManagePackVectorStatusId = "";
+        renderManagePackVectorStatus(normalizedPackId, null, "error");
+      }
+      console.warn("读取当前图包向量状态失败:", error);
+      return null;
+    }
+  }
+
+  async function performVectorRebuild(packId, knownStatus = null) {
+    const normalizedPackId = String(packId || "").trim();
+    if (!normalizedPackId || !packSupportsVectorStatus(normalizedPackId)) {
+      showToast("旧版表情包不支持向量重建。", "warning", "无法重建");
+      return false;
+    }
+    const status =
+      knownStatus ||
+      (latestManagePackVectorStatusId === normalizedPackId
+        ? latestManagePackVectorStatus
+        : null) ||
+      (await refreshManagePackVectorStatus(normalizedPackId));
+    if (!status) {
+      showToast("暂时无法读取向量状态，请稍后重试。", "error", "无法重建");
+      return false;
+    }
+    if (!status.embedding_provider_ready) {
+      showToast(
+        "请先在插件配置中选择并启用向量模型。",
+        "warning",
+        "未配置向量模型",
+      );
+      return false;
+    }
+    if (!status.semantic_caption_complete) {
+      showToast("请先完成当前包的全部语义描述。", "warning", "暂不能重建");
+      return false;
+    }
+    if (["running", "paused"].includes(String(status.task_status || ""))) {
+      showToast("当前语义任务尚未结束。", "warning", "暂不能重建");
+      return false;
+    }
+
+    setButtonBusy(rebuildPackVectorsBtn, "正在重建…");
+    try {
+      showToast("正在按当前向量模型建立索引…", "info", "开始重建");
+      const result = await apiPost("semantic/rebuild-index", {
+        pack_id: normalizedPackId,
+        force: true,
+      });
+      await refreshManagePackSummaries();
+      showToast(result?.message || "向量索引已建立。", "success", "重建完成");
+      return true;
+    } catch (error) {
+      showToast(
+        error?.message || String(error),
+        "error",
+        "向量重建失败",
+        5000,
+      );
+      return false;
+    } finally {
+      restoreButton(rebuildPackVectorsBtn);
+      await refreshManagePackVectorStatus(normalizedPackId);
+    }
+  }
+
+  async function confirmAndRebuildVector(
+    packId,
+    status,
+    { importedShare = false, manual = false } = {},
+  ) {
+    const normalizedPackId = String(packId || "").trim();
+    const pack = managePacksById.get(normalizedPackId);
+    const packName = String(pack?.name || normalizedPackId);
+    const modelLabel = [
+      String(status?.embedding_model || "").trim(),
+      Number(status?.embedding_configured_dimension || 0)
+        ? `${Number(status.embedding_configured_dimension)} 维`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const alreadyReady = Boolean(status?.index_ready);
+    const confirmed = await showConfirm({
+      title: importedShare
+        ? "分享包需要重建向量"
+        : alreadyReady && manual
+          ? "重新建立当前包向量？"
+          : "当前表情包需要重建向量",
+      description:
+        `「${packName}」${
+          importedShare
+            ? "来自无向量分享版，需要在本机补建向量。"
+            : alreadyReady && manual
+              ? "已有可用向量，重建后会替换当前本机索引。"
+              : "尚未按当前向量模型建立可用的本机索引。"
+        }` +
+        `本次只会调用向量模型${modelLabel ? `（${modelLabel}）` : ""}，` +
+        "不会重新调用视觉模型，也不会覆盖现有语义描述。是否继续？",
+      confirmLabel: "立即重建向量",
+    });
+    if (!confirmed) {
+      if (!manual) {
+        showToast(
+          "语义描述已保留，可稍后点击首页的重建按钮。",
+          "warning",
+          "稍后重建",
+        );
+      }
+      return false;
+    }
+    return performVectorRebuild(normalizedPackId, status);
+  }
+
+  async function maybeOfferVectorRebuild(packId, guidance = null) {
+    const normalizedPackId = String(packId || "").trim();
+    if (!normalizedPackId || !packSupportsVectorStatus(normalizedPackId)) {
+      return false;
+    }
+    const status =
+      latestManagePackVectorStatusId === normalizedPackId
+        ? latestManagePackVectorStatus
+        : await refreshManagePackVectorStatus(normalizedPackId);
+    if (!status) {
+      return false;
+    }
+    const rebuildRequired = Boolean(
+      status.semantic_enabled &&
+        status.embedding_provider_ready &&
+        status.semantic_caption_complete &&
+        status.dimension_rebuild_required &&
+        !["running", "paused"].includes(String(status.task_status || "")),
+    );
+    if (!rebuildRequired) {
+      return false;
+    }
+    return confirmAndRebuildVector(normalizedPackId, status, {
+      importedShare: String(guidance?.export_mode || "") === "share",
+    });
+  }
+
   function resetPackImportPreview({ keepResult = false } = {}) {
     pendingPackImportToken = "";
     if (packImportFile) packImportFile.value = "";
@@ -608,6 +937,7 @@ async function initApp() {
       await refreshUi({ emojis: true, syncStatus: true });
       await refreshPackExportCapability(importedPackId);
       showToast(`表情包 ${importedPackId} 已导入。`, "success", "导入成功");
+      await maybeOfferVectorRebuild(importedPackId, data);
     } catch (error) {
       setPackTransferResult(
         packImportResult,
@@ -646,7 +976,7 @@ async function initApp() {
     const semanticTotal = Number(pack.semantic_caption_total || 0);
     const failedCount = Number(pack.semantic_caption_failed || 0);
     if (status === "complete") {
-      packSemanticStatusText.textContent = `已完成语义化 · 覆盖 ${imageCount} 张图片`;
+      packSemanticStatusText.textContent = `语义已完成 · ${imageCount} 张`;
       packSemanticStatus.title =
         semanticTotal && semanticTotal !== imageCount
           ? `${imageCount} 张图片中有重复内容，共复用 ${semanticTotal} 条语义描述。`
@@ -656,10 +986,10 @@ async function initApp() {
     if (status === "partial") {
       const failureHint = failedCount > 0 ? `，${failedCount} 条失败` : "";
       packSemanticStatusText.textContent = pack.semantic_files_changed
-        ? `部分语义化 · 有新增或替换图片待处理（已有 ${completedCount} 条）`
+        ? `语义待更新 · 已有 ${completedCount} 条`
         : semanticTotal
-          ? `部分语义化 · 已完成 ${completedCount}/${semanticTotal} 条${failureHint}`
-          : "部分语义化 · 尚未完成";
+          ? `部分语义 · ${completedCount}/${semanticTotal}${failureHint}`
+          : "部分语义 · 尚未完成";
       packSemanticStatus.title = pack.semantic_files_changed
         ? "图包新增了图片，或原图片内容已被替换，需要继续语义化。"
         : "当前图包仍有图片的语义描述未完成。";
@@ -687,7 +1017,10 @@ async function initApp() {
         }
       });
       updateManagePackSemanticAppearance(activeManagePackId);
-      void refreshPackExportCapability(activeManagePackId);
+      await Promise.all([
+        refreshPackExportCapability(activeManagePackId),
+        refreshManagePackVectorStatus(activeManagePackId),
+      ]);
       return packs;
     } catch (error) {
       console.warn("刷新图包语义状态失败:", error);
@@ -763,6 +1096,7 @@ async function initApp() {
         managePackSelect.disabled = true;
         activeManagePackId = "";
         updateManagePackSemanticAppearance("");
+        hideManagePackVectorStatus();
         await refreshPackExportCapability("");
         if (switchManagePackBtn) {
           switchManagePackBtn.disabled = true;
@@ -815,7 +1149,10 @@ async function initApp() {
       activeManagePackId = selectedPackId;
       updateManagePackSemanticAppearance(selectedPackId);
       syncManagedPackQuery(selectedPackId);
-      await refreshPackExportCapability(selectedPackId);
+      await Promise.all([
+        refreshPackExportCapability(selectedPackId),
+        refreshManagePackVectorStatus(selectedPackId),
+      ]);
 
       await maybeShowFirstUseCatalogGuide(packs);
       return packs;
@@ -844,11 +1181,15 @@ async function initApp() {
       await refreshUi({ emojis: true });
       await refreshPackExportCapability(targetPackId);
       showToast(`已切换管理视图到 ${targetPackId}。`, "success", "切换成功");
+      await maybeOfferVectorRebuild(targetPackId);
     } catch (error) {
       activeManagePackId = previousActivePackId;
       updateManagePackSemanticAppearance(previousActivePackId);
       syncManagedPackQuery(previousActivePackId);
-      await refreshPackExportCapability(previousActivePackId);
+      await Promise.all([
+        refreshPackExportCapability(previousActivePackId),
+        refreshManagePackVectorStatus(previousActivePackId),
+      ]);
       showToast(error?.message || String(error), "error", "切换失败");
     } finally {
       restoreButton(switchManagePackBtn);
@@ -4882,10 +5223,23 @@ async function initApp() {
   packImportConfirmBtn?.addEventListener("click", () => {
     void confirmPackImport();
   });
+  rebuildPackVectorsBtn?.addEventListener("click", () => {
+    const packId = String(activeManagePackId || "").trim();
+    const status =
+      latestManagePackVectorStatusId === packId
+        ? latestManagePackVectorStatus
+        : null;
+    if (!status) {
+      void refreshManagePackVectorStatus(packId);
+      return;
+    }
+    void confirmAndRebuildVector(packId, status, { manual: true });
+  });
   updateExportModeAppearance();
 
   await loadManagePackSwitcher();
   await fetchEmojis();
+  await maybeOfferVectorRebuild(activeManagePackId);
   switchManagePackBtn?.addEventListener("click", () => {
     void switchManagePack();
   });

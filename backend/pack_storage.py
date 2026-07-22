@@ -110,6 +110,17 @@ def _require_free_space(path: Path, required_bytes: int, operation: str) -> None
         )
 
 
+def _is_legacy_pack(pack_id: str, manifest: dict) -> bool:
+    tags = {
+        str(item or "").strip().lower()
+        for item in manifest.get("tags", [])
+        if str(item or "").strip()
+    }
+    return str(pack_id or "").strip() == LEGACY_MIGRATED_PACK_ID or bool(
+        tags.intersection({"legacy", "converted"})
+    )
+
+
 def _normalize_installed_packs(installed_packs) -> list[dict]:
     if not isinstance(installed_packs, list):
         return []
@@ -311,6 +322,8 @@ def list_installed_packs() -> list[dict]:
         manifest = _load_manifest(pack_id)
         memes_dir = pack_dir / "memes"
         image_count = _count_images(memes_dir)
+        has_semantic_metadata = (pack_dir / "semantic_metadata.json").is_file()
+        is_legacy_pack = _is_legacy_pack(pack_id, manifest)
         pack_data = {
             "id": pack_id,
             "name": str(item.get("name") or manifest.get("name") or pack_id),
@@ -324,7 +337,11 @@ def list_installed_packs() -> list[dict]:
                 if memes_dir.is_dir()
                 else 0
             ),
-            "has_semantic_metadata": (pack_dir / "semantic_metadata.json").is_file(),
+            "has_semantic_metadata": has_semantic_metadata,
+            "is_legacy_pack": is_legacy_pack,
+            "supports_vector_rebuild": bool(
+                has_semantic_metadata and not is_legacy_pack
+            ),
         }
         pack_data.update(get_pack_semantic_summary(pack_dir, image_count))
         packs.append(pack_data)

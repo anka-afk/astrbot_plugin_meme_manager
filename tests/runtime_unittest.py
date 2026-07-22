@@ -30,6 +30,131 @@ class FakeEvent:
 
 @unittest.skipUnless(ASTRBOT_AVAILABLE, "当前 Python 环境没有 AstrBot 运行库")
 class RuntimeBehaviorTests(unittest.TestCase):
+    def test_vector_rebuild_guidance_requires_complete_captions_without_index(self):
+        class Manager:
+            def status(self, pack_id):
+                self.pack_id = pack_id
+                return {
+                    "task_status": "idle",
+                    "dimension_rebuild_required": True,
+                    "semantic_caption_complete": True,
+                    "index_ready": False,
+                    "embedding_provider_id": "embedding-provider",
+                    "embedding_model": "embedding-model",
+                    "embedding_configured_dimension": 4096,
+                }
+
+        class Plugin(WebAPIMixin):
+            def __init__(self):
+                self.semantic_enabled = True
+                self.semantic_task_manager = Manager()
+
+        plugin = Plugin()
+        guidance = plugin._semantic_rebuild_guidance("shared-pack")
+
+        self.assertEqual(plugin.semantic_task_manager.pack_id, "shared-pack")
+        self.assertTrue(guidance["semantic_rebuild_required"])
+        self.assertTrue(guidance["semantic_caption_complete"])
+        self.assertFalse(guidance["semantic_index_ready"])
+        self.assertEqual(guidance["semantic_embedding_model"], "embedding-model")
+        self.assertEqual(guidance["semantic_embedding_dimension"], 4096)
+
+    def test_vector_rebuild_guidance_stays_off_while_task_is_running(self):
+        class Manager:
+            @staticmethod
+            def status(pack_id):
+                return {
+                    "task_status": "running",
+                    "dimension_rebuild_required": True,
+                    "semantic_caption_complete": True,
+                    "index_ready": False,
+                }
+
+        class Plugin(WebAPIMixin):
+            semantic_enabled = True
+            semantic_task_manager = Manager()
+
+        guidance = Plugin()._semantic_rebuild_guidance("shared-pack")
+
+        self.assertFalse(guidance["semantic_rebuild_required"])
+        self.assertEqual(guidance["semantic_task_status"], "running")
+
+    def test_vector_rebuild_guidance_stays_off_when_semantic_is_disabled(self):
+        class Manager:
+            def status(self, pack_id):
+                raise AssertionError("语义功能关闭时不应读取任务状态")
+
+        class Plugin(WebAPIMixin):
+            semantic_enabled = False
+            semantic_task_manager = Manager()
+
+        guidance = Plugin()._semantic_rebuild_guidance("shared-pack")
+
+        self.assertFalse(guidance["semantic_rebuild_required"])
+        self.assertEqual(guidance["semantic_rebuild_pack_id"], "shared-pack")
+
+    def test_vector_rebuild_guidance_failure_does_not_break_pack_operation(self):
+        class Manager:
+            @staticmethod
+            def status(pack_id):
+                raise RuntimeError(f"无法读取 {pack_id}")
+
+        class Plugin(WebAPIMixin):
+            semantic_enabled = True
+            semantic_task_manager = Manager()
+
+        guidance = Plugin()._semantic_rebuild_guidance("shared-pack")
+
+        self.assertFalse(guidance["semantic_rebuild_required"])
+        self.assertEqual(guidance["semantic_rebuild_pack_id"], "shared-pack")
+
+    def test_setting_default_pack_returns_vector_rebuild_guidance(self):
+        from quart import Quart
+
+        class Manager:
+            @staticmethod
+            def status(pack_id):
+                return {
+                    "task_status": "idle",
+                    "dimension_rebuild_required": pack_id == "shared-pack",
+                    "semantic_caption_complete": True,
+                    "index_ready": False,
+                    "embedding_provider_id": "embedding-provider",
+                    "embedding_model": "embedding-model",
+                    "embedding_configured_dimension": 4096,
+                }
+
+        class Plugin(WebAPIMixin):
+            semantic_enabled = True
+            semantic_task_manager = Manager()
+
+            @staticmethod
+            def _reload_personas():
+                return None
+
+        async def run():
+            app = Quart(__name__)
+            with patch.object(
+                web_api_module,
+                "set_default_pack",
+                return_value={"default_pack_id": "shared-pack"},
+            ) as mocked_set_default:
+                async with app.test_request_context(
+                    "/default",
+                    method="POST",
+                    json={"pack_id": "shared-pack"},
+                ):
+                    response, status = await Plugin()._api_set_default_pack()
+                    payload = await response.get_json()
+
+            self.assertEqual(status, 200)
+            mocked_set_default.assert_called_once_with("shared-pack")
+            self.assertEqual(payload["default_pack_id"], "shared-pack")
+            self.assertTrue(payload["semantic_rebuild_required"])
+            self.assertEqual(payload["semantic_embedding_dimension"], 4096)
+
+        asyncio.run(run())
+
     def test_pack_import_stage_accepts_archive_larger_than_quart_default(self):
         from quart import Quart
 
@@ -97,6 +222,83 @@ class RuntimeBehaviorTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_pack_import_apply_returns_vector_rebuild_guidance(self):
+        from quart import Quart
+
+        token = "a" * 32
+
+        class Manager:
+            @staticmethod
+            def status(pack_id):
+                return {
+                    "task_status": "idle",
+                    "dimension_rebuild_required": pack_id == "shared-pack",
+                    "semantic_caption_complete": True,
+                    "index_ready": False,
+                    "embedding_provider_id": "embedding-provider",
+                    "embedding_model": "embedding-model",
+                    "embedding_configured_dimension": 4096,
+                }
+
+        class Plugin(WebAPIMixin):
+            semantic_enabled = True
+            semantic_task_manager = Manager()
+
+            @staticmethod
+            def _cleanup_pack_import_sessions():
+                return None
+
+            @staticmethod
+            def _reload_personas():
+                return None
+
+        def fake_import(path, **kwargs):
+            self.assertTrue(Path(path).is_file())
+            self.assertTrue(kwargs["set_as_default"])
+            return {
+                "pack_id": "shared-pack",
+                "name": "分享包",
+                "vectors_restored": False,
+            }
+
+        async def run():
+            app = Quart(__name__)
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                session_dir = temp_path / "pack_import_sessions"
+                session_dir.mkdir()
+                (session_dir / f"{token}.zip").write_bytes(b"test archive")
+                (session_dir / f"{token}.json").write_text(
+                    '{"pack_id":"shared-pack","suggested_pack_id":"shared-pack"}',
+                    encoding="utf-8",
+                )
+                with (
+                    patch.object(web_api_module, "TEMP_DIR", temp_path),
+                    patch.object(
+                        web_api_module,
+                        "import_pack_archive",
+                        fake_import,
+                    ),
+                ):
+                    async with app.test_request_context(
+                        "/apply",
+                        method="POST",
+                        json={
+                            "import_token": token,
+                            "overwrite": False,
+                            "set_as_default": True,
+                        },
+                    ):
+                        response, status = await Plugin()._api_apply_pack_import()
+                        payload = await response.get_json()
+
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["pack_id"], "shared-pack")
+                self.assertTrue(payload["semantic_rebuild_required"])
+                self.assertEqual(payload["semantic_rebuild_pack_id"], "shared-pack")
+
+        asyncio.run(run())
+
     def test_pack_download_uses_quart_compatible_attachment_name(self):
         captured = {}
 
@@ -113,9 +315,7 @@ class RuntimeBehaviorTests(unittest.TestCase):
             return SimpleNamespace(status_code=200)
 
         async def run():
-            fake_request = SimpleNamespace(
-                args={"pack_id": "demo", "mode": "share"}
-            )
+            fake_request = SimpleNamespace(args={"pack_id": "demo", "mode": "share"})
             with (
                 patch.object(web_api_module, "request", fake_request),
                 patch.object(web_api_module, "send_file", fake_send_file),
