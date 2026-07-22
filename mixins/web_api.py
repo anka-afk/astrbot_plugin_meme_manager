@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import binascii
+import inspect
 import io
 import json
 import mimetypes
@@ -13,6 +14,7 @@ from typing import Any
 
 from PIL import Image as PILImage
 from quart import jsonify, make_response, request, send_file
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from astrbot.api import logger
 
@@ -73,6 +75,7 @@ PREVIEW_IMAGE_MAX_DIMENSION = 512
 IMG_HOST_STATUS_CACHE_TTL_SECONDS = 15
 PACK_IMPORT_SESSION_TTL_SECONDS = 60 * 60
 MAX_PACK_ARCHIVE_BYTES = 1024 * 1024 * 1024
+MAX_PACK_UPLOAD_REQUEST_BYTES = MAX_PACK_ARCHIVE_BYTES + 1024 * 1024
 
 
 class WebAPIMixin:
@@ -501,6 +504,26 @@ class WebAPIMixin:
         finally:
             if locked:
                 manager.end_external_pack_operation(pack_id)
+
+    @staticmethod
+    def _prepare_archive_upload_request() -> None:
+        """覆盖 Quart 兼容层默认的 16 MB 请求上限。"""
+        try:
+            request.max_content_length = MAX_PACK_UPLOAD_REQUEST_BYTES
+        except (AttributeError, RuntimeError):
+            # 新版 AstrBot 使用 Starlette 上传对象，不需要在这里调整限制。
+            pass
+
+    @staticmethod
+    async def _save_uploaded_file(uploaded_file, destination: Path) -> None:
+        """同时兼容 Quart 的异步 save 与旧版同步 save。"""
+        save_method = uploaded_file.save
+        if inspect.iscoroutinefunction(save_method):
+            await save_method(str(destination))
+            return
+        result = await asyncio.to_thread(save_method, str(destination))
+        if inspect.isawaitable(result):
+            await result
 
     @staticmethod
     def _pack_import_session_paths(token: str) -> tuple[Path, Path]:
@@ -2174,7 +2197,7 @@ class WebAPIMixin:
                 result["archive_path"],
                 mimetype="application/zip",
                 as_attachment=True,
-                download_name=result["archive_filename"],
+                attachment_filename=result["archive_filename"],
             )
         except FileNotFoundError as exc:
             return jsonify({"message": str(exc)}), 404
@@ -2189,10 +2212,11 @@ class WebAPIMixin:
     async def _api_import_pack(self):
         temp_zip_path = None
         try:
+            self._prepare_archive_upload_request()
             content_length = request.content_length
             if (
                 content_length is not None
-                and content_length > MAX_PACK_ARCHIVE_BYTES + 1024 * 1024
+                and content_length > MAX_PACK_UPLOAD_REQUEST_BYTES
             ):
                 return jsonify({"message": "压缩包超过 1 GB，无法通过 WebUI 导入"}), 413
             form = await request.form
@@ -2225,7 +2249,7 @@ class WebAPIMixin:
             temp_dir.mkdir(parents=True, exist_ok=True)
             safe_name = f"import_{int(time.time() * 1000)}.zip"
             temp_zip_path = (temp_dir / safe_name).resolve()
-            await asyncio.to_thread(archive_file.save, str(temp_zip_path))
+            await self._save_uploaded_file(archive_file, temp_zip_path)
 
             suggested_pack_id = Path(filename).stem
             if overwrite:
@@ -2258,6 +2282,8 @@ class WebAPIMixin:
             return jsonify({"message": str(e)}), 409
         except RuntimeError as e:
             return jsonify({"message": str(e)}), 409
+        except RequestEntityTooLarge:
+            return jsonify({"message": "压缩包超过 1 GB，无法通过 WebUI 导入"}), 413
         except (FileNotFoundError, ValueError) as e:
             return jsonify({"message": str(e)}), 400
         except Exception as e:
@@ -2274,11 +2300,12 @@ class WebAPIMixin:
         archive_path = None
         metadata_path = None
         try:
+            self._prepare_archive_upload_request()
             self._cleanup_pack_import_sessions()
             content_length = request.content_length
             if (
                 content_length is not None
-                and content_length > MAX_PACK_ARCHIVE_BYTES + 1024 * 1024
+                and content_length > MAX_PACK_UPLOAD_REQUEST_BYTES
             ):
                 return jsonify({"message": "压缩包超过 1 GB，无法通过 WebUI 导入"}), 413
             files = await request.files
@@ -2291,7 +2318,7 @@ class WebAPIMixin:
 
             token = secrets.token_hex(16)
             archive_path, metadata_path = self._pack_import_session_paths(token)
-            await asyncio.to_thread(archive_file.save, str(archive_path))
+            await self._save_uploaded_file(archive_file, archive_path)
             if archive_path.stat().st_size > MAX_PACK_ARCHIVE_BYTES:
                 raise ValueError("压缩包超过 1 GB，无法通过 WebUI 导入")
 
@@ -2325,6 +2352,11 @@ class WebAPIMixin:
                 if path and path.exists():
                     path.unlink()
             return jsonify({"message": str(exc)}), 400
+        except RequestEntityTooLarge:
+            for path in (archive_path, metadata_path):
+                if path and path.exists():
+                    path.unlink()
+            return jsonify({"message": "压缩包超过 1 GB，无法通过 WebUI 导入"}), 413
         except Exception as exc:
             for path in (archive_path, metadata_path):
                 if path and path.exists():
@@ -2649,6 +2681,7 @@ class WebAPIMixin:
     async def _api_import_runtime_backup(self):
         temp_zip_path = None
         try:
+            self._prepare_archive_upload_request()
             overwrite_param = request.args.get("overwrite")
             form = await request.form
             json_payload = await request.get_json(silent=True)
@@ -2680,7 +2713,7 @@ class WebAPIMixin:
                     return jsonify({"message": "无效的备份文件"}), 400
                 if not str(archive_file.filename).lower().endswith(".zip"):
                     return jsonify({"message": "仅支持 zip 备份文件"}), 400
-                archive_file.save(str(temp_zip_path))
+                await self._save_uploaded_file(archive_file, temp_zip_path)
             elif isinstance(json_payload, dict):
                 file_name = str(json_payload.get("file_name") or "").strip()
                 file_b64 = str(json_payload.get("file_b64") or "").strip()
@@ -2708,6 +2741,8 @@ class WebAPIMixin:
             return jsonify({"message": "全量备份导入成功", **result}), 200
         except RuntimeError as e:
             return jsonify({"message": str(e)}), 409
+        except RequestEntityTooLarge:
+            return jsonify({"message": "备份文件超过 1 GB，无法通过 WebUI 导入"}), 413
         except (FileNotFoundError, ValueError) as e:
             return jsonify({"message": str(e)}), 400
         except Exception as e:

@@ -464,8 +464,8 @@ async function initApp() {
     if (exportPackDownloadBtn) {
       exportPackDownloadBtn.innerHTML =
         selectedExportMode() === "backup"
-          ? '<i class="fas fa-download icon"></i>导出并下载带向量备份'
-          : '<i class="fas fa-download icon"></i>导出并下载分享版';
+          ? '<i class="fas fa-download icon"></i>下载自用备份'
+          : '<i class="fas fa-download icon"></i>下载分享版';
     }
   }
 
