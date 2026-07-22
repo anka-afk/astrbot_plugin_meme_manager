@@ -156,6 +156,29 @@ class PackTransferTests(unittest.TestCase):
         self._write_runtime_files([pack_id])
         return pack_dir
 
+    def test_pack_list_exposes_vector_rebuild_only_for_new_semantic_packs(self):
+        new_pack_dir = self._create_semantic_pack("new-pack")
+        legacy_pack_dir = self._create_semantic_pack("legacy-pack")
+        legacy_manifest = json.loads(
+            (legacy_pack_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+        legacy_manifest["tags"] = ["legacy", "converted"]
+        self._write_json(legacy_pack_dir / "manifest.json", legacy_manifest)
+        migrated_pack_id = str(pack_storage.LEGACY_MIGRATED_PACK_ID)
+        self._create_semantic_pack(migrated_pack_id)
+        self._write_runtime_files(["new-pack", "legacy-pack", migrated_pack_id])
+
+        packs = {item["id"]: item for item in pack_storage.list_installed_packs()}
+
+        self.assertTrue((new_pack_dir / "semantic_metadata.json").is_file())
+        self.assertTrue(packs["new-pack"]["supports_vector_rebuild"])
+        self.assertFalse(packs["new-pack"]["is_legacy_pack"])
+        self.assertTrue(packs["legacy-pack"]["has_semantic_metadata"])
+        self.assertTrue(packs["legacy-pack"]["is_legacy_pack"])
+        self.assertFalse(packs["legacy-pack"]["supports_vector_rebuild"])
+        self.assertTrue(packs[migrated_pack_id]["is_legacy_pack"])
+        self.assertFalse(packs[migrated_pack_id]["supports_vector_rebuild"])
+
     def test_share_export_strips_vectors_and_remains_importable(self):
         pack_dir = self._create_semantic_pack()
         private_metadata = load_metadata(pack_dir)

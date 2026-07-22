@@ -1944,6 +1944,31 @@ body.app-page {
   margin: 0;
 }
 
+.panel-toggle-group {
+  display: inline-flex;
+  overflow: hidden;
+  padding: 3px;
+  border: 1px solid rgba(214, 229, 225, 0.94);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 8px 20px rgba(20, 56, 59, 0.06);
+}
+
+.manage-pack-switch-row .panel-toggle-group .panel-toggle {
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.manage-pack-switch-row .panel-toggle-group .panel-toggle[aria-expanded="true"] {
+  background: #fff;
+  color: var(--ui-brand-strong);
+  box-shadow: 0 4px 12px rgba(20, 56, 59, 0.09);
+}
+
 .panel-toggle {
   margin: 0;
   border: 1px solid rgba(148, 163, 184, 0.26);
@@ -2178,11 +2203,34 @@ body.panel-console-hidden.panel-directory-hidden .container {
 
 .selection-toolbar {
   gap: 18px;
+  flex-wrap: wrap;
   border-radius: 18px;
 }
 
 .selection-toolbar-copy {
   min-width: 0;
+}
+
+.selection-toolbar-controls {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.pack-index-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.selection-toolbar-controls .selection-toolbar-actions {
+  justify-content: flex-end;
 }
 
 .selection-toolbar-copy p {
@@ -2657,23 +2705,31 @@ body.app-page {
 
 .nav-actions {
   display: flex;
-  gap: 10px;
+  gap: 2px;
   flex-wrap: wrap;
   margin-top: 12px;
+  padding: 4px;
+  border: 1px solid rgba(214, 229, 225, 0.94);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: 0 10px 24px rgba(20, 56, 59, 0.07);
 }
 
 .nav-link {
   text-decoration: none;
   color: var(--ui-brand-strong);
-  border: 1px solid rgba(214, 229, 225, 0.94);
-  border-radius: 999px;
-  padding: 9px 14px;
-  background: rgba(255, 255, 255, 0.88);
-  transition: transform 0.2s ease;
+  border: 0;
+  border-radius: 11px;
+  padding: 8px 11px;
+  background: transparent;
+  transition:
+    transform 0.2s ease,
+    background-color 0.2s ease;
 }
 
 .nav-link:hover {
   transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.92);
 }
 
 .left-panel,
@@ -2991,6 +3047,90 @@ button.danger,
   background: linear-gradient(135deg, #fffaf0, #fef3c7);
   color: #92400e;
   box-shadow: 0 8px 18px rgba(217, 119, 6, 0.09);
+}
+
+.pack-vector-status {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 11px;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.25;
+  cursor: help;
+}
+
+.pack-vector-status.vector-ready {
+  border-color: rgba(22, 163, 74, 0.3);
+  background: #ecfdf3;
+  color: #166534;
+}
+
+.pack-vector-status.vector-rebuild {
+  border-color: rgba(217, 119, 6, 0.34);
+  background: #fff7e8;
+  color: #92400e;
+}
+
+.pack-vector-status.vector-unconfigured {
+  border-color: rgba(220, 38, 38, 0.24);
+  background: #fff1f2;
+  color: #b42318;
+}
+
+.pack-vector-status.vector-pending,
+.pack-vector-status.vector-loading {
+  border-color: rgba(100, 116, 139, 0.26);
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.pack-index-toolbar .vector-rebuild-btn {
+  min-height: 36px;
+  padding: 7px 11px;
+  border: 1px solid rgba(40, 117, 199, 0.25);
+  background: #2875c7;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.pack-index-toolbar .vector-rebuild-btn:disabled {
+  border-color: rgba(148, 163, 184, 0.28);
+  background: #e2e8f0;
+  color: #64748b;
+  cursor: not-allowed;
+  opacity: 1;
+  transform: none;
+  box-shadow: none;
+}
+
+@media (max-width: 1180px) {
+  .selection-toolbar-actions {
+    width: 100%;
+  }
+}
+
+@media (max-width: 768px) {
+  .selection-toolbar-controls,
+  .pack-index-toolbar {
+    width: 100%;
+    align-items: stretch;
+  }
+
+  .selection-toolbar-controls {
+    flex: 1 1 auto;
+  }
+
+  .pack-index-toolbar .pack-vector-status,
+  .pack-index-toolbar .vector-rebuild-btn {
+    width: 100%;
+    justify-content: center;
+  }
 }
 
 #content.pack-semantic-complete {
