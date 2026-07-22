@@ -3196,3 +3196,359 @@ button.danger,
     right: 12px;
   }
 }
+
+/* 首页表情包导入导出 */
+.pack-transfer-panel {
+  width: min(1400px, calc(100% - 3rem));
+  margin: 0 auto 1.25rem;
+  padding: 22px;
+  border: 1px solid rgba(29, 138, 102, 0.18);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at top right, rgba(46, 204, 113, 0.12), transparent 34%),
+    rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 34px rgba(44, 62, 80, 0.08);
+}
+
+.pack-transfer-heading,
+.pack-transfer-card-title,
+.pack-import-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.pack-transfer-heading {
+  margin-bottom: 18px;
+}
+
+.pack-transfer-eyebrow {
+  margin: 0 0 5px;
+  color: #19825f;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.pack-transfer-heading h2,
+.pack-transfer-card h3 {
+  margin: 0;
+  color: #213547;
+}
+
+.pack-transfer-heading h2 {
+  font-size: clamp(20px, 2vw, 27px);
+}
+
+.pack-transfer-heading > div > p:last-child,
+.pack-transfer-card-title p {
+  margin: 7px 0 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.transfer-current-pack {
+  max-width: min(42%, 430px);
+  padding: 8px 13px;
+  overflow: hidden;
+  border: 1px solid rgba(29, 138, 102, 0.2);
+  border-radius: 999px;
+  background: #effaf5;
+  color: #176d51;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pack-transfer-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.pack-transfer-card {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.pack-transfer-card-title {
+  justify-content: flex-start;
+  margin-bottom: 15px;
+}
+
+.pack-transfer-icon {
+  display: inline-flex;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 13px;
+  font-size: 17px;
+}
+
+.share-icon {
+  background: #e8f7ef;
+  color: #19825f;
+}
+
+.import-icon {
+  background: #eaf3ff;
+  color: #2875c7;
+}
+
+.export-mode-list {
+  display: grid;
+  gap: 9px;
+  margin-bottom: 14px;
+}
+
+.export-mode-option {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 11px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid #dfe7e3;
+  border-radius: 13px;
+  background: #fbfdfc;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.export-mode-option.selected {
+  border-color: rgba(29, 138, 102, 0.5);
+  background: #f0faf5;
+}
+
+.export-mode-option.disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.export-mode-option input {
+  margin-top: 3px;
+  accent-color: #1d8a66;
+}
+
+.export-mode-option strong,
+.export-mode-option small {
+  display: block;
+}
+
+.export-mode-option strong {
+  color: #2c3e50;
+  font-size: 13px;
+}
+
+.export-mode-option small {
+  margin-top: 4px;
+  color: #66788a;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.export-mode-option em {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #dff6e9;
+  color: #176d51;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.pack-transfer-card > button,
+.pack-import-preview > button {
+  width: 100%;
+  justify-content: center;
+  min-height: 43px;
+  font-weight: 700;
+}
+
+.pack-transfer-result {
+  min-height: 18px;
+  margin: 9px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pack-transfer-result.success {
+  color: #177653;
+}
+
+.pack-transfer-result.error {
+  color: #b42318;
+}
+
+.pack-import-dropzone {
+  display: flex;
+  min-height: 138px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 7px;
+  padding: 16px;
+  border: 2px dashed #b9d7c9;
+  border-radius: 14px;
+  background: #f7fcf9;
+  color: #426556;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.pack-import-dropzone:hover,
+.pack-import-dropzone.dragover {
+  border-color: #1d8a66;
+  background: #edf9f3;
+}
+
+.pack-import-dropzone input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.pack-import-dropzone > i {
+  color: #1d8a66;
+  font-size: 25px;
+}
+
+.pack-import-dropzone strong {
+  font-size: 14px;
+}
+
+.pack-import-dropzone small {
+  color: #718096;
+  font-size: 11px;
+}
+
+.pack-import-preview {
+  padding: 13px;
+  border: 1px solid rgba(40, 117, 199, 0.23);
+  border-radius: 14px;
+  background: #f8fbff;
+}
+
+.pack-import-preview-header strong,
+.pack-import-preview-header span {
+  display: block;
+}
+
+.pack-import-preview-header strong {
+  color: #25384a;
+  font-size: 14px;
+}
+
+.pack-import-preview-header span {
+  margin-top: 3px;
+  color: #60758a;
+  font-size: 11px;
+}
+
+button.compact {
+  min-height: 32px;
+  padding: 7px 10px;
+  font-size: 11px;
+}
+
+.pack-import-preview-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+  margin: 12px 0;
+}
+
+.pack-import-preview-stats > div {
+  padding: 8px;
+  border-radius: 9px;
+  background: #fff;
+  text-align: center;
+}
+
+.pack-import-preview-stats dt {
+  color: #718096;
+  font-size: 10px;
+}
+
+.pack-import-preview-stats dd {
+  margin-top: 3px;
+  overflow: hidden;
+  color: #24384b;
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pack-import-warning {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: #fff6df;
+  color: #805b12;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.pack-import-options {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0 12px;
+}
+
+.pack-import-options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #465a6e;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pack-import-options input {
+  accent-color: #1d8a66;
+}
+
+@media (max-width: 900px) {
+  .pack-transfer-panel {
+    width: calc(100% - 2rem);
+  }
+
+  .pack-transfer-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .pack-transfer-panel {
+    width: calc(100% - 1rem);
+    padding: 15px;
+    border-radius: 16px;
+  }
+
+  .pack-transfer-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .transfer-current-pack {
+    max-width: 100%;
+  }
+
+  .pack-import-preview-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

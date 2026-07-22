@@ -346,56 +346,42 @@ def save_metadata(pack_dir: Path | str, data: dict[str, Any]) -> Path:
 
 
 def reset_local_embedding_state(data: dict[str, Any]) -> dict[str, Any]:
-    """移除只对生成者本机有效的向量状态，保留可发布的图片语义描述。"""
-    payload = dict(data or {})
-    for key in (
-        "embedding_provider_id",
-        "embedding_model",
-        "embedding_dimension",
-        "verified_embedding_dimension",
-        "embedding_verified_dimension",
-        "embedding_dimension_verified",
-        "dimension_verified",
-        "verified_dimension",
-        "index_dimension",
-        "index_embedding_dimension",
-        "embedding_signature",
-        "embedding",
-        "embeddings",
-        "vector",
-        "vectors",
-        "faiss_id",
-    ):
-        payload.pop(key, None)
-    images = payload.get("images", {})
+    """生成可公开分享的语义数据，只保留协议明确允许的字段。"""
+    source = data if isinstance(data, dict) else {}
+    portable_top_level_fields = {
+        "schema_version",
+        "pack_id",
+        "generated_at",
+        "file_total",
+        "unique_total",
+        "reused_duplicate_files",
+    }
+    payload = {key: source[key] for key in portable_top_level_fields if key in source}
+    images = source.get("images", {})
+    portable_image_fields = {
+        "content_sha256",
+        "relative_path",
+        "category",
+        "caption",
+        "tags",
+        "visible_text",
+        "caption_status",
+        "provenance",
+        "auto_tags",
+        "manual_tags",
+        "manual_override",
+        "prompt_version",
+        "text_hash",
+        "updated_at",
+    }
     normalized_images: dict[str, dict[str, Any]] = {}
     if isinstance(images, dict):
         for digest, value in images.items():
             if not isinstance(value, dict):
                 continue
-            item = dict(value)
+            item = {key: value[key] for key in portable_image_fields if key in value}
             item["embedding_status"] = "pending"
-            for key in (
-                "embedding_provider_id",
-                "embedding_model",
-                "embedding_dimension",
-                "verified_embedding_dimension",
-                "embedding_verified_dimension",
-                "embedding_dimension_verified",
-                "dimension_verified",
-                "verified_dimension",
-                "index_dimension",
-                "index_embedding_dimension",
-                "embedding_signature",
-                "embedding",
-                "embeddings",
-                "vector",
-                "vectors",
-                "faiss_id",
-            ):
-                item.pop(key, None)
-            if item.get("caption_status") == "done":
-                item["error"] = None
+            item["error"] = None
             normalized_images[str(digest)] = item
     payload["images"] = normalized_images
     payload["requires_local_index_rebuild"] = True

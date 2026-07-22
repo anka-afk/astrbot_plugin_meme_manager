@@ -1,5 +1,10 @@
 from pathlib import Path
 
+PACK_TRANSFER_FORMAT = "astrbot-meme-pack"
+PACK_TRANSFER_VERSION = 2
+PACK_TRANSFER_MANIFEST = "meme_pack_export.json"
+PACK_EXPORT_MODES = {"share", "backup"}
+
 
 def _require_str(payload: dict, key: str, context: str) -> str:
     value = str(payload.get(key) or "").strip()
@@ -18,6 +23,45 @@ def _ensure_pack_id(pack_id: str, context: str) -> str:
     if any(ch not in allowed for ch in pack_id):
         raise ValueError(f"{context} 的 id 含非法字符")
     return pack_id
+
+
+def validate_pack_id(pack_id: str, context: str = "pack") -> str:
+    """校验可用于目录名和资源包清单的稳定 ID。"""
+    return _ensure_pack_id(pack_id, context)
+
+
+def validate_transfer_manifest(payload: dict, context: str = "导出信息") -> dict:
+    """校验新版导入导出压缩包携带的传输信息。"""
+    if not isinstance(payload, dict):
+        raise ValueError(f"{context} 必须是对象")
+    if str(payload.get("format") or "") != PACK_TRANSFER_FORMAT:
+        raise ValueError(f"{context}.format 不受支持")
+
+    try:
+        format_version = int(payload.get("format_version", 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{context}.format_version 无效") from exc
+    if format_version < 1 or format_version > PACK_TRANSFER_VERSION:
+        raise ValueError(
+            f"{context}版本不受支持: {format_version}，当前最高支持 {PACK_TRANSFER_VERSION}"
+        )
+
+    export_mode = str(payload.get("export_mode") or "share").strip().lower()
+    if export_mode not in PACK_EXPORT_MODES:
+        raise ValueError(f"{context}.export_mode 不受支持")
+
+    features = payload.get("features", {})
+    if not isinstance(features, dict):
+        raise ValueError(f"{context}.features 必须是对象")
+
+    normalized = dict(payload)
+    normalized["format_version"] = format_version
+    normalized["export_mode"] = export_mode
+    normalized["features"] = {
+        "semantic_metadata": bool(features.get("semantic_metadata", False)),
+        "vectors": bool(features.get("vectors", False)),
+    }
+    return normalized
 
 
 def validate_source_descriptor(source: dict, context: str = "source") -> dict:
