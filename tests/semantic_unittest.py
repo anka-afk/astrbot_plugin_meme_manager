@@ -24,11 +24,14 @@ from backend.semantic_query import (
     validate_selected_id,
 )
 from backend.semantic_storage import (
+    get_image_semantic_detail,
+    get_pack_semantic_summary,
     load_metadata,
     reconcile_metadata,
     reset_local_embedding_state,
     safe_relative_path,
     save_metadata,
+    semantic_metadata_is_complete,
 )
 from backend.semantic_task import SemanticTaskManager
 from image_host.img_sync import ImageSync
@@ -171,6 +174,73 @@ class RetryVisionContext:
 
 
 class SemanticMvpTest(unittest.TestCase):
+    def test_homepage_semantic_summary_and_duplicate_image_detail(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first_category = root / "memes" / "a"
+            second_category = root / "memes" / "b"
+            first_category.mkdir(parents=True)
+            second_category.mkdir(parents=True)
+            first_image = first_category / "one.png"
+            duplicate_image = second_category / "copy.png"
+            first_image.write_bytes(b"same-image")
+            duplicate_image.write_bytes(b"same-image")
+
+            metadata = reconcile_metadata(root)
+            semantic_item = next(iter(metadata["images"].values()))
+            semantic_item.update(
+                {
+                    "caption": "无奈地摊手表示没办法",
+                    "tags": ["无奈", "摊手"],
+                    "visible_text": "",
+                    "caption_status": "done",
+                    "embedding_status": "done",
+                }
+            )
+            save_metadata(root, metadata)
+
+            summary = get_pack_semantic_summary(root)
+            self.assertEqual(summary["semantic_status"], "complete")
+            self.assertTrue(semantic_metadata_is_complete(root))
+            self.assertEqual(summary["semantic_file_total"], 2)
+            self.assertEqual(summary["semantic_caption_total"], 1)
+            self.assertEqual(summary["semantic_caption_done"], 1)
+
+            duplicate_detail = get_image_semantic_detail(root, duplicate_image)
+            self.assertEqual(duplicate_detail["status"], "complete")
+            self.assertEqual(duplicate_detail["caption"], "无奈地摊手表示没办法")
+            self.assertEqual(duplicate_detail["tags"], ["无奈", "摊手"])
+
+            duplicate_image.write_bytes(b"new-content")
+            replaced_summary = get_pack_semantic_summary(root)
+            self.assertEqual(replaced_summary["semantic_status"], "partial")
+            self.assertTrue(replaced_summary["semantic_snapshot_matches"])
+            self.assertTrue(replaced_summary["semantic_files_changed"])
+            self.assertFalse(semantic_metadata_is_complete(root))
+            duplicate_image.write_bytes(b"same-image")
+            self.assertTrue(semantic_metadata_is_complete(root))
+
+            first_image.write_bytes(b"replaced-image")
+            replaced_summary = get_pack_semantic_summary(root)
+            self.assertEqual(replaced_summary["semantic_status"], "partial")
+            self.assertTrue(replaced_summary["semantic_snapshot_matches"])
+
+            first_image.write_bytes(b"same-image")
+            self.assertEqual(
+                get_pack_semantic_summary(root)["semantic_status"], "complete"
+            )
+
+            (first_category / "new.jpg").write_bytes(b"new-image")
+            changed_summary = get_pack_semantic_summary(root)
+            self.assertEqual(changed_summary["semantic_status"], "partial")
+            self.assertFalse(changed_summary["semantic_snapshot_matches"])
+            self.assertTrue(changed_summary["semantic_files_changed"])
+
+            missing_detail = get_image_semantic_detail(
+                root, first_category / "new.jpg"
+            )
+            self.assertEqual(missing_detail["status"], "none")
+
     def test_new_image_sync_does_not_stop_existing_task(self):
         class RunningProcess:
             @staticmethod

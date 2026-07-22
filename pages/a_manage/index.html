@@ -106,6 +106,15 @@
               id="manage-pack-select"
               aria-label="选择管理的表情包"
             ></select>
+            <span
+              id="pack-semantic-status"
+              class="pack-semantic-status semantic-none"
+              role="status"
+              aria-live="polite"
+            >
+              <i class="fas fa-wand-magic-sparkles"></i>
+              <span id="pack-semantic-status-text">正在读取语义状态…</span>
+            </span>
             <button id="switch-manage-pack-btn" type="button" class="secondary">
               切换
             </button>
@@ -485,6 +494,57 @@
             <i class="fas fa-up-right-and-down-left-from-center icon"></i>原图
           </button>
         </div>
+        <aside
+          id="image-preview-semantic"
+          class="image-preview-semantic semantic-loading"
+          aria-live="polite"
+        >
+          <div class="image-preview-semantic-header">
+            <div>
+              <p class="image-preview-semantic-eyebrow">Semantic Detail</p>
+              <h2>图片语义</h2>
+            </div>
+            <span
+              id="image-preview-semantic-state"
+              class="image-preview-semantic-state"
+              >读取中</span
+            >
+          </div>
+          <p
+            id="image-preview-semantic-filename"
+            class="image-preview-semantic-filename"
+          ></p>
+          <div class="image-preview-semantic-section">
+            <p class="image-preview-semantic-label">图片含义</p>
+            <p
+              id="image-preview-semantic-caption"
+              class="image-preview-semantic-caption"
+            >
+              正在读取这张图片的语义信息…
+            </p>
+          </div>
+          <div
+            id="image-preview-semantic-tags-wrap"
+            class="image-preview-semantic-section hidden"
+          >
+            <p class="image-preview-semantic-label">语义标签</p>
+            <div id="image-preview-semantic-tags" class="image-preview-semantic-tags"></div>
+          </div>
+          <div
+            id="image-preview-visible-text-wrap"
+            class="image-preview-semantic-section hidden"
+          >
+            <p class="image-preview-semantic-label">图片内文字</p>
+            <p
+              id="image-preview-visible-text"
+              class="image-preview-visible-text"
+            ></p>
+          </div>
+          <p
+            id="image-preview-semantic-index"
+            class="image-preview-semantic-index"
+          ></p>
+        </aside>
       </div>
     </div>
 

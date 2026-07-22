@@ -62,7 +62,9 @@ async function initApp() {
 
   async function apiGet(endpoint, params = {}) {
     const mergedParams = { ...params };
-    const managedPackId = String(managePackSelect?.value || "").trim();
+    const managedPackId = String(
+      activeManagePackId || managePackSelect?.value || "",
+    ).trim();
     if (
       managedPackId &&
       [
@@ -70,6 +72,7 @@ async function initApp() {
         "emotions",
         "meme_image",
         "meme_image_data",
+        "meme_image_semantic",
         "img_host/sync/status",
         "img_host/sync/task_status",
       ].includes(endpoint)
@@ -81,7 +84,9 @@ async function initApp() {
 
   async function apiPost(endpoint, body = {}) {
     const mergedBody = { ...body };
-    const selectedPackId = String(managePackSelect?.value || "").trim();
+    const selectedPackId = String(
+      activeManagePackId || managePackSelect?.value || "",
+    ).trim();
     if (
       selectedPackId &&
       defaultManagePackId &&
@@ -146,6 +151,33 @@ async function initApp() {
   const imagePreviewCloseBtn = document.getElementById(
     "image-preview-close-btn",
   );
+  const imagePreviewSemantic = document.getElementById(
+    "image-preview-semantic",
+  );
+  const imagePreviewSemanticState = document.getElementById(
+    "image-preview-semantic-state",
+  );
+  const imagePreviewSemanticFilename = document.getElementById(
+    "image-preview-semantic-filename",
+  );
+  const imagePreviewSemanticCaption = document.getElementById(
+    "image-preview-semantic-caption",
+  );
+  const imagePreviewSemanticTagsWrap = document.getElementById(
+    "image-preview-semantic-tags-wrap",
+  );
+  const imagePreviewSemanticTags = document.getElementById(
+    "image-preview-semantic-tags",
+  );
+  const imagePreviewVisibleTextWrap = document.getElementById(
+    "image-preview-visible-text-wrap",
+  );
+  const imagePreviewVisibleText = document.getElementById(
+    "image-preview-visible-text",
+  );
+  const imagePreviewSemanticIndex = document.getElementById(
+    "image-preview-semantic-index",
+  );
   const moveTargetModalRoot = document.getElementById("move-target-modal");
   const moveTargetModalTitle = document.getElementById(
     "move-target-modal-title",
@@ -203,9 +235,15 @@ async function initApp() {
     "img-host-sync-progress-text",
   );
   const managePackSelect = document.getElementById("manage-pack-select");
+  const packSemanticStatus = document.getElementById("pack-semantic-status");
+  const packSemanticStatusText = document.getElementById(
+    "pack-semantic-status-text",
+  );
   const switchManagePackBtn = document.getElementById("switch-manage-pack-btn");
   const deleteManagePackBtn = document.getElementById("delete-manage-pack-btn");
   let defaultManagePackId = "";
+  let activeManagePackId = "";
+  let managePacksById = new Map();
   let confirmResolver = null;
   const MOBILE_LAYOUT_MEDIA = "(max-width: 960px)";
   const DRAG_HUD_OFFSET_X = 18;
@@ -255,7 +293,88 @@ async function initApp() {
     const name = String(pack?.name || pack?.id || "未命名");
     const id = String(pack?.id || "").trim();
     const imageCount = Number(pack?.image_count || 0);
-    return `${name} (${id}) · ${imageCount} 张`;
+    const semanticStatus = String(pack?.semantic_status || "none");
+    const semanticLabel =
+      semanticStatus === "complete"
+        ? "已语义化"
+        : semanticStatus === "partial"
+          ? "部分语义化"
+          : "未语义化";
+    return `${name} (${id}) · ${imageCount} 张 · ${semanticLabel}`;
+  }
+
+  function updateManagePackSemanticAppearance(packId) {
+    const normalizedPackId = String(packId || "").trim();
+    const pack = managePacksById.get(normalizedPackId);
+    const content = document.getElementById("content");
+    const knownStatuses = ["none", "partial", "complete"];
+    const status = knownStatuses.includes(String(pack?.semantic_status || ""))
+      ? String(pack.semantic_status)
+      : "none";
+
+    knownStatuses.forEach((item) => {
+      packSemanticStatus?.classList.toggle(`semantic-${item}`, item === status);
+      content?.classList.toggle(`pack-semantic-${item}`, item === status);
+    });
+
+    if (!pack || !packSemanticStatusText) {
+      if (packSemanticStatusText) {
+        packSemanticStatusText.textContent = "未语义化";
+      }
+      return;
+    }
+
+    const imageCount = Number(pack.image_count || 0);
+    const completedCount = Number(pack.semantic_caption_done || 0);
+    const semanticTotal = Number(pack.semantic_caption_total || 0);
+    const failedCount = Number(pack.semantic_caption_failed || 0);
+    if (status === "complete") {
+      packSemanticStatusText.textContent = `已完成语义化 · 覆盖 ${imageCount} 张图片`;
+      packSemanticStatus.title =
+        semanticTotal && semanticTotal !== imageCount
+          ? `${imageCount} 张图片中有重复内容，共复用 ${semanticTotal} 条语义描述。`
+          : `当前图包的 ${imageCount} 张图片均已有语义描述。`;
+      return;
+    }
+    if (status === "partial") {
+      const failureHint = failedCount > 0 ? `，${failedCount} 条失败` : "";
+      packSemanticStatusText.textContent = pack.semantic_files_changed
+        ? `部分语义化 · 有新增或替换图片待处理（已有 ${completedCount} 条）`
+        : semanticTotal
+          ? `部分语义化 · 已完成 ${completedCount}/${semanticTotal} 条${failureHint}`
+          : "部分语义化 · 尚未完成";
+      packSemanticStatus.title = pack.semantic_files_changed
+        ? "图包新增了图片，或原图片内容已被替换，需要继续语义化。"
+        : "当前图包仍有图片的语义描述未完成。";
+      return;
+    }
+    packSemanticStatusText.textContent =
+      imageCount > 0 ? "未语义化" : "空图包 · 暂无语义";
+    packSemanticStatus.title =
+      imageCount > 0
+        ? "当前图包还没有可用的图片语义描述。"
+        : "空图包无需语义化。";
+  }
+
+  async function refreshManagePackSummaries() {
+    try {
+      const response = await apiGet("packs");
+      const packs = Array.isArray(response?.packs) ? response.packs : [];
+      managePacksById = new Map(
+        packs.map((pack) => [String(pack?.id || "").trim(), pack]),
+      );
+      Array.from(managePackSelect?.options || []).forEach((option) => {
+        const pack = managePacksById.get(String(option.value || "").trim());
+        if (pack) {
+          option.textContent = formatPackOptionLabel(pack);
+        }
+      });
+      updateManagePackSemanticAppearance(activeManagePackId);
+      return packs;
+    } catch (error) {
+      console.warn("刷新图包语义状态失败:", error);
+      return [];
+    }
   }
 
   function syncManagedPackQuery(managedPackId) {
@@ -313,6 +432,9 @@ async function initApp() {
     try {
       const response = await apiGet("packs");
       const packs = Array.isArray(response?.packs) ? response.packs : [];
+      managePacksById = new Map(
+        packs.map((pack) => [String(pack?.id || "").trim(), pack]),
+      );
       managePackSelect.innerHTML = "";
 
       if (!packs.length) {
@@ -321,6 +443,8 @@ async function initApp() {
         option.textContent = "暂无可用表情包";
         managePackSelect.appendChild(option);
         managePackSelect.disabled = true;
+        activeManagePackId = "";
+        updateManagePackSemanticAppearance("");
         if (switchManagePackBtn) {
           switchManagePackBtn.disabled = true;
         }
@@ -369,6 +493,8 @@ async function initApp() {
         selectedPackId = managedPackIdFromUrl;
       }
       managePackSelect.value = selectedPackId;
+      activeManagePackId = selectedPackId;
+      updateManagePackSemanticAppearance(selectedPackId);
       syncManagedPackQuery(selectedPackId);
 
       await maybeShowFirstUseCatalogGuide(packs);
@@ -390,11 +516,17 @@ async function initApp() {
     }
 
     setButtonBusy(switchManagePackBtn, "切换中...");
+    const previousActivePackId = activeManagePackId;
+    activeManagePackId = targetPackId;
+    updateManagePackSemanticAppearance(targetPackId);
     try {
       syncManagedPackQuery(targetPackId);
       await refreshUi({ emojis: true });
       showToast(`已切换管理视图到 ${targetPackId}。`, "success", "切换成功");
     } catch (error) {
+      activeManagePackId = previousActivePackId;
+      updateManagePackSemanticAppearance(previousActivePackId);
+      syncManagedPackQuery(previousActivePackId);
       showToast(error?.message || String(error), "error", "切换失败");
     } finally {
       restoreButton(switchManagePackBtn);
@@ -406,7 +538,9 @@ async function initApp() {
       return;
     }
 
-    const targetPackId = String(managePackSelect.value || "").trim();
+    const targetPackId = String(
+      activeManagePackId || managePackSelect.value || "",
+    ).trim();
     if (!targetPackId) {
       showToast("请先选择要删除的表情包。", "warning", "删除失败");
       return;
@@ -646,6 +780,95 @@ async function initApp() {
     return data.data_url;
   }
 
+  async function loadImageSemantic(category, emoji) {
+    const data = await apiGet("meme_image_semantic", {
+      category,
+      filename: emoji,
+    });
+    return data?.semantic || { status: "none" };
+  }
+
+  function renderImageSemantic(semantic, { loading = false, error = "" } = {}) {
+    if (!imagePreviewSemantic) {
+      return;
+    }
+    const statuses = ["loading", "complete", "partial", "failed", "none"];
+    const rawStatus = loading
+      ? "loading"
+      : error
+        ? "failed"
+        : String(semantic?.status || "none");
+    const status = rawStatus === "pending" ? "partial" : rawStatus;
+    const normalizedStatus = statuses.includes(status) ? status : "none";
+    statuses.forEach((item) => {
+      imagePreviewSemantic.classList.toggle(
+        `semantic-${item}`,
+        item === normalizedStatus,
+      );
+    });
+
+    if (imagePreviewSemanticFilename) {
+      imagePreviewSemanticFilename.textContent = imagePreviewState?.emoji || "";
+    }
+    if (loading) {
+      imagePreviewSemanticState.textContent = "读取中";
+      imagePreviewSemanticCaption.textContent = "正在读取这张图片的语义信息…";
+    } else if (error) {
+      imagePreviewSemanticState.textContent = "读取失败";
+      imagePreviewSemanticCaption.textContent = error;
+    } else if (normalizedStatus === "complete") {
+      imagePreviewSemanticState.textContent = "已语义化";
+      imagePreviewSemanticCaption.textContent =
+        String(semantic?.caption || "").trim() || "已有语义记录。";
+    } else if (normalizedStatus === "failed") {
+      imagePreviewSemanticState.textContent = "语义化失败";
+      imagePreviewSemanticCaption.textContent =
+        String(semantic?.error || "").trim() ||
+        "这张图片上次语义化失败，可以前往语义化页面重试。";
+    } else if (normalizedStatus === "partial") {
+      imagePreviewSemanticState.textContent = "等待完成";
+      imagePreviewSemanticCaption.textContent =
+        "这张图片已进入语义化流程，但描述尚未完成。";
+    } else {
+      imagePreviewSemanticState.textContent = "未语义化";
+      imagePreviewSemanticCaption.textContent =
+        "这张图片还没有语义描述，可以前往语义化页面继续处理。";
+    }
+
+    const tags = Array.isArray(semantic?.tags) ? semantic.tags : [];
+    if (imagePreviewSemanticTags) {
+      imagePreviewSemanticTags.replaceChildren();
+      tags.forEach((tag) => {
+        const chip = document.createElement("span");
+        chip.textContent = String(tag);
+        imagePreviewSemanticTags.appendChild(chip);
+      });
+    }
+    imagePreviewSemanticTagsWrap?.classList.toggle(
+      "hidden",
+      loading || tags.length === 0,
+    );
+
+    const visibleText = String(semantic?.visible_text || "").trim();
+    if (imagePreviewVisibleText) {
+      imagePreviewVisibleText.textContent = visibleText;
+    }
+    imagePreviewVisibleTextWrap?.classList.toggle(
+      "hidden",
+      loading || !visibleText,
+    );
+
+    if (imagePreviewSemanticIndex) {
+      const embeddingStatus = String(semantic?.embedding_status || "");
+      imagePreviewSemanticIndex.textContent =
+        normalizedStatus === "complete"
+          ? embeddingStatus === "done"
+            ? "语义向量已建立，可用于搜索。"
+            : "图片含义已生成，语义向量尚未完成。"
+          : "";
+    }
+  }
+
   function setImagePreviewBusy(isBusy) {
     if (imagePreviewLoading) {
       imagePreviewLoading.classList.toggle("hidden", !isBusy);
@@ -664,6 +887,7 @@ async function initApp() {
     if (imagePreviewImg) {
       imagePreviewImg.removeAttribute("src");
     }
+    renderImageSemantic(null, { loading: true });
     setImagePreviewBusy(false);
   }
 
@@ -672,10 +896,12 @@ async function initApp() {
       return;
     }
 
-    imagePreviewState = { category, emoji };
+    const previewState = { category, emoji };
+    imagePreviewState = previewState;
     imagePreviewModalRoot.classList.remove("hidden");
     imagePreviewModalRoot.setAttribute("aria-hidden", "false");
     imagePreviewImg.alt = `表情包预览：${emoji}`;
+    renderImageSemantic(null, { loading: true });
     if (previewDataUrl) {
       imagePreviewImg.src = previewDataUrl;
     } else {
@@ -683,22 +909,34 @@ async function initApp() {
     }
 
     setImagePreviewBusy(!previewDataUrl);
-    try {
-      if (!previewDataUrl) {
-        imagePreviewImg.src = await loadPreviewImage(
-          category,
-          emoji,
-          "preview",
-        );
-      }
-    } catch (error) {
+    const previewRequest = previewDataUrl
+      ? Promise.resolve(previewDataUrl)
+      : loadPreviewImage(category, emoji, "preview");
+    const semanticRequest = loadImageSemantic(category, emoji);
+    const [previewResult, semanticResult] = await Promise.allSettled([
+      previewRequest,
+      semanticRequest,
+    ]);
+    if (imagePreviewState !== previewState) {
+      return;
+    }
+    if (previewResult.status === "rejected") {
+      const error = previewResult.reason;
       console.error("打开大图预览失败:", error);
       closeImagePreview();
       showToast("图片预览加载失败，请稍后重试。", "error", "加载失败");
       return;
-    } finally {
-      setImagePreviewBusy(false);
     }
+    imagePreviewImg.src = previewResult.value;
+    if (semanticResult.status === "fulfilled") {
+      renderImageSemantic(semanticResult.value);
+    } else {
+      console.error("读取图片语义失败:", semanticResult.reason);
+      renderImageSemantic(null, {
+        error: "语义信息暂时读取失败，请稍后重新打开图片。",
+      });
+    }
+    setImagePreviewBusy(false);
 
     imagePreviewCloseBtn?.focus();
   }
@@ -708,18 +946,24 @@ async function initApp() {
       return;
     }
 
+    const previewState = imagePreviewState;
     setImagePreviewBusy(true);
     try {
-      imagePreviewImg.src = await loadPreviewImage(
-        imagePreviewState.category,
-        imagePreviewState.emoji,
+      const originalDataUrl = await loadPreviewImage(
+        previewState.category,
+        previewState.emoji,
         "original",
       );
+      if (imagePreviewState === previewState) {
+        imagePreviewImg.src = originalDataUrl;
+      }
     } catch (error) {
       console.error("加载原图失败:", error);
       showToast("原图加载失败，可能文件过大或已不存在。", "error", "加载失败");
     } finally {
-      setImagePreviewBusy(false);
+      if (imagePreviewState === previewState) {
+        setImagePreviewBusy(false);
+      }
     }
   }
 
@@ -840,7 +1084,7 @@ async function initApp() {
     imgHostStatus = false,
   } = {}) {
     if (emojis) {
-      await fetchEmojis();
+      await Promise.all([fetchEmojis(), refreshManagePackSummaries()]);
     }
     if (syncStatus) {
       await checkSyncStatus(false);
@@ -2638,7 +2882,10 @@ async function initApp() {
 
       const syncParams = {};
       const currentManagedPackId = String(
-        managePackSelect?.value || managedPackIdFromUrl || "",
+        activeManagePackId ||
+          managePackSelect?.value ||
+          managedPackIdFromUrl ||
+          "",
       ).trim();
       if (currentManagedPackId) {
         syncParams.managed_pack_id = currentManagedPackId;

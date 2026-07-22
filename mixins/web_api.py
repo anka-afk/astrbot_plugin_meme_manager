@@ -44,6 +44,7 @@ from ..backend.pack_storage import (
 )
 from ..backend.semantic_index import EmbeddingAdapter, index_is_ready
 from ..backend.semantic_storage import (
+    get_image_semantic_detail,
     import_metadata_file,
     load_metadata,
     metadata_items,
@@ -198,6 +199,12 @@ class WebAPIMixin:
             self._api_get_meme_image_data,
             ["GET"],
             "获取表情图片的 Data URL（预览）",
+        )
+        self._register_webui_api(
+            "meme_image_semantic",
+            self._api_get_meme_image_semantic,
+            ["GET"],
+            "获取单张表情图片的语义描述",
         )
 
         # Phase 3: pack-aware API
@@ -1294,6 +1301,42 @@ class WebAPIMixin:
                 "data_url": data_url,
             }
         )
+
+    async def _api_get_meme_image_semantic(self):
+        category = request.args.get("category", "")
+        filename = request.args.get("filename", "")
+        view_context = self._resolve_webui_pack_view_context()
+        memes_root = (
+            view_context["memes_dir"].resolve() if view_context else MEMES_DIR.resolve()
+        )
+        pack_dir = (
+            view_context["pack_dir"].resolve()
+            if view_context
+            else memes_root.parent.resolve()
+        )
+        file_path = (memes_root / category / filename).resolve()
+
+        try:
+            file_path.relative_to(memes_root)
+        except ValueError:
+            return jsonify({"message": "图片路径无效"}), 403
+        if not file_path.is_file():
+            return jsonify({"message": "图片不存在"}), 404
+
+        try:
+            detail = get_image_semantic_detail(pack_dir, file_path)
+            return jsonify(
+                {
+                    "category": category,
+                    "filename": filename,
+                    "semantic": detail,
+                }
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("读取图片语义失败: %s", exc, exc_info=True)
+            return jsonify({"message": "读取图片语义失败"}), 500
 
     @staticmethod
     def _build_file_data_url(file_path, mime_type: str) -> str:

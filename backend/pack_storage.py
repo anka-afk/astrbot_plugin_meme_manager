@@ -30,6 +30,7 @@ from ..config import (
     TEMP_DIR,
 )
 from .semantic_storage import (
+    get_pack_semantic_summary,
     reconcile_metadata,
     reset_local_embedding_state,
     save_metadata,
@@ -252,25 +253,28 @@ def list_installed_packs() -> list[dict]:
             continue
         manifest = _load_manifest(pack_id)
         memes_dir = pack_dir / "memes"
-        packs.append(
-            {
-                "id": pack_id,
-                "name": str(item.get("name") or manifest.get("name") or pack_id),
-                "version": str(
-                    item.get("version") or manifest.get("version") or "0.0.0"
-                ),
-                "enabled": bool(item.get("enabled", True)),
-                "installed_at": item.get("installed_at"),
-                "is_default": pack_id == default_pack_id,
-                "image_count": _count_images(memes_dir),
-                "category_count": (
-                    len([d for d in memes_dir.iterdir() if d.is_dir()])
-                    if memes_dir.is_dir()
-                    else 0
-                ),
-                "has_semantic_metadata": (pack_dir / "semantic_metadata.json").is_file(),
-            }
-        )
+        image_count = _count_images(memes_dir)
+        pack_data = {
+            "id": pack_id,
+            "name": str(item.get("name") or manifest.get("name") or pack_id),
+            "version": str(
+                item.get("version") or manifest.get("version") or "0.0.0"
+            ),
+            "enabled": bool(item.get("enabled", True)),
+            "installed_at": item.get("installed_at"),
+            "is_default": pack_id == default_pack_id,
+            "image_count": image_count,
+            "category_count": (
+                len([d for d in memes_dir.iterdir() if d.is_dir()])
+                if memes_dir.is_dir()
+                else 0
+            ),
+            "has_semantic_metadata": (
+                pack_dir / "semantic_metadata.json"
+            ).is_file(),
+        }
+        pack_data.update(get_pack_semantic_summary(pack_dir, image_count))
+        packs.append(pack_data)
     return packs
 
 
@@ -304,7 +308,7 @@ def get_pack_detail(pack_id: str) -> dict:
                     }
                 )
 
-    return {
+    result = {
         "id": pack_id,
         "manifest": manifest,
         "pack_dir": str(pack_dir),
@@ -312,6 +316,8 @@ def get_pack_detail(pack_id: str) -> dict:
         "total_images": _count_images(memes_dir),
         "has_semantic_metadata": (pack_dir / "semantic_metadata.json").is_file(),
     }
+    result.update(get_pack_semantic_summary(pack_dir, result["total_images"]))
+    return result
 
 
 def set_default_pack(pack_id: str) -> dict:

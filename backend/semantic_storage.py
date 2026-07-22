@@ -13,6 +13,7 @@ from .semantic_models import (
     IMAGE_EXTENSIONS,
     SCHEMA_VERSION,
     build_semantic_text,
+    normalize_tags,
     text_hash,
     utc_now,
 )
@@ -104,6 +105,211 @@ def load_metadata(pack_dir: Path | str) -> dict[str, Any]:
     data.setdefault("generated_at", utc_now())
     data["images"] = normalized
     return data
+
+
+def semantic_metadata_is_complete(
+    pack_dir: Path | str, data: dict[str, Any] | None = None
+) -> bool:
+    """严格确认当前图包的每一份图片内容都已有完整语义描述。
+
+    不能只看元数据里的完成数量：图片可能在语义化之后被新增、删除，或在
+    文件数量不变时被替换。只有磁盘内容、扫描快照和完成记录完全一致，
+    才允许把这个图包用作语义检索目标。
+    """
+    root = Path(pack_dir).resolve()
+    memes_root = root / "memes"
+    if not metadata_path(root).is_file() or not memes_root.is_dir():
+        return False
+
+    metadata = data if isinstance(data, dict) else load_metadata(root)
+    images = metadata.get("images", {})
+    if not isinstance(images, dict) or not images:
+        return False
+
+    scanned = scan_images(root)
+    if not scanned:
+        return False
+    current_hashes = {str(item.get("content_sha256") or "") for item in scanned}
+    if not current_hashes or set(images) != current_hashes:
+        return False
+
+    current_file_total = sum(
+        1
+        for path in memes_root.rglob("*")
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+    )
+    try:
+        recorded_file_total = int(metadata.get("file_total"))
+        recorded_unique_total = int(metadata.get("unique_total"))
+    except (TypeError, ValueError):
+        return False
+    if (
+        recorded_file_total != current_file_total
+        or recorded_unique_total != len(current_hashes)
+    ):
+        return False
+
+    return all(
+        isinstance(images.get(digest), dict)
+        and images[digest].get("caption_status") == "done"
+        and str(images[digest].get("caption") or "").strip()
+        and normalize_tags(images[digest].get("tags"))
+        for digest in current_hashes
+    )
+
+
+def get_pack_semantic_summary(
+    pack_dir: Path | str, image_count: int | None = None
+) -> dict[str, Any]:
+    """返回适合 WebUI 展示的图包语义化进度摘要。
+
+    语义任务会按图片内容去重，因此 ``unique_total`` 可能小于实际文件数。
+    完成状态同时校验上次语义扫描时的文件数，避免在完整语义化后新增图片，
+    主页仍错误显示为“已完成语义化”。
+    """
+    root = Path(pack_dir).resolve()
+    if image_count is None:
+        memes_root = root / "memes"
+        current_file_total = (
+            sum(
+                1
+                for path in memes_root.rglob("*")
+                if path.is_file()
+                and path.suffix.lower() in IMAGE_EXTENSIONS.union({".webp"})
+            )
+            if memes_root.is_dir()
+            else 0
+        )
+    else:
+        current_file_total = max(0, int(image_count))
+
+    metadata_file = root / "semantic_metadata.json"
+    if not metadata_file.is_file():
+        return {
+            "semantic_status": "none",
+            "semantic_caption_done": 0,
+            "semantic_caption_total": 0,
+            "semantic_caption_failed": 0,
+            "semantic_file_total": current_file_total,
+            "semantic_snapshot_matches": False,
+            "semantic_files_changed": False,
+        }
+
+    metadata = load_metadata(root)
+    images = [
+        item
+        for item in metadata.get("images", {}).values()
+        if isinstance(item, dict)
+    ]
+    caption_done = sum(
+        1
+        for item in images
+        if item.get("caption_status") == "done"
+        and str(item.get("caption") or "").strip()
+        and item.get("tags")
+    )
+    caption_failed = sum(
+        1 for item in images if item.get("caption_status") == "failed"
+    )
+    try:
+        recorded_unique_total = int(metadata.get("unique_total", len(images)))
+    except (TypeError, ValueError):
+        recorded_unique_total = len(images)
+    semantic_total = max(0, recorded_unique_total, len(images))
+
+    raw_snapshot_total = metadata.get("file_total")
+    if raw_snapshot_total is None:
+        # 旧版或外部语义文件没有文件数快照时，不能仅凭“现有记录都完成”
+        # 就断言整个图包已完成；至少要求记录数能覆盖当前文件数。
+        snapshot_file_total = semantic_total
+    else:
+        try:
+            snapshot_file_total = max(0, int(raw_snapshot_total))
+        except (TypeError, ValueError):
+            snapshot_file_total = -1
+    snapshot_matches = snapshot_file_total == current_file_total
+    all_records_done = bool(images) and caption_done == len(images)
+    completion_candidate = (
+        current_file_total > 0
+        and semantic_total > 0
+        and snapshot_matches
+        and all_records_done
+        and caption_done >= semantic_total
+    )
+    strictly_complete = bool(
+        completion_candidate and semantic_metadata_is_complete(root, metadata)
+    )
+    if strictly_complete:
+        semantic_status = "complete"
+    elif images:
+        semantic_status = "partial"
+    else:
+        semantic_status = "none"
+
+    return {
+        "semantic_status": semantic_status,
+        "semantic_caption_done": caption_done,
+        "semantic_caption_total": semantic_total,
+        "semantic_caption_failed": caption_failed,
+        "semantic_file_total": current_file_total,
+        "semantic_snapshot_matches": snapshot_matches,
+        "semantic_files_changed": bool(
+            not snapshot_matches or (completion_candidate and not strictly_complete)
+        ),
+    }
+
+
+def get_image_semantic_detail(
+    pack_dir: Path | str, image_path: Path | str
+) -> dict[str, Any]:
+    """按图片内容哈希读取单张图片的语义，重复图片可共用同一条结果。"""
+    root = Path(pack_dir).resolve()
+    memes_root = (root / "memes").resolve()
+    source = Path(image_path).resolve()
+    try:
+        source.relative_to(memes_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("图片路径不属于当前表情包") from exc
+    if not source.is_file():
+        raise FileNotFoundError("图片不存在")
+
+    empty_result = {
+        "status": "none",
+        "caption": "",
+        "tags": [],
+        "visible_text": "",
+        "caption_status": "pending",
+        "embedding_status": "pending",
+        "error": "",
+    }
+    metadata = load_metadata(root)
+    images = metadata.get("images", {})
+    if not images:
+        return empty_result
+
+    digest = file_sha256(source)
+    item = images.get(digest)
+    if not isinstance(item, dict):
+        return empty_result
+
+    caption = str(item.get("caption") or "").strip()
+    tags = normalize_tags(item.get("tags"))
+    caption_status = str(item.get("caption_status") or "pending")
+    if caption_status == "done" and caption and tags:
+        status = "complete"
+    elif caption_status == "failed":
+        status = "failed"
+    else:
+        status = "pending"
+    return {
+        "status": status,
+        "caption": caption,
+        "tags": tags,
+        "visible_text": str(item.get("visible_text") or "").strip(),
+        "caption_status": caption_status,
+        "embedding_status": str(item.get("embedding_status") or "pending"),
+        "error": str(item.get("error") or "").strip(),
+    }
 
 
 def save_metadata(pack_dir: Path | str, data: dict[str, Any]) -> Path:
