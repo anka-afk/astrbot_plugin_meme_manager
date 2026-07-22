@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import sys
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ ASTRBOT_AVAILABLE = importlib.util.find_spec("astrbot") is not None
 if ASTRBOT_AVAILABLE:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from astrbot_plugin_meme_manager.mixins.event_handlers import EventHandlerMixin
+    from astrbot_plugin_meme_manager.mixins.web_api import WebAPIMixin
 
 
 class FakeEvent:
@@ -31,6 +33,49 @@ class FakeEvent:
 
 @unittest.skipUnless(ASTRBOT_AVAILABLE, "当前 Python 环境没有 AstrBot 运行库")
 class RuntimeBehaviorTests(unittest.TestCase):
+    def test_cancelled_file_request_holds_lock_until_worker_finishes(self):
+        class Manager:
+            def __init__(self):
+                self.active = set()
+
+            def begin_external_pack_operation(self, pack_id, operation):
+                self.active.add(pack_id)
+
+            def end_external_pack_operation(self, pack_id):
+                self.active.discard(pack_id)
+
+        class Plugin(WebAPIMixin):
+            def __init__(self):
+                self.semantic_task_manager = Manager()
+
+        async def run():
+            plugin = Plugin()
+            worker_started = threading.Event()
+            worker_release = threading.Event()
+
+            def blocking_file_operation(*, operation_guard=None):
+                self.assertIsNone(operation_guard)
+                worker_started.set()
+                worker_release.wait(timeout=2)
+
+            task = asyncio.create_task(
+                plugin._run_guarded_pack_file_operation(
+                    "demo",
+                    "测试文件操作",
+                    blocking_file_operation,
+                )
+            )
+            self.assertTrue(await asyncio.to_thread(worker_started.wait, 1))
+            task.cancel()
+            await asyncio.sleep(0.05)
+            self.assertIn("demo", plugin.semantic_task_manager.active)
+            worker_release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertNotIn("demo", plugin.semantic_task_manager.active)
+
+        asyncio.run(run())
+
     def test_semantic_response_is_processed_only_once(self):
         class Plugin(EventHandlerMixin):
             def __init__(self):

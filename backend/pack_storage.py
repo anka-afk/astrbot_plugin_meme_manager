@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import tempfile
 import zipfile
@@ -22,20 +23,41 @@ from ..config import (
     TEMP_DIR,
 )
 from .pack_protocol import (
+    PACK_EXPORT_MODES,
+    PACK_TRANSFER_FORMAT,
+    PACK_TRANSFER_MANIFEST,
+    PACK_TRANSFER_VERSION,
     is_official_pack_entry,
     validate_community_index,
     validate_pack_directory,
+    validate_pack_id,
     validate_pack_manifest,
     validate_source_descriptor,
+    validate_transfer_manifest,
 )
+from .semantic_index import index_is_ready, load_index_manifest
 from .semantic_storage import (
     get_pack_semantic_summary,
+    load_metadata,
     reconcile_metadata,
     reset_local_embedding_state,
     save_metadata,
 )
 
 PackOperationGuard = Callable[[str, str], None]
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+MAX_ARCHIVE_FILE_COUNT = 20_000
+MAX_ARCHIVE_COMPRESSED_BYTES = 1024 * 1024 * 1024
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
+MAX_ARCHIVE_SINGLE_FILE_BYTES = 1024 * 1024 * 1024
+MIN_FREE_SPACE_RESERVE_BYTES = 512 * 1024 * 1024
+ARCHIVE_JSON_SIZE_LIMITS = {
+    "manifest.json": 4 * 1024 * 1024,
+    PACK_TRANSFER_MANIFEST: 1024 * 1024,
+    "memes_data.json": 16 * 1024 * 1024,
+    "semantic_metadata.json": 256 * 1024 * 1024,
+    "index_manifest.json": 256 * 1024 * 1024,
+}
 
 
 def _load_json(path: Path, default):
@@ -50,6 +72,42 @@ def _save_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as file_obj:
         json.dump(data, file_obj, ensure_ascii=False, indent=2)
+
+
+def _directory_size(path: Path) -> int:
+    if not path.is_dir():
+        return 0
+    total = 0
+    for file_path in path.rglob("*"):
+        if not file_path.is_file():
+            continue
+        try:
+            total += max(0, file_path.stat().st_size)
+        except OSError:
+            continue
+    return total
+
+
+def _require_regular_tree(path: Path, operation: str) -> None:
+    if path.is_symlink():
+        raise ValueError(f"{operation}目录不能是符号链接")
+    if not path.is_dir():
+        return
+    for item in path.rglob("*"):
+        if item.is_symlink():
+            raise ValueError(f"{operation}包含符号链接，已拒绝处理: {item.name}")
+
+
+def _require_free_space(path: Path, required_bytes: int, operation: str) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    free_bytes = shutil.disk_usage(path).free
+    if free_bytes < max(0, int(required_bytes)):
+        required_gib = required_bytes / (1024**3)
+        free_gib = free_bytes / (1024**3)
+        raise ValueError(
+            f"剩余磁盘空间不足，无法{operation}：预计至少需要 {required_gib:.2f} GB，"
+            f"当前可用 {free_gib:.2f} GB"
+        )
 
 
 def _normalize_installed_packs(installed_packs) -> list[dict]:
@@ -334,17 +392,22 @@ def set_default_pack(pack_id: str) -> dict:
     return {"pack_id": pack_id}
 
 
-def _find_manifest_root(extract_root: Path) -> Path:
-    direct_manifest = extract_root / "manifest.json"
-    if direct_manifest.is_file():
-        return extract_root
+def _archive_root_candidates(extract_root: Path) -> list[Path]:
+    candidates = [extract_root]
+    candidates.extend(
+        child
+        for child in extract_root.iterdir()
+        if child.is_dir() and child.name != "__MACOSX"
+    )
+    return candidates
 
-    candidates = []
-    for child in extract_root.iterdir():
-        if not child.is_dir():
-            continue
-        if (child / "manifest.json").is_file():
-            candidates.append(child)
+
+def _find_manifest_root(extract_root: Path) -> Path:
+    candidates = [
+        root
+        for root in _archive_root_candidates(extract_root)
+        if (root / "manifest.json").is_file()
+    ]
 
     if len(candidates) == 1:
         return candidates[0]
@@ -353,16 +416,150 @@ def _find_manifest_root(extract_root: Path) -> Path:
     raise ValueError("压缩包中未找到 manifest.json")
 
 
+def _legacy_root_has_categories(root: Path) -> bool:
+    metadata_path = root / "memes_data.json"
+    if not metadata_path.is_file():
+        return False
+    for child in root.iterdir():
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if any(
+            file_path.is_file() and file_path.suffix.lower() in IMAGE_EXTENSIONS
+            for file_path in child.rglob("*")
+        ):
+            return True
+    return False
+
+
+def _find_import_root(extract_root: Path) -> tuple[Path, str]:
+    try:
+        pack_root = _find_manifest_root(extract_root)
+        transfer_path = pack_root / PACK_TRANSFER_MANIFEST
+        detected_format = "v2" if transfer_path.is_file() else "v1"
+        return pack_root, detected_format
+    except ValueError as manifest_error:
+        legacy_candidates = [
+            root
+            for root in _archive_root_candidates(extract_root)
+            if (root / "memes").is_dir() or _legacy_root_has_categories(root)
+        ]
+        if len(legacy_candidates) == 1:
+            return legacy_candidates[0], "legacy"
+        if len(legacy_candidates) > 1:
+            raise ValueError("压缩包中存在多个可能的旧版表情包目录") from manifest_error
+        raise ValueError(
+            "无法识别压缩包：新版包需要 manifest.json，旧版包需要 memes 目录"
+        ) from manifest_error
+
+
+def _legacy_pack_id(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9._-]+", "-", str(value or "").lower())
+    normalized = normalized.strip("._-")[:64]
+    if len(normalized) < 2:
+        normalized = "legacy-pack"
+    return validate_pack_id(normalized, "旧版表情包")
+
+
+def _legacy_descriptions(root: Path, memes_dir: Path) -> dict[str, str]:
+    raw = _load_json(root / "memes_data.json", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    descriptions = {
+        str(category): str(description or "请添加描述")
+        for category, description in raw.items()
+        if str(category).strip()
+    }
+    if memes_dir.is_dir():
+        for category_dir in memes_dir.iterdir():
+            if category_dir.is_dir():
+                descriptions.setdefault(category_dir.name, "请添加描述")
+    return descriptions
+
+
+def _copy_legacy_pack(
+    legacy_root: Path,
+    target_root: Path,
+    suggested_pack_id: str,
+) -> dict:
+    pack_id = _legacy_pack_id(suggested_pack_id)
+    source_memes = legacy_root / "memes"
+    direct_category_layout = not source_memes.is_dir()
+    if direct_category_layout:
+        source_memes = legacy_root
+
+    target_memes = target_root / "memes"
+    target_memes.mkdir(parents=True, exist_ok=True)
+    for source_path in sorted(source_memes.rglob("*")):
+        if (
+            not source_path.is_file()
+            or source_path.suffix.lower() not in IMAGE_EXTENSIONS
+        ):
+            continue
+        relative = source_path.relative_to(source_memes)
+        if not relative.parts or relative.parts[0].startswith("."):
+            continue
+        if len(relative.parts) == 1:
+            relative = Path("default") / relative
+        target_path = target_memes / relative
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+
+    descriptions = _legacy_descriptions(legacy_root, target_memes)
+    if not descriptions:
+        descriptions = {
+            path.name: "请添加描述" for path in target_memes.iterdir() if path.is_dir()
+        }
+    if not descriptions:
+        raise ValueError("旧版压缩包中没有可导入的表情图片")
+
+    manifest = {
+        "schema_version": 1,
+        "id": pack_id,
+        "name": f"旧版导入包 ({pack_id})",
+        "version": "1.0.0",
+        "description": "由旧版无语义化表情包自动转换",
+        "tags": ["legacy", "converted"],
+        "categories": {
+            category: {"description": description}
+            for category, description in sorted(descriptions.items())
+        },
+    }
+    _save_json(target_root / "manifest.json", manifest)
+    _save_json(target_root / "memes_data.json", descriptions)
+    return manifest
+
+
 def _extract_zip_safely(
     zip_path: Path, target_dir: Path, block_executable_scripts: bool = True
 ) -> None:
+    archive_size = zip_path.stat().st_size
+    if archive_size > MAX_ARCHIVE_COMPRESSED_BYTES:
+        raise ValueError("压缩包体积超过 1 GB，无法安全导入")
     with zipfile.ZipFile(zip_path, "r") as zip_file:
-        for member in zip_file.infolist():
+        members = zip_file.infolist()
+        if len(members) > MAX_ARCHIVE_FILE_COUNT:
+            raise ValueError("压缩包文件数量过多")
+        total_uncompressed = sum(max(0, member.file_size) for member in members)
+        if total_uncompressed > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+            raise ValueError("压缩包解压后的体积过大")
+        # 导入时会同时保留解压目录、规范化目录和向量校验副本。提前预留
+        # 三倍解压体积以及固定安全余量，避免把 AstrBot 所在磁盘写满。
+        _require_free_space(
+            target_dir,
+            total_uncompressed * 3 + MIN_FREE_SPACE_RESERVE_BYTES,
+            "解压表情包",
+        )
+        for member in members:
             member_path = Path(member.filename)
             if member_path.is_absolute() or ".." in member_path.parts:
                 raise ValueError("压缩包包含非法路径")
             if member.filename.endswith("/"):
                 continue
+            if member.file_size > MAX_ARCHIVE_SINGLE_FILE_BYTES:
+                raise ValueError(f"压缩包中的单个文件过大: {member_path.name}")
+            json_limit = ARCHIVE_JSON_SIZE_LIMITS.get(member_path.name)
+            if json_limit is not None and member.file_size > json_limit:
+                raise ValueError(f"压缩包中的 {member_path.name} 体积异常")
             suffix = member_path.suffix.lower()
             if (
                 block_executable_scripts
@@ -371,6 +568,144 @@ def _extract_zip_safely(
             ):
                 raise ValueError("压缩包包含不允许的可执行脚本文件")
         zip_file.extractall(target_dir)
+
+
+def _load_transfer_info(pack_root: Path, detected_format: str) -> dict:
+    if detected_format != "v2":
+        return {
+            "format": PACK_TRANSFER_FORMAT,
+            "format_version": 1,
+            "export_mode": "share",
+            "features": {
+                "semantic_metadata": (pack_root / "semantic_metadata.json").is_file(),
+                "vectors": False,
+            },
+        }
+    transfer_info = _load_json(pack_root / PACK_TRANSFER_MANIFEST, {})
+    return validate_transfer_manifest(transfer_info)
+
+
+def _prepare_import_pack(
+    pack_root: Path,
+    detected_format: str,
+    target_root: Path,
+    suggested_pack_id: str,
+) -> tuple[dict, dict]:
+    if detected_format == "legacy":
+        manifest = _copy_legacy_pack(pack_root, target_root, suggested_pack_id)
+        transfer_info = {
+            "format": PACK_TRANSFER_FORMAT,
+            "format_version": 0,
+            "export_mode": "share",
+            "features": {"semantic_metadata": False, "vectors": False},
+        }
+        return manifest, transfer_info
+
+    transfer_info = _load_transfer_info(pack_root, detected_format)
+
+    def ignore_transfer_files(directory: str, names: list[str]) -> set[str]:
+        if Path(directory).resolve() != pack_root.resolve():
+            return set()
+        return {
+            name for name in names if name in {PACK_TRANSFER_MANIFEST, "semantic_index"}
+        }
+
+    shutil.copytree(pack_root, target_root, ignore=ignore_transfer_files)
+    manifest = _load_json(target_root / "manifest.json", {})
+    if not isinstance(manifest, dict):
+        raise ValueError("manifest.json 格式无效")
+    return validate_pack_manifest(manifest), transfer_info
+
+
+def inspect_pack_archive(zip_path: Path, suggested_pack_id: str | None = None) -> dict:
+    """只读检查导入包，返回 WebUI 确认导入所需的兼容性摘要。"""
+    if not zip_path.is_file():
+        raise FileNotFoundError("压缩包不存在")
+    if not zipfile.is_zipfile(zip_path):
+        raise ValueError("文件不是有效的 zip 压缩包")
+
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=TEMP_DIR, prefix="pack_inspect_") as tmp_dir:
+        workspace = Path(tmp_dir)
+        extract_root = workspace / "extract"
+        extract_root.mkdir()
+        _extract_zip_safely(zip_path, extract_root)
+        pack_root, detected_format = _find_import_root(extract_root)
+        prepared_root = workspace / "prepared"
+        manifest, transfer_info = _prepare_import_pack(
+            pack_root,
+            detected_format,
+            prepared_root,
+            suggested_pack_id or zip_path.stem,
+        )
+        validate_pack_directory(prepared_root, context="待导入表情包")
+
+        image_count = _count_images(prepared_root / "memes")
+        categories = manifest.get("categories", {})
+        semantic_path = prepared_root / "semantic_metadata.json"
+        semantic_data = _load_json(semantic_path, {}) if semantic_path.is_file() else {}
+        semantic_images = (
+            semantic_data.get("images", {}) if isinstance(semantic_data, dict) else {}
+        )
+        semantic_done = sum(
+            1
+            for item in semantic_images.values()
+            if isinstance(item, dict) and item.get("caption_status") == "done"
+        )
+        declared_vectors = bool(transfer_info.get("features", {}).get("vectors", False))
+        vector_files_present = bool(
+            (pack_root / "semantic_index" / "index.faiss").is_file()
+            and (pack_root / "semantic_index" / "index_manifest.json").is_file()
+        )
+        warnings = []
+        if detected_format == "legacy":
+            warnings.append("已识别为旧版无语义化压缩包，导入时会自动转换为新版结构。")
+        if declared_vectors and not vector_files_present:
+            warnings.append(
+                "压缩包声明包含向量，但缺少完整索引文件；将按无向量包导入。"
+            )
+
+        return {
+            "detected_format": detected_format,
+            "format_version": int(transfer_info.get("format_version", 0) or 0),
+            "export_mode": str(transfer_info.get("export_mode") or "share"),
+            "pack_id": str(manifest.get("id") or ""),
+            "name": str(manifest.get("name") or manifest.get("id") or ""),
+            "version": str(manifest.get("version") or "1.0.0"),
+            "image_count": image_count,
+            "category_count": len(categories) if isinstance(categories, dict) else 0,
+            "semantic_metadata": semantic_path.is_file(),
+            "semantic_done": semantic_done,
+            "vectors_declared": declared_vectors,
+            "vectors_present": vector_files_present,
+            "warnings": warnings,
+        }
+
+
+def get_pack_export_capabilities(pack_id: str) -> dict:
+    pack_id = validate_pack_id(pack_id, "表情包")
+    pack_dir = PACKS_DIR / pack_id
+    if not pack_dir.is_dir():
+        raise FileNotFoundError(f"表情包 {pack_id} 不存在")
+    metadata = load_metadata(pack_dir)
+    semantic_metadata = (pack_dir / "semantic_metadata.json").is_file()
+    try:
+        vector_backup_available = bool(
+            semantic_metadata
+            and index_is_ready(PLUGIN_DATA_DIR, pack_id, metadata=metadata)
+        )
+    except Exception:
+        vector_backup_available = False
+    index_manifest = load_index_manifest(PLUGIN_DATA_DIR, pack_id)
+    return {
+        "pack_id": pack_id,
+        "image_count": _count_images(pack_dir / "memes"),
+        "semantic_metadata": semantic_metadata,
+        "vector_backup_available": vector_backup_available,
+        "embedding_provider_id": str(index_manifest.get("embedding_provider_id") or ""),
+        "embedding_model": str(index_manifest.get("embedding_model") or ""),
+        "embedding_dimension": int(index_manifest.get("embedding_dimension", 0) or 0),
+    }
 
 
 def _allocate_pack_id(base_pack_id: str) -> str:
@@ -392,48 +727,146 @@ def import_pack_archive(
     overwrite: bool = False,
     set_as_default: bool = False,
     operation_guard: PackOperationGuard | None = None,
+    suggested_pack_id: str | None = None,
 ) -> dict:
     if not zip_path.is_file():
         raise FileNotFoundError("压缩包不存在")
+    if not zipfile.is_zipfile(zip_path):
+        raise ValueError("文件不是有效的 zip 压缩包")
 
     previous_single_empty_pack_id = _snapshot_single_empty_pack()
+    detected_format = ""
+    transfer_info: dict = {}
+    vectors_restored = False
+    vector_warning = ""
 
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=TEMP_DIR, prefix="pack_import_") as tmp_dir:
-        extract_root = Path(tmp_dir)
+        workspace = Path(tmp_dir)
+        extract_root = workspace / "extract"
+        extract_root.mkdir()
         _extract_zip_safely(zip_path, extract_root)
-        pack_root = _find_manifest_root(extract_root)
-        manifest = _load_json(pack_root / "manifest.json", {})
-        if not isinstance(manifest, dict):
-            raise ValueError("manifest.json 格式无效")
-
-        normalized_manifest = validate_pack_manifest(manifest)
+        pack_root, detected_format = _find_import_root(extract_root)
+        prepared_pack_dir = workspace / "prepared"
+        normalized_manifest, transfer_info = _prepare_import_pack(
+            pack_root,
+            detected_format,
+            prepared_pack_dir,
+            suggested_pack_id or zip_path.stem,
+        )
         original_pack_id = str(normalized_manifest.get("id") or "").strip()
         pack_id = original_pack_id if overwrite else _allocate_pack_id(original_pack_id)
         if pack_id != original_pack_id:
             normalized_manifest["id"] = pack_id
             current_name = str(normalized_manifest.get("name") or original_pack_id)
             normalized_manifest["name"] = f"{current_name} ({pack_id})"
+        _save_json(prepared_pack_dir / "manifest.json", normalized_manifest)
+
+        compatibility_metadata = prepared_pack_dir / "memes_data.json"
+        if not compatibility_metadata.is_file():
+            descriptions = {
+                str(category): str(
+                    metadata.get("description") or "请添加描述"
+                    if isinstance(metadata, dict)
+                    else metadata or "请添加描述"
+                )
+                for category, metadata in normalized_manifest.get(
+                    "categories", {}
+                ).items()
+            }
+            _save_json(compatibility_metadata, descriptions)
+        _require_regular_tree(prepared_pack_dir, "导入表情包")
+        validate_pack_directory(prepared_pack_dir, context=f"导入包 {pack_id}")
+
+        semantic_file = prepared_pack_dir / "semantic_metadata.json"
+        declared_vectors = bool(transfer_info.get("features", {}).get("vectors", False))
+        source_index_dir = pack_root / "semantic_index"
+        vector_files_present = bool(
+            (source_index_dir / "index.faiss").is_file()
+            and (source_index_dir / "index_manifest.json").is_file()
+        )
+        wants_vector_restore = bool(
+            transfer_info.get("export_mode") == "backup"
+            and declared_vectors
+            and vector_files_present
+            and semantic_file.is_file()
+        )
+
+        if semantic_file.is_file():
+            # 无论新旧包都先按图片内容复核路径和哈希，避免错误记录指向其他文件。
+            imported_data = _load_json(semantic_file, {})
+            if wants_vector_restore:
+                reconciled = reconcile_metadata(
+                    prepared_pack_dir, external_data=imported_data
+                )
+                reconciled["pack_id"] = pack_id
+                save_metadata(prepared_pack_dir, reconciled)
+            else:
+                portable_data = reset_local_embedding_state(imported_data)
+                reconciled = reconcile_metadata(
+                    prepared_pack_dir, external_data=portable_data
+                )
+                reconciled = reset_local_embedding_state(reconciled)
+                reconciled["pack_id"] = pack_id
+                save_metadata(prepared_pack_dir, reconciled)
+
+        prepared_index_dir = workspace / "prepared_index"
+        if wants_vector_restore:
+            shutil.copytree(source_index_dir, prepared_index_dir)
+            index_manifest_path = prepared_index_dir / "index_manifest.json"
+            index_manifest = _load_json(index_manifest_path, {})
+            if isinstance(index_manifest, dict):
+                index_manifest["pack_id"] = pack_id
+                _save_json(index_manifest_path, index_manifest)
+
+            validation_runtime = workspace / "vector_validation"
+            validation_index_dir = validation_runtime / "semantic_indexes" / pack_id
+            validation_index_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(prepared_index_dir, validation_index_dir)
+            try:
+                vectors_restored = index_is_ready(
+                    validation_runtime,
+                    pack_id,
+                    metadata=load_metadata(prepared_pack_dir),
+                )
+            except Exception:
+                vectors_restored = False
+            if not vectors_restored:
+                vector_warning = "向量索引校验未通过，已保留语义描述并改为待重建状态。"
+                portable = reset_local_embedding_state(load_metadata(prepared_pack_dir))
+                portable["pack_id"] = pack_id
+                save_metadata(prepared_pack_dir, portable)
+        elif declared_vectors:
+            vector_warning = "压缩包缺少完整向量索引，已按无向量包导入。"
 
         target_pack_dir = PACKS_DIR / pack_id
+        target_index_dir = PLUGIN_DATA_DIR / "semantic_indexes" / pack_id
+        old_pack_dir = workspace / "replaced_pack"
+        old_index_dir = workspace / "replaced_index"
+        if target_pack_dir.exists() and not overwrite:
+            raise FileExistsError(f"表情包 {pack_id} 已存在，请重新检查后再导入")
         if target_pack_dir.exists() and overwrite:
             if operation_guard:
                 operation_guard(pack_id, "覆盖安装资源包")
-            shutil.rmtree(target_pack_dir)
-
-        shutil.copytree(pack_root, target_pack_dir)
-    _save_json(target_pack_dir / "manifest.json", normalized_manifest)
-    validate_pack_directory(target_pack_dir, context=f"导入包 {pack_id}")
-    semantic_file = target_pack_dir / "semantic_metadata.json"
-    if semantic_file.is_file():
-        # 导入时重新按图片内容校验哈希；缺图/错图只保留为待处理状态。
-        imported_data = _load_json(semantic_file, {})
-        portable_data = reset_local_embedding_state(imported_data, target_pack_dir)
-        reconciled = reconcile_metadata(target_pack_dir, external_data=portable_data)
-        reconciled = reset_local_embedding_state(reconciled)
-        save_metadata(target_pack_dir, reconciled)
-    # FAISS 与 Provider 只属于本机，换包后必须重新建立，不接受压缩包中的旧状态。
-    shutil.rmtree(PLUGIN_DATA_DIR / "semantic_indexes" / pack_id, ignore_errors=True)
+            shutil.move(str(target_pack_dir), str(old_pack_dir))
+        if target_index_dir.exists():
+            target_index_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(target_index_dir), str(old_index_dir))
+        try:
+            PACKS_DIR.mkdir(parents=True, exist_ok=True)
+            prepared_pack_dir.rename(target_pack_dir)
+            if vectors_restored:
+                target_index_dir.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(prepared_index_dir, target_index_dir)
+        except Exception:
+            shutil.rmtree(target_pack_dir, ignore_errors=True)
+            shutil.rmtree(target_index_dir, ignore_errors=True)
+            if old_pack_dir.exists():
+                shutil.move(str(old_pack_dir), str(target_pack_dir))
+            if old_index_dir.exists():
+                target_index_dir.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(old_index_dir), str(target_index_dir))
+            raise
 
     registry = _load_registry()
     installed = registry["installed_packs"]
@@ -479,6 +912,11 @@ def import_pack_archive(
         "name": str(manifest.get("name") or pack_id),
         "version": str(manifest.get("version") or "1.0.0"),
         "overwritten": overwrite and replaced,
+        "detected_format": detected_format,
+        "export_mode": str(transfer_info.get("export_mode") or "share"),
+        "semantic_metadata": (target_pack_dir / "semantic_metadata.json").is_file(),
+        "vectors_restored": vectors_restored,
+        "vector_warning": vector_warning or None,
         **post_install,
     }
 
@@ -488,43 +926,112 @@ def export_pack_archive(
     output_dir: str | None = None,
     *,
     include_semantic: bool = True,
+    export_mode: str = "share",
     operation_guard: PackOperationGuard | None = None,
 ) -> dict:
-    pack_id = str(pack_id or "").strip()
-    if not pack_id:
-        raise ValueError("pack_id 不能为空")
+    pack_id = validate_pack_id(pack_id, "表情包")
+    export_mode = str(export_mode or "share").strip().lower()
+    if export_mode not in PACK_EXPORT_MODES:
+        raise ValueError("导出类型仅支持 share 或 backup")
 
     pack_dir = PACKS_DIR / pack_id
     if not pack_dir.is_dir():
         raise FileNotFoundError(f"表情包 {pack_id} 不存在")
+    _require_regular_tree(pack_dir, "导出表情包")
     if operation_guard:
         operation_guard(pack_id, "导出资源包")
 
     target_dir = Path(output_dir).expanduser().resolve() if output_dir else BACKUP_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    archive_base = target_dir / f"{pack_id}_{timestamp}"
-    # 即使导出语义描述，也只发布图片描述和标签；Provider、模型、维度、向量状态
-    # 以及本机索引全部留在本机，避免把作者环境带给普通用户。
+    archive_base = target_dir / f"{pack_id}_{export_mode}_{timestamp}"
+    if export_mode == "backup":
+        _require_regular_tree(
+            PLUGIN_DATA_DIR / "semantic_indexes" / pack_id,
+            "导出向量索引",
+        )
+        capabilities = get_pack_export_capabilities(pack_id)
+        if not capabilities["vector_backup_available"]:
+            raise ValueError("当前表情包没有可用的完整向量，暂时不能导出带向量备份")
+
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    source_size = _directory_size(pack_dir)
+    if export_mode == "backup":
+        source_size += _directory_size(PLUGIN_DATA_DIR / "semantic_indexes" / pack_id)
+    temp_device = TEMP_DIR.stat().st_dev
+    target_device = target_dir.stat().st_dev
+    if temp_device == target_device:
+        _require_free_space(
+            TEMP_DIR,
+            source_size * 2 + MIN_FREE_SPACE_RESERVE_BYTES,
+            "导出表情包",
+        )
+    else:
+        _require_free_space(
+            TEMP_DIR,
+            source_size + MIN_FREE_SPACE_RESERVE_BYTES,
+            "创建导出快照",
+        )
+        _require_free_space(
+            target_dir,
+            source_size + MIN_FREE_SPACE_RESERVE_BYTES,
+            "写入导出文件",
+        )
     with tempfile.TemporaryDirectory(dir=TEMP_DIR, prefix="pack_export_") as tmp_dir:
         staging = Path(tmp_dir) / pack_id
         shutil.copytree(pack_dir, staging)
         semantic_file = staging / "semantic_metadata.json"
-        if include_semantic:
+        vectors_included = False
+        if export_mode == "share" and include_semantic:
             if semantic_file.exists():
                 portable = reset_local_embedding_state(
                     _load_json(semantic_file, {}), staging
                 )
                 portable = reconcile_metadata(staging, external_data=portable)
                 save_metadata(staging, reset_local_embedding_state(portable))
-        elif semantic_file.exists():
+        elif export_mode == "share" and semantic_file.exists():
             semantic_file.unlink()
+        elif export_mode == "backup":
+            source_index_dir = PLUGIN_DATA_DIR / "semantic_indexes" / pack_id
+            shutil.copytree(source_index_dir, staging / "semantic_index")
+            vectors_included = True
+
+        raw_pack_schema_version = _load_manifest(pack_id).get("schema_version", 1)
+        try:
+            pack_schema_version = int(raw_pack_schema_version or 1)
+        except (TypeError, ValueError):
+            pack_schema_version = 1
+        transfer_info = {
+            "format": PACK_TRANSFER_FORMAT,
+            "format_version": PACK_TRANSFER_VERSION,
+            "export_mode": export_mode,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "pack": {
+                "id": pack_id,
+                "schema_version": pack_schema_version,
+            },
+            "features": {
+                "semantic_metadata": semantic_file.is_file(),
+                "vectors": vectors_included,
+            },
+            "compatibility": {
+                "manifest_and_memes_at_archive_root": True,
+                "legacy_nonsemantic_import_supported": True,
+            },
+        }
+        _save_json(staging / PACK_TRANSFER_MANIFEST, transfer_info)
         archive_path = shutil.make_archive(str(archive_base), "zip", root_dir=staging)
 
     return {
         "pack_id": pack_id,
         "archive_path": archive_path,
+        "archive_filename": Path(archive_path).name,
         "include_semantic": include_semantic,
+        "export_mode": export_mode,
+        "semantic_metadata_included": bool(
+            transfer_info["features"]["semantic_metadata"]
+        ),
+        "vectors_included": vectors_included,
     }
 
 
