@@ -924,6 +924,29 @@ class SemanticMvpTest(unittest.TestCase):
                 for path in temp_paths:
                     Path(path).unlink(missing_ok=True)
 
+    def test_misnamed_gif_is_detected_from_file_content(self):
+        with tempfile.TemporaryDirectory() as temp:
+            disguised_path = Path(temp) / "animated.jpg"
+            colors = [(index * 30, 0, 0) for index in range(7)]
+            frames = [Image.new("RGB", (4, 4), color) for color in colors]
+            frames[0].save(
+                disguised_path,
+                format="GIF",
+                save_all=True,
+                append_images=frames[1:],
+                duration=100,
+                loop=0,
+                disposal=2,
+            )
+
+            visual_paths, temp_paths = prepare_visual_inputs(disguised_path)
+            try:
+                self.assertEqual(len(visual_paths), 5)
+                self.assertTrue(all(Path(path).suffix == ".png" for path in visual_paths))
+            finally:
+                for path in temp_paths:
+                    Path(path).unlink(missing_ok=True)
+
     def test_scan_deduplicates_and_reuses_metadata(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -78,15 +78,19 @@ def build_caption_prompt(frame_count: int = 1) -> str:
 
 
 def prepare_visual_inputs(path: Path | str) -> tuple[list[str], list[str]]:
-    """返回视觉模型输入；GIF 等间隔生成最多五张临时 PNG。"""
+    """返回视觉模型输入；按文件真实格式识别 GIF 并生成最多五张临时 PNG。"""
     source = Path(path).resolve()
-    if source.suffix.lower() != ".gif":
-        return [str(source)], []
     temp_paths: list[str] = []
+    confirmed_gif = False
     try:
         from PIL import Image
 
         with Image.open(source) as image:
+            # 资源包里可能存在扩展名为 jpg/png、实际内容却是 GIF 的文件。
+            # 只看后缀会把整段动图直接交给模型，部分中转站会因此返回 500。
+            if str(image.format or "").upper() != "GIF":
+                return [str(source)], []
+            confirmed_gif = True
             frame_count = max(1, int(getattr(image, "n_frames", 1) or 1))
             sample_count = min(frame_count, MAX_GIF_FRAMES)
             if sample_count <= 1:
@@ -113,6 +117,10 @@ def prepare_visual_inputs(path: Path | str) -> tuple[list[str], list[str]]:
     except Exception as exc:
         for temp_path in temp_paths:
             Path(temp_path).unlink(missing_ok=True)
+        # 保持旧行为：无法由 Pillow 识别的普通图片仍交给模型处理。
+        # 明确使用 .gif 后缀或已经确认是 GIF 的文件则应报告预处理错误。
+        if not confirmed_gif and source.suffix.lower() != ".gif":
+            return [str(source)], []
         raise ValueError(f"GIF 多帧处理失败：{exc}") from exc
 
 
