@@ -28,11 +28,10 @@ CAPTION_PROMPT = """你是中文互联网表情包语义分析员。你的任务
 - 结合文字的陈述/疑问形式、人物表情、动作方向和图文反差选择指向。如果人物用开心、得意、点赞、卖萌等方式主动认领一种本应尴尬或负面的状态，应优先考虑己方自嘲、承认后装傻、厚脸皮调侃等用法，而不是自动解释成批评对方。
 - 明确蠢事、失误、越界行为或尴尬处境究竟是发送者一方、对方还是第三方造成的，并在 caption 和 tags 中保持一致。
 
-四、按条件核实外部知识
-- 如果当前请求环境确实提供联网搜索能力，只要画面主体疑似有明确身份、作品出处或经典模板来源，就必须尝试检索核实；不能因为不确定搜索词而直接跳过。
-- 搜索时应使用稳定的外观特征、服饰/道具、画面文字和可能的作品线索交叉验证，不能仅凭发色、瞳色或印象认人。
-- 有可靠结果时，将人物名、作品名或模板来源自然写入 caption 或 tags，方便按身份搜索；但角色身份和原作人设只能作为辅助证据，不能覆盖当前图片经过二创后的实际语气。
-- 如果没有联网能力或没有可靠结果，就省略身份，不得声称已经检索，也不能把搜索猜测写成事实。
+四、谨慎处理角色和出处
+- 本任务不提供联网搜索或其他外部工具，禁止调用 web_search，禁止输出工具调用请求或搜索过程。
+- 只有从画面文字、显著服饰或经典构图就能高置信确认时，才写入人物名、作品名或模板来源。
+- 身份不确定时直接省略，不得为了认人而中断最终 JSON 输出，也不能把猜测写成事实。
 
 五、还原聊天中的真实用法
 - 先推断“什么样的上一句话或行为会触发发送这张图”，再判断发送者是在质问、反驳、拒绝、催促、吐槽、嘲讽、敷衍、求饶、炫耀还是表达其他反应。
@@ -54,6 +53,16 @@ CAPTION_PROMPT = """你是中文互联网表情包语义分析员。你的任务
 格式必须为：
 {"caption":"……","tags":["……","……"],"visible_text":"……"}
 """
+
+CAPTION_SYSTEM_PROMPT = (
+    "你只能直接完成图片分析并返回一个 JSON 对象。"
+    "禁止联网，禁止调用或模拟任何工具，禁止输出分析过程。"
+)
+
+CAPTION_RETRY_PROMPT = """上一次输出不是可用的 JSON。请重新直接分析这张表情包。
+不得联网，不得调用或模拟 web_search，不得输出思考过程、Markdown 或代码块。
+身份不确定就省略，只根据画面、动作和文字还原聊天用法。
+只返回：{"caption":"一到两句中文核心梗义和使用场景","tags":["6到10个细粒度中文标签"],"visible_text":"图中原文或空字符串"}"""
 
 MAX_GIF_FRAMES = 5
 
@@ -175,7 +184,53 @@ def extract_token_usage(response: Any) -> dict[str, int]:
         "input": input_tokens + cached_tokens,
         "output": output_tokens,
         "total": total,
+        "calls": 1,
     }
+
+
+def _merge_token_usage(usages: list[dict[str, int]]) -> dict[str, int]:
+    result = {"input": 0, "output": 0, "total": 0, "calls": 0}
+    for usage in usages:
+        for key in result:
+            try:
+                result[key] += max(0, int(usage.get(key, 0) or 0))
+            except (TypeError, ValueError):
+                continue
+    return result
+
+
+def _structured_output_is_unsupported(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    return "response_format" in message and any(
+        marker in message
+        for marker in ("unsupported", "not support", "unknown", "unexpected", "invalid")
+    )
+
+
+async def _request_caption_response(
+    context: Any,
+    provider_id: str,
+    prompt: str,
+    visual_paths: list[str],
+) -> Any:
+    request = {
+        "chat_provider_id": provider_id,
+        "prompt": prompt,
+        "image_urls": visual_paths,
+        "system_prompt": CAPTION_SYSTEM_PROMPT,
+        "temperature": 0,
+        "max_tokens": 900,
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        return await context.llm_generate(**request)
+    except Exception as exc:
+        # 部分非 OpenAI Provider 不支持 response_format。只在明确报参数
+        # 不支持时降级，避免吞掉真实的模型或网络错误。
+        if not _structured_output_is_unsupported(exc):
+            raise
+        request.pop("response_format", None)
+        return await context.llm_generate(**request)
 
 
 async def generate_caption(
@@ -189,24 +244,44 @@ async def generate_caption(
         selected_provider = provider_id
         if not selected_provider:
             raise RuntimeError("未配置视觉模型，请先选择支持图片输入的视觉模型 Provider")
-        response = await context.llm_generate(
-            chat_provider_id=selected_provider,
-            prompt=build_caption_prompt(len(visual_paths)),
-            image_urls=visual_paths,
+        usages = []
+        response = await _request_caption_response(
+            context,
+            selected_provider,
+            build_caption_prompt(len(visual_paths)),
+            visual_paths,
         )
-        raw = (
-            getattr(response, "completion_text", None)
-            or getattr(response, "text", None)
-            or response
-        )
-        token_usage = extract_token_usage(response)
+        usages.append(extract_token_usage(response))
+        raw = getattr(response, "completion_text", None) or getattr(
+            response, "text", None
+        ) or response
         try:
             caption, tags, visible_text = parse_caption_result(raw)
-        except Exception as exc:
-            # 即使返回内容无法解析，也保留本次已发生的调用用量。
-            setattr(exc, "token_usage", token_usage)
-            setattr(exc, "result_preview", str(raw or "")[:1000])
-            raise
+        except Exception:
+            # 中转站偶尔会把模型的工具调用意图当成普通文本返回。
+            # 第二次使用精简提示重试，不携带旧回复，避免重复工具调用过程。
+            try:
+                response = await _request_caption_response(
+                    context,
+                    selected_provider,
+                    CAPTION_RETRY_PROMPT,
+                    visual_paths,
+                )
+            except Exception as exc:
+                setattr(exc, "token_usage", _merge_token_usage(usages))
+                setattr(exc, "result_preview", str(raw or "")[:1000])
+                raise
+            usages.append(extract_token_usage(response))
+            raw = getattr(response, "completion_text", None) or getattr(
+                response, "text", None
+            ) or response
+            try:
+                caption, tags, visible_text = parse_caption_result(raw)
+            except Exception as exc:
+                setattr(exc, "token_usage", _merge_token_usage(usages))
+                setattr(exc, "result_preview", str(raw or "")[:1000])
+                raise
+        token_usage = _merge_token_usage(usages)
         return {
             "caption": caption,
             "tags": tags,

@@ -250,7 +250,7 @@ class SemanticTaskManager:
         current = self._normalize_token_usage(usage)
         for key in ("input", "output", "total"):
             total[key] += current[key]
-        total["calls"] += 1
+        total["calls"] += max(1, current["calls"])
         state["token_usage"] = total
         state["vision_calls"] = total["calls"]
         state["updated_at"] = utc_now()

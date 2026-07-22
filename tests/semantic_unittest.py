@@ -5,7 +5,11 @@ import unittest
 from pathlib import Path
 
 import faiss
-from backend.semantic_caption import build_caption_prompt, prepare_visual_inputs
+from backend.semantic_caption import (
+    build_caption_prompt,
+    generate_caption,
+    prepare_visual_inputs,
+)
 from backend.semantic_index import EmbeddingAdapter, build_index, index_is_ready
 from backend.semantic_models import (
     PROMPT_VERSION,
@@ -126,6 +130,44 @@ class BlockingEmbedding(FakeEmbedding):
         self.batch_started.set()
         await self.release_batch.wait()
         return [[1.0, 0.0] for _ in texts]
+
+
+class RetryVisionContext:
+    def __init__(self):
+        self.requests = []
+
+    async def llm_generate(self, **kwargs):
+        self.requests.append(kwargs)
+        if len(self.requests) == 1:
+            return type(
+                "VisionResponse",
+                (),
+                {
+                    "completion_text": (
+                        "我先确认角色。tool request web_search with query is 动漫角色"
+                    ),
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 20,
+                        "total_tokens": 120,
+                    },
+                },
+            )()
+        return type(
+            "VisionResponse",
+            (),
+            {
+                "completion_text": (
+                    '{"caption":"惊慌地摆手求饶","tags":["惊慌","求饶",'
+                    '"摆手","认怂","聊天反应","拒绝"],"visible_text":""}'
+                ),
+                "usage": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 15,
+                    "total_tokens": 55,
+                },
+            },
+        )()
 
 
 class SemanticMvpTest(unittest.TestCase):
@@ -768,8 +810,9 @@ class SemanticMvpTest(unittest.TestCase):
         self.assertIn("发送表情包的人、聊天对象、图中人物", prompt)
         self.assertIn("不能默认所有句子都在质问聊天对象", prompt)
         self.assertIn("己方自嘲、承认后装傻", prompt)
-        self.assertIn("确实提供联网搜索能力", prompt)
-        self.assertIn("不得声称已经检索", prompt)
+        self.assertIn("不提供联网搜索或其他外部工具", prompt)
+        self.assertIn("禁止调用 web_search", prompt)
+        self.assertNotIn("必须尝试检索", prompt)
         self.assertIn("触发发送这张图", prompt)
         self.assertIn("言语功能", prompt)
         self.assertIn("复合语气", prompt)
@@ -779,6 +822,26 @@ class SemanticMvpTest(unittest.TestCase):
         self.assertNotIn("小B崽子", prompt)
         self.assertNotIn("《我的世界》", prompt)
         self.assertNotIn("不觉得羞愧", prompt)
+
+    def test_caption_retry_recovers_tool_text_and_counts_both_calls(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                image_path = Path(temp) / "one.jpg"
+                image_path.write_bytes(b"fake-image")
+                context = RetryVisionContext()
+                result = await generate_caption(context, image_path, "fake-vision")
+                self.assertEqual(result["caption"], "惊慌地摆手求饶")
+                self.assertEqual(result["token_usage"]["calls"], 2)
+                self.assertEqual(result["token_usage"]["total"], 175)
+                self.assertEqual(len(context.requests), 2)
+                self.assertEqual(
+                    context.requests[0]["response_format"], {"type": "json_object"}
+                )
+                self.assertEqual(context.requests[0]["temperature"], 0)
+                self.assertIn("禁止联网", context.requests[0]["system_prompt"])
+                self.assertIn("上一次输出不是可用的 JSON", context.requests[1]["prompt"])
+
+        asyncio.run(run())
 
     def test_old_prompt_caption_is_regenerated_with_current_prompt(self):
         async def run():
@@ -943,6 +1006,12 @@ class SemanticMvpTest(unittest.TestCase):
         self.assertEqual(tags, ["心虚", "尴尬"])
         with self.assertRaises(ValueError):
             parse_caption_result('{"caption":"只有情绪"}')
+        mixed = parse_caption_result(
+            '工具调用：{"name":"web_search","parameters":{"query":"角色"}}\n'
+            '最终结果：{"caption":"无奈地装傻","tags":["无奈","装傻"],'
+            '"visible_text":""}'
+        )
+        self.assertEqual(mixed[0], "无奈地装傻")
         with self.assertRaisesRegex(ValueError, "无效数值"):
             normalize_vector([float("nan"), 1.0])
 

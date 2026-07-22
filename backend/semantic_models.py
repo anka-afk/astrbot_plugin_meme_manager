@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 SCHEMA_VERSION = "1.0"
-PROMPT_VERSION = "meme-semantic-v5"
+PROMPT_VERSION = "meme-semantic-v6"
 IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif"})
 CAPTION_STATUSES = frozenset({"pending", "running", "done", "failed"})
 EMBEDDING_STATUSES = frozenset({"pending", "running", "done", "failed"})
@@ -199,9 +199,29 @@ def parse_caption_result(value: Any) -> tuple[str, list[str], str]:
         try:
             value = json.loads(raw)
         except json.JSONDecodeError:
-            start, end = raw.find("{"), raw.rfind("}")
-            if start >= 0 and end > start:
-                value = json.loads(raw[start : end + 1])
+            decoder = json.JSONDecoder()
+            decoded_objects = []
+            valid_caption_objects = []
+            for start, character in enumerate(raw):
+                if character != "{":
+                    continue
+                try:
+                    candidate, _ = decoder.raw_decode(raw[start:])
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(candidate, dict):
+                    continue
+                decoded_objects.append(candidate)
+                if str(candidate.get("caption") or "").strip() and normalize_tags(
+                    candidate.get("tags")
+                ):
+                    valid_caption_objects.append(candidate)
+            if valid_caption_objects:
+                # 工具参数 JSON 可能出现在最终结果之前，只接受真正包含
+                # caption/tags 的最后一个对象。
+                value = valid_caption_objects[-1]
+            elif decoded_objects:
+                value = decoded_objects[-1]
             else:
                 raise ValueError("视觉模型没有返回 JSON")
     if not isinstance(value, dict):
