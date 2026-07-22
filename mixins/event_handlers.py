@@ -1,4 +1,5 @@
-import asyncio
+import io
+import json
 import os
 import random
 import re
@@ -6,23 +7,26 @@ import ssl
 import tempfile
 import time
 import traceback
-import io
-import json
 from typing import Any
 
 import aiohttp
 from PIL import Image as PILImage
+
 from astrbot.api import logger
 from astrbot.api.all import *
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.event.filter import EventMessageType
 from astrbot.api.message_components import *
 from astrbot.api.provider import LLMResponse, ProviderRequest
-from astrbot.core.message.components import Plain, Image
+from astrbot.core.message.components import Image, Plain
 from astrbot.core.message.message_event_result import MessageChain, ResultContentType
 
-from ..config import MEMES_DIR
-from ..backend.semantic_query import validate_selected_id
+from ..backend.semantic_query import (
+    candidate_records,
+    remember_candidates,
+    search_memes,
+    validate_selected_id,
+)
+from ..config import MEMES_DIR, PLUGIN_DATA_DIR
 
 
 class EventHandlerMixin:
@@ -328,6 +332,99 @@ class EventHandlerMixin:
     ) -> None:
         self._apply_request_prompt(req, event)
 
+    async def _resp_semantic_llm_impl(
+        self, event: AstrMessageEvent, response: LLMResponse, text: str
+    ):
+        """Select one semantic candidate with the emotion-assistant model.
+
+        Args:
+            event: Current AstrBot message event.
+            response: Reply model response that will be cleaned in place.
+            text: Reply text used as the semantic query and selection context.
+        """
+        pack_context = self._resolve_runtime_pack_context(event=event)
+        pack_id = str(pack_context.get("pack_id") or "")
+        verified_pack_id = str(
+            event.get_extra("meme_manager_semantic_verified_pack_id") or ""
+        )
+        selected_id = ""
+        try:
+            result = await search_memes(
+                pack_context["pack_dir"],
+                PLUGIN_DATA_DIR,
+                pack_id,
+                text,
+                self._resolve_embedding_provider(pack_id),
+                top_k=self.semantic_top_k,
+                min_score=self.semantic_min_score,
+                _verified_complete=pack_id == verified_pack_id,
+            )
+            candidates = result.get("candidates") or []
+            records = candidate_records(pack_context["pack_dir"], candidates)
+            remember_candidates(event, records)
+            event.set_extra("meme_manager_semantic_query", str(text or ""))
+            if candidates:
+                provider_id = str(self.emotion_llm_provider_id or "").strip()
+                if not provider_id:
+                    provider_id = str(
+                        await self.context.get_current_chat_provider_id(
+                            umo=event.unified_msg_origin
+                        )
+                        or ""
+                    ).strip()
+                if provider_id:
+                    visible_candidates = [
+                        {
+                            "id": item.get("id"),
+                            "caption": item.get("caption", ""),
+                            "tags": item.get("tags") or [],
+                        }
+                        for item in candidates
+                    ]
+                    prompt = (
+                        "你是表情图片选择助手。请根据机器人准备发送的回复，从候选中最多选择一张最合适的图片；"
+                        "不适合使用表情时必须留空。只能返回候选里真实存在的ID。\n"
+                        "只输出JSON，格式为："
+                        '{"meme_id":"meme:候选ID"}；不使用则返回'
+                        '{"meme_id":""}。\n'
+                        f"机器人回复：{text}\n"
+                        "候选图片："
+                        + json.dumps(visible_candidates, ensure_ascii=False)
+                    )
+                    llm_resp = await self.context.llm_generate(
+                        chat_provider_id=provider_id, prompt=prompt
+                    )
+                    raw_text = str(
+                        getattr(llm_resp, "completion_text", "") or ""
+                    ).strip()
+                    data = None
+                    try:
+                        data = json.loads(raw_text)
+                    except (TypeError, ValueError):
+                        match = re.search(r"\{[\s\S]*\}", raw_text)
+                        if match:
+                            try:
+                                data = json.loads(match.group(0))
+                            except (TypeError, ValueError):
+                                data = None
+                    if not isinstance(data, dict):
+                        data = {}
+                    requested_id = str(
+                        data.get("meme_id") or data.get("id") or ""
+                    ).strip()
+                    valid_ids = {str(item.get("id") or "") for item in candidates}
+                    if requested_id in valid_ids:
+                        selected_id = requested_id
+        except Exception as exc:
+            logger.error(
+                "[meme_manager] Emotion-assisted semantic search failed: %s",
+                exc,
+                exc_info=True,
+            )
+
+        marked_text = text + (f"\n&&{selected_id}&&" if selected_id else "")
+        return await self._resp_semantic_impl(event, response, marked_text)
+
     async def _resp_impl(self, event: AstrMessageEvent, response: LLMResponse):
         """处理 LLM 响应，识别表情"""
 
@@ -335,12 +432,20 @@ class EventHandlerMixin:
             return
 
         text = response.completion_text
+        pack_context = self._resolve_runtime_pack_context(event=event)
 
-        # 语义模式只接受本轮 search_memes 返回的候选 ID，不再运行旧分类猜测逻辑。
-        if self._semantic_mode_active(event):
+        # Semantic packs use one exclusive route: reply-model Tool calls or
+        # emotion-assistant candidate selection. Neither uses legacy guessing.
+        semantic_mode = (
+            str(event.get_extra("meme_manager_semantic_mode") or "")
+            if self._semantic_mode_active(event)
+            else ""
+        )
+        if semantic_mode == "llm":
+            return await self._resp_semantic_llm_impl(event, response, text)
+        if semantic_mode == "tool":
             return await self._resp_semantic_impl(event, response, text)
 
-        pack_context = self._resolve_runtime_pack_context(event=event)
         runtime_category_mapping = (
             pack_context.get("category_mapping") or self.category_mapping
         )
@@ -519,11 +624,14 @@ class EventHandlerMixin:
 
         if self.emotion_llm_enabled:
             try:
-                provider_id = self.emotion_llm_provider_id
+                provider_id = str(self.emotion_llm_provider_id or "").strip()
                 if not provider_id:
-                    provider_id = await self.context.get_current_chat_provider_id(
-                        umo=event.unified_msg_origin
-                    )
+                    provider_id = str(
+                        await self.context.get_current_chat_provider_id(
+                            umo=event.unified_msg_origin
+                        )
+                        or ""
+                    ).strip()
                 if provider_id:
                     valid_list = sorted(valid_emoticons)
                     prompt = (
@@ -542,12 +650,12 @@ class EventHandlerMixin:
                         data = None
                         try:
                             data = json.loads(raw_text)
-                        except Exception:
+                        except (TypeError, ValueError):
                             match = re.search(r"\{[\s\S]*\}", raw_text)
                             if match:
                                 try:
                                     data = json.loads(match.group(0))
-                                except Exception:
+                                except (TypeError, ValueError):
                                     data = None
                         if isinstance(data, dict):
                             emotions = data.get("emotions")

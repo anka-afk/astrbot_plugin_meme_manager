@@ -18,7 +18,7 @@ from .backend.semantic_query import (
     remember_candidates,
     search_memes,
 )
-from .backend.semantic_storage import load_metadata
+from .backend.semantic_storage import load_metadata, semantic_metadata_is_complete
 from .backend.semantic_task import SemanticTaskManager
 from .config import (
     DEFAULT_CATEGORY_DESCRIPTIONS,
@@ -35,6 +35,8 @@ from .utils import dict_to_string, load_json
 
 MEME_PROMPT_MARKER_START = "<!-- meme_manager_prompt:start -->"
 MEME_PROMPT_MARKER_END = "<!-- meme_manager_prompt:end -->"
+SEMANTIC_PROMPT_MARKER_START = "<!-- meme_manager_semantic_prompt:start -->"
+SEMANTIC_PROMPT_MARKER_END = "<!-- meme_manager_semantic_prompt:end -->"
 PLUGIN_NAME = "meme_manager"
 WEBUI_LOG_PREFIX = f"[{PLUGIN_NAME}][WebUI]"
 
@@ -71,8 +73,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         )
         try:
             configured_concurrency = int(
-                self._read_config_value(("semantic", "concurrency"), default=1)
-                or 1
+                self._read_config_value(("semantic", "concurrency"), default=1) or 1
             )
         except (TypeError, ValueError):
             configured_concurrency = 1
@@ -477,7 +478,9 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             pack_id = str(pack_context.get("pack_id") or "").strip()
             pack_dir = pack_context.get("pack_dir")
             if not pack_id or not pack_dir:
-                logger.info("%s 语义检索已开启，但当前没有可重建的表情包。", WEBUI_LOG_PREFIX)
+                logger.info(
+                    "%s 语义检索已开启，但当前没有可重建的表情包。", WEBUI_LOG_PREFIX
+                )
                 return
             metadata = load_metadata(pack_dir)
             images = metadata.get("images", {})
@@ -486,7 +489,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 for item in images.values()
                 if isinstance(item, dict) and item.get("caption_status") == "done"
             )
-            if not images or caption_done != len(images):
+            if (
+                not images
+                or caption_done != len(images)
+                or not semantic_metadata_is_complete(pack_dir, metadata)
+            ):
                 logger.info(
                     "%s 首次开启语义检索：%s 的图片描述尚未全部完成，暂不自动建立向量；"
                     "请先在语义化页面完成描述。",
@@ -513,9 +520,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 embedding.provider_id,
                 embedding.dimension,
             )
-            result = await self.semantic_task_manager.rebuild_index(
-                pack_id, force=True
-            )
+            result = await self.semantic_task_manager.rebuild_index(pack_id, force=True)
             logger.info(
                 "%s 首次开启语义检索：%s 向量索引完成，共 %s 条。",
                 WEBUI_LOG_PREFIX,
@@ -557,13 +562,32 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             return True
 
     def _semantic_pack_ready(
-        self, event: AstrMessageEvent | None = None, req: ProviderRequest | None = None
+        self,
+        event: AstrMessageEvent | None = None,
+        req: ProviderRequest | None = None,
+        *,
+        require_tool: bool = False,
     ) -> bool:
+        """Return whether the selected runtime pack can use semantic search.
+
+        Args:
+            event: Current AstrBot message event.
+            req: Current provider request, when checking request-time tools.
+            require_tool: Whether the reply model and request must expose the
+                semantic search tool.
+
+        Returns:
+            True when the pack is complete and its matching index is ready.
+        """
         if not self.semantic_enabled:
             return False
-        if req is not None and not self._reply_model_supports_tools(event):
+        if (
+            require_tool
+            and req is not None
+            and not self._reply_model_supports_tools(event)
+        ):
             return False
-        if req is not None:
+        if require_tool and req is not None:
             tool_set = getattr(req, "func_tool", None)
             if (
                 tool_set is None
@@ -575,13 +599,23 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         pack_id = str(context.get("pack_id") or "")
         if not pack_id:
             return False
-        metadata = load_metadata(context.get("pack_dir"))
-        if not metadata.get("images"):
+        pack_dir = context.get("pack_dir")
+        metadata = load_metadata(pack_dir)
+        if not semantic_metadata_is_complete(
+            pack_dir, metadata, require_embeddings=True
+        ):
             return False
-        provider = self._resolve_embedding_provider(pack_id)
-        embedding = EmbeddingAdapter(
-            provider, self.semantic_embedding_provider_id or ""
-        )
+        try:
+            provider = self._resolve_embedding_provider(pack_id)
+            embedding = EmbeddingAdapter(
+                provider, self.semantic_embedding_provider_id or ""
+            )
+        except Exception as exc:
+            logger.warning(
+                "Semantic search is unavailable; falling back to legacy categories: %s",
+                exc,
+            )
+            return False
         provider_id = embedding.provider_id
         return (
             index_is_ready(
@@ -608,20 +642,34 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             remove_tool("search_memes")
 
     def _semantic_mode_active(self, event: AstrMessageEvent | None) -> bool:
+        """Return whether the event still targets its verified semantic pack.
+
+        Args:
+            event: Current AstrBot message event.
+
+        Returns:
+            True when request-time verification and the runtime pack match.
+        """
         if event is None or not hasattr(event, "get_extra"):
             return False
-        return bool(event.get_extra("meme_manager_semantic_active")) and bool(
-            self._semantic_pack_ready(event=event)
+        verified_pack_id = str(
+            event.get_extra("meme_manager_semantic_verified_pack_id") or ""
+        )
+        runtime_pack_id = str(event.get_extra("meme_manager_runtime_pack_id") or "")
+        return (
+            bool(event.get_extra("meme_manager_semantic_active"))
+            and bool(verified_pack_id)
+            and verified_pack_id == runtime_pack_id
         )
 
     def _semantic_system_prompt(self) -> str:
         return (
-            "\n\n<!-- meme_manager_semantic_prompt:start -->\n"
+            f"\n\n{SEMANTIC_PROMPT_MARKER_START}\n"
             "你可以使用 search_memes 搜索表情包。只有确实想使用表情包时才调用它；不要直接复制用户原话，"
             "先判断你准备如何回应，再用第一人称描述自己的情绪、态度、动作和潜台词作为查询词。"
             "工具只返回少量候选，最终是否使用由你决定。若选择候选，请在最终文本中使用 &&meme:候选ID&&，"
             "不要捏造候选列表之外的 ID；不需要表情时不要调用工具。\n"
-            "<!-- meme_manager_semantic_prompt:end -->"
+            f"{SEMANTIC_PROMPT_MARKER_END}"
         )
 
     def _wrap_meme_prompt(self, prompt: str) -> str:
@@ -633,6 +681,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             rf"\n*{re.escape(MEME_PROMPT_MARKER_START)}[\s\S]*?{re.escape(MEME_PROMPT_MARKER_END)}"
         )
         prompt = marker_pattern.sub("", prompt).rstrip()
+        semantic_marker_pattern = re.compile(
+            rf"\n*{re.escape(SEMANTIC_PROMPT_MARKER_START)}[\s\S]*?"
+            rf"{re.escape(SEMANTIC_PROMPT_MARKER_END)}"
+        )
+        prompt = semantic_marker_pattern.sub("", prompt).rstrip()
         if self.sys_prompt_add and prompt.endswith(self.sys_prompt_add):
             prompt = prompt[: -len(self.sys_prompt_add)].rstrip()
         if not self.prompt_head:
@@ -745,17 +798,33 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
     def _apply_request_prompt(
         self, req: ProviderRequest, event: AstrMessageEvent | None = None
     ) -> None:
-        semantic_active = self._semantic_pack_ready(event=event, req=req)
+        semantic_mode = ""
+        if self.emotion_llm_enabled:
+            if self._semantic_pack_ready(event=event, req=req):
+                semantic_mode = "llm"
+        elif self._semantic_pack_ready(event=event, req=req, require_tool=True):
+            semantic_mode = "tool"
+        semantic_active = bool(semantic_mode)
         if event is not None and hasattr(event, "set_extra"):
             event.set_extra("meme_manager_semantic_active", semantic_active)
-        if semantic_active:
+            event.set_extra("meme_manager_semantic_mode", semantic_mode)
+            event.set_extra(
+                "meme_manager_semantic_verified_pack_id",
+                str(event.get_extra("meme_manager_runtime_pack_id") or "")
+                if semantic_active
+                else "",
+            )
+            event.set_extra("meme_manager_semantic_selected_ids", [])
+            event.set_extra("meme_manager_semantic_candidates", {})
+            event.set_extra("meme_manager_semantic_query", "")
+        if semantic_mode == "tool":
             req.system_prompt = (
                 self._strip_meme_prompt(req.system_prompt)
                 + self._semantic_system_prompt()
             )
             return
         self._remove_semantic_tool(req)
-        if self.emotion_llm_enabled:
+        if semantic_mode == "llm" or self.emotion_llm_enabled:
             req.system_prompt = self._strip_meme_prompt(req.system_prompt)
             return
         pack_context = self._resolve_runtime_pack_context(event=event, req=req)
@@ -790,9 +859,16 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         Args:
             query(string): Bot 自己准备表达的情绪、态度、动作和潜台词，不要直接复制用户原话。
         """
-        if not self._semantic_mode_active(event):
+        if (
+            not self._semantic_mode_active(event)
+            or str(event.get_extra("meme_manager_semantic_mode") or "") != "tool"
+        ):
             return dumps_result({"ok": False, "reason": "语义查询未启用或索引不可用"})
         context = self._resolve_runtime_pack_context(event=event)
+        if str(context.get("pack_id") or "") != str(
+            event.get_extra("meme_manager_semantic_verified_pack_id") or ""
+        ):
+            return dumps_result({"ok": False, "reason": "当前语义图包已经变化"})
         try:
             result = await search_memes(
                 context["pack_dir"],
@@ -802,6 +878,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 self._resolve_embedding_provider(str(context["pack_id"])),
                 top_k=self.semantic_top_k,
                 min_score=self.semantic_min_score,
+                _verified_complete=True,
             )
             remember_candidates(
                 event,

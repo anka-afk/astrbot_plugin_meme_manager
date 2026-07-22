@@ -108,54 +108,66 @@ def load_metadata(pack_dir: Path | str) -> dict[str, Any]:
 
 
 def semantic_metadata_is_complete(
-    pack_dir: Path | str, data: dict[str, Any] | None = None
+    pack_dir: Path | str,
+    data: dict[str, Any] | None = None,
+    *,
+    require_embeddings: bool = False,
 ) -> bool:
-    """严格确认当前图包的每一份图片内容都已有完整语义描述。
+    """Return whether every current image has complete semantic metadata.
 
-    不能只看元数据里的完成数量：图片可能在语义化之后被新增、删除，或在
-    文件数量不变时被替换。只有磁盘内容、扫描快照和完成记录完全一致，
-    才允许把这个图包用作语义检索目标。
+    Args:
+        pack_dir: Root directory of the meme pack.
+        data: Previously loaded metadata, if available.
+        require_embeddings: Whether every image must also have a completed
+            local embedding.
+
+    Returns:
+        True only when disk contents, the scan snapshot, and completed records
+        match exactly.
     """
     root = Path(pack_dir).resolve()
     memes_root = root / "memes"
-    if not metadata_path(root).is_file() or not memes_root.is_dir():
-        return False
+    metadata_file = metadata_path(root)
+    image_paths = (
+        [
+            path
+            for path in sorted(memes_root.rglob("*"))
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        ]
+        if memes_root.is_dir()
+        else []
+    )
 
     metadata = data if isinstance(data, dict) else load_metadata(root)
     images = metadata.get("images", {})
-    if not isinstance(images, dict) or not images:
-        return False
-
-    scanned = scan_images(root)
-    if not scanned:
-        return False
-    current_hashes = {str(item.get("content_sha256") or "") for item in scanned}
-    if not current_hashes or set(images) != current_hashes:
-        return False
-
-    current_file_total = sum(
-        1
-        for path in memes_root.rglob("*")
-        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-    )
-    try:
-        recorded_file_total = int(metadata.get("file_total"))
-        recorded_unique_total = int(metadata.get("unique_total"))
-    except (TypeError, ValueError):
-        return False
-    if (
-        recorded_file_total != current_file_total
-        or recorded_unique_total != len(current_hashes)
-    ):
-        return False
-
-    return all(
-        isinstance(images.get(digest), dict)
-        and images[digest].get("caption_status") == "done"
-        and str(images[digest].get("caption") or "").strip()
-        and normalize_tags(images[digest].get("tags"))
-        for digest in current_hashes
-    )
+    complete = False
+    if metadata_file.is_file() and image_paths and isinstance(images, dict) and images:
+        scanned = scan_images(root)
+        current_hashes = {str(item.get("content_sha256") or "") for item in scanned}
+        try:
+            recorded_file_total = int(metadata.get("file_total"))
+            recorded_unique_total = int(metadata.get("unique_total"))
+        except (TypeError, ValueError):
+            recorded_file_total = -1
+            recorded_unique_total = -1
+        complete = bool(
+            current_hashes
+            and set(images) == current_hashes
+            and recorded_file_total == len(image_paths)
+            and recorded_unique_total == len(current_hashes)
+            and all(
+                isinstance(images.get(digest), dict)
+                and images[digest].get("caption_status") == "done"
+                and str(images[digest].get("caption") or "").strip()
+                and normalize_tags(images[digest].get("tags"))
+                and (
+                    not require_embeddings
+                    or images[digest].get("embedding_status") == "done"
+                )
+                for digest in current_hashes
+            )
+        )
+    return complete
 
 
 def get_pack_semantic_summary(
@@ -197,9 +209,7 @@ def get_pack_semantic_summary(
 
     metadata = load_metadata(root)
     images = [
-        item
-        for item in metadata.get("images", {}).values()
-        if isinstance(item, dict)
+        item for item in metadata.get("images", {}).values() if isinstance(item, dict)
     ]
     caption_done = sum(
         1
@@ -208,9 +218,7 @@ def get_pack_semantic_summary(
         and str(item.get("caption") or "").strip()
         and item.get("tags")
     )
-    caption_failed = sum(
-        1 for item in images if item.get("caption_status") == "failed"
-    )
+    caption_failed = sum(1 for item in images if item.get("caption_status") == "failed")
     try:
         recorded_unique_total = int(metadata.get("unique_total", len(images)))
     except (TypeError, ValueError):
@@ -552,8 +560,15 @@ def metadata_items(
         }
         predicate = predicates.get(status)
         if predicate is None:
-            predicate = lambda item: item.get("caption_status") == status or item.get("embedding_status") == status
-        items = [item for item in items if predicate(item)]
+            items = [
+                item
+                for item in items
+                if item.get("caption_status") == status
+                or item.get("embedding_status") == status
+            ]
+        else:
+            items = [item for item in items if predicate(item)]
+
     def item_sort_key(item: dict[str, Any]) -> tuple[int, str, str]:
         statuses = {
             str(item.get("caption_status") or ""),

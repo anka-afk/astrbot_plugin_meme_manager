@@ -8,7 +8,12 @@ from typing import Any
 
 from .semantic_index import EmbeddingAdapter, search_index
 from .semantic_models import parse_meme_id
-from .semantic_storage import file_sha256, load_metadata, safe_relative_path
+from .semantic_storage import (
+    file_sha256,
+    load_metadata,
+    safe_relative_path,
+    semantic_metadata_is_complete,
+)
 
 
 async def search_memes(
@@ -20,12 +25,37 @@ async def search_memes(
     *,
     top_k: int = 5,
     min_score: float = 0.25,
+    _verified_complete: bool = False,
 ) -> dict[str, Any]:
+    """Search a fully semanticized meme pack.
+
+    Args:
+        pack_dir: Root directory of the selected meme pack.
+        plugin_data_dir: Plugin data directory containing semantic indexes.
+        pack_id: Selected meme pack identifier.
+        query: Semantic query text.
+        embedding_provider: Embedding provider used by the pack index.
+        top_k: Maximum number of candidates to return.
+        min_score: Minimum cosine similarity for returned candidates.
+        _verified_complete: Internal request-scoped proof that the same pack was
+            already checked before prompt injection.
+
+    Returns:
+        Search result with validated public candidate identifiers.
+    """
     if not str(query or "").strip():
         return {"ok": True, "candidates": [], "reason": "查询词不能为空"}
     metadata = load_metadata(pack_dir)
     if not metadata.get("images"):
         return {"ok": True, "candidates": [], "reason": "资源包没有语义元数据"}
+    if not _verified_complete and not semantic_metadata_is_complete(
+        pack_dir, metadata, require_embeddings=True
+    ):
+        return {
+            "ok": True,
+            "candidates": [],
+            "reason": "资源包尚未完成100%语义化，不能作为语义检索目标",
+        }
     candidates = await search_index(
         plugin_data_dir,
         pack_id,

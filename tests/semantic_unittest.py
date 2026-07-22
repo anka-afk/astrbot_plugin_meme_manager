@@ -10,7 +10,12 @@ from backend.semantic_caption import (
     generate_caption,
     prepare_visual_inputs,
 )
-from backend.semantic_index import EmbeddingAdapter, build_index, index_is_ready
+from backend.semantic_index import (
+    EmbeddingAdapter,
+    build_index,
+    index_is_ready,
+    search_index,
+)
 from backend.semantic_models import (
     PROMPT_VERSION,
     SemanticImage,
@@ -236,9 +241,7 @@ class SemanticMvpTest(unittest.TestCase):
             self.assertFalse(changed_summary["semantic_snapshot_matches"])
             self.assertTrue(changed_summary["semantic_files_changed"])
 
-            missing_detail = get_image_semantic_detail(
-                root, first_category / "new.jpg"
-            )
+            missing_detail = get_image_semantic_detail(root, first_category / "new.jpg")
             self.assertEqual(missing_detail["status"], "none")
 
     def test_new_image_sync_does_not_stop_existing_task(self):
@@ -266,18 +269,26 @@ class SemanticMvpTest(unittest.TestCase):
     def test_semantic_config_uses_astrbot_supported_types(self):
         schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
-        self.assertEqual(schema["semantic"]["items"]["min_score"]["type"], "float")
+        self.assertLess(
+            list(schema).index("semantic"), list(schema).index("generation")
+        )
+        semantic_items = schema["semantic"]["items"]
+        self.assertEqual(semantic_items["min_score"]["type"], "float")
         self.assertEqual(
-            schema["semantic"]["items"]["vision_provider_id"]["_special"],
+            semantic_items["vision_provider_id"]["_special"],
             "select_provider",
         )
         self.assertEqual(
-            schema["semantic"]["items"]["embedding_provider_id"]["_special"],
+            semantic_items["embedding_provider_id"]["_special"],
             "select_provider_embedding",
         )
-        self.assertNotIn(
-            "可选", schema["semantic"]["items"]["embedding_provider_id"]["description"]
-        )
+        self.assertNotIn("可选", semantic_items["embedding_provider_id"]["description"])
+        self.assertEqual(list(semantic_items)[:3], ["enabled", "top_k", "min_score"])
+        generation_items = schema["generation"]["items"]
+        self.assertEqual(next(iter(generation_items)), "emotion")
+        emotion_items = generation_items["emotion"]["items"]
+        self.assertEqual(next(iter(emotion_items)), "llm")
+        self.assertIn("接管 Tool", emotion_items["llm"]["description"])
 
     def test_full_task_embeds_once_and_builds_faiss(self):
         async def run():
@@ -324,10 +335,7 @@ class SemanticMvpTest(unittest.TestCase):
             self.assertIs(automatic._resolve_embedding_provider("demo"), provider)
             selection = json.loads(
                 (
-                    Path(temp)
-                    / "semantic_indexes"
-                    / "demo"
-                    / "provider_selection.json"
+                    Path(temp) / "semantic_indexes" / "demo" / "provider_selection.json"
                 ).read_text(encoding="utf-8")
             )
             self.assertEqual(selection["selection_mode"], "automatic")
@@ -424,14 +432,21 @@ class SemanticMvpTest(unittest.TestCase):
                 manager = SemanticTaskManager(
                     root,
                     context=FakeContext(WrongDimensionEmbedding()),
-                    config={"embedding_provider_id": "fake-embedding", "vision_provider_id": "fake-vision"},
+                    config={
+                        "embedding_provider_id": "fake-embedding",
+                        "vision_provider_id": "fake-vision",
+                    },
                 )
                 with self.assertRaisesRegex(RuntimeError, "维度校验失败"):
                     await manager.start("demo")
                 self.assertNotIn("demo", manager._tasks)
-                self.assertFalse((root / "semantic_indexes" / "demo" / "task_state.json").exists())
+                self.assertFalse(
+                    (root / "semantic_indexes" / "demo" / "task_state.json").exists()
+                )
                 selection = json.loads(
-                    (root / "semantic_indexes" / "demo" / "provider_selection.json").read_text()
+                    (
+                        root / "semantic_indexes" / "demo" / "provider_selection.json"
+                    ).read_text()
                 )
                 self.assertFalse(selection["dimension_verified"])
                 self.assertIn("维度不一致", selection["verification_error"])
@@ -448,7 +463,10 @@ class SemanticMvpTest(unittest.TestCase):
                 manager = SemanticTaskManager(
                     root,
                     context=FakeContext(FakeEmbedding()),
-                    config={"embedding_provider_id": "fake-embedding", "vision_provider_id": "fake-vision"},
+                    config={
+                        "embedding_provider_id": "fake-embedding",
+                        "vision_provider_id": "fake-vision",
+                    },
                 )
                 await manager.start("demo")
                 await manager._tasks["demo"]
@@ -457,12 +475,18 @@ class SemanticMvpTest(unittest.TestCase):
                 metadata["images"][digest]["caption_status"] = "done"
                 metadata["images"][digest]["embedding_status"] = "done"
                 save_metadata(pack, metadata)
-                (root / "semantic_indexes" / "demo" / "task_state.json").write_text("{}")
+                (root / "semantic_indexes" / "demo" / "task_state.json").write_text(
+                    "{}"
+                )
                 result = await manager.clear_local_semantic_state("demo")
                 current = load_metadata(pack)
                 self.assertEqual(current["images"][digest]["caption_status"], "done")
-                self.assertEqual(current["images"][digest]["embedding_status"], "cleared")
-                self.assertFalse((root / "semantic_indexes" / "demo" / "index.faiss").exists())
+                self.assertEqual(
+                    current["images"][digest]["embedding_status"], "cleared"
+                )
+                self.assertFalse(
+                    (root / "semantic_indexes" / "demo" / "index.faiss").exists()
+                )
                 self.assertEqual(result["task_status"], "idle")
                 self.assertEqual(result["pending"], 0)
                 self.assertTrue(result["queue_cleared"])
@@ -667,9 +691,7 @@ class SemanticMvpTest(unittest.TestCase):
                 image_dir = root / "packs" / "demo" / "memes" / "queue"
                 image_dir.mkdir(parents=True)
                 for index in range(4):
-                    (image_dir / f"{index}.png").write_bytes(
-                        f"worker-{index}".encode()
-                    )
+                    (image_dir / f"{index}.png").write_bytes(f"worker-{index}".encode())
                 manager = SemanticTaskManager(
                     root,
                     context=FakeContext(FakeEmbedding()),
@@ -716,9 +738,7 @@ class SemanticMvpTest(unittest.TestCase):
         async def run():
             with tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
-                (root / "packs" / "demo" / "memes" / "queue").mkdir(
-                    parents=True
-                )
+                (root / "packs" / "demo" / "memes" / "queue").mkdir(parents=True)
                 manager = SemanticTaskManager(
                     root,
                     context=FakeContext(FakeEmbedding()),
@@ -741,9 +761,7 @@ class SemanticMvpTest(unittest.TestCase):
                 image_dir = root / "packs" / "demo" / "memes" / "queue"
                 image_dir.mkdir(parents=True)
                 for index in range(2):
-                    (image_dir / f"{index}.png").write_bytes(
-                        f"index-{index}".encode()
-                    )
+                    (image_dir / f"{index}.png").write_bytes(f"index-{index}".encode())
                 provider = BlockingEmbedding()
                 manager = SemanticTaskManager(
                     root,
@@ -837,9 +855,7 @@ class SemanticMvpTest(unittest.TestCase):
                 self.assertEqual(
                     started_b["other_active_tasks"][0]["pack_id"], "pack-a"
                 )
-                self.assertEqual(
-                    started_b["other_active_tasks"][0]["concurrency"], 5
-                )
+                self.assertEqual(started_b["other_active_tasks"][0]["concurrency"], 5)
                 self.assertIn("并发会叠加", started_b["message"])
 
                 await manager.clear_local_semantic_state("pack-a")
@@ -851,9 +867,7 @@ class SemanticMvpTest(unittest.TestCase):
         async def run():
             with tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
-                (root / "packs" / "demo" / "memes" / "queue").mkdir(
-                    parents=True
-                )
+                (root / "packs" / "demo" / "memes" / "queue").mkdir(parents=True)
                 manager = SemanticTaskManager(
                     root,
                     context=FakeContext(FakeEmbedding()),
@@ -909,7 +923,9 @@ class SemanticMvpTest(unittest.TestCase):
                 )
                 self.assertEqual(context.requests[0]["temperature"], 0)
                 self.assertIn("禁止联网", context.requests[0]["system_prompt"])
-                self.assertIn("上一次输出不是可用的 JSON", context.requests[1]["prompt"])
+                self.assertIn(
+                    "上一次输出不是可用的 JSON", context.requests[1]["prompt"]
+                )
 
         asyncio.run(run())
 
@@ -1012,7 +1028,9 @@ class SemanticMvpTest(unittest.TestCase):
             visual_paths, temp_paths = prepare_visual_inputs(disguised_path)
             try:
                 self.assertEqual(len(visual_paths), 5)
-                self.assertTrue(all(Path(path).suffix == ".png" for path in visual_paths))
+                self.assertTrue(
+                    all(Path(path).suffix == ".png" for path in visual_paths)
+                )
             finally:
                 for path in temp_paths:
                     Path(path).unlink(missing_ok=True)
@@ -1188,6 +1206,30 @@ class SemanticMvpTest(unittest.TestCase):
                 await search_memes(pack, root, "demo", "我有点心虚", fake_embedding)
                 self.assertEqual(fake_embedding.single_calls, 1)
 
+                incomplete_vectors = load_metadata(pack)
+                first_digest = next(iter(incomplete_vectors["images"]))
+                incomplete_vectors["images"][first_digest]["embedding_status"] = (
+                    "failed"
+                )
+                save_metadata(pack, incomplete_vectors)
+                blocked = await search_memes(
+                    pack, root, "demo", "我有点心虚", fake_embedding
+                )
+                self.assertEqual(blocked["candidates"], [])
+                self.assertIn("尚未完成100%语义化", blocked["reason"])
+                incomplete_vectors["images"][first_digest]["embedding_status"] = "done"
+                save_metadata(pack, incomplete_vectors)
+
+                # Replacing content without changing the file count must still
+                # disable semantic search immediately.
+                (pack / "memes" / "a" / "one.png").write_bytes(b"new")
+                blocked = await search_memes(
+                    pack, root, "demo", "我有点心虚", fake_embedding
+                )
+                self.assertEqual(blocked["candidates"], [])
+                self.assertIn("尚未完成100%语义化", blocked["reason"])
+                self.assertEqual(fake_embedding.single_calls, 1)
+
         asyncio.run(run())
 
     def test_index_allows_failed_items_and_expands_colliding_ids(self):
@@ -1223,18 +1265,16 @@ class SemanticMvpTest(unittest.TestCase):
                 adapter = EmbeddingAdapter(provider)
                 await build_index(pack, root, "demo", adapter)
 
-                result = await search_memes(
-                    pack,
+                result = await search_index(
                     root,
                     "demo",
                     "我有点心虚，碰撞测试",
-                    provider,
+                    adapter,
+                    load_metadata(pack),
                     top_k=1,
                     min_score=-1,
                 )
-                self.assertEqual(
-                    len(result["candidates"][0]["id"].removeprefix("meme:")), 16
-                )
+                self.assertEqual(len(result[0]["id"].removeprefix("meme:")), 16)
 
                 current = load_metadata(pack)
                 failed_digest = "b" * 64
