@@ -2,6 +2,7 @@ import json
 import shutil
 import tempfile
 import zipfile
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,7 +29,13 @@ from ..config import (
     SELECTION_RULES_PATH,
     TEMP_DIR,
 )
-from .semantic_storage import reconcile_metadata, save_metadata
+from .semantic_storage import (
+    reconcile_metadata,
+    reset_local_embedding_state,
+    save_metadata,
+)
+
+PackOperationGuard = Callable[[str, str], None]
 
 
 def _load_json(path: Path, default):
@@ -166,6 +173,7 @@ def _apply_post_install_policy(
     new_pack_id: str,
     previous_single_empty_pack_id: str | None,
     set_as_default: bool,
+    operation_guard: PackOperationGuard | None = None,
 ) -> dict:
     """安装完成后执行策略：必要时移除空包并设置默认包。"""
     result = {
@@ -186,7 +194,7 @@ def _apply_post_install_policy(
     )
 
     if should_cleanup_previous_empty:
-        uninstall_pack(previous_empty_pack_id)
+        uninstall_pack(previous_empty_pack_id, operation_guard=operation_guard)
         result["removed_empty_pack_id"] = previous_empty_pack_id
 
     should_set_default = bool(set_as_default) or bool(previous_empty_pack_id)
@@ -382,6 +390,7 @@ def import_pack_archive(
     zip_path: Path,
     overwrite: bool = False,
     set_as_default: bool = False,
+    operation_guard: PackOperationGuard | None = None,
 ) -> dict:
     if not zip_path.is_file():
         raise FileNotFoundError("压缩包不存在")
@@ -407,6 +416,8 @@ def import_pack_archive(
 
         target_pack_dir = PACKS_DIR / pack_id
         if target_pack_dir.exists() and overwrite:
+            if operation_guard:
+                operation_guard(pack_id, "覆盖安装资源包")
             shutil.rmtree(target_pack_dir)
 
         shutil.copytree(pack_root, target_pack_dir)
@@ -415,8 +426,13 @@ def import_pack_archive(
     semantic_file = target_pack_dir / "semantic_metadata.json"
     if semantic_file.is_file():
         # 导入时重新按图片内容校验哈希；缺图/错图只保留为待处理状态。
-        reconciled = reconcile_metadata(target_pack_dir)
+        imported_data = _load_json(semantic_file, {})
+        portable_data = reset_local_embedding_state(imported_data)
+        reconciled = reconcile_metadata(target_pack_dir, external_data=portable_data)
+        reconciled = reset_local_embedding_state(reconciled)
         save_metadata(target_pack_dir, reconciled)
+    # FAISS 与 Provider 只属于本机，换包后必须重新建立，不接受压缩包中的旧状态。
+    shutil.rmtree(PLUGIN_DATA_DIR / "semantic_indexes" / pack_id, ignore_errors=True)
 
     registry = _load_registry()
     installed = registry["installed_packs"]
@@ -454,6 +470,7 @@ def import_pack_archive(
         new_pack_id=pack_id,
         previous_single_empty_pack_id=previous_single_empty_pack_id,
         set_as_default=set_as_default,
+        operation_guard=operation_guard,
     )
 
     return {
@@ -470,6 +487,7 @@ def export_pack_archive(
     output_dir: str | None = None,
     *,
     include_semantic: bool = True,
+    operation_guard: PackOperationGuard | None = None,
 ) -> dict:
     pack_id = str(pack_id or "").strip()
     if not pack_id:
@@ -478,27 +496,33 @@ def export_pack_archive(
     pack_dir = PACKS_DIR / pack_id
     if not pack_dir.is_dir():
         raise FileNotFoundError(f"表情包 {pack_id} 不存在")
+    if operation_guard:
+        operation_guard(pack_id, "导出资源包")
 
     target_dir = Path(output_dir).expanduser().resolve() if output_dir else BACKUP_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     archive_base = target_dir / f"{pack_id}_{timestamp}"
-    if include_semantic:
-        archive_path = shutil.make_archive(str(archive_base), "zip", root_dir=pack_dir)
-    else:
-        # 兼容版导出不带语义文件，原始资源包目录不做任何修改。
-        with tempfile.TemporaryDirectory(dir=TEMP_DIR, prefix="pack_export_") as tmp_dir:
-            staging = Path(tmp_dir) / pack_id
-            shutil.copytree(pack_dir, staging)
-            semantic_file = staging / "semantic_metadata.json"
+    # 即使导出语义描述，也只发布图片描述和标签；Provider、模型、维度、向量状态
+    # 以及本机索引全部留在本机，避免把作者环境带给普通用户。
+    with tempfile.TemporaryDirectory(dir=TEMP_DIR, prefix="pack_export_") as tmp_dir:
+        staging = Path(tmp_dir) / pack_id
+        shutil.copytree(pack_dir, staging)
+        semantic_file = staging / "semantic_metadata.json"
+        if include_semantic:
             if semantic_file.exists():
-                semantic_file.unlink()
-            archive_path = shutil.make_archive(str(archive_base), "zip", root_dir=staging)
+                portable = reset_local_embedding_state(_load_json(semantic_file, {}))
+                _save_json(semantic_file, portable)
+        elif semantic_file.exists():
+            semantic_file.unlink()
+        archive_path = shutil.make_archive(str(archive_base), "zip", root_dir=staging)
 
     return {"pack_id": pack_id, "archive_path": archive_path, "include_semantic": include_semantic}
 
 
-def uninstall_pack(pack_id: str) -> dict:
+def uninstall_pack(
+    pack_id: str, operation_guard: PackOperationGuard | None = None
+) -> dict:
     pack_id = str(pack_id or "").strip()
     if not pack_id:
         raise ValueError("pack_id 不能为空")
@@ -508,8 +532,11 @@ def uninstall_pack(pack_id: str) -> dict:
     pack_dir = PACKS_DIR / pack_id
     if not pack_dir.is_dir():
         raise FileNotFoundError(f"表情包 {pack_id} 不存在")
+    if operation_guard:
+        operation_guard(pack_id, "卸载资源包")
 
     shutil.rmtree(pack_dir)
+    shutil.rmtree(PLUGIN_DATA_DIR / "semantic_indexes" / pack_id, ignore_errors=True)
 
     registry = _load_registry()
     registry["installed_packs"] = [
@@ -668,6 +695,7 @@ def install_pack_from_github_source(
     source: dict,
     overwrite: bool = False,
     set_as_default: bool = False,
+    operation_guard: PackOperationGuard | None = None,
 ) -> dict:
     github_source = validate_source_descriptor(source)
     repo = github_source["repo"]
@@ -716,6 +744,7 @@ def install_pack_from_github_source(
             local_zip,
             overwrite=overwrite,
             set_as_default=set_as_default,
+            operation_guard=operation_guard,
         )
         result["source"] = github_source
         return result
@@ -725,6 +754,7 @@ def install_first_official_pack_from_index(
     index_url: str,
     overwrite: bool = False,
     set_as_default: bool = True,
+    operation_guard: PackOperationGuard | None = None,
 ) -> dict:
     """从社区索引安装首个官方包；若无官方条目则回退索引首项。"""
     cache_loaded = True
@@ -754,6 +784,7 @@ def install_first_official_pack_from_index(
         source=source,
         overwrite=overwrite,
         set_as_default=set_as_default,
+        operation_guard=operation_guard,
     )
     result["selected_pack_id"] = str(selected_entry.get("id") or "").strip()
     result["selected_pack_name"] = str(
@@ -838,7 +869,10 @@ def save_selection_rules(rules: list[dict]) -> dict:
     return payload
 
 
-def export_runtime_backup(output_dir: str | None = None) -> dict:
+def export_runtime_backup(
+    output_dir: str | None = None,
+    operation_guard: PackOperationGuard | None = None,
+) -> dict:
     target_dir = Path(output_dir).expanduser().resolve() if output_dir else BACKUP_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -857,6 +891,10 @@ def export_runtime_backup(output_dir: str | None = None) -> dict:
         if COMMUNITY_CACHE_PATH.is_file():
             shutil.copy2(COMMUNITY_CACHE_PATH, snapshot_root / "community_cache.json")
         if PACKS_DIR.is_dir():
+            if operation_guard:
+                for pack_dir in PACKS_DIR.iterdir():
+                    if pack_dir.is_dir():
+                        operation_guard(pack_dir.name, "导出全量备份")
             shutil.copytree(PACKS_DIR, snapshot_root / "packs", dirs_exist_ok=True)
 
         archive_path = shutil.make_archive(
@@ -878,7 +916,11 @@ def _find_backup_root(extract_root: Path) -> Path:
     raise ValueError("备份包结构无效，缺少 runtime 根目录")
 
 
-def import_runtime_backup(backup_zip_path: Path, overwrite: bool = False) -> dict:
+def import_runtime_backup(
+    backup_zip_path: Path,
+    overwrite: bool = False,
+    operation_guard: PackOperationGuard | None = None,
+) -> dict:
     if not backup_zip_path.is_file():
         raise FileNotFoundError("备份压缩包不存在")
 
@@ -899,6 +941,11 @@ def import_runtime_backup(backup_zip_path: Path, overwrite: bool = False) -> dic
             raise ValueError("备份包中没有可恢复的数据")
 
         if overwrite and PACKS_DIR.is_dir():
+            if operation_guard:
+                # 必须在删除任何目录前一次性检查完，避免恢复到一半才发现活动任务。
+                for pack_dir in PACKS_DIR.iterdir():
+                    if pack_dir.is_dir():
+                        operation_guard(pack_dir.name, "覆盖恢复全量备份")
             shutil.rmtree(PACKS_DIR)
             PACKS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -912,8 +959,15 @@ def import_runtime_backup(backup_zip_path: Path, overwrite: bool = False) -> dic
                 if target_pack_dir.exists() and not overwrite:
                     continue
                 if target_pack_dir.exists() and overwrite:
+                    if operation_guard:
+                        operation_guard(pack_dir.name, "覆盖恢复资源包")
                     shutil.rmtree(target_pack_dir)
                 shutil.copytree(pack_dir, target_pack_dir)
+                # 全量备份不包含本机 FAISS 文件；恢复后不能沿用旧状态。
+                shutil.rmtree(
+                    PLUGIN_DATA_DIR / "semantic_indexes" / pack_dir.name,
+                    ignore_errors=True,
+                )
                 restored_packs += 1
 
         if backup_registry.is_file():

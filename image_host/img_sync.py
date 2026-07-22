@@ -108,10 +108,9 @@ class ImageSync:
         Returns:
             同步是否成功
         """
-        # 如果已有正在运行的同步任务，先停止它
+        # 不能为了启动新任务而悄悄杀掉已有任务。
         if self.sync_process and self.sync_process.is_alive():
-            logger.warning("已有正在运行的同步任务，将先停止它")
-            self.stop_sync()
+            raise RuntimeError("已有同步任务正在运行，请等待完成后再试")
 
         # 检查是否需要同步
         status = self.check_status()

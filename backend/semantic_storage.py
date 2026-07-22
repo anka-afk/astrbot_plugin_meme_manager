@@ -131,6 +131,63 @@ def save_metadata(pack_dir: Path | str, data: dict[str, Any]) -> Path:
     return target
 
 
+def reset_local_embedding_state(data: dict[str, Any]) -> dict[str, Any]:
+    """移除只对生成者本机有效的向量状态，保留可发布的图片语义描述。"""
+    payload = dict(data or {})
+    for key in (
+        "embedding_provider_id",
+        "embedding_model",
+        "embedding_dimension",
+        "verified_embedding_dimension",
+        "embedding_verified_dimension",
+        "embedding_dimension_verified",
+        "dimension_verified",
+        "verified_dimension",
+        "index_dimension",
+        "index_embedding_dimension",
+        "embedding_signature",
+        "embedding",
+        "embeddings",
+        "vector",
+        "vectors",
+        "faiss_id",
+    ):
+        payload.pop(key, None)
+    images = payload.get("images", {})
+    normalized_images: dict[str, dict[str, Any]] = {}
+    if isinstance(images, dict):
+        for digest, value in images.items():
+            if not isinstance(value, dict):
+                continue
+            item = dict(value)
+            item["embedding_status"] = "pending"
+            for key in (
+                "embedding_provider_id",
+                "embedding_model",
+                "embedding_dimension",
+                "verified_embedding_dimension",
+                "embedding_verified_dimension",
+                "embedding_dimension_verified",
+                "dimension_verified",
+                "verified_dimension",
+                "index_dimension",
+                "index_embedding_dimension",
+                "embedding_signature",
+                "embedding",
+                "embeddings",
+                "vector",
+                "vectors",
+                "faiss_id",
+            ):
+                item.pop(key, None)
+            if item.get("caption_status") == "done":
+                item["error"] = None
+            normalized_images[str(digest)] = item
+    payload["images"] = normalized_images
+    payload["requires_local_index_rebuild"] = True
+    return payload
+
+
 def reconcile_metadata(
     pack_dir: Path | str, external_data: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -272,10 +329,45 @@ def metadata_items(
     items = list(data.get("images", {}).values())
     if status:
         status = str(status).strip().lower()
-        items = [
-            item
-            for item in items
-            if item.get("caption_status") == status
-            or item.get("embedding_status") == status
-        ]
-    return sorted(items, key=lambda item: str(item.get("relative_path") or ""))
+        predicates = {
+            "all": lambda item: True,
+            "pending": lambda item: item.get("caption_status") == "pending"
+            or item.get("embedding_status") == "pending",
+            "running": lambda item: item.get("caption_status") == "running"
+            or item.get("embedding_status") == "running",
+            "failed": lambda item: item.get("caption_status") == "failed"
+            or item.get("embedding_status") == "failed",
+            "caption_failed": lambda item: item.get("caption_status") == "failed",
+            "embedding_failed": lambda item: item.get("embedding_status") == "failed",
+            "completed": lambda item: item.get("caption_status") == "done"
+            and item.get("embedding_status") == "done",
+            "caption_done": lambda item: item.get("caption_status") == "done",
+            "embedding_done": lambda item: item.get("embedding_status") == "done",
+        }
+        predicate = predicates.get(status)
+        if predicate is None:
+            predicate = lambda item: item.get("caption_status") == status or item.get("embedding_status") == status
+        items = [item for item in items if predicate(item)]
+    def item_sort_key(item: dict[str, Any]) -> tuple[int, str, str]:
+        statuses = {
+            str(item.get("caption_status") or ""),
+            str(item.get("embedding_status") or ""),
+        }
+        # 进行中的项目始终排在第一页，随后是待处理/失败，最后才是已完成项目。
+        if "running" in statuses:
+            priority = 0
+        elif "pending" in statuses:
+            priority = 1
+        elif "failed" in statuses:
+            priority = 2
+        elif statuses == {"done"}:
+            priority = 3
+        else:
+            priority = 4
+        return (
+            priority,
+            str(item.get("updated_at") or ""),
+            str(item.get("relative_path") or ""),
+        )
+
+    return sorted(items, key=item_sort_key)

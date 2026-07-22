@@ -511,6 +511,24 @@ async function initSettingsPage() {
       ensureDefaultRuleAtEnd(response?.default_pack_id || "");
       renderRules();
       addLog("规则保存成功");
+      const rebuildPacks = Array.isArray(response?.semantic_rebuild_packs)
+        ? response.semantic_rebuild_packs
+        : [];
+      for (const packId of rebuildPacks) {
+        const shouldRebuild = window.confirm(
+          `资源包「${packId}」已切换，但还没有按当前 Embedding 模型建立本机向量。是否现在重建？`,
+        );
+        if (!shouldRebuild) continue;
+        try {
+          await apiPost("semantic/rebuild-index", { pack_id: packId, force: true });
+          addLog(`资源包 ${packId} 的向量重建已完成`);
+        } catch (rebuildError) {
+          addLog(
+            `资源包 ${packId} 向量重建失败: ${rebuildError?.message || String(rebuildError)}`,
+            true,
+          );
+        }
+      }
     } catch (error) {
       addLog(`规则保存失败: ${error?.message || String(error)}`, true);
     } finally {

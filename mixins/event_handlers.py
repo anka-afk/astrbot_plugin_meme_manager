@@ -256,6 +256,14 @@ class EventHandlerMixin:
             yield event.plain_result("请发送图片文件来进行上传哦。")
             return
         category = upload_state["category"]
+        pack_id = str(MEMES_DIR.parent.name or "").strip()
+        try:
+            self.semantic_task_manager.begin_external_pack_operation(
+                pack_id, "接收并保存表情图片"
+            )
+        except RuntimeError as exc:
+            yield event.plain_result(f"⚠️ {exc}")
+            return
         save_dir = os.path.join(MEMES_DIR, category)
         try:
             os.makedirs(save_dir, exist_ok=True)
@@ -312,6 +320,8 @@ class EventHandlerMixin:
             await self.reload_emotions()
         except Exception as e:
             yield event.plain_result(f"保存失败了：{str(e)}")
+        finally:
+            self.semantic_task_manager.end_external_pack_operation(pack_id)
 
     async def _inject_meme_prompt_impl(
         self, event: AstrMessageEvent, req: ProviderRequest

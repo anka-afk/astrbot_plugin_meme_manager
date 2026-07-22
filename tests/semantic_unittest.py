@@ -5,9 +5,10 @@ import unittest
 from pathlib import Path
 
 import faiss
-from backend.semantic_caption import prepare_visual_inputs
+from backend.semantic_caption import build_caption_prompt, prepare_visual_inputs
 from backend.semantic_index import EmbeddingAdapter, build_index, index_is_ready
 from backend.semantic_models import (
+    PROMPT_VERSION,
     SemanticImage,
     normalize_vector,
     parse_caption_result,
@@ -21,10 +22,12 @@ from backend.semantic_query import (
 from backend.semantic_storage import (
     load_metadata,
     reconcile_metadata,
+    reset_local_embedding_state,
     safe_relative_path,
     save_metadata,
 )
 from backend.semantic_task import SemanticTaskManager
+from image_host.img_sync import ImageSync
 from PIL import Image
 
 
@@ -49,6 +52,15 @@ class FakeEmbedding:
 
     def meta(self):
         return type("ProviderMeta", (), {"id": "fake-embedding"})()
+
+
+class WrongDimensionEmbedding(FakeEmbedding):
+    def get_dim(self):
+        return 3
+
+    async def get_embedding(self, text):
+        self.single_calls += 1
+        return [1.0, 0.0]
 
 
 class FakeEvent:
@@ -87,11 +99,73 @@ class FakeContext:
         )()
 
 
+class BlockingVisionContext(FakeContext):
+    def __init__(self, provider, expected_started):
+        super().__init__(provider)
+        self.expected_started = expected_started
+        self.started_calls = 0
+        self.expected_calls_started = asyncio.Event()
+        self.release_calls = asyncio.Event()
+
+    async def llm_generate(self, **kwargs):
+        self.started_calls += 1
+        if self.started_calls >= self.expected_started:
+            self.expected_calls_started.set()
+        await self.release_calls.wait()
+        return await super().llm_generate(**kwargs)
+
+
+class BlockingEmbedding(FakeEmbedding):
+    def __init__(self):
+        super().__init__()
+        self.batch_started = asyncio.Event()
+        self.release_batch = asyncio.Event()
+
+    async def get_embeddings(self, texts):
+        self.batch_calls += 1
+        self.batch_started.set()
+        await self.release_batch.wait()
+        return [[1.0, 0.0] for _ in texts]
+
+
 class SemanticMvpTest(unittest.TestCase):
+    def test_new_image_sync_does_not_stop_existing_task(self):
+        class RunningProcess:
+            @staticmethod
+            def is_alive():
+                return True
+
+        async def run():
+            sync_client = ImageSync.__new__(ImageSync)
+            sync_client.sync_process = RunningProcess()
+            stopped = False
+
+            def stop_sync():
+                nonlocal stopped
+                stopped = True
+
+            sync_client.stop_sync = stop_sync
+            with self.assertRaisesRegex(RuntimeError, "已有同步任务"):
+                await sync_client.start_sync("download")
+            self.assertFalse(stopped)
+
+        asyncio.run(run())
+
     def test_semantic_config_uses_astrbot_supported_types(self):
         schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         self.assertEqual(schema["semantic"]["items"]["min_score"]["type"], "float")
+        self.assertEqual(
+            schema["semantic"]["items"]["vision_provider_id"]["_special"],
+            "select_provider",
+        )
+        self.assertEqual(
+            schema["semantic"]["items"]["embedding_provider_id"]["_special"],
+            "select_provider_embedding",
+        )
+        self.assertNotIn(
+            "可选", schema["semantic"]["items"]["embedding_provider_id"]["description"]
+        )
 
     def test_full_task_embeds_once_and_builds_faiss(self):
         async def run():
@@ -113,13 +187,18 @@ class SemanticMvpTest(unittest.TestCase):
                 await manager._tasks["demo"]
                 self.assertEqual(manager.status("demo")["task_status"], "completed")
                 self.assertEqual(provider.batch_calls, 1)
-                self.assertEqual(provider.single_calls, 0)
+                self.assertEqual(provider.single_calls, 1)
+                task_state = json.loads(
+                    (root / "semantic_indexes" / "demo" / "task_state.json").read_text()
+                )
+                self.assertEqual(task_state["embedding_provider_id"], "fake-embedding")
+                self.assertEqual(task_state["embedding_dimension"], 2)
                 index_path = root / "semantic_indexes" / "demo" / "index.faiss"
                 self.assertEqual(faiss.read_index(str(index_path)).ntotal, 1)
 
         asyncio.run(run())
 
-    def test_task_manager_uses_core_embedding_provider(self):
+    def test_task_manager_automatically_selects_and_persists_embedding_provider(self):
         provider = FakeEmbedding()
         with tempfile.TemporaryDirectory() as temp:
             configured = SemanticTaskManager(
@@ -130,7 +209,176 @@ class SemanticMvpTest(unittest.TestCase):
             self.assertIs(configured._resolve_embedding_provider(), provider)
 
             automatic = SemanticTaskManager(temp, context=FakeContext(provider))
-            self.assertIs(automatic._resolve_embedding_provider(), provider)
+            self.assertIs(automatic._resolve_embedding_provider("demo"), provider)
+            selection = json.loads(
+                (
+                    Path(temp)
+                    / "semantic_indexes"
+                    / "demo"
+                    / "provider_selection.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(selection["selection_mode"], "automatic")
+            self.assertEqual(selection["effective_provider_id"], "fake-embedding")
+            self.assertEqual(selection["configured_dimension"], 2)
+
+    def test_invalid_explicit_provider_does_not_fallback_to_automatic(self):
+        provider = FakeEmbedding()
+        with tempfile.TemporaryDirectory() as temp:
+            manager = SemanticTaskManager(
+                temp,
+                context=FakeContext(provider),
+                config={"embedding_provider_id": "missing-provider"},
+            )
+            self.assertIsNone(manager._resolve_embedding_provider("demo"))
+
+    def test_full_task_is_blocked_before_queue_without_embedding_provider(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                (pack / "memes" / "a").mkdir(parents=True)
+                (pack / "memes" / "a" / "one.png").write_bytes(b"one")
+                empty_context = type(
+                    "EmptyContext",
+                    (),
+                    {
+                        "llm_generate": FakeContext(FakeEmbedding()).llm_generate,
+                        "get_all_embedding_providers": lambda self: [],
+                    },
+                )()
+                manager = SemanticTaskManager(
+                    root,
+                    context=empty_context,
+                    config={"vision_provider_id": "fake-vision"},
+                )
+                with self.assertRaisesRegex(RuntimeError, "没有可自动选择"):
+                    await manager.start("demo")
+                self.assertNotIn("demo", manager._tasks)
+                self.assertFalse(
+                    (root / "semantic_indexes" / "demo" / "task_state.json").exists()
+                )
+
+        asyncio.run(run())
+
+    def test_caption_only_task_does_not_require_embedding_provider(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                (pack / "memes" / "a").mkdir(parents=True)
+                (pack / "memes" / "a" / "one.png").write_bytes(b"one")
+                manager = SemanticTaskManager(
+                    root,
+                    context=FakeContext(FakeEmbedding()),
+                    config={"vision_provider_id": "fake-vision"},
+                )
+                await manager.start("demo", mode="caption_only")
+                await manager._tasks["demo"]
+                self.assertEqual(manager.status("demo")["task_status"], "completed")
+                self.assertEqual(manager.status("demo")["caption_done"], 1)
+                self.assertEqual(manager.status("demo")["embedding_done"], 0)
+
+        asyncio.run(run())
+
+    def test_full_task_requires_explicit_visual_provider(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                (pack / "memes" / "a").mkdir(parents=True)
+                (pack / "memes" / "a" / "one.png").write_bytes(b"one")
+                manager = SemanticTaskManager(
+                    root,
+                    context=FakeContext(FakeEmbedding()),
+                    config={"embedding_provider_id": "fake-embedding"},
+                )
+                with self.assertRaisesRegex(RuntimeError, "未配置视觉模型"):
+                    await manager.start("demo")
+                self.assertNotIn("demo", manager._tasks)
+                self.assertFalse(
+                    (root / "semantic_indexes" / "demo" / "task_state.json").exists()
+                )
+
+        asyncio.run(run())
+
+    def test_dimension_probe_blocks_queue_and_persists_error(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                (pack / "memes" / "a").mkdir(parents=True)
+                (pack / "memes" / "a" / "one.png").write_bytes(b"one")
+                manager = SemanticTaskManager(
+                    root,
+                    context=FakeContext(WrongDimensionEmbedding()),
+                    config={"embedding_provider_id": "fake-embedding", "vision_provider_id": "fake-vision"},
+                )
+                with self.assertRaisesRegex(RuntimeError, "维度校验失败"):
+                    await manager.start("demo")
+                self.assertNotIn("demo", manager._tasks)
+                self.assertFalse((root / "semantic_indexes" / "demo" / "task_state.json").exists())
+                selection = json.loads(
+                    (root / "semantic_indexes" / "demo" / "provider_selection.json").read_text()
+                )
+                self.assertFalse(selection["dimension_verified"])
+                self.assertIn("维度不一致", selection["verification_error"])
+
+        asyncio.run(run())
+
+    def test_clear_local_state_preserves_caption_and_removes_vectors(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                (pack / "memes" / "a").mkdir(parents=True)
+                (pack / "memes" / "a" / "one.png").write_bytes(b"one")
+                manager = SemanticTaskManager(
+                    root,
+                    context=FakeContext(FakeEmbedding()),
+                    config={"embedding_provider_id": "fake-embedding", "vision_provider_id": "fake-vision"},
+                )
+                await manager.start("demo")
+                await manager._tasks["demo"]
+                metadata = load_metadata(pack)
+                digest = next(iter(metadata["images"]))
+                metadata["images"][digest]["caption_status"] = "done"
+                metadata["images"][digest]["embedding_status"] = "done"
+                save_metadata(pack, metadata)
+                (root / "semantic_indexes" / "demo" / "task_state.json").write_text("{}")
+                result = await manager.clear_local_semantic_state("demo")
+                current = load_metadata(pack)
+                self.assertEqual(current["images"][digest]["caption_status"], "done")
+                self.assertEqual(current["images"][digest]["embedding_status"], "cleared")
+                self.assertFalse((root / "semantic_indexes" / "demo" / "index.faiss").exists())
+                self.assertEqual(result["task_status"], "idle")
+                self.assertEqual(result["pending"], 0)
+                self.assertTrue(result["queue_cleared"])
+
+        asyncio.run(run())
+
+    def test_public_semantic_state_removes_provider_and_dimension(self):
+        portable = reset_local_embedding_state(
+            {
+                "embedding_provider_id": "private-provider",
+                "embedding_dimension": 4096,
+                "images": {
+                    "a" * 64: {
+                        "caption": "描述",
+                        "tags": ["测试"],
+                        "caption_status": "done",
+                        "embedding_status": "done",
+                        "embedding_dimension": 4096,
+                    }
+                },
+            }
+        )
+        self.assertNotIn("embedding_provider_id", portable)
+        self.assertNotIn("embedding_dimension", portable)
+        item = portable["images"]["a" * 64]
+        self.assertEqual(item["embedding_status"], "pending")
+        self.assertNotIn("embedding_dimension", item)
+        self.assertTrue(portable["requires_local_index_rebuild"])
 
     def test_rebuild_is_blocked_while_task_is_running(self):
         async def run():
@@ -158,10 +406,33 @@ class SemanticMvpTest(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_resume_and_rebuild_require_embedding_provider(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                (root / "packs" / "demo").mkdir(parents=True)
+                empty_context = type(
+                    "EmptyContext",
+                    (),
+                    {"get_all_embedding_providers": lambda self: []},
+                )()
+                manager = SemanticTaskManager(root, context=empty_context)
+                manager._save_state("demo", {"task_status": "paused"})
+                with self.assertRaisesRegex(RuntimeError, "没有可自动选择"):
+                    await manager.resume("demo")
+                with self.assertRaisesRegex(RuntimeError, "没有可自动选择"):
+                    await manager.rebuild_index("demo")
+
+        asyncio.run(run())
+
     def test_resume_restarts_stale_running_task(self):
         async def run():
             with tempfile.TemporaryDirectory() as temp:
-                manager = SemanticTaskManager(temp)
+                manager = SemanticTaskManager(
+                    temp,
+                    context=FakeContext(FakeEmbedding()),
+                    config={"embedding_provider_id": "fake-embedding"},
+                )
                 manager._save_state("demo", {"task_status": "running"})
                 resumed = asyncio.Event()
 
@@ -176,16 +447,379 @@ class SemanticMvpTest(unittest.TestCase):
 
         asyncio.run(run())
 
-    def test_gif_uses_first_middle_and_last_frames(self):
+    def test_pause_with_five_concurrency_cancels_requests_and_restores_queue(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo" / "memes" / "queue"
+                pack.mkdir(parents=True)
+                for index in range(8):
+                    (pack / f"{index}.png").write_bytes(f"image-{index}".encode())
+
+                context = BlockingVisionContext(FakeEmbedding(), expected_started=5)
+                manager = SemanticTaskManager(
+                    root,
+                    context=context,
+                    config={"vision_provider_id": "fake-vision", "concurrency": 5},
+                )
+                await manager.start("demo", mode="caption_only", concurrency=5)
+                await asyncio.wait_for(context.expected_calls_started.wait(), timeout=1)
+
+                paused = await manager.pause("demo")
+                self.assertEqual(paused["task_status"], "paused")
+                self.assertEqual(paused["active_request_count"], 0)
+                self.assertEqual(paused["queued_caption_tasks"], 8)
+                self.assertEqual(paused["running_tasks"], 0)
+                self.assertIn("已中断 5 个模型请求", paused["message"])
+
+                stopped = manager.status("demo")
+                self.assertEqual(context.started_calls, 5)
+                self.assertEqual(stopped["task_status"], "paused")
+                self.assertEqual(stopped["queue_status"], "paused")
+                self.assertEqual(stopped["queued_caption_tasks"], 8)
+                self.assertFalse(stopped["can_pause"])
+                self.assertTrue(stopped["can_resume"])
+
+                context.release_calls.set()
+                resumed = await manager.resume("demo", concurrency=5)
+                self.assertIn("队列已继续", resumed["message"])
+                await asyncio.wait_for(manager._tasks["demo"], timeout=1)
+                finished = manager.status("demo")
+                self.assertEqual(context.started_calls, 13)
+                self.assertEqual(finished["task_status"], "completed")
+                self.assertEqual(finished["queue_status"], "waiting")
+
+        asyncio.run(run())
+
+    def test_stale_paused_requests_are_restored_as_waiting_queue(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                (pack / "memes" / "queue").mkdir(parents=True)
+                for index in range(2):
+                    (pack / "memes" / "queue" / f"{index}.png").write_bytes(
+                        f"stale-image-{index}".encode()
+                    )
+                metadata = reconcile_metadata(pack)
+                first_item = next(iter(metadata["images"].values()))
+                first_item["caption_status"] = "running"
+                save_metadata(pack, metadata)
+
+                context = BlockingVisionContext(FakeEmbedding(), expected_started=2)
+                context.release_calls.set()
+                manager = SemanticTaskManager(
+                    root,
+                    context=context,
+                    config={"vision_provider_id": "fake-vision", "concurrency": 5},
+                )
+                manager._save_state(
+                    "demo",
+                    {
+                        "task_status": "paused",
+                        "task_phase": "captioning",
+                        "mode": "caption_only",
+                        "concurrency": 5,
+                        "active_items": [first_item["relative_path"]],
+                        "started_at": "2026-01-01T00:00:00+00:00",
+                        "paused_at": "2026-01-01T00:00:10+00:00",
+                        "paused_seconds": 3,
+                    },
+                )
+
+                stale = manager.status("demo")
+                self.assertEqual(stale["active_request_count"], 0)
+                self.assertEqual(stale["queued_caption_tasks"], 2)
+                self.assertEqual(stale["elapsed_seconds"], 7)
+                recovered = load_metadata(pack)
+                self.assertTrue(
+                    all(
+                        item.get("caption_status") == "pending"
+                        for item in recovered["images"].values()
+                    )
+                )
+
+                await manager.resume("demo", concurrency=3)
+                await asyncio.wait_for(manager._tasks["demo"], timeout=1)
+                finished = manager.status("demo")
+                self.assertEqual(context.started_calls, 2)
+                self.assertEqual(finished["task_status"], "completed")
+                self.assertEqual(finished["active_request_count"], 0)
+
+        asyncio.run(run())
+
+    def test_unexpected_worker_error_cancels_and_awaits_sibling_workers(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                image_dir = root / "packs" / "demo" / "memes" / "queue"
+                image_dir.mkdir(parents=True)
+                for index in range(4):
+                    (image_dir / f"{index}.png").write_bytes(
+                        f"worker-{index}".encode()
+                    )
+                manager = SemanticTaskManager(
+                    root,
+                    context=FakeContext(FakeEmbedding()),
+                    config={"vision_provider_id": "fake-vision", "concurrency": 4},
+                )
+                started = 0
+                cancelled = 0
+                completed = 0
+                wait_forever = asyncio.Event()
+
+                async def fake_process(
+                    pack_id,
+                    pack_dir,
+                    metadata,
+                    digest,
+                    raw_item,
+                    vision_provider,
+                    force,
+                    semaphore,
+                ):
+                    nonlocal started, cancelled, completed
+                    started += 1
+                    if started == 1:
+                        await asyncio.sleep(0)
+                        raise OSError("模拟持久化失败")
+                    try:
+                        await wait_forever.wait()
+                        completed += 1
+                    except asyncio.CancelledError:
+                        cancelled += 1
+                        raise
+
+                manager._process_caption_item = fake_process
+                await manager.start("demo", mode="caption_only", concurrency=4)
+                await asyncio.wait_for(manager._tasks["demo"], timeout=1)
+                self.assertEqual(started, 4)
+                self.assertEqual(cancelled, 3)
+                self.assertEqual(completed, 0)
+                self.assertEqual(manager.status("demo")["task_status"], "failed")
+
+        asyncio.run(run())
+
+    def test_persisted_pause_requires_resume_and_blocks_pack_mutation(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                (root / "packs" / "demo" / "memes" / "queue").mkdir(
+                    parents=True
+                )
+                manager = SemanticTaskManager(
+                    root,
+                    context=FakeContext(FakeEmbedding()),
+                    config={"vision_provider_id": "fake-vision"},
+                )
+                manager._save_state(
+                    "demo", {"task_status": "paused", "mode": "caption_only"}
+                )
+                with self.assertRaisesRegex(RuntimeError, "继续队列"):
+                    await manager.start("demo", mode="caption_only")
+                with self.assertRaisesRegex(RuntimeError, "暂停或中断"):
+                    manager.assert_pack_mutation_allowed("demo", "卸载资源包")
+
+        asyncio.run(run())
+
+    def test_standalone_index_build_is_visible_in_task_status(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                image_dir = root / "packs" / "demo" / "memes" / "queue"
+                image_dir.mkdir(parents=True)
+                for index in range(2):
+                    (image_dir / f"{index}.png").write_bytes(
+                        f"index-{index}".encode()
+                    )
+                provider = BlockingEmbedding()
+                manager = SemanticTaskManager(
+                    root,
+                    context=FakeContext(provider),
+                    config={
+                        "vision_provider_id": "fake-vision",
+                        "embedding_provider_id": "fake-embedding",
+                    },
+                )
+                await manager.start("demo", mode="caption_only")
+                await manager._tasks["demo"]
+
+                rebuilding = asyncio.create_task(
+                    manager.rebuild_index("demo", force=True)
+                )
+                await asyncio.wait_for(provider.batch_started.wait(), timeout=1)
+                status = manager.status("demo")
+                self.assertEqual(status["task_status"], "running")
+                self.assertEqual(status["task_phase"], "indexing")
+                self.assertTrue(status["worker_alive"])
+                self.assertFalse(status["can_start"])
+                with self.assertRaisesRegex(RuntimeError, "语义任务尚未结束"):
+                    manager.assert_pack_mutation_allowed("demo", "卸载资源包")
+
+                provider.release_batch.set()
+                await asyncio.wait_for(rebuilding, timeout=1)
+                finished = manager.status("demo")
+                self.assertEqual(finished["task_status"], "completed")
+                self.assertFalse(finished["worker_alive"])
+
+        asyncio.run(run())
+
+    def test_clear_queue_cancels_standalone_index_build(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                image_dir = root / "packs" / "demo" / "memes" / "queue"
+                image_dir.mkdir(parents=True)
+                (image_dir / "one.png").write_bytes(b"cancel-index")
+                provider = BlockingEmbedding()
+                manager = SemanticTaskManager(
+                    root,
+                    context=FakeContext(provider),
+                    config={
+                        "vision_provider_id": "fake-vision",
+                        "embedding_provider_id": "fake-embedding",
+                    },
+                )
+                await manager.start("demo", mode="caption_only")
+                await manager._tasks["demo"]
+
+                rebuilding = asyncio.create_task(
+                    manager.rebuild_index("demo", force=True)
+                )
+                await asyncio.wait_for(provider.batch_started.wait(), timeout=1)
+                with self.assertRaisesRegex(RuntimeError, "收尾阶段不能暂停"):
+                    await asyncio.wait_for(manager.pause("demo"), timeout=0.2)
+
+                cleared = await asyncio.wait_for(
+                    manager.clear_local_semantic_state("demo"), timeout=1
+                )
+                self.assertTrue(rebuilding.cancelled())
+                self.assertEqual(cleared["task_status"], "idle")
+                self.assertTrue(cleared["queue_cleared"])
+                self.assertNotIn("demo", manager._index_tasks)
+
+        asyncio.run(run())
+
+    def test_other_pack_concurrency_is_reported_without_global_limiting(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                for pack_id in ("pack-a", "pack-b"):
+                    image_dir = root / "packs" / pack_id / "memes" / "queue"
+                    image_dir.mkdir(parents=True)
+                    for index in range(6):
+                        (image_dir / f"{index}.png").write_bytes(
+                            f"{pack_id}-{index}".encode()
+                        )
+                context = BlockingVisionContext(FakeEmbedding(), expected_started=5)
+                manager = SemanticTaskManager(
+                    root,
+                    context=context,
+                    config={"vision_provider_id": "fake-vision", "concurrency": 5},
+                )
+                await manager.start("pack-a", mode="caption_only", concurrency=5)
+                await asyncio.wait_for(context.expected_calls_started.wait(), timeout=1)
+                started_b = await manager.start(
+                    "pack-b", mode="caption_only", concurrency=3
+                )
+                self.assertEqual(
+                    started_b["other_active_tasks"][0]["pack_id"], "pack-a"
+                )
+                self.assertEqual(
+                    started_b["other_active_tasks"][0]["concurrency"], 5
+                )
+                self.assertIn("并发会叠加", started_b["message"])
+
+                await manager.clear_local_semantic_state("pack-a")
+                await manager.clear_local_semantic_state("pack-b")
+
+        asyncio.run(run())
+
+    def test_external_file_operation_blocks_semantic_start(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                (root / "packs" / "demo" / "memes" / "queue").mkdir(
+                    parents=True
+                )
+                manager = SemanticTaskManager(
+                    root,
+                    context=FakeContext(FakeEmbedding()),
+                    config={"vision_provider_id": "fake-vision"},
+                )
+                manager.begin_external_pack_operation("demo", "从远端覆盖本地表情包")
+                status = manager.status("demo")
+                self.assertEqual(status["queue_status"], "external_operation")
+                self.assertFalse(status["can_start"])
+                with self.assertRaisesRegex(RuntimeError, "从远端覆盖"):
+                    await manager.start("demo", mode="caption_only")
+                manager.end_external_pack_operation("demo")
+                self.assertTrue(manager.status("demo")["can_start"])
+
+        asyncio.run(run())
+
+    def test_caption_prompt_uses_complete_meme_pragmatics_workflow(self):
+        prompt = build_caption_prompt(5)
+        self.assertIn("不是给图片写普通图注", prompt)
+        self.assertIn("区分原图内容与后期叠加", prompt)
+        self.assertIn("梗的构成方式", prompt)
+        self.assertIn("严格保留原文的语气和标点", prompt)
+        self.assertIn("确定说话视角和行为归属", prompt)
+        self.assertIn("发送表情包的人、聊天对象、图中人物", prompt)
+        self.assertIn("不能默认所有句子都在质问聊天对象", prompt)
+        self.assertIn("己方自嘲、承认后装傻", prompt)
+        self.assertIn("确实提供联网搜索能力", prompt)
+        self.assertIn("不得声称已经检索", prompt)
+        self.assertIn("触发发送这张图", prompt)
+        self.assertIn("言语功能", prompt)
+        self.assertIn("复合语气", prompt)
+        self.assertIn("表情不等于梗义", prompt)
+        self.assertIn("同一个 GIF", prompt)
+        self.assertIn("不要把它们当成互不相关的图片", prompt)
+        self.assertNotIn("小B崽子", prompt)
+        self.assertNotIn("《我的世界》", prompt)
+        self.assertNotIn("不觉得羞愧", prompt)
+
+    def test_old_prompt_caption_is_regenerated_with_current_prompt(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                image_dir = pack / "memes" / "angry"
+                image_dir.mkdir(parents=True)
+                (image_dir / "one.png").write_bytes(b"old-caption")
+                metadata = reconcile_metadata(pack)
+                item = next(iter(metadata["images"].values()))
+                item.update(
+                    {
+                        "caption": "旧提示词生成的错误描述",
+                        "tags": ["旧标签"],
+                        "auto_tags": ["旧标签"],
+                        "caption_status": "done",
+                        "embedding_status": "cleared",
+                        "prompt_version": "meme-semantic-v4",
+                    }
+                )
+                save_metadata(pack, metadata)
+                manager = SemanticTaskManager(
+                    root,
+                    context=FakeContext(FakeEmbedding()),
+                    config={"vision_provider_id": "fake-vision"},
+                )
+
+                await manager.start("demo", mode="caption_only")
+                await manager._tasks["demo"]
+
+                current = next(iter(load_metadata(pack)["images"].values()))
+                self.assertEqual(current["caption"], "我有点心虚想装傻")
+                self.assertEqual(current["prompt_version"], PROMPT_VERSION)
+
+        asyncio.run(run())
+
+    def test_gif_uses_up_to_five_evenly_spaced_frames(self):
         with tempfile.TemporaryDirectory() as temp:
             gif_path = Path(temp) / "animated.gif"
-            colors = [
-                (255, 0, 0),
-                (0, 255, 0),
-                (0, 0, 255),
-                (255, 255, 255),
-                (0, 0, 0),
-            ]
+            colors = [(index * 20, 0, 0) for index in range(11)]
             frames = [Image.new("RGB", (4, 4), color) for color in colors]
             frames[0].save(
                 gif_path,
@@ -198,12 +832,15 @@ class SemanticMvpTest(unittest.TestCase):
 
             visual_paths, temp_paths = prepare_visual_inputs(gif_path)
             try:
-                self.assertEqual(len(visual_paths), 3)
+                self.assertEqual(len(visual_paths), 5)
                 sampled_colors = []
                 for path in visual_paths:
                     with Image.open(path) as sampled:
                         sampled_colors.append(sampled.convert("RGB").getpixel((0, 0)))
-                self.assertEqual(sampled_colors, [colors[0], colors[2], colors[4]])
+                self.assertEqual(
+                    sampled_colors,
+                    [colors[index] for index in (0, 2, 5, 8, 10)],
+                )
             finally:
                 for path in temp_paths:
                     Path(path).unlink(missing_ok=True)

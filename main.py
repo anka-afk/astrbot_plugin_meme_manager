@@ -1,3 +1,4 @@
+import asyncio
 import re
 from pathlib import Path
 
@@ -68,6 +69,14 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             )
             or ""
         )
+        try:
+            configured_concurrency = int(
+                self._read_config_value(("semantic", "concurrency"), default=1)
+                or 1
+            )
+        except (TypeError, ValueError):
+            configured_concurrency = 1
+        self.semantic_concurrency = max(1, min(16, configured_concurrency))
         self.semantic_top_k = int(
             self._read_config_value(("semantic", "top_k"), default=5) or 5
         )
@@ -80,6 +89,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             config={
                 "vision_provider_id": self.semantic_vision_provider_id,
                 "embedding_provider_id": self.semantic_embedding_provider_id,
+                "concurrency": self.semantic_concurrency,
             },
         )
 
@@ -246,6 +256,20 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
 
         # 注册 WebUI API
         self._register_web_apis()
+
+        self._semantic_initial_rebuild_task = None
+
+    @filter.on_astrbot_loaded()
+    async def _schedule_semantic_initial_rebuild(self):
+        """等 AstrBot 核心和所有 Provider 加载完成后再安排首次静默重建。"""
+        if not self.semantic_enabled:
+            return
+        task = self._semantic_initial_rebuild_task
+        if task and not task.done():
+            return
+        self._semantic_initial_rebuild_task = asyncio.create_task(
+            self._auto_rebuild_initial_pack()
+        )
 
     @classmethod
     def _normalize_mixin_handler_module_paths(cls):
@@ -442,8 +466,70 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             + self.prompt_tail_2
         )
 
-    def _resolve_embedding_provider(self):
-        return self.semantic_task_manager._resolve_embedding_provider()
+    def _resolve_embedding_provider(self, pack_id: str = ""):
+        return self.semantic_task_manager._resolve_embedding_provider(pack_id)
+
+    async def _auto_rebuild_initial_pack(self):
+        """语义开关已开启时，后台静默补齐当前包的本机向量索引。"""
+        await asyncio.sleep(3)
+        try:
+            pack_context = self._resolve_runtime_pack_context()
+            pack_id = str(pack_context.get("pack_id") or "").strip()
+            pack_dir = pack_context.get("pack_dir")
+            if not pack_id or not pack_dir:
+                logger.info("%s 语义检索已开启，但当前没有可重建的表情包。", WEBUI_LOG_PREFIX)
+                return
+            metadata = load_metadata(pack_dir)
+            images = metadata.get("images", {})
+            caption_done = sum(
+                1
+                for item in images.values()
+                if isinstance(item, dict) and item.get("caption_status") == "done"
+            )
+            if not images or caption_done != len(images):
+                logger.info(
+                    "%s 首次开启语义检索：%s 的图片描述尚未全部完成，暂不自动建立向量；"
+                    "请先在语义化页面完成描述。",
+                    WEBUI_LOG_PREFIX,
+                    pack_id,
+                )
+                return
+            embedding = self.semantic_task_manager._require_embedding_provider(
+                pack_id, "首次建立语义索引"
+            )
+            if index_is_ready(
+                PLUGIN_DATA_DIR,
+                pack_id,
+                metadata,
+                embedding.provider_id,
+                embedding.model_name,
+                embedding.dimension,
+            ):
+                return
+            logger.info(
+                "%s 首次开启语义检索：后台静默重建 %s 的向量索引（Provider=%s，维度=%s）。",
+                WEBUI_LOG_PREFIX,
+                pack_id,
+                embedding.provider_id,
+                embedding.dimension,
+            )
+            result = await self.semantic_task_manager.rebuild_index(
+                pack_id, force=True
+            )
+            logger.info(
+                "%s 首次开启语义检索：%s 向量索引完成，共 %s 条。",
+                WEBUI_LOG_PREFIX,
+                pack_id,
+                result.get("item_count", 0),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "%s 首次开启语义检索的后台向量重建未完成：%s",
+                WEBUI_LOG_PREFIX,
+                str(exc),
+            )
 
     def _reply_model_supports_tools(self, event: AstrMessageEvent | None) -> bool:
         """仅在模型明确声明不支持工具时关闭语义模式。"""
@@ -492,9 +578,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         metadata = load_metadata(context.get("pack_dir"))
         if not metadata.get("images"):
             return False
-        provider = self._resolve_embedding_provider()
-        embedding = EmbeddingAdapter(provider, self.semantic_embedding_provider_id)
-        provider_id = self.semantic_embedding_provider_id or embedding.provider_id
+        provider = self._resolve_embedding_provider(pack_id)
+        embedding = EmbeddingAdapter(
+            provider, self.semantic_embedding_provider_id or ""
+        )
+        provider_id = embedding.provider_id
         return (
             index_is_ready(
                 PLUGIN_DATA_DIR,
@@ -711,7 +799,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 PLUGIN_DATA_DIR,
                 str(context["pack_id"]),
                 query,
-                self._resolve_embedding_provider(),
+                self._resolve_embedding_provider(str(context["pack_id"])),
                 top_k=self.semantic_top_k,
                 min_score=self.semantic_min_score,
             )
@@ -726,6 +814,10 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             return dumps_result({"ok": False, "reason": "语义查询失败"})
 
     async def terminate(self):
+        initial_task = getattr(self, "_semantic_initial_rebuild_task", None)
+        if initial_task and not initial_task.done():
+            initial_task.cancel()
+            await asyncio.gather(initial_task, return_exceptions=True)
         if getattr(self, "semantic_task_manager", None):
             await self.semantic_task_manager.close()
         personas = self.context.provider_manager.personas

@@ -348,19 +348,32 @@
         "description": "启用语义查询",
         "type": "bool",
         "default": false,
-        "hint": "需要先完成语义化并建立索引；关闭后完全使用旧分类逻辑"
+        "hint": "开启后首次使用会在后台自动建立本机向量；切换到未重建的资源包时会询问是否重建"
       },
       "vision_provider_id": {
         "description": "视觉模型 Provider ID",
         "type": "string",
         "default": "",
-        "hint": "仅用于离线批量生成描述，留空时尝试当前聊天模型"
+        "_special": "select_provider",
+        "hint": "一键完整语义化需要选择支持图片输入的聊天模型；留空时不能生成图片描述"
       },
       "embedding_provider_id": {
-        "description": "AstrBot Embedding Provider ID",
+        "description": "Embedding 向量模型 Provider",
         "type": "string",
         "default": "",
-        "hint": "填写模型提供商页面中类型为 Embedding 的 Provider ID；留空时使用第一个可用的核心 Embedding Provider"
+        "_special": "select_provider_embedding",
+        "hint": "可留空自动选择第一个可用的 Embedding 模型；实际选择的 Provider ID 会保存到本机 provider_selection.json"
+      },
+      "concurrency": {
+        "description": "语义描述并发数",
+        "type": "int",
+        "default": 1,
+        "hint": "同时调用视觉模型的图片数量；建议按模型限流设置为 1 到 4",
+        "slider": {
+          "min": 1,
+          "max": 16,
+          "step": 1
+        }
       },
       "top_k": {
         "description": "每次返回候选数",

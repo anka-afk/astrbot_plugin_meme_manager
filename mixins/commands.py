@@ -19,6 +19,14 @@ from ..config import COMMUNITY_INDEX_URL
 class CommandMixin:
     """表情包管理命令组及所有管理命令"""
 
+    def _assert_default_pack_mutation_allowed(self, operation: str) -> str:
+        pack_id = str(MEMES_DIR.parent.name or "").strip()
+        if pack_id:
+            self.semantic_task_manager.assert_pack_mutation_allowed(
+                pack_id, operation
+            )
+        return pack_id
+
     @filter.command_group("表情管理")
     def meme_manager(self):
         """表情包管理命令组:
@@ -206,6 +214,9 @@ class CommandMixin:
                 index_url=COMMUNITY_INDEX_URL,
                 overwrite=False,
                 set_as_default=True,
+                operation_guard=(
+                    self.semantic_task_manager.assert_pack_mutation_allowed
+                ),
             )
             selected_name = str(
                 result.get("selected_pack_name")
@@ -224,6 +235,8 @@ class CommandMixin:
             yield event.plain_result(
                 "⚠️ 目标表情包已存在。请先在广场或管理页卸载同名包后重试。"
             )
+        except RuntimeError as exc:
+            yield event.plain_result(f"⚠️ {exc}")
         except Exception as exc:
             logger.error("从官方仓库安装默认表情包失败: %s", exc, exc_info=True)
             yield event.plain_result(f"❌ 安装默认表情包失败：{exc}")
@@ -260,6 +273,12 @@ class CommandMixin:
         if not await self._wait_for_command_confirmation(event):
             return
 
+        try:
+            self._assert_default_pack_mutation_allowed("清空表情分类")
+        except RuntimeError as exc:
+            yield event.plain_result(f"⚠️ {exc}")
+            return
+
         result = clear_category_emojis(category)
         deleted_count = len(result["deleted_files"])
         yield event.plain_result(
@@ -290,6 +309,12 @@ class CommandMixin:
             "请在 30 秒内回复“确认”继续执行，或回复“取消”终止本次操作。"
         )
         if not await self._wait_for_command_confirmation(event):
+            return
+
+        try:
+            self._assert_default_pack_mutation_allowed("清空全部表情图片")
+        except RuntimeError as exc:
+            yield event.plain_result(f"⚠️ {exc}")
             return
 
         result = clear_all_emojis()
@@ -326,6 +351,12 @@ class CommandMixin:
             "请在 30 秒内回复“确认”继续执行，或回复“取消”终止本次操作。"
         )
         if not await self._wait_for_command_confirmation(event):
+            return
+
+        try:
+            self._assert_default_pack_mutation_allowed("删除表情分类")
+        except RuntimeError as exc:
+            yield event.plain_result(f"⚠️ {exc}")
             return
 
         if not self.category_manager.delete_category(category):
@@ -558,6 +589,16 @@ class CommandMixin:
             )
             return
 
+        pack_id = str(
+            getattr(self, "_img_sync_pack_id", "") or MEMES_DIR.parent.name
+        ).strip()
+        try:
+            self.semantic_task_manager.begin_external_pack_operation(
+                pack_id, "从图床下载表情包"
+            )
+        except RuntimeError as exc:
+            yield event.plain_result(f"⚠️ {exc}")
+            return
         try:
             yield event.plain_result("开始从云端进行同步...")
             success = await sync_client.start_sync("download")
@@ -570,6 +611,8 @@ class CommandMixin:
         except Exception as e:
             logger.error(f"从云端同步失败: {str(e)}")
             yield event.plain_result(f"从云端同步失败: {str(e)}")
+        finally:
+            self.semantic_task_manager.end_external_pack_operation(pack_id)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @meme_manager.command("覆盖到云端")
@@ -608,6 +651,16 @@ class CommandMixin:
             )
             return
 
+        pack_id = str(
+            getattr(self, "_img_sync_pack_id", "") or MEMES_DIR.parent.name
+        ).strip()
+        try:
+            self.semantic_task_manager.begin_external_pack_operation(
+                pack_id, "从远端覆盖本地表情包"
+            )
+        except RuntimeError as exc:
+            yield event.plain_result(f"⚠️ {exc}")
+            return
         try:
             yield event.plain_result(
                 "⚠️ 正在执行从云端覆盖任务（将清理本地多余文件）..."
@@ -622,6 +675,8 @@ class CommandMixin:
         except Exception as e:
             logger.error(f"从云端覆盖失败: {str(e)}")
             yield event.plain_result(f"从云端覆盖失败: {str(e)}")
+        finally:
+            self.semantic_task_manager.end_external_pack_operation(pack_id)
 
     @meme_manager.command("图库统计")
     async def show_library_stats(self, event: AstrMessageEvent):

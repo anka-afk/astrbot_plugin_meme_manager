@@ -71,9 +71,20 @@ class EmbeddingAdapter:
         method = getattr(provider, "get_model", None)
         if callable(method):
             try:
-                return str(method() or "")
+                value = str(method() or "")
+                if value:
+                    return value
             except Exception:
-                return ""
+                pass
+        for attr in ("model_name", "model", "embed_model"):
+            value = getattr(provider, attr, None)
+            if value:
+                return str(value)
+        config = getattr(provider, "provider_config", None)
+        if isinstance(config, dict):
+            for key in ("embedding_model", "model", "model_name"):
+                if config.get(key):
+                    return str(config[key])
         return ""
 
     @property

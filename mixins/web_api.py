@@ -315,6 +315,18 @@ class WebAPIMixin:
             ["POST"],
             "重建语义向量索引",
         )
+        self._register_webui_api(
+            "semantic/clear-local-state",
+            self._api_semantic_clear_local_state,
+            ["POST"],
+            "清理本机语义任务与向量",
+        )
+        self._register_webui_api(
+            "semantic/delete-all",
+            self._api_semantic_delete_all,
+            ["POST"],
+            "删除当前资源包全部语义化数据",
+        )
 
     def _register_webui_api(self, route, handler, methods, desc):
         route_path = f"/{PLUGIN_NAME}/{route.strip('/')}"
@@ -372,6 +384,32 @@ class WebAPIMixin:
         if not pack_dir.is_dir():
             raise FileNotFoundError(f"表情包 {pack_id} 不存在")
         return pack_id
+
+    def _semantic_operation_guard(self, pack_id: str, operation: str) -> None:
+        if getattr(self, "_img_host_local_operation", None):
+            self._get_img_host_sync_task_status()
+        manager = getattr(self, "semantic_task_manager", None)
+        if manager is not None:
+            manager.assert_pack_mutation_allowed(pack_id, operation)
+
+    def _guard_default_pack_file_operation(self, operation: str):
+        pack_id = str(MEMES_DIR.parent.name or "").strip()
+        try:
+            if pack_id:
+                self._semantic_operation_guard(pack_id, operation)
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        return None
+
+    def _finish_img_host_local_operation(self) -> None:
+        active = getattr(self, "_img_host_local_operation", None)
+        if not isinstance(active, dict):
+            return
+        pack_id = str(active.get("pack_id") or "").strip()
+        manager = getattr(self, "semantic_task_manager", None)
+        if manager is not None and pack_id:
+            manager.end_external_pack_operation(pack_id)
+        self._img_host_local_operation = None
 
     @staticmethod
     def _resolve_webui_pack_view_context() -> dict | None:
@@ -514,6 +552,9 @@ class WebAPIMixin:
             image_file = files["file"]
             if not image_file or not image_file.filename:
                 return jsonify({"message": "无效的图片文件"}), 400
+            conflict = self._guard_default_pack_file_operation("上传表情图片")
+            if conflict:
+                return conflict
             logger.info(f"收到上传请求: 类别={category}, 文件名={image_file.filename}")
             try:
                 result = add_emoji_to_category(category, image_file)
@@ -553,6 +594,9 @@ class WebAPIMixin:
         image_file = data.get("image_file")
         if not category or not image_file:
             return jsonify({"message": "分类和文件名不能为空"}), 400
+        conflict = self._guard_default_pack_file_operation("删除表情图片")
+        if conflict:
+            return conflict
         if delete_emoji_from_category(category, image_file):
             return (
                 jsonify(
@@ -572,6 +616,9 @@ class WebAPIMixin:
         image_files = data.get("image_files")
         if not category or not isinstance(image_files, list) or not image_files:
             return jsonify({"message": "分类和文件名列表不能为空"}), 400
+        conflict = self._guard_default_pack_file_operation("批量删除表情图片")
+        if conflict:
+            return conflict
         result = batch_delete_emojis(category, image_files)
         if not result["category_exists"]:
             return jsonify({"message": "分类未找到"}), 404
@@ -598,6 +645,9 @@ class WebAPIMixin:
             return jsonify({"message": "源分类、目标分类和文件名不能为空"}), 400
         if source_category == target_category:
             return jsonify({"message": "源分类和目标分类不能相同"}), 400
+        conflict = self._guard_default_pack_file_operation("移动表情图片")
+        if conflict:
+            return conflict
         result = move_emoji_to_category(source_category, image_file, target_category)
         if not result["source_category_exists"]:
             return jsonify({"message": "源分类未找到"}), 404
@@ -631,6 +681,9 @@ class WebAPIMixin:
             return jsonify({"message": "源分类、目标分类和文件名列表不能为空"}), 400
         if source_category == target_category:
             return jsonify({"message": "源分类和目标分类不能相同"}), 400
+        conflict = self._guard_default_pack_file_operation("批量移动表情图片")
+        if conflict:
+            return conflict
         result = batch_move_emojis(source_category, image_files, target_category)
         if not result["source_category_exists"]:
             return jsonify({"message": "源分类未找到"}), 404
@@ -663,6 +716,9 @@ class WebAPIMixin:
             or not image_files
         ):
             return jsonify({"message": "源分类、目标分类和文件名列表不能为空"}), 400
+        conflict = self._guard_default_pack_file_operation("批量复制表情图片")
+        if conflict:
+            return conflict
         result = batch_copy_emojis(source_category, image_files, target_category)
         if not result["source_category_exists"]:
             return jsonify({"message": "源分类未找到"}), 404
@@ -684,6 +740,9 @@ class WebAPIMixin:
         )
 
     async def _api_clear_all_emojis(self):
+        conflict = self._guard_default_pack_file_operation("清空全部表情图片")
+        if conflict:
+            return conflict
         result = clear_all_emojis()
         deleted_count = sum(result["deleted_by_category"].values())
         return (
@@ -716,6 +775,9 @@ class WebAPIMixin:
             category = data.get("category")
             if not category:
                 return jsonify({"message": "分类不能为空"}), 400
+            conflict = self._guard_default_pack_file_operation("删除表情分类")
+            if conflict:
+                return conflict
             if self.category_manager.delete_category(category):
                 return jsonify({"message": "分类删除成功"}), 200
             return jsonify({"message": "分类删除失败"}), 500
@@ -727,6 +789,9 @@ class WebAPIMixin:
         category = data.get("category")
         if not category:
             return jsonify({"message": "分类不能为空"}), 400
+        conflict = self._guard_default_pack_file_operation("清空表情分类")
+        if conflict:
+            return conflict
         result = clear_category_emojis(category)
         if not result["category_exists"]:
             return jsonify({"message": "分类未找到"}), 404
@@ -765,6 +830,9 @@ class WebAPIMixin:
             new_name = data.get("new_name")
             if not old_name or not new_name:
                 return jsonify({"message": "旧分类名和新分类名不能为空"}), 400
+            conflict = self._guard_default_pack_file_operation("重命名表情分类")
+            if conflict:
+                return conflict
             if self.category_manager.rename_category(old_name, new_name):
                 return jsonify({"message": "分类重命名成功"}), 200
             return jsonify({"message": "分类重命名失败"}), 500
@@ -851,6 +919,7 @@ class WebAPIMixin:
 
     def _get_img_host_sync_task_status(self) -> dict:
         if not self.img_sync:
+            self._finish_img_host_local_operation()
             return {
                 "available": False,
                 "running": False,
@@ -861,6 +930,7 @@ class WebAPIMixin:
 
         process = getattr(self.img_sync, "sync_process", None)
         if not process:
+            self._finish_img_host_local_operation()
             if self._last_img_host_sync_task_status:
                 return self._last_img_host_sync_task_status.copy()
             return {
@@ -893,6 +963,7 @@ class WebAPIMixin:
         except Exception as exc:
             logger.warning(f"回收图床同步进程失败: {exc}")
         self.img_sync.sync_process = None
+        self._finish_img_host_local_operation()
 
         status.update(
             {
@@ -955,7 +1026,28 @@ class WebAPIMixin:
 
         self._invalidate_img_host_status_cache(pack_id)
         self._last_img_host_sync_task_status = None
-        sync_client.sync_process = sync_client._start_sync_process(task)
+        changes_local_files = task in {"overwrite_from_remote", "download"}
+        effective_pack_id = str(
+            pack_id or getattr(self, "_img_sync_pack_id", "") or MEMES_DIR.parent.name
+        ).strip()
+        manager = getattr(self, "semantic_task_manager", None)
+        if changes_local_files and manager is not None and effective_pack_id:
+            operation_name = (
+                "从远端覆盖本地表情包"
+                if task == "overwrite_from_remote"
+                else "从图床下载表情包"
+            )
+            manager.begin_external_pack_operation(effective_pack_id, operation_name)
+            self._img_host_local_operation = {
+                "pack_id": effective_pack_id,
+                "operation": operation_name,
+            }
+        try:
+            sync_client.sync_process = sync_client._start_sync_process(task)
+        except Exception:
+            if changes_local_files:
+                self._finish_img_host_local_operation()
+            raise
         return self._get_img_host_sync_task_status()
 
     async def _api_img_host_sync_status(self):
@@ -1035,7 +1127,14 @@ class WebAPIMixin:
             task_status = self._start_img_host_sync_task("upload", pack_id=pack_id)
             return jsonify({"success": True, "task": task_status})
         except Exception as e:
-            status_code = 409 if "已有同步任务" in str(e) else 500
+            status_code = (
+                409
+                if any(
+                    marker in str(e)
+                    for marker in ("已有同步任务", "语义任务", "语义队列")
+                )
+                else 500
+            )
             return jsonify({"message": str(e)}), status_code
 
     async def _api_img_host_sync_overwrite_to_remote(self):
@@ -1049,7 +1148,14 @@ class WebAPIMixin:
             )
             return jsonify({"success": True, "task": task_status})
         except Exception as e:
-            status_code = 409 if "已有同步任务" in str(e) else 500
+            status_code = (
+                409
+                if any(
+                    marker in str(e)
+                    for marker in ("已有同步任务", "语义任务", "语义队列")
+                )
+                else 500
+            )
             return jsonify({"message": str(e)}), status_code
 
     async def _api_img_host_sync_overwrite_from_remote(self):
@@ -1063,7 +1169,14 @@ class WebAPIMixin:
             )
             return jsonify({"success": True, "task": task_status})
         except Exception as e:
-            status_code = 409 if "已有同步任务" in str(e) else 500
+            status_code = (
+                409
+                if any(
+                    marker in str(e)
+                    for marker in ("已有同步任务", "语义任务", "语义队列")
+                )
+                else 500
+            )
             return jsonify({"message": str(e)}), status_code
 
     async def _api_img_host_sync_download(self):
@@ -1075,7 +1188,14 @@ class WebAPIMixin:
             task_status = self._start_img_host_sync_task("download", pack_id=pack_id)
             return jsonify({"success": True, "task": task_status})
         except Exception as e:
-            status_code = 409 if "已有同步任务" in str(e) else 500
+            status_code = (
+                409
+                if any(
+                    marker in str(e)
+                    for marker in ("已有同步任务", "语义任务", "语义队列")
+                )
+                else 500
+            )
             return jsonify({"message": str(e)}), status_code
 
     async def _api_img_host_sync_task_status(self):
@@ -1212,6 +1332,8 @@ class WebAPIMixin:
             return jsonify(get_pack_detail(pack_id))
         except FileNotFoundError as e:
             return jsonify({"message": str(e)}), 404
+        except RuntimeError as e:
+            return jsonify({"message": str(e)}), 409
         except ValueError as e:
             return jsonify({"message": str(e)}), 400
         except Exception as e:
@@ -1221,10 +1343,11 @@ class WebAPIMixin:
     async def _api_semantic_status(self):
         try:
             pack_id = await self._semantic_request_pack_id()
+            self._get_img_host_sync_task_status()
             result = self.semantic_task_manager.status(pack_id)
             metadata = load_metadata(PACKS_DIR / pack_id)
             provider = EmbeddingAdapter(
-                self.semantic_task_manager._resolve_embedding_provider(),
+                self.semantic_task_manager._resolve_embedding_provider(pack_id),
                 str(getattr(self, "semantic_embedding_provider_id", "") or ""),
             )
             result["index_ready"] = index_is_ready(
@@ -1236,6 +1359,9 @@ class WebAPIMixin:
                 provider.dimension,
             )
             result["semantic_enabled"] = bool(getattr(self, "semantic_enabled", False))
+            result["semantic_config_ready"] = bool(
+                not result["semantic_enabled"] or result.get("embedding_provider_ready")
+            )
             return jsonify(result), 200
         except FileNotFoundError as exc:
             return jsonify({"message": str(exc)}), 404
@@ -1248,12 +1374,30 @@ class WebAPIMixin:
     async def _api_semantic_items(self):
         try:
             pack_id = await self._semantic_request_pack_id()
+            try:
+                page = max(1, int(request.args.get("page", 1) or 1))
+            except (TypeError, ValueError):
+                page = 1
+            try:
+                page_size = int(request.args.get("page_size", 20) or 20)
+            except (TypeError, ValueError):
+                page_size = 20
+            page_size = min(100, max(10, page_size))
+            all_items = metadata_items(
+                PACKS_DIR / pack_id, request.args.get("status")
+            )
+            total = len(all_items)
+            total_pages = max(1, (total + page_size - 1) // page_size)
+            page = min(page, total_pages)
+            start = (page - 1) * page_size
             return jsonify(
                 {
                     "pack_id": pack_id,
-                    "items": metadata_items(
-                        PACKS_DIR / pack_id, request.args.get("status")
-                    ),
+                    "items": all_items[start : start + page_size],
+                    "total": total,
+                    "page": page,
+                    "page_size": page_size,
+                    "total_pages": total_pages,
                 }
             ), 200
         except (FileNotFoundError, ValueError) as exc:
@@ -1266,6 +1410,7 @@ class WebAPIMixin:
         try:
             data = await request.get_json() or {}
             pack_id = await self._semantic_request_pack_id(data)
+            self._get_img_host_sync_task_status()
             external_data = (
                 data.get("external_metadata")
                 if isinstance(data.get("external_metadata"), dict)
@@ -1284,12 +1429,15 @@ class WebAPIMixin:
                 pack_id,
                 mode=str(data.get("mode") or "full"),
                 force=bool(data.get("force", False)),
+                concurrency=data.get("concurrency"),
                 external_data=external_data,
             )
             return jsonify(result), 202
         except FileNotFoundError as exc:
             return jsonify({"message": str(exc)}), 404
-        except (ValueError, RuntimeError) as exc:
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except ValueError as exc:
             return jsonify({"message": str(exc)}), 400
         except Exception as exc:
             logger.error("启动语义任务失败: %s", exc, exc_info=True)
@@ -1305,8 +1453,18 @@ class WebAPIMixin:
         try:
             data = await request.get_json() or {}
             pack_id = await self._semantic_request_pack_id(data)
-            return jsonify(await self.semantic_task_manager.retry(pack_id)), 202
-        except (FileNotFoundError, ValueError, RuntimeError) as exc:
+            self._get_img_host_sync_task_status()
+            result = await self.semantic_task_manager.start(
+                pack_id,
+                mode="retry_failed",
+                concurrency=data.get("concurrency"),
+            )
+            return jsonify(result), 202
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except ValueError as exc:
             return jsonify({"message": str(exc)}), 400
         except Exception as exc:
             logger.error("重试语义任务失败: %s", exc, exc_info=True)
@@ -1316,9 +1474,19 @@ class WebAPIMixin:
         try:
             data = await request.get_json() or {}
             pack_id = await self._semantic_request_pack_id(data)
-            result = await getattr(self.semantic_task_manager, action)(pack_id)
+            self._get_img_host_sync_task_status()
+            if action == "resume":
+                result = await self.semantic_task_manager.resume(
+                    pack_id, concurrency=data.get("concurrency")
+                )
+            else:
+                result = await getattr(self.semantic_task_manager, action)(pack_id)
             return jsonify(result), 200
-        except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except ValueError as exc:
             return jsonify({"message": str(exc)}), 400
         except Exception as exc:
             logger.error("语义任务操作失败: %s", exc, exc_info=True)
@@ -1328,15 +1496,57 @@ class WebAPIMixin:
         try:
             data = await request.get_json() or {}
             pack_id = await self._semantic_request_pack_id(data)
+            self._get_img_host_sync_task_status()
             result = await self.semantic_task_manager.rebuild_index(
                 pack_id, force=bool(data.get("force", False))
             )
             return jsonify({"message": "向量索引已建立", **result}), 200
-        except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except ValueError as exc:
             return jsonify({"message": str(exc)}), 400
         except Exception as exc:
             logger.error("重建语义索引失败: %s", exc, exc_info=True)
             return jsonify({"message": "重建语义索引失败"}), 500
+
+    async def _api_semantic_clear_local_state(self):
+        try:
+            data = await request.get_json() or {}
+            pack_id = await self._semantic_request_pack_id(data)
+            result = await self.semantic_task_manager.clear_local_semantic_state(pack_id)
+            return jsonify({"message": "已清理本机任务与向量，图片描述已保留", **result}), 200
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("清理本机语义状态失败: %s", exc, exc_info=True)
+            return jsonify({"message": "清理本机语义状态失败"}), 500
+
+    async def _api_semantic_delete_all(self):
+        try:
+            data = await request.get_json() or {}
+            pack_id = await self._semantic_request_pack_id(data)
+            result = await self.semantic_task_manager.delete_all_semantic_data(pack_id)
+            return jsonify(
+                {
+                    "message": "已删除当前资源包的全部语义化数据，原图片已保留",
+                    **result,
+                }
+            ), 200
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("删除全部语义化数据失败: %s", exc, exc_info=True)
+            return jsonify({"message": "删除全部语义化数据失败"}), 500
 
     async def _api_set_default_pack(self):
         try:
@@ -1344,8 +1554,21 @@ class WebAPIMixin:
             pack_id = str((data or {}).get("pack_id") or "").strip()
             if not pack_id:
                 return jsonify({"message": "pack_id 不能为空"}), 400
+            previous_pack_id = str(
+                get_selection_rules().get("default_pack_id") or ""
+            ).strip()
             result = set_default_pack(pack_id)
             self._reload_personas()
+            if (
+                bool(getattr(self, "semantic_enabled", False))
+                and previous_pack_id != pack_id
+            ):
+                status = self.semantic_task_manager.status(pack_id)
+                result["semantic_rebuild_required"] = bool(
+                    status.get("dimension_rebuild_required")
+                    and status.get("semantic_caption_complete")
+                )
+                result["semantic_rebuild_pack_id"] = pack_id
             return jsonify({"message": "默认表情包设置成功", **result}), 200
         except FileNotFoundError as e:
             return jsonify({"message": str(e)}), 404
@@ -1371,11 +1594,16 @@ class WebAPIMixin:
                 "off",
             }
             result = export_pack_archive(
-                pack_id, output_dir=output_dir, include_semantic=include_semantic
+                pack_id,
+                output_dir=output_dir,
+                include_semantic=include_semantic,
+                operation_guard=self._semantic_operation_guard,
             )
             return jsonify({"message": "导出成功", **result}), 200
         except FileNotFoundError as e:
             return jsonify({"message": str(e)}), 404
+        except RuntimeError as e:
+            return jsonify({"message": str(e)}), 409
         except ValueError as e:
             return jsonify({"message": str(e)}), 400
         except Exception as e:
@@ -1421,10 +1649,13 @@ class WebAPIMixin:
                 temp_zip_path,
                 overwrite=overwrite,
                 set_as_default=set_as_default,
+                operation_guard=self._semantic_operation_guard,
             )
             self._reload_personas()
             return jsonify({"message": "导入成功", **result}), 200
         except FileExistsError as e:
+            return jsonify({"message": str(e)}), 409
+        except RuntimeError as e:
             return jsonify({"message": str(e)}), 409
         except (FileNotFoundError, ValueError) as e:
             return jsonify({"message": str(e)}), 400
@@ -1444,11 +1675,15 @@ class WebAPIMixin:
             pack_id = str((data or {}).get("pack_id") or "").strip()
             if not pack_id:
                 return jsonify({"message": "pack_id 不能为空"}), 400
-            result = uninstall_pack(pack_id)
+            result = uninstall_pack(
+                pack_id, operation_guard=self._semantic_operation_guard
+            )
             self._reload_personas()
             return jsonify({"message": "卸载成功", **result}), 200
         except FileNotFoundError as e:
             return jsonify({"message": str(e)}), 404
+        except RuntimeError as e:
+            return jsonify({"message": str(e)}), 409
         except ValueError as e:
             return jsonify({"message": str(e)}), 400
         except Exception as e:
@@ -1529,10 +1764,13 @@ class WebAPIMixin:
                 source=source,
                 overwrite=overwrite,
                 set_as_default=set_as_default,
+                operation_guard=self._semantic_operation_guard,
             )
             self._reload_personas()
             return jsonify({"message": "社区表情包安装成功", **result}), 200
         except FileExistsError as e:
+            return jsonify({"message": str(e)}), 409
+        except RuntimeError as e:
             return jsonify({"message": str(e)}), 409
         except (FileNotFoundError, ValueError) as e:
             logger.warning(
@@ -1558,10 +1796,13 @@ class WebAPIMixin:
                 index_url=COMMUNITY_INDEX_URL,
                 overwrite=overwrite,
                 set_as_default=set_as_default,
+                operation_guard=self._semantic_operation_guard,
             )
             self._reload_personas()
             return jsonify({"message": "官方表情包安装成功", **result}), 200
         except FileExistsError as e:
+            return jsonify({"message": str(e)}), 409
+        except RuntimeError as e:
             return jsonify({"message": str(e)}), 409
         except (FileNotFoundError, ValueError) as e:
             logger.warning(
@@ -1585,8 +1826,29 @@ class WebAPIMixin:
         try:
             data = await request.get_json()
             rules = (data or {}).get("rules", [])
+            before = get_selection_rules()
+            before_map = {
+                str(item.get("id") or ""): str(item.get("pack_id") or "")
+                for item in before.get("rules", [])
+                if isinstance(item, dict)
+            }
             saved = save_selection_rules(rules)
             self._reload_personas()
+            rebuild_packs = []
+            if bool(getattr(self, "semantic_enabled", False)):
+                for item in saved.get("rules", []):
+                    if not isinstance(item, dict):
+                        continue
+                    rule_id = str(item.get("id") or "")
+                    pack_id = str(item.get("pack_id") or "")
+                    if before_map.get(rule_id) == pack_id or not pack_id:
+                        continue
+                    status = self.semantic_task_manager.status(pack_id)
+                    if status.get("dimension_rebuild_required") and status.get(
+                        "semantic_caption_complete"
+                    ):
+                        rebuild_packs.append(pack_id)
+            saved["semantic_rebuild_packs"] = sorted(set(rebuild_packs))
             return jsonify({"message": "规则保存成功", **saved}), 200
         except ValueError as e:
             return jsonify({"message": str(e)}), 400
@@ -1598,8 +1860,13 @@ class WebAPIMixin:
         try:
             data = await request.get_json()
             output_dir = (data or {}).get("output_dir")
-            result = export_runtime_backup(output_dir=output_dir)
+            result = export_runtime_backup(
+                output_dir=output_dir,
+                operation_guard=self._semantic_operation_guard,
+            )
             return jsonify({"message": "全量备份导出成功", **result}), 200
+        except RuntimeError as e:
+            return jsonify({"message": str(e)}), 409
         except Exception as e:
             logger.error(f"导出全量备份失败: {e}", exc_info=True)
             return jsonify({"message": f"导出全量备份失败: {str(e)}"}), 500
@@ -1711,9 +1978,15 @@ class WebAPIMixin:
                     400,
                 )
 
-            result = import_runtime_backup(temp_zip_path, overwrite=overwrite)
+            result = import_runtime_backup(
+                temp_zip_path,
+                overwrite=overwrite,
+                operation_guard=self._semantic_operation_guard,
+            )
             self._reload_personas()
             return jsonify({"message": "全量备份导入成功", **result}), 200
+        except RuntimeError as e:
+            return jsonify({"message": str(e)}), 409
         except (FileNotFoundError, ValueError) as e:
             return jsonify({"message": str(e)}), 400
         except Exception as e:
