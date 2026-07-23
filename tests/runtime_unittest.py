@@ -22,6 +22,12 @@ class FakeEvent:
     def set_extra(self, key, value):
         self.extra[key] = value
 
+    def get_result(self):
+        return None
+
+    def get_platform_name(self):
+        return "telegram"
+
 
 @unittest.skipUnless(ASTRBOT_AVAILABLE, "当前 Python 环境没有 AstrBot 运行库")
 class RuntimeBehaviorTests(unittest.TestCase):
@@ -56,6 +62,44 @@ class RuntimeBehaviorTests(unittest.TestCase):
                 event.get_extra("meme_manager_semantic_selected_ids"),
                 ["meme:123456789abc"],
             )
+
+        asyncio.run(run())
+
+    def test_legacy_response_is_processed_only_once(self):
+        class Plugin(EventHandlerMixin):
+            remove_invalid_alternative_markup = True
+            emotion_llm_enabled = False
+            max_emotions_per_message = 1
+
+            @staticmethod
+            def _semantic_mode_active(event):
+                return False
+
+            @staticmethod
+            def _resolve_runtime_pack_context(event=None):
+                return {"category_mapping": {"happy": "开心"}}
+
+            @staticmethod
+            def _read_config_value(
+                path,
+                default=None,
+                *,
+                legacy_paths=(),
+                legacy_keys=(),
+            ):
+                return default
+
+        async def run():
+            plugin = Plugin()
+            event = FakeEvent()
+            event.set_extra("meme_manager_semantic_response_processed", False)
+            response = SimpleNamespace(completion_text="今天真不错 &&happy&&")
+
+            await plugin._resp_impl(event, response)
+            await plugin._resp_impl(event, response)
+
+            self.assertEqual(event.get_extra("found_emotions"), ["happy"])
+            self.assertEqual(response.completion_text, "今天真不错")
 
         asyncio.run(run())
 

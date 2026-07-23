@@ -524,13 +524,14 @@ class EventHandlerMixin:
             if self._semantic_mode_active(event)
             else ""
         )
-        if semantic_mode:
-            if bool(event.get_extra("meme_manager_semantic_response_processed")):
-                logger.info("[meme_manager] 本轮语义回复已经处理，忽略重复响应钩子")
-                return
-            # 必须在任何异步检索或情感模型调用前占位，确保并发或重复钩子
-            # 都不会再次进入并覆盖第一次的有效选择。
-            event.set_extra("meme_manager_semantic_response_processed", True)
+        if bool(event.get_extra("meme_manager_semantic_response_processed")):
+            logger.info(
+                "[meme_manager] Response already processed; ignoring duplicate hook"
+            )
+            return
+        # Claim the response before any async work so duplicate hooks cannot
+        # overwrite either semantic selections or legacy category matches.
+        event.set_extra("meme_manager_semantic_response_processed", True)
         if semantic_mode == "llm":
             return await self._resp_semantic_llm_impl(event, response, text)
         if semantic_mode == "tool":
