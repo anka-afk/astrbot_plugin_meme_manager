@@ -57,7 +57,7 @@ from backend.semantic_storage import (
     save_metadata,
     semantic_metadata_is_complete,
 )
-from backend.semantic_task import SemanticTaskManager
+from backend.semantic_task import SemanticTaskManager, _revision_category_choice
 from image_host.img_sync import ImageSync
 from PIL import Image
 from utils import normalize_probability, probability_hit
@@ -1886,6 +1886,11 @@ class SemanticMvpTest(unittest.TestCase):
         self.assertIn("保存、移动并更新该图向量", page)
         self.assertIn("target_category", script)
         self.assertIn("updateImageSemanticMoveChoice", script)
+        self.assertIn("classification_action", script)
+        self.assertIn('classificationAction === "return_original"', script)
+        self.assertIn('classificationAction === "move_to_other"', script)
+        self.assertIn("模型会重写语义并自动选择分类", page)
+        self.assertIn("视觉模型重写后会自动填入建议分类", page)
         self.assertIn("image-preview-save-vector-btn", page)
         self.assertIn("image-preview-restore-auto-btn", page)
         self.assertIn("固定分类标签（只读）", page)
@@ -2154,8 +2159,12 @@ class SemanticMvpTest(unittest.TestCase):
                 pack = root / "packs" / "demo"
                 foo_dir = pack / "memes" / "foo"
                 bar_dir = pack / "memes" / "bar"
+                other_dir = pack / "memes" / "other"
+                review_dir = pack / "memes" / "needs_review"
                 foo_dir.mkdir(parents=True)
                 bar_dir.mkdir(parents=True)
+                other_dir.mkdir(parents=True)
+                review_dir.mkdir(parents=True)
                 (pack / "memes_data.json").write_text(
                     json.dumps({"foo": "原分类", "bar": "更合适的分类"}),
                     encoding="utf-8",
@@ -2175,6 +2184,10 @@ class SemanticMvpTest(unittest.TestCase):
                         "category_review_status": "needs_review",
                         "category_review_reason": "需要人工判断",
                         "category_review_context_hash": item["category_context_hash"],
+                        "reclassification_status": "auto_reclassified",
+                        "reclassified_from_category": "bar",
+                        "reclassified_to_category": "foo",
+                        "reclassification_reason": "自动任务曾判断 foo 更合适",
                     }
                 )
                 save_metadata(pack, metadata)
@@ -2206,13 +2219,102 @@ class SemanticMvpTest(unittest.TestCase):
                 self.assertEqual(proposal["caption"], "按人工意见纠正后的描述")
                 self.assertEqual(proposal["tags"], ["纠正标签", "无语"])
                 self.assertEqual(proposal["suggested_category"], "bar")
+                self.assertEqual(proposal["current_category"], "foo")
+                self.assertEqual(proposal["original_category"], "bar")
+                self.assertEqual(proposal["selected_category"], "bar")
+                self.assertEqual(
+                    proposal["classification_action"], "return_original"
+                )
                 self.assertEqual(proposal["vision_requests"], 1)
                 self.assertEqual(len(context.requests), 1)
                 prompt = context.requests[0]["prompt"]
                 self.assertIn("人工复审纠错", prompt)
                 self.assertIn("这不是开心，是看到离谱内容后无语", prompt)
                 self.assertIn("原来的错误描述", prompt)
+                self.assertIn("分类重新选择规则", prompt)
+                self.assertIn('"current_category": "foo"', prompt)
+                self.assertIn('"original_category": "bar"', prompt)
+                self.assertIn("自动任务曾判断 foo 更合适", prompt)
+                self.assertIn('"other": ""', prompt)
+                tool = context.requests[0]["tools"].tools[0]
+                self.assertEqual(
+                    tool.parameters["properties"]["suggested_category"]["enum"],
+                    ["", "bar", "other"],
+                )
                 self.assertEqual(load_metadata(pack)["images"], before)
+
+        asyncio.run(run())
+
+    def test_review_category_choice_covers_keep_original_other_and_manual(self):
+        categories = {"foo", "bar", "other"}
+        self.assertEqual(
+            _revision_category_choice(
+                current_category="foo",
+                original_category="bar",
+                category_fit="match",
+                suggested_category="",
+                selectable_categories=categories,
+            ),
+            ("foo", "keep_current"),
+        )
+        self.assertEqual(
+            _revision_category_choice(
+                current_category="foo",
+                original_category="bar",
+                category_fit="conflict",
+                suggested_category="bar",
+                selectable_categories=categories,
+            ),
+            ("bar", "return_original"),
+        )
+        self.assertEqual(
+            _revision_category_choice(
+                current_category="foo",
+                original_category="bar",
+                category_fit="conflict",
+                suggested_category="other",
+                selectable_categories=categories,
+            ),
+            ("other", "move_to_other"),
+        )
+        self.assertEqual(
+            _revision_category_choice(
+                current_category="needs_review",
+                original_category="foo",
+                category_fit="uncertain",
+                suggested_category="",
+                selectable_categories=categories,
+            ),
+            ("", "manual_required"),
+        )
+
+    def test_review_rewrite_does_not_anchor_caption_to_review_bucket(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                image = Path(temp) / "one.png"
+                image.write_bytes(b"review-bucket")
+                context = CategoryVisionContext(
+                    {
+                        "caption": "暂时无法确定具体情绪分类",
+                        "tags": ["不确定", "等待复核"],
+                        "visible_text": "",
+                        "category_fit": "uncertain",
+                        "category_review_reason": "画面证据不足",
+                        "suggested_category": "",
+                    }
+                )
+                proposal = await generate_caption(
+                    context,
+                    image,
+                    "fake-vision",
+                    category="needs_review",
+                    category_description="人工复核暂存分类",
+                    available_categories={"foo": "分类一", "bar": "分类二"},
+                    review_instruction="重新检查语义和最终分类",
+                    current_semantic={"caption": "旧描述", "tags": []},
+                )
+                self.assertEqual(proposal["caption"], "暂时无法确定具体情绪分类")
+                self.assertNotIn("以当前分类", proposal["caption"])
 
         asyncio.run(run())
 

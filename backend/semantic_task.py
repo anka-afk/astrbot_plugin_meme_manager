@@ -46,6 +46,57 @@ from .semantic_storage import (
 )
 
 
+def _revision_original_category(
+    item: SemanticImage,
+    existing_categories: set[str],
+) -> str:
+    """返回仍然存在的自动重分类前原分类，旧数据缺字段时查历史记录。"""
+    direct = str(item.reclassified_from_category or "").strip()
+    if (
+        direct
+        and direct != item.category
+        and direct != REVIEW_CATEGORY
+        and direct in existing_categories
+    ):
+        return direct
+    for record in reversed(item.reclassification_history):
+        candidate = str(record.get("from_category") or "").strip()
+        if (
+            candidate
+            and candidate != item.category
+            and candidate != REVIEW_CATEGORY
+            and candidate in existing_categories
+        ):
+            return candidate
+    return ""
+
+
+def _revision_category_choice(
+    *,
+    current_category: str,
+    original_category: str,
+    category_fit: str,
+    suggested_category: str,
+    selectable_categories: set[str],
+) -> tuple[str, str]:
+    """把模型分类结果转换成前端可直接复核的目标分类和动作。"""
+    current = str(current_category or "").strip()
+    original = str(original_category or "").strip()
+    fit = str(category_fit or "uncertain").strip()
+    suggested = str(suggested_category or "").strip()
+    if (
+        fit == "conflict"
+        and suggested
+        and suggested != current
+        and suggested in selectable_categories
+    ):
+        action = "return_original" if suggested == original else "move_to_other"
+        return suggested, action
+    if current != REVIEW_CATEGORY and fit in {"match", "uncertain"}:
+        return current, "keep_current"
+    return "", "manual_required"
+
+
 class SemanticTaskManager:
     def __init__(
         self,
@@ -382,6 +433,33 @@ class SemanticTaskManager:
                 expected_entry_id=expected_entry_id,
             )
             item = snapshot["item"]
+            category_descriptions = load_category_descriptions(pack_dir)
+            memes_root = pack_dir / "memes"
+            category_paths = (
+                [
+                    category_path
+                    for category_path in memes_root.iterdir()
+                    if category_path.is_dir() and not category_path.is_symlink()
+                ]
+                if memes_root.is_dir()
+                else []
+            )
+            for category_path in category_paths:
+                category_descriptions.setdefault(category_path.name, "")
+            selectable_categories = {
+                category_path.name
+                for category_path in category_paths
+                if category_path.name and category_path.name != REVIEW_CATEGORY
+            }
+            available_categories = {
+                category: description
+                for category, description in category_descriptions.items()
+                if category in selectable_categories
+            }
+            original_category = _revision_original_category(
+                item,
+                selectable_categories,
+            )
             try:
                 proposal = await generate_caption(
                     self.context,
@@ -389,12 +467,16 @@ class SemanticTaskManager:
                     str(vision["id"]),
                     category=item.category,
                     category_description=item.category_description,
-                    available_categories=load_category_descriptions(pack_dir),
+                    available_categories=available_categories,
                     review_instruction=instruction,
                     current_semantic={
                         "caption": item.caption,
                         "tags": [tag for tag in item.tags if not is_category_tag(tag)],
                         "visible_text": item.visible_text,
+                        "current_category": item.category,
+                        "original_category": original_category,
+                        "reclassification_status": item.reclassification_status,
+                        "reclassification_reason": item.reclassification_reason,
                     },
                 )
             except Exception as exc:
@@ -410,19 +492,32 @@ class SemanticTaskManager:
                 expected_content_sha256=snapshot["content_sha256"],
                 expected_entry_id=snapshot["entry_id"],
             )
+            category_fit = str(proposal.get("category_fit") or "uncertain")
+            suggested_category = str(
+                proposal.get("suggested_category") or ""
+            ).strip()
+            selected_category, classification_action = _revision_category_choice(
+                current_category=item.category,
+                original_category=original_category,
+                category_fit=category_fit,
+                suggested_category=suggested_category,
+                selectable_categories=selectable_categories,
+            )
             return {
                 "caption": str(proposal.get("caption") or "").strip(),
                 "tags": [
                     tag for tag in proposal.get("tags", []) if not is_category_tag(tag)
                 ],
                 "visible_text": str(proposal.get("visible_text") or "").strip(),
-                "category_fit": str(proposal.get("category_fit") or "uncertain"),
+                "category_fit": category_fit,
                 "category_review_reason": str(
                     proposal.get("category_review_reason") or ""
                 ).strip(),
-                "suggested_category": str(
-                    proposal.get("suggested_category") or ""
-                ).strip(),
+                "suggested_category": suggested_category,
+                "current_category": item.category,
+                "original_category": original_category,
+                "selected_category": selected_category,
+                "classification_action": classification_action,
                 "vision_model": str(proposal.get("vision_model") or vision["id"]),
                 "vision_requests": int(
                     (proposal.get("token_usage") or {}).get("calls", 1) or 1

@@ -1579,7 +1579,7 @@ class WebAPIMixin:
             )
             return jsonify(
                 {
-                    "message": "视觉模型已生成候选内容；检查后请点击保存，当前语义尚未改变",
+                    "message": "视觉模型已重写语义并选择分类候选；检查后请点击保存，当前语义尚未改变",
                     "pack_id": pack_id,
                     "category": category,
                     "filename": filename,

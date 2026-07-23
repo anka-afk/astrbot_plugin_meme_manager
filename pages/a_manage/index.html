@@ -616,7 +616,7 @@
                 让视觉模型按意见重写
               </button>
               <p id="image-preview-review-rewrite-status" class="image-preview-review-rewrite-status">
-                模型只会生成候选内容，不会直接覆盖；检查后仍需点击保存。
+                模型会重写语义并自动选择分类；只生成候选，不会直接保存或移动。
               </p>
             </div>
             <div class="image-preview-edit-field">
@@ -649,7 +649,7 @@
                 <option value="">保持当前分类</option>
               </select>
               <small>
-                选择新分类后，请点击“保存、移动并更新该图向量”。系统会一次完成保存、移动和单图向量更新，其他同内容图片不变。
+                视觉模型重写后会自动填入建议分类，你只需检查。选择新分类后，请点击“保存、移动并更新该图向量”；其他同内容图片不变。
               </small>
             </div>
             <p id="image-preview-edit-scope" class="image-preview-edit-scope">

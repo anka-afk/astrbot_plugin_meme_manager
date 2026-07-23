@@ -1201,7 +1201,7 @@ async function initApp() {
     }
     if (imagePreviewReviewRewriteStatus) {
       imagePreviewReviewRewriteStatus.textContent =
-        "模型只会生成候选内容，不会直接覆盖；检查后仍需点击保存。";
+        "模型会重写语义并自动选择分类；只生成候选，不会直接保存或移动。";
       imagePreviewReviewRewriteStatus.classList.remove("has-proposal");
     }
     if (imagePreviewTargetCategory) {
@@ -1383,35 +1383,67 @@ async function initApp() {
         );
       }
       const categoryFit = String(proposal.category_fit || "uncertain");
+      const classificationAction = String(
+        proposal.classification_action || "manual_required",
+      );
       if (imagePreviewCategoryDecision) {
-        imagePreviewCategoryDecision.value =
+        if (
+          classificationAction === "keep_current" &&
           categoryFit === "match"
-            ? "match"
-            : categoryFit === "conflict"
-              ? "mismatch"
-              : "keep";
+        ) {
+          imagePreviewCategoryDecision.value = "match";
+        } else if (
+          ["return_original", "move_to_other"].includes(
+            classificationAction,
+          ) || categoryFit === "conflict"
+        ) {
+          imagePreviewCategoryDecision.value = "mismatch";
+        } else {
+          imagePreviewCategoryDecision.value = "keep";
+        }
       }
-      const suggestedCategory = String(
-        proposal.suggested_category || "",
+      const currentCategory = String(
+        proposal.current_category || previewState?.category || "",
       ).trim();
-      if (
-        suggestedCategory &&
-        imagePreviewTargetCategory &&
-        Array.from(imagePreviewTargetCategory.options).some(
-          (option) => option.value === suggestedCategory,
-        )
-      ) {
-        imagePreviewTargetCategory.value = suggestedCategory;
+      const originalCategory = String(
+        proposal.original_category || "",
+      ).trim();
+      const selectedCategory = String(
+        proposal.selected_category || "",
+      ).trim();
+      let targetOptionAvailable = true;
+      if (imagePreviewTargetCategory) {
+        const selectableTarget =
+          selectedCategory && selectedCategory !== currentCategory
+            ? selectedCategory
+            : "";
+        const hasTargetOption = Array.from(
+          imagePreviewTargetCategory.options,
+        ).some((option) => option.value === selectableTarget);
+        targetOptionAvailable = !selectableTarget || hasTargetOption;
+        imagePreviewTargetCategory.value = hasTargetOption
+          ? selectableTarget
+          : "";
         updateImageSemanticMoveChoice();
       }
       if (imagePreviewReviewRewriteStatus) {
         const reviewReason = String(
           proposal.category_review_reason || "",
         ).trim();
+        let categoryChoiceText = "分类建议：模型未能确定，请手动选择。";
+        if (!targetOptionAvailable) {
+          categoryChoiceText = `模型建议改到“${selectedCategory}”，但当前分类列表已变化，请刷新页面后重新检查。`;
+        } else if (classificationAction === "keep_current") {
+          categoryChoiceText = `分类建议：保持当前分类“${currentCategory}”。`;
+        } else if (classificationAction === "return_original") {
+          categoryChoiceText = `分类建议：回到原分类“${originalCategory || selectedCategory}”。`;
+        } else if (classificationAction === "move_to_other") {
+          categoryChoiceText = `分类建议：改到“${selectedCategory}”。`;
+        }
         imagePreviewReviewRewriteStatus.textContent = [
           "视觉模型候选已填入，尚未保存。",
+          categoryChoiceText,
           reviewReason ? `分类判断：${reviewReason}` : "",
-          suggestedCategory ? `建议移动到：${suggestedCategory}` : "",
         ]
           .filter(Boolean)
           .join(" ");
