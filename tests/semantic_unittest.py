@@ -18,6 +18,7 @@ from backend.semantic_index import (
 )
 from backend.semantic_models import (
     PROMPT_VERSION,
+    REVIEW_CATEGORY_DESCRIPTION,
     SemanticImage,
     build_semantic_text,
     compact_semantic_query,
@@ -37,12 +38,14 @@ from backend.semantic_query import (
     validate_selected_id,
 )
 from backend.semantic_storage import (
+    apply_conflict_reclassifications,
     confirm_image_category,
     file_sha256,
     get_category_review_overview,
     get_image_semantic_detail,
     get_pack_semantic_summary,
     load_metadata,
+    metadata_items,
     reconcile_metadata,
     reset_local_embedding_state,
     safe_relative_path,
@@ -875,6 +878,7 @@ class SemanticMvpTest(unittest.TestCase):
                     digest,
                     raw_item,
                     vision_provider,
+                    available_categories,
                     force,
                     semaphore,
                 ):
@@ -1125,6 +1129,7 @@ class SemanticMvpTest(unittest.TestCase):
                         "visible_text",
                         "category_fit",
                         "category_review_reason",
+                        "suggested_category",
                     ],
                 )
 
@@ -1298,6 +1303,250 @@ class SemanticMvpTest(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_conflict_prompt_lists_categories_and_rejects_invented_suggestion(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                image_path = Path(temp) / "one.png"
+                image_path.write_bytes(b"catalog")
+                context = CategoryVisionContext(
+                    {
+                        "caption": "冒汗尴尬，不知道如何回应",
+                        "tags": ["冒汗", "尴尬", "无奈"],
+                        "visible_text": "",
+                        "category_fit": "conflict",
+                        "category_review_reason": "没有愤怒证据，主要是尴尬无奈",
+                        "suggested_category": "sigh",
+                    }
+                )
+                result = await generate_caption(
+                    context,
+                    image_path,
+                    "fake-vision",
+                    category="angry",
+                    category_description="抱怨、批评或激烈反对",
+                    available_categories={
+                        "angry": "抱怨、批评或激烈反对",
+                        "sigh": "表达无奈、无语或感慨",
+                        "confused": "表达困惑或理解障碍",
+                    },
+                )
+                prompt = context.requests[0]["prompt"]
+                self.assertIn('"sigh": "表达无奈、无语或感慨"', prompt)
+                self.assertIn("不能代替画面证据", prompt)
+                self.assertIn("冒汗、慌张、尴尬笑", prompt)
+                self.assertEqual(result["suggested_category"], "sigh")
+                tool = context.requests[0]["tools"].tools[0]
+                self.assertEqual(
+                    tool.parameters["properties"]["suggested_category"]["enum"],
+                    ["", "confused", "sigh"],
+                )
+
+                invalid_context = CategoryVisionContext(
+                    {
+                        "caption": "明显是在害怕",
+                        "tags": ["害怕", "退缩"],
+                        "visible_text": "",
+                        "category_fit": "conflict",
+                        "category_review_reason": "与愤怒明显不符",
+                        "suggested_category": "model-invented-category",
+                    }
+                )
+                invalid = await generate_caption(
+                    invalid_context,
+                    image_path,
+                    "fake-vision",
+                    category="angry",
+                    available_categories={"sigh": "无奈"},
+                )
+                self.assertEqual(invalid["suggested_category"], "")
+
+        asyncio.run(run())
+
+    def test_conflict_is_moved_to_existing_category_and_marked(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                angry_dir = pack / "memes" / "angry"
+                sigh_dir = pack / "memes" / "sigh"
+                angry_dir.mkdir(parents=True)
+                sigh_dir.mkdir()
+                source = angry_dir / "sweat.jpg"
+                source.write_bytes(b"obvious-sweat")
+                descriptions = {
+                    "angry": "抱怨、批评或激烈反对",
+                    "sigh": "表达无奈、无语或感慨",
+                }
+                (pack / "memes_data.json").write_text(
+                    json.dumps(descriptions, ensure_ascii=False), encoding="utf-8"
+                )
+                context = CategoryVisionContext(
+                    {
+                        "caption": "额头冒汗，尴尬无奈地不知道如何接话",
+                        "tags": ["冒汗", "尴尬", "无奈"],
+                        "visible_text": "",
+                        "category_fit": "conflict",
+                        "category_review_reason": "没有愤怒线索，主要表达尴尬无奈",
+                        "suggested_category": "sigh",
+                    }
+                )
+                manager = SemanticTaskManager(
+                    root,
+                    context=context,
+                    config={"vision_provider_id": "fake-vision"},
+                )
+                await manager.start("demo", mode="caption_only")
+                await manager._tasks["demo"]
+
+                moved_path = sigh_dir / "sweat.jpg"
+                self.assertFalse(source.exists())
+                self.assertTrue(moved_path.is_file())
+                current = load_metadata(pack)
+                self.assertEqual(len(current["images"]), 1)
+                item = next(iter(current["images"].values()))
+                self.assertEqual(item["category"], "sigh")
+                self.assertEqual(item["tags"][0], "category:sigh")
+                self.assertNotIn("category:angry", item["tags"])
+                self.assertEqual(item["category_review_status"], "needs_review")
+                self.assertEqual(item["reclassification_status"], "auto_reclassified")
+                self.assertEqual(item["reclassified_from_category"], "angry")
+                self.assertEqual(item["reclassified_to_category"], "sigh")
+                self.assertIn("尴尬无奈", item["reclassification_reason"])
+                self.assertEqual(len(item["reclassification_history"]), 1)
+                self.assertEqual(manager.status("demo")["reclassified_items"], 1)
+
+                overview = get_category_review_overview(pack)
+                self.assertEqual(overview["statistics"]["reclassified"], 1)
+                self.assertEqual(len(metadata_items(pack, "reclassified")), 1)
+                self.assertEqual(
+                    overview["items"][0]["reclassification_status"],
+                    "auto_reclassified",
+                )
+
+                context.payload = {
+                    "caption": "当前分类下确实表达无奈",
+                    "tags": ["无奈", "叹气"],
+                    "visible_text": "",
+                    "category_fit": "match",
+                    "category_review_reason": "",
+                    "suggested_category": "",
+                }
+                await manager.start("demo", mode="caption_only", force=True)
+                await manager._tasks["demo"]
+                refreshed = next(iter(load_metadata(pack)["images"].values()))
+                self.assertEqual(refreshed["category"], "sigh")
+                self.assertEqual(refreshed["category_review_status"], "needs_review")
+                self.assertEqual(
+                    refreshed["reclassification_status"], "auto_reclassified"
+                )
+                confirmed = confirm_image_category(pack, moved_path)
+                self.assertEqual(
+                    confirmed["category_review_status"], "manual_confirmed"
+                )
+                self.assertEqual(
+                    confirmed["reclassification_status"], "auto_reclassified"
+                )
+
+        asyncio.run(run())
+
+    def test_reclassification_avoids_filename_overwrite_and_skips_manual_item(self):
+        with tempfile.TemporaryDirectory() as temp:
+            pack = Path(temp)
+            angry_dir = pack / "memes" / "angry"
+            sigh_dir = pack / "memes" / "sigh"
+            angry_dir.mkdir(parents=True)
+            sigh_dir.mkdir()
+            (angry_dir / "same.jpg").write_bytes(b"move-me")
+            (angry_dir / "manual.jpg").write_bytes(b"manual-content")
+            (sigh_dir / "same.jpg").write_bytes(b"keep-target")
+            (pack / "memes_data.json").write_text(
+                json.dumps({"angry": "愤怒", "sigh": "无奈"}), encoding="utf-8"
+            )
+            metadata = reconcile_metadata(pack)
+            for item in metadata["images"].values():
+                if item["category"] != "angry":
+                    continue
+                item.update(
+                    {
+                        "caption": "真实含义是无奈",
+                        "tags": ["无奈"],
+                        "caption_status": "done",
+                        "prompt_version": PROMPT_VERSION,
+                        "category_fit": "conflict",
+                        "category_review_status": "needs_review",
+                        "category_review_reason": "没有愤怒证据",
+                        "category_review_context_hash": item["category_context_hash"],
+                        "suggested_category": "sigh",
+                    }
+                )
+                if item["relative_path"].endswith("manual.jpg"):
+                    item["manual_override"] = True
+                    item["manual_tags"] = ["用户标签"]
+                    item["provenance"] = "manual"
+            save_metadata(pack, metadata)
+            current = load_metadata(pack)
+            result = apply_conflict_reclassifications(pack, current)
+
+            self.assertEqual(result["moved"], 1)
+            self.assertEqual(result["skipped"], 1)
+            self.assertEqual((sigh_dir / "same.jpg").read_bytes(), b"keep-target")
+            self.assertEqual((sigh_dir / "same_1.jpg").read_bytes(), b"move-me")
+            self.assertTrue((angry_dir / "manual.jpg").is_file())
+            records = load_metadata(pack)["images"].values()
+            manual = next(
+                item for item in records if item["relative_path"].endswith("manual.jpg")
+            )
+            self.assertEqual(manual["category"], "angry")
+            self.assertTrue(manual["manual_override"])
+
+    def test_reclassification_merges_same_content_target_without_stale_entry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            pack = Path(temp)
+            angry_dir = pack / "memes" / "angry"
+            sigh_dir = pack / "memes" / "sigh"
+            angry_dir.mkdir(parents=True)
+            sigh_dir.mkdir()
+            (angry_dir / "source.png").write_bytes(b"same-content")
+            (sigh_dir / "existing.png").write_bytes(b"same-content")
+            (pack / "memes_data.json").write_text(
+                json.dumps({"angry": "愤怒", "sigh": "无奈"}), encoding="utf-8"
+            )
+            metadata = reconcile_metadata(pack)
+            self.assertEqual(metadata["unique_total"], 2)
+            angry_item = next(
+                item
+                for item in metadata["images"].values()
+                if item["category"] == "angry"
+            )
+            angry_item.update(
+                {
+                    "caption": "冒汗无奈",
+                    "tags": ["无奈"],
+                    "caption_status": "done",
+                    "prompt_version": PROMPT_VERSION,
+                    "category_fit": "conflict",
+                    "category_review_status": "needs_review",
+                    "category_review_reason": "没有愤怒证据",
+                    "category_review_context_hash": angry_item["category_context_hash"],
+                    "suggested_category": "sigh",
+                }
+            )
+            save_metadata(pack, metadata)
+            current = load_metadata(pack)
+            result = apply_conflict_reclassifications(pack, current)
+
+            self.assertEqual(result["moved"], 1)
+            merged = load_metadata(pack)
+            self.assertEqual(len(merged["images"]), 1)
+            self.assertEqual(merged["unique_total"], 1)
+            self.assertEqual(merged["file_total"], 2)
+            self.assertEqual(merged["reused_duplicate_files"], 1)
+            item = next(iter(merged["images"].values()))
+            self.assertEqual(item["category"], "sigh")
+            self.assertEqual(item["reclassification_status"], "auto_reclassified")
+            overview = get_category_review_overview(pack)
+            self.assertEqual(overview["statistics"]["reclassified"], 2)
+
     def test_task_persists_conflict_review_reason_and_fixed_tag(self):
         async def run():
             with tempfile.TemporaryDirectory() as temp:
@@ -1327,9 +1576,28 @@ class SemanticMvpTest(unittest.TestCase):
                 await manager._tasks["demo"]
                 item = next(iter(load_metadata(pack)["images"].values()))
                 self.assertEqual(item["category_review_status"], "needs_review")
-                self.assertEqual(item["category_review_reason"], "文字是在明确指责对方")
-                self.assertEqual(item["tags"][0], "category:foo")
+                self.assertIn("文字是在明确指责对方", item["category_review_reason"])
+                self.assertEqual(item["tags"][0], "category:needs_review")
+                self.assertNotIn("category:foo", item["tags"])
                 self.assertEqual(item["caption"], "严肃指责对方，语气非常强硬")
+                self.assertEqual(item["reclassification_status"], "moved_to_review")
+                self.assertEqual(item["reclassified_from_category"], "foo")
+                self.assertEqual(item["reclassified_to_category"], "needs_review")
+                self.assertFalse((image_dir / "one.png").exists())
+                self.assertTrue((pack / "memes" / "needs_review" / "one.png").is_file())
+                descriptions = json.loads(
+                    (pack / "memes_data.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    descriptions["needs_review"], REVIEW_CATEGORY_DESCRIPTION
+                )
+                manifest = json.loads(
+                    (pack / "manifest.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    manifest["categories"]["needs_review"]["description"],
+                    REVIEW_CATEGORY_DESCRIPTION,
+                )
                 self.assertIn("自嘲或缓和气氛", context.requests[0]["prompt"])
 
         asyncio.run(run())
@@ -1554,9 +1822,16 @@ class SemanticMvpTest(unittest.TestCase):
 
         page = Path("pages/a_manage/index.html").read_text(encoding="utf-8")
         script = Path("pages/a_manage/script.js").read_text(encoding="utf-8")
+        semantic_page = Path("pages/semantic/index.html").read_text(encoding="utf-8")
+        semantic_script = Path("pages/semantic/script.js").read_text(encoding="utf-8")
         self.assertIn('data-review-filter="needs_review"', page)
+        self.assertIn('data-review-filter="reclassified"', page)
         self.assertIn("image-preview-category-confirm-btn", page)
+        self.assertIn("image-preview-reclassification", page)
         self.assertIn("semantic/confirm_category", script)
+        self.assertIn("reclassification_status", script)
+        self.assertIn('value="reclassified"', semantic_page)
+        self.assertIn("自动重分类：", semantic_script)
 
     def test_v1_metadata_is_discarded_for_clean_rebuild(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1626,6 +1901,27 @@ class SemanticMvpTest(unittest.TestCase):
             )
             save_metadata(source, metadata)
             confirm_image_category(source, source / "memes" / "foo" / "one.png")
+            confirmed_metadata = load_metadata(source)
+            confirmed_item = next(iter(confirmed_metadata["images"].values()))
+            confirmed_item.update(
+                {
+                    "reclassification_status": "auto_reclassified",
+                    "reclassified_from_category": "angry",
+                    "reclassified_to_category": "foo",
+                    "reclassification_reason": "原分类与画面明显不符",
+                    "reclassified_at": "2026-07-23T00:00:00+00:00",
+                    "reclassification_history": [
+                        {
+                            "from_category": "angry",
+                            "to_category": "foo",
+                            "reason": "原分类与画面明显不符",
+                            "status": "auto_reclassified",
+                            "at": "2026-07-23T00:00:00+00:00",
+                        }
+                    ],
+                }
+            )
+            save_metadata(source, confirmed_metadata)
 
             portable = reset_local_embedding_state(load_metadata(source))
             imported = reconcile_metadata(target, external_data=portable)
@@ -1640,6 +1936,10 @@ class SemanticMvpTest(unittest.TestCase):
                 imported_item["category_review_status"], "manual_confirmed"
             )
             self.assertEqual(imported_item["embedding_status"], "pending")
+            self.assertEqual(
+                imported_item["reclassification_status"], "auto_reclassified"
+            )
+            self.assertEqual(len(imported_item["reclassification_history"]), 1)
             self.assertTrue(imported["requires_local_index_rebuild"])
 
     def test_one_click_classification_does_not_overwrite_manual_content(self):

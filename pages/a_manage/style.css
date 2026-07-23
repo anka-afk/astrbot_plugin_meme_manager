@@ -3230,6 +3230,10 @@ button.danger,
   outline: 3px solid #22c55e;
 }
 
+.emoji-item.review-reclassified {
+  outline: 3px solid #8b5cf6;
+}
+
 .image-preview-category-review {
   display: grid;
   gap: 8px;
@@ -3254,6 +3258,17 @@ button.danger,
   margin: 0;
   color: #92400e;
   font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.image-preview-reclassification {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #ede9fe;
+  color: #5b21b6;
+  font-size: 0.86rem;
+  font-weight: 650;
   line-height: 1.5;
 }
 

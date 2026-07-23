@@ -90,6 +90,7 @@ button:disabled { cursor: not-allowed; opacity: .6; transform: none; }
 .record-path { font-weight: 650; overflow-wrap: anywhere; }
 .record-copy, .record-state { color: var(--muted); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
 .record-error { margin-top: 6px; color: var(--danger); white-space: pre-wrap; }
+.record-reclassification { margin-top: 7px; padding: 6px 8px; border-radius: 8px; background: #ede9fe; color: #5b21b6; font-weight: 700; }
 .record-preview-button { width: 92px; height: 72px; padding: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #eef5f3; color: var(--muted); }
 .record-preview-button:hover:not(:disabled) { transform: none; border-color: var(--brand); }
 .record-preview-button img { width: 100%; height: 100%; display: block; object-fit: contain; background: #f6faf9; }

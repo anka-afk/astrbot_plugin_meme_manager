@@ -16,13 +16,18 @@ from datetime import datetime, timezone
 from typing import Any
 
 SCHEMA_VERSION = "2.0"
-PROMPT_VERSION = "meme-semantic-v7-category-aware"
+PROMPT_VERSION = "meme-semantic-v8-category-reclassification"
 IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp"})
 CAPTION_STATUSES = frozenset({"pending", "running", "done", "failed"})
 EMBEDDING_STATUSES = frozenset({"pending", "running", "done", "failed", "cleared"})
 CATEGORY_FITS = frozenset({"match", "uncertain", "conflict"})
 CATEGORY_REVIEW_STATUSES = frozenset(
     {"unchecked", "auto_match", "needs_review", "manual_confirmed"}
+)
+RECLASSIFICATION_STATUSES = frozenset({"", "auto_reclassified", "moved_to_review"})
+REVIEW_CATEGORY = "needs_review"
+REVIEW_CATEGORY_DESCRIPTION = (
+    "自动语义化发现图片与原分类明显不符，等待人工确认或重新移动"
 )
 TASK_STATUSES = frozenset(
     {"idle", "running", "paused", "completed", "completed_with_errors", "failed"}
@@ -371,6 +376,13 @@ class SemanticImage:
     category_review_reason: str = ""
     category_review_context_hash: str = ""
     manual_confirmation_context_hash: str = ""
+    suggested_category: str = ""
+    reclassification_status: str = ""
+    reclassified_from_category: str = ""
+    reclassified_to_category: str = ""
+    reclassification_reason: str = ""
+    reclassified_at: str = ""
+    reclassification_history: list[dict[str, str]] = field(default_factory=list)
     caption: str = ""
     tags: list[str] = field(default_factory=list)
     visible_text: str = ""
@@ -391,6 +403,30 @@ class SemanticImage:
         self.relative_path = str(self.relative_path or "").replace("\\", "/")
         self.category = str(self.category or "").strip()
         self.category_description = str(self.category_description or "").strip()
+        self.suggested_category = str(self.suggested_category or "").strip()
+        self.reclassified_from_category = str(
+            self.reclassified_from_category or ""
+        ).strip()
+        self.reclassified_to_category = str(self.reclassified_to_category or "").strip()
+        self.reclassification_reason = str(self.reclassification_reason or "").strip()[
+            :500
+        ]
+        self.reclassified_at = str(self.reclassified_at or "").strip()
+        if self.reclassification_status not in RECLASSIFICATION_STATUSES:
+            self.reclassification_status = ""
+        if not isinstance(self.reclassification_history, list):
+            self.reclassification_history = []
+        self.reclassification_history = [
+            {
+                "from_category": str(value.get("from_category") or "").strip(),
+                "to_category": str(value.get("to_category") or "").strip(),
+                "reason": str(value.get("reason") or "").strip()[:500],
+                "status": str(value.get("status") or "").strip(),
+                "at": str(value.get("at") or "").strip(),
+            }
+            for value in self.reclassification_history[-20:]
+            if isinstance(value, dict)
+        ]
         if len(self.content_sha256) == 64:
             self.entry_id = semantic_entry_id(self.content_sha256, self.category)
         self.category_tag = build_category_tag(self.category)
@@ -454,6 +490,13 @@ class SemanticImage:
             "category_review_reason": self.category_review_reason,
             "category_review_context_hash": self.category_review_context_hash,
             "manual_confirmation_context_hash": self.manual_confirmation_context_hash,
+            "suggested_category": self.suggested_category,
+            "reclassification_status": self.reclassification_status,
+            "reclassified_from_category": self.reclassified_from_category,
+            "reclassified_to_category": self.reclassified_to_category,
+            "reclassification_reason": self.reclassification_reason,
+            "reclassified_at": self.reclassified_at,
+            "reclassification_history": self.reclassification_history,
             "caption": self.caption,
             "tags": self.tags,
             "visible_text": self.visible_text,
@@ -522,7 +565,7 @@ def parse_caption_result(value: Any) -> tuple[str, list[str], str]:
 
 def parse_caption_result_with_review(
     value: Any,
-) -> tuple[str, list[str], str, str, str]:
+) -> tuple[str, list[str], str, str, str, str]:
     """解析带分类符合判断的视觉结果，并兼容旧模型的三字段结果。"""
     original = value
     if isinstance(value, str):
@@ -557,4 +600,15 @@ def parse_caption_result_with_review(
             if "category_fit" in payload
             else "模型未返回分类符合判断"
         )
-    return caption, tags, visible_text, category_fit, reason
+    suggested_category = str(payload.get("suggested_category") or "").strip()
+    suggested_category = re.sub(r"\s+", " ", suggested_category)[:80]
+    if category_fit != "conflict":
+        suggested_category = ""
+    return (
+        caption,
+        tags,
+        visible_text,
+        category_fit,
+        reason,
+        suggested_category,
+    )

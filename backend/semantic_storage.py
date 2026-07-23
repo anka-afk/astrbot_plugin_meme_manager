@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -11,6 +12,8 @@ from typing import Any
 
 from .semantic_models import (
     IMAGE_EXTENSIONS,
+    REVIEW_CATEGORY,
+    REVIEW_CATEGORY_DESCRIPTION,
     SCHEMA_VERSION,
     SemanticImage,
     build_category_tag,
@@ -27,6 +30,31 @@ from .semantic_models import (
 
 def metadata_path(pack_dir: Path | str) -> Path:
     return Path(pack_dir).resolve() / "semantic_metadata.json"
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """Write JSON through a same-directory temporary file.
+
+    Args:
+        path: Destination JSON path.
+        payload: JSON object to persist.
+
+    Raises:
+        OSError: If the temporary file cannot be written or replaced.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file_obj:
+            json.dump(payload, file_obj, ensure_ascii=False, indent=2)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
 
 
 def safe_relative_path(pack_dir: Path | str, relative_path: str) -> Path | None:
@@ -420,6 +448,11 @@ def get_image_semantic_detail(
         "category_tag": build_category_tag(source.parent.name),
         "category_review_status": "unchecked",
         "category_review_reason": "",
+        "reclassification_status": "",
+        "reclassified_from_category": "",
+        "reclassified_to_category": "",
+        "reclassification_reason": "",
+        "reclassified_at": "",
         "can_confirm_category": False,
     }
     metadata = load_metadata(root)
@@ -460,6 +493,11 @@ def get_image_semantic_detail(
             item.get("category_review_status") or "unchecked"
         ),
         "category_review_reason": str(item.get("category_review_reason") or ""),
+        "reclassification_status": str(item.get("reclassification_status") or ""),
+        "reclassified_from_category": str(item.get("reclassified_from_category") or ""),
+        "reclassified_to_category": str(item.get("reclassified_to_category") or ""),
+        "reclassification_reason": str(item.get("reclassification_reason") or ""),
+        "reclassified_at": str(item.get("reclassified_at") or ""),
         "can_confirm_category": bool(
             item.get("caption_status") == "done"
             and item.get("category_review_status") != "manual_confirmed"
@@ -478,19 +516,283 @@ def save_metadata(pack_dir: Path | str, data: dict[str, Any]) -> Path:
     payload["images"] = _normalize_image_records(
         payload.get("images"), load_category_descriptions(target.parent)
     )
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as file_obj:
-            json.dump(payload, file_obj, ensure_ascii=False, indent=2)
-            file_obj.flush()
-            os.fsync(file_obj.fileno())
-        os.replace(temp_name, target)
-    finally:
-        if os.path.exists(temp_name):
-            os.unlink(temp_name)
+    _write_json_atomic(target, payload)
     return target
+
+
+def _is_safe_category_key(category: str) -> bool:
+    value = str(category or "").strip()
+    return bool(
+        value
+        and value not in {".", ".."}
+        and "/" not in value
+        and "\\" not in value
+        and Path(value).name == value
+    )
+
+
+def _ensure_pack_category(pack_dir: Path, category: str, description: str) -> None:
+    """Create a safe pack category and synchronize its metadata.
+
+    Args:
+        pack_dir: Meme pack root directory.
+        category: Exact category key to create.
+        description: Human-readable category description.
+
+    Raises:
+        ValueError: If the category key is unsafe.
+        OSError: If the directory or metadata files cannot be written.
+    """
+    if not _is_safe_category_key(category):
+        raise ValueError("自动复核分类名称无效")
+    memes_root = pack_dir / "memes"
+    (memes_root / category).mkdir(parents=True, exist_ok=True)
+
+    descriptions = load_category_descriptions(pack_dir)
+    if descriptions.get(category) != description:
+        descriptions[category] = description
+        _write_json_atomic(pack_dir / "memes_data.json", descriptions)
+
+    manifest_path = pack_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        manifest = {}
+    if not isinstance(manifest, dict):
+        manifest = {}
+    manifest.setdefault("schema_version", 1)
+    manifest.setdefault("id", pack_dir.name)
+    manifest.setdefault("name", f"Meme Pack {pack_dir.name}")
+    manifest.setdefault("version", "1.0.0")
+    manifest.setdefault("description", "Runtime-managed meme pack")
+    manifest.setdefault("tags", ["runtime"])
+    categories = manifest.get("categories")
+    if not isinstance(categories, dict):
+        categories = {}
+        manifest["categories"] = categories
+    expected = {"description": description}
+    if categories.get(category) != expected:
+        categories[category] = expected
+        _write_json_atomic(manifest_path, manifest)
+
+
+def apply_conflict_reclassifications(
+    pack_dir: Path | str, data: dict[str, Any]
+) -> dict[str, Any]:
+    """Move explicit category conflicts and persist their audit records.
+
+    Args:
+        pack_dir: Meme pack root directory.
+        data: Current schema-v2 semantic metadata.
+
+    Returns:
+        Counts for moved, existing-target, review-target, and skipped items.
+
+    Raises:
+        OSError: If a file move or metadata write fails.
+        ValueError: If a generated target path escapes the meme pack.
+    """
+    root = Path(pack_dir).resolve()
+    memes_root = (root / "memes").resolve()
+    images = data.get("images")
+    if not isinstance(images, dict):
+        return {"moved": 0, "to_existing": 0, "to_review": 0, "skipped": 0}
+
+    descriptions = load_category_descriptions(root)
+    existing_categories = (
+        {
+            path.name
+            for path in memes_root.iterdir()
+            if path.is_dir() and _is_safe_category_key(path.name)
+        }
+        if memes_root.is_dir()
+        else set()
+    )
+    original_images = copy.deepcopy(images)
+    completed_moves: list[tuple[Path, Path]] = []
+    result = {"moved": 0, "to_existing": 0, "to_review": 0, "skipped": 0}
+
+    try:
+        for old_entry_id, raw_item in list(images.items()):
+            if not isinstance(raw_item, dict):
+                continue
+            item = SemanticImage.from_dict(raw_item)
+            if (
+                item.caption_status != "done"
+                or item.category_fit != "conflict"
+                or item.category_review_status == "manual_confirmed"
+            ):
+                continue
+            if item.manual_override or item.provenance in {"manual", "mixed"}:
+                result["skipped"] += 1
+                continue
+
+            source = safe_relative_path(root, item.relative_path)
+            if (
+                source is None
+                or not source.is_file()
+                or source.parent.name != item.category
+                or file_sha256(source) != item.content_sha256
+            ):
+                result["skipped"] += 1
+                continue
+
+            suggested = str(item.suggested_category or "").strip()
+            use_existing = bool(
+                suggested
+                and suggested != item.category
+                and suggested != REVIEW_CATEGORY
+                and suggested in existing_categories
+            )
+            target_category = suggested if use_existing else REVIEW_CATEGORY
+            if item.category == target_category:
+                result["skipped"] += 1
+                continue
+            if target_category == REVIEW_CATEGORY:
+                _ensure_pack_category(
+                    root, REVIEW_CATEGORY, REVIEW_CATEGORY_DESCRIPTION
+                )
+                descriptions[REVIEW_CATEGORY] = REVIEW_CATEGORY_DESCRIPTION
+                existing_categories.add(REVIEW_CATEGORY)
+
+            target_dir = (memes_root / target_category).resolve()
+            try:
+                target_dir.relative_to(memes_root)
+            except ValueError as exc:
+                raise ValueError("自动重分类目标路径无效") from exc
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = target_dir / source.name
+            suffix = source.suffix
+            stem = source.stem
+            index = 1
+            while target.exists():
+                target = target_dir / f"{stem}_{index}{suffix}"
+                index += 1
+            source.rename(target)
+            completed_moves.append((target, source))
+
+            moved_at = utc_now()
+            reason = str(item.category_review_reason or "图片与原分类明显不符").strip()
+            move_status = "auto_reclassified" if use_existing else "moved_to_review"
+            history_item = {
+                "from_category": item.category,
+                "to_category": target_category,
+                "reason": reason,
+                "status": move_status,
+                "at": moved_at,
+            }
+            new_entry_id = semantic_entry_id(item.content_sha256, target_category)
+            existing_target = images.get(new_entry_id)
+            keep_existing_target = bool(
+                isinstance(existing_target, dict)
+                and new_entry_id != old_entry_id
+                and (
+                    existing_target.get("manual_override")
+                    or existing_target.get("provenance") in {"manual", "mixed"}
+                    or (
+                        existing_target.get("caption_status") == "done"
+                        and existing_target.get("caption")
+                        and existing_target.get("tags")
+                    )
+                )
+            )
+            if keep_existing_target:
+                moved_item = SemanticImage.from_dict(existing_target)
+            else:
+                moved_value = dict(raw_item)
+                previous_fixed_tag = build_category_tag(item.category)
+                moved_value.update(
+                    {
+                        "relative_path": target.relative_to(root).as_posix(),
+                        "category": target_category,
+                        "category_description": str(
+                            descriptions.get(target_category) or ""
+                        ),
+                        "category_context_hash": "",
+                        "category_review_status": "unchecked",
+                        "category_review_context_hash": "",
+                        "manual_confirmation_context_hash": "",
+                        "category_tag": "",
+                        "tags": [
+                            tag
+                            for tag in normalize_tags(raw_item.get("tags"))
+                            if tag != previous_fixed_tag
+                        ],
+                        "auto_tags": [
+                            tag
+                            for tag in normalize_tags(raw_item.get("auto_tags"))
+                            if tag != previous_fixed_tag
+                        ],
+                        "manual_tags": [
+                            tag
+                            for tag in normalize_tags(raw_item.get("manual_tags"))
+                            if tag != previous_fixed_tag
+                        ],
+                    }
+                )
+                moved_item = SemanticImage.from_dict(moved_value)
+
+            moved_item.reclassification_history.append(history_item)
+            moved_item.reclassification_history = moved_item.reclassification_history[
+                -20:
+            ]
+            moved_item.reclassification_status = move_status
+            moved_item.reclassified_from_category = item.category
+            moved_item.reclassified_to_category = target_category
+            moved_item.reclassification_reason = reason
+            moved_item.reclassified_at = moved_at
+            moved_item.suggested_category = suggested if use_existing else ""
+            if moved_item.category_review_status != "manual_confirmed":
+                moved_item.category_fit = "uncertain"
+                moved_item.category_review_status = "needs_review"
+                moved_item.category_review_reason = (
+                    f"已从 {item.category} 自动移至 {target_category}：{reason}"
+                )[:500]
+                moved_item.category_review_context_hash = (
+                    moved_item.category_context_hash
+                )
+                moved_item.manual_confirmation_context_hash = ""
+            moved_item.embedding_status = "pending"
+            moved_item.text_hash = text_hash(moved_item.vector_text)
+            moved_item.updated_at = moved_at
+
+            images.pop(old_entry_id, None)
+            images[new_entry_id] = moved_item.to_dict()
+            result["moved"] += 1
+            if use_existing:
+                result["to_existing"] += 1
+            else:
+                result["to_review"] += 1
+
+        if result["moved"]:
+            scanned = scan_images(root)
+            scanned_entry_ids = {item["entry_id"] for item in scanned}
+            data["file_total"] = sum(
+                1
+                for path in memes_root.rglob("*")
+                if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+            )
+            data["unique_total"] = len(scanned_entry_ids)
+            data["content_unique_total"] = len(
+                {item["content_sha256"] for item in scanned}
+            )
+            data["reused_duplicate_files"] = max(
+                0, data["file_total"] - data["unique_total"]
+            )
+            data["cross_category_duplicate_entries"] = max(
+                0, data["unique_total"] - data["content_unique_total"]
+            )
+            data["requires_local_index_rebuild"] = True
+            data["last_reclassification_at"] = utc_now()
+            save_metadata(root, data)
+    except Exception:
+        for target, source in reversed(completed_moves):
+            if target.is_file() and not source.exists():
+                source.parent.mkdir(parents=True, exist_ok=True)
+                target.rename(source)
+        data["images"] = original_images
+        raise
+    return result
 
 
 def reset_local_embedding_state(data: dict[str, Any]) -> dict[str, Any]:
@@ -777,6 +1079,7 @@ def metadata_items(
             and item.get("embedding_status") == "done",
             "caption_done": lambda item: item.get("caption_status") == "done",
             "embedding_done": lambda item: item.get("embedding_status") == "done",
+            "reclassified": lambda item: bool(item.get("reclassification_status")),
         }
         predicate = predicates.get(status)
         if predicate is None:
@@ -849,6 +1152,19 @@ def get_category_review_overview(pack_dir: Path | str) -> dict[str, Any]:
                     "category_review_reason": str(
                         record.get("category_review_reason") or ""
                     ),
+                    "reclassification_status": str(
+                        record.get("reclassification_status") or ""
+                    ),
+                    "reclassified_from_category": str(
+                        record.get("reclassified_from_category") or ""
+                    ),
+                    "reclassified_to_category": str(
+                        record.get("reclassified_to_category") or ""
+                    ),
+                    "reclassification_reason": str(
+                        record.get("reclassification_reason") or ""
+                    ),
+                    "reclassified_at": str(record.get("reclassified_at") or ""),
                     "caption_status": str(record.get("caption_status") or "pending"),
                 }
             )
@@ -862,6 +1178,9 @@ def get_category_review_overview(pack_dir: Path | str) -> dict[str, Any]:
         )
     }
     statistics["total"] = len(items)
+    statistics["reclassified"] = sum(
+        1 for item in items if item.get("reclassification_status")
+    )
     return {"items": items, "statistics": statistics}
 
 

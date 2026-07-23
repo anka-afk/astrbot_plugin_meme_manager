@@ -21,6 +21,7 @@ from .semantic_index import (
     load_index_manifest,
 )
 from .semantic_models import (
+    REVIEW_CATEGORY,
     SemanticImage,
     category_analysis_is_current,
     ensure_category_tag,
@@ -28,7 +29,9 @@ from .semantic_models import (
     utc_now,
 )
 from .semantic_storage import (
+    apply_conflict_reclassifications,
     confirm_image_category,
+    load_category_descriptions,
     load_metadata,
     reconcile_metadata,
     safe_relative_path,
@@ -813,6 +816,7 @@ class SemanticTaskManager:
             "queued_embedding_tasks": queued_embedding_tasks,
             "active_request_count": active_request_count,
             "vision_calls": token_usage["calls"],
+            "reclassified_items": int(state.get("reclassified_items", 0) or 0),
             "token_usage_input": token_usage["input"],
             "token_usage_output": token_usage["output"],
             "token_usage_total": token_usage["total"],
@@ -989,6 +993,7 @@ class SemanticTaskManager:
                 "embedding_dimension": int(selection.get("verified_dimension", 0) or 0),
                 "token_usage": {"input": 0, "output": 0, "total": 0, "calls": 0},
                 "vision_calls": 0,
+                "reclassified_items": 0,
             }
             self._save_state(pack_id, state)
             pause_event = self._pause_events.setdefault(pack_id, asyncio.Event())
@@ -1419,6 +1424,7 @@ class SemanticTaskManager:
         digest: str,
         raw_item: dict[str, Any],
         vision_provider: str,
+        available_categories: dict[str, str],
         force: bool,
         semaphore: asyncio.Semaphore,
     ) -> None:
@@ -1482,6 +1488,7 @@ class SemanticTaskManager:
                     vision_provider,
                     category=item.category,
                     category_description=item.category_description,
+                    available_categories=available_categories,
                 )
             self._record_vision_usage(pack_id, caption.get("token_usage"))
             manual_content = bool(
@@ -1495,16 +1502,27 @@ class SemanticTaskManager:
             item.vision_model = caption.get("vision_model", "")
             item.prompt_version = caption.get("prompt_version", item.prompt_version)
             item.category_fit = str(caption.get("category_fit") or "uncertain")
+            item.suggested_category = str(
+                caption.get("suggested_category") or ""
+            ).strip()
             if not (
                 item.category_review_status == "manual_confirmed"
                 and item.manual_confirmation_context_hash == item.category_context_hash
             ):
-                item.category_review_status = (
-                    "auto_match" if item.category_fit == "match" else "needs_review"
-                )
-                item.category_review_reason = str(
-                    caption.get("category_review_reason") or ""
-                ).strip()
+                if item.reclassification_status:
+                    item.category_review_status = "needs_review"
+                    item.category_review_reason = str(
+                        item.category_review_reason
+                        or item.reclassification_reason
+                        or "图片曾被自动重分类，等待人工确认"
+                    ).strip()
+                else:
+                    item.category_review_status = (
+                        "auto_match" if item.category_fit == "match" else "needs_review"
+                    )
+                    item.category_review_reason = str(
+                        caption.get("category_review_reason") or ""
+                    ).strip()
                 item.category_review_context_hash = item.category_context_hash
                 item.manual_confirmation_context_hash = ""
             item.caption_status = "done"
@@ -1553,6 +1571,17 @@ class SemanticTaskManager:
                 or ""
             )
             embedding = self._embedding_adapter(pack_id)
+            descriptions = load_category_descriptions(pack_dir)
+            memes_root = pack_dir / "memes"
+            available_categories = (
+                {
+                    path.name: str(descriptions.get(path.name) or "")
+                    for path in memes_root.iterdir()
+                    if path.is_dir() and path.name != REVIEW_CATEGORY
+                }
+                if memes_root.is_dir()
+                else {}
+            )
             state = self._load_state(pack_id)
             try:
                 concurrency = max(1, min(16, int(state.get("concurrency") or 1)))
@@ -1568,6 +1597,7 @@ class SemanticTaskManager:
                         str(digest),
                         raw_item,
                         vision_provider,
+                        available_categories,
                         force,
                         semaphore,
                     ),
@@ -1596,6 +1626,16 @@ class SemanticTaskManager:
             pause_event = self._pause_events.setdefault(pack_id, asyncio.Event())
             while self._load_state(pack_id).get("task_status") == "paused":
                 await pause_event.wait()
+            reclassification_result = apply_conflict_reclassifications(
+                pack_dir, metadata
+            )
+            if reclassification_result.get("moved"):
+                state = self._load_state(pack_id)
+                state["reclassified_items"] = int(
+                    state.get("reclassified_items", 0) or 0
+                ) + int(reclassification_result["moved"])
+                state["updated_at"] = utc_now()
+                self._save_state(pack_id, state)
             has_caption = any(
                 isinstance(item, dict)
                 and item.get("caption_status") == "done"

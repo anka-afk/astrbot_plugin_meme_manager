@@ -195,6 +195,9 @@ async function initApp() {
   const imagePreviewCategoryReviewReason = document.getElementById(
     "image-preview-category-review-reason",
   );
+  const imagePreviewReclassification = document.getElementById(
+    "image-preview-reclassification",
+  );
   const imagePreviewCategoryConfirmBtn = document.getElementById(
     "image-preview-category-confirm-btn",
   );
@@ -900,6 +903,27 @@ async function initApp() {
       imagePreviewCategoryReviewReason.classList.toggle(
         "hidden",
         loading || !reviewReason,
+      );
+    }
+    const reclassificationStatus = String(
+      semantic?.reclassification_status || "",
+    );
+    if (imagePreviewReclassification) {
+      const fromCategory = String(
+        semantic?.reclassified_from_category || "",
+      );
+      const toCategory = String(semantic?.reclassified_to_category || "");
+      const reclassificationReason = String(
+        semantic?.reclassification_reason || "",
+      ).trim();
+      imagePreviewReclassification.textContent = reclassificationStatus
+        ? `自动重分类：${fromCategory || "原分类"} → ${toCategory || "当前分类"}${
+            reclassificationReason ? `；${reclassificationReason}` : ""
+          }`
+        : "";
+      imagePreviewReclassification.classList.toggle(
+        "hidden",
+        loading || !reclassificationStatus,
       );
     }
     imagePreviewCategoryConfirmBtn?.classList.toggle(
@@ -3052,6 +3076,9 @@ async function initApp() {
             const review = semanticReviewByPath.get(
               semanticReviewKey(category, emoji),
             );
+            if (activeSemanticReviewFilter === "reclassified") {
+              return Boolean(review?.reclassification_status);
+            }
             return (
               String(review?.category_review_status || "unchecked") ===
               activeSemanticReviewFilter
@@ -3219,7 +3246,13 @@ async function initApp() {
           const reviewStatus = String(
             review.category_review_status || "unchecked",
           );
+          const reclassificationStatus = String(
+            review.reclassification_status || "",
+          );
           emojiItem.classList.add(`review-${reviewStatus}`);
+          if (reclassificationStatus) {
+            emojiItem.classList.add("review-reclassified");
+          }
           emojiItem.dataset.categoryReviewStatus = reviewStatus;
 
           const semanticBadge = document.createElement("span");
@@ -3227,14 +3260,24 @@ async function initApp() {
           const fixedCategoryTag = String(
             review.category_tag || `category:${category}`,
           );
-          semanticBadge.textContent = `${fixedCategoryTag} · ${semanticReviewLabel(reviewStatus)}`;
+          semanticBadge.textContent = `${fixedCategoryTag} · ${
+            reclassificationStatus ? "自动重分类 · " : ""
+          }${semanticReviewLabel(reviewStatus)}`;
           const reviewReason = String(
             review.category_review_reason || "",
           ).trim();
           semanticBadge.title =
-            reviewStatus === "needs_review" && reviewReason
-              ? `${semanticBadge.textContent}；原因：${reviewReason}`
-              : semanticBadge.textContent;
+            reclassificationStatus
+              ? `${semanticBadge.textContent}；${String(
+                  review.reclassified_from_category || "原分类",
+                )} → ${String(
+                  review.reclassified_to_category || category,
+                )}；原因：${String(
+                  review.reclassification_reason || reviewReason,
+                )}`
+              : reviewStatus === "needs_review" && reviewReason
+                ? `${semanticBadge.textContent}；原因：${reviewReason}`
+                : semanticBadge.textContent;
           emojiItem.appendChild(semanticBadge);
 
           const selectionIndicator = document.createElement("button");

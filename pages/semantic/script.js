@@ -276,6 +276,7 @@ async function initSemanticPage() {
       ["任务状态", taskText], ["当前阶段", phaseText],
       ["图片总数", data.total_tasks], ["模型请求中", data.active_request_count],
       ["排队待描述", data.queued_caption_tasks], ["描述完成", data.caption_done],
+      ["自动重分类", data.reclassified_items || 0],
       ["处理失败", data.failed_tasks], ["并发上限", data.concurrency || 1],
     ], groupOpen("任务进度", true));
     renderMetricGroup("图片和描述", [
@@ -478,6 +479,18 @@ async function initSemanticPage() {
       const tags = Array.isArray(item.tags) ? item.tags.join("、") : "";
       copy.textContent = `描述结果：${item.caption || "暂无返回结果"}${tags ? ` · 标签：${tags}` : ""}`;
       if (item.visible_text) copy.textContent += ` · 图片文字：${item.visible_text}`;
+      if (item.reclassification_status) {
+        const reclassification = document.createElement("div");
+        reclassification.className = "record-reclassification";
+        reclassification.textContent = `自动重分类：${
+          item.reclassified_from_category || "原分类"
+        } → ${item.reclassified_to_category || item.category || "当前分类"}${
+          item.reclassification_reason
+            ? `；原因：${item.reclassification_reason}`
+            : ""
+        }`;
+        copy.append(reclassification);
+      }
       if (item.error) {
         const error = document.createElement("div");
         error.className = "record-error";
