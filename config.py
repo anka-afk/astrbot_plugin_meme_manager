@@ -14,6 +14,7 @@ except ImportError:
     def get_astrbot_plugin_data_path() -> str:
         return os.path.realpath(os.path.join(get_astrbot_data_path(), "plugin_data"))
 
+
 PLUGIN_DIR = Path(__file__).resolve().parent
 CURRENT_DIR = str(PLUGIN_DIR)
 DEFAULT_PLUGIN_NAME = "meme_manager"

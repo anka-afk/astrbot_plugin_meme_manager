@@ -689,9 +689,7 @@ async def generate_caption(
             "caption": anchor_caption_to_category(
                 caption,
                 tags,
-                ""
-                if review_instruction and category == REVIEW_CATEGORY
-                else category,
+                "" if review_instruction and category == REVIEW_CATEGORY else category,
                 category_fit,
                 category_description,
             ),

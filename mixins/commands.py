@@ -1,5 +1,5 @@
-import re
 import os
+import re
 import time
 
 from astrbot.api import logger
@@ -7,13 +7,12 @@ from astrbot.api.all import *
 from astrbot.api.event import AstrMessageEvent, filter
 
 from ..backend.models import (
-    get_emoji_by_category,
-    clear_category_emojis,
     clear_all_emojis,
+    clear_category_emojis,
+    get_emoji_by_category,
 )
 from ..backend.pack_storage import install_first_official_pack_from_index
-from ..config import MEMES_DIR
-from ..config import COMMUNITY_INDEX_URL
+from ..config import COMMUNITY_INDEX_URL, MEMES_DIR
 
 
 class CommandMixin:
@@ -22,9 +21,7 @@ class CommandMixin:
     def _assert_default_pack_mutation_allowed(self, operation: str) -> str:
         pack_id = str(MEMES_DIR.parent.name or "").strip()
         if pack_id:
-            self.semantic_task_manager.assert_pack_mutation_allowed(
-                pack_id, operation
-            )
+            self.semantic_task_manager.assert_pack_mutation_allowed(pack_id, operation)
         return pack_id
 
     @filter.command_group("表情管理")
