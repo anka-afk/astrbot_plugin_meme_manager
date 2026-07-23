@@ -520,6 +520,31 @@ class WebAPIMixin:
         )
         return guidance
 
+    def _pack_import_embedding_signature(self) -> dict:
+        """Return the active local embedding signature for safe backup restore."""
+        try:
+            provider = self._resolve_embedding_provider()
+            embedding = EmbeddingAdapter(
+                provider, str(getattr(self, "semantic_embedding_provider_id", "") or "")
+            )
+        except Exception:
+            return {
+                "embedding_provider_id": "",
+                "embedding_model": "",
+                "embedding_dimension": 0,
+            }
+        if not embedding.ready:
+            return {
+                "embedding_provider_id": "",
+                "embedding_model": "",
+                "embedding_dimension": 0,
+            }
+        return {
+            "embedding_provider_id": embedding.provider_id,
+            "embedding_model": embedding.model_name,
+            "embedding_dimension": embedding.dimension,
+        }
+
     async def _run_guarded_pack_file_operation(
         self,
         pack_id: str,
@@ -549,6 +574,47 @@ class WebAPIMixin:
             raise
         finally:
             if locked:
+                manager.end_external_pack_operation(pack_id)
+
+    async def _run_guarded_runtime_file_operation(
+        self,
+        operation: str,
+        function,
+        *args,
+        **kwargs,
+    ):
+        """Hold every installed pack lock for one runtime-wide file operation."""
+        manager = getattr(self, "semantic_task_manager", None)
+        pack_ids = (
+            sorted(path.name for path in PACKS_DIR.iterdir() if path.is_dir())
+            if PACKS_DIR.is_dir()
+            else []
+        )
+        locked_pack_ids = []
+        if manager is not None:
+            try:
+                for pack_id in pack_ids:
+                    manager.begin_external_pack_operation(pack_id, operation)
+                    locked_pack_ids.append(pack_id)
+            except Exception:
+                for pack_id in reversed(locked_pack_ids):
+                    manager.end_external_pack_operation(pack_id)
+                raise
+
+        kwargs["operation_guard"] = (
+            None if manager is not None else self._semantic_operation_guard
+        )
+        worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(worker)
+            except Exception:
+                pass
+            raise
+        finally:
+            for pack_id in reversed(locked_pack_ids):
                 manager.end_external_pack_operation(pack_id)
 
     @staticmethod
@@ -2266,6 +2332,10 @@ class WebAPIMixin:
                 "yes",
                 "on",
             }
+            overwrite_manual_semantics = str(
+                form.get("overwrite_manual_semantics", "false")
+            ).lower() in {"1", "true", "yes", "on"}
+            import_signature = self._pack_import_embedding_signature()
 
             files = await request.files
             if not files or "file" not in files:
@@ -2300,15 +2370,19 @@ class WebAPIMixin:
                     overwrite=True,
                     set_as_default=set_as_default,
                     suggested_pack_id=suggested_pack_id,
+                    preserve_existing_manual=not overwrite_manual_semantics,
+                    **import_signature,
                 )
             else:
-                result = await asyncio.to_thread(
+                result = await self._run_guarded_runtime_file_operation(
+                    "安装资源包",
                     import_pack_archive,
                     temp_zip_path,
                     overwrite=False,
                     set_as_default=set_as_default,
-                    operation_guard=self._semantic_operation_guard,
                     suggested_pack_id=suggested_pack_id,
+                    preserve_existing_manual=not overwrite_manual_semantics,
+                    **import_signature,
                 )
             self._reload_personas()
             return jsonify({"message": "导入成功", **result}), 200
@@ -2422,10 +2496,15 @@ class WebAPIMixin:
                 "yes",
                 "on",
             }
+            overwrite_manual_semantics = str(
+                data.get("overwrite_manual_semantics", "false")
+            ).lower() in {"1", "true", "yes", "on"}
             import_kwargs = {
                 "overwrite": overwrite,
                 "set_as_default": set_as_default,
                 "suggested_pack_id": str(session_data.get("suggested_pack_id") or ""),
+                "preserve_existing_manual": not overwrite_manual_semantics,
+                **self._pack_import_embedding_signature(),
             }
             if overwrite:
                 result = await self._run_guarded_pack_file_operation(
@@ -2436,10 +2515,10 @@ class WebAPIMixin:
                     **import_kwargs,
                 )
             else:
-                result = await asyncio.to_thread(
+                result = await self._run_guarded_runtime_file_operation(
+                    "安装资源包",
                     import_pack_archive,
                     archive_path,
-                    operation_guard=self._semantic_operation_guard,
                     **import_kwargs,
                 )
             archive_path.unlink(missing_ok=True)
@@ -2465,8 +2544,11 @@ class WebAPIMixin:
             pack_id = str((data or {}).get("pack_id") or "").strip()
             if not pack_id:
                 return jsonify({"message": "pack_id 不能为空"}), 400
-            result = uninstall_pack(
-                pack_id, operation_guard=self._semantic_operation_guard
+            result = await self._run_guarded_pack_file_operation(
+                pack_id,
+                "卸载资源包",
+                uninstall_pack,
+                pack_id,
             )
             self._reload_personas()
             return jsonify({"message": "卸载成功", **result}), 200
@@ -2550,11 +2632,12 @@ class WebAPIMixin:
                 if not isinstance(source, dict):
                     return jsonify({"message": "缓存条目缺少 source 信息"}), 400
 
-            result = install_pack_from_github_source(
+            result = await self._run_guarded_runtime_file_operation(
+                "安装社区资源包",
+                install_pack_from_github_source,
                 source=source,
                 overwrite=overwrite,
                 set_as_default=set_as_default,
-                operation_guard=self._semantic_operation_guard,
             )
             self._reload_personas()
             return jsonify({"message": "社区表情包安装成功", **result}), 200
@@ -2582,11 +2665,12 @@ class WebAPIMixin:
             overwrite = bool(payload.get("overwrite", False))
             set_as_default = bool(payload.get("set_as_default", True))
 
-            result = install_first_official_pack_from_index(
+            result = await self._run_guarded_runtime_file_operation(
+                "安装官方资源包",
+                install_first_official_pack_from_index,
                 index_url=COMMUNITY_INDEX_URL,
                 overwrite=overwrite,
                 set_as_default=set_as_default,
-                operation_guard=self._semantic_operation_guard,
             )
             self._reload_personas()
             return jsonify({"message": "官方表情包安装成功", **result}), 200
@@ -2650,9 +2734,10 @@ class WebAPIMixin:
         try:
             data = await request.get_json()
             output_dir = (data or {}).get("output_dir")
-            result = export_runtime_backup(
+            result = await self._run_guarded_runtime_file_operation(
+                "导出全量备份",
+                export_runtime_backup,
                 output_dir=output_dir,
-                operation_guard=self._semantic_operation_guard,
             )
             return jsonify({"message": "全量备份导出成功", **result}), 200
         except RuntimeError as e:
@@ -2769,10 +2854,11 @@ class WebAPIMixin:
                     400,
                 )
 
-            result = import_runtime_backup(
+            result = await self._run_guarded_runtime_file_operation(
+                "恢复全量备份",
+                import_runtime_backup,
                 temp_zip_path,
                 overwrite=overwrite,
-                operation_guard=self._semantic_operation_guard,
             )
             self._reload_personas()
             return jsonify({"message": "全量备份导入成功", **result}), 200

@@ -11,6 +11,9 @@ from unittest.mock import patch
 ASTRBOT_AVAILABLE = importlib.util.find_spec("astrbot") is not None
 if ASTRBOT_AVAILABLE:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from astrbot_plugin_meme_manager.mixins import (
+        event_handlers as event_handlers_module,
+    )
     from astrbot_plugin_meme_manager.mixins import web_api as web_api_module
     from astrbot_plugin_meme_manager.mixins.event_handlers import EventHandlerMixin
     from astrbot_plugin_meme_manager.mixins.web_api import WebAPIMixin
@@ -36,6 +39,73 @@ class FakeEvent:
 
 @unittest.skipUnless(ASTRBOT_AVAILABLE, "当前 Python 环境没有 AstrBot 运行库")
 class RuntimeBehaviorTests(unittest.TestCase):
+    def test_legacy_runtime_sends_jpeg_webp_and_uppercase_extensions(self):
+        class Plugin(EventHandlerMixin):
+            emotions_probability = 100
+
+            def __init__(self, memes_dir):
+                self.memes_dir = memes_dir
+
+            def _get_runtime_memes_dir_for_event(self, event):
+                return str(self.memes_dir)
+
+            @staticmethod
+            def _convert_to_gif(path):
+                return path
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memes_dir = Path(temp_dir) / "memes"
+            category_dir = memes_dir / "happy"
+            category_dir.mkdir(parents=True)
+            for filename in ("one.JPEG", "two.webp", "three.PNG"):
+                (category_dir / filename).write_bytes(b"image")
+            plugin = Plugin(memes_dir)
+            with patch.object(
+                event_handlers_module.Image,
+                "fromFileSystem",
+                side_effect=lambda path: path,
+            ):
+                for _ in range(12):
+                    images, temp_files = plugin._build_emotion_images_for_event(
+                        FakeEvent(), ["happy"]
+                    )
+                    self.assertEqual(len(images), 1)
+                    self.assertEqual(temp_files, [])
+
+    def test_pack_import_uses_active_embedding_signature(self):
+        class Provider:
+            @staticmethod
+            def get_dim():
+                return 3
+
+            @staticmethod
+            def get_model():
+                return "active-model"
+
+            @staticmethod
+            def get_embedding(_text):
+                return [1.0, 0.0, 0.0]
+
+            @staticmethod
+            def meta():
+                return SimpleNamespace(id="active-provider")
+
+        class Plugin(WebAPIMixin):
+            semantic_embedding_provider_id = ""
+
+            @staticmethod
+            def _resolve_embedding_provider():
+                return Provider()
+
+        self.assertEqual(
+            Plugin()._pack_import_embedding_signature(),
+            {
+                "embedding_provider_id": "active-provider",
+                "embedding_model": "active-model",
+                "embedding_dimension": 3,
+            },
+        )
+
     def test_vector_rebuild_guidance_requires_complete_captions_without_index(self):
         class Manager:
             def status(self, pack_id):
@@ -234,6 +304,15 @@ class RuntimeBehaviorTests(unittest.TestCase):
         token = "a" * 32
 
         class Manager:
+            def __init__(self):
+                self.active = set()
+
+            def begin_external_pack_operation(self, pack_id, operation):
+                self.active.add(pack_id)
+
+            def end_external_pack_operation(self, pack_id):
+                self.active.discard(pack_id)
+
             @staticmethod
             def status(pack_id):
                 return {
@@ -377,6 +456,56 @@ class RuntimeBehaviorTests(unittest.TestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await task
             self.assertNotIn("demo", plugin.semantic_task_manager.active)
+
+        asyncio.run(run())
+
+    def test_cancelled_runtime_request_holds_all_pack_locks(self):
+        class Manager:
+            def __init__(self):
+                self.active = set()
+
+            def begin_external_pack_operation(self, pack_id, operation):
+                self.active.add(pack_id)
+
+            def end_external_pack_operation(self, pack_id):
+                self.active.discard(pack_id)
+
+        class Plugin(WebAPIMixin):
+            def __init__(self):
+                self.semantic_task_manager = Manager()
+
+        async def run():
+            plugin = Plugin()
+            worker_started = threading.Event()
+            worker_release = threading.Event()
+
+            def blocking_runtime_operation(*, operation_guard=None):
+                self.assertIsNone(operation_guard)
+                worker_started.set()
+                worker_release.wait(timeout=2)
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                packs_dir = Path(temp_dir) / "packs"
+                (packs_dir / "alpha").mkdir(parents=True)
+                (packs_dir / "beta").mkdir()
+                with patch.object(web_api_module, "PACKS_DIR", packs_dir):
+                    task = asyncio.create_task(
+                        plugin._run_guarded_runtime_file_operation(
+                            "测试全量操作",
+                            blocking_runtime_operation,
+                        )
+                    )
+                    self.assertTrue(await asyncio.to_thread(worker_started.wait, 1))
+                    task.cancel()
+                    await asyncio.sleep(0.05)
+                    self.assertEqual(
+                        plugin.semantic_task_manager.active, {"alpha", "beta"}
+                    )
+                    worker_release.set()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+
+            self.assertEqual(plugin.semantic_task_manager.active, set())
 
         asyncio.run(run())
 

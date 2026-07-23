@@ -207,13 +207,12 @@ class CommandMixin:
             )
 
         try:
-            result = install_first_official_pack_from_index(
+            result = await self._run_guarded_runtime_file_operation(
+                "安装官方资源包",
+                install_first_official_pack_from_index,
                 index_url=COMMUNITY_INDEX_URL,
                 overwrite=False,
                 set_as_default=True,
-                operation_guard=(
-                    self.semantic_task_manager.assert_pack_mutation_allowed
-                ),
             )
             selected_name = str(
                 result.get("selected_pack_name")

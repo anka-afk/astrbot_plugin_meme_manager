@@ -51,21 +51,62 @@ LOCAL_EMBEDDING_FIELDS = frozenset(
         "faiss_id",
     }
 )
-PORTABLE_PRIVATE_FIELDS = frozenset(
+PORTABLE_METADATA_FIELDS = frozenset(
     {
-        "api_key",
-        "provider_config",
-        "vision_provider_id",
-        "configured_provider_id",
-        "effective_provider_id",
-        "base_url",
-        "local_path",
-        "source_path",
-        "last_error",
-        "task_error",
-        "error_items",
-        "active_items",
-        "current",
+        "schema_version",
+        "pack_id",
+        "generated_at",
+        "file_total",
+        "unique_total",
+        "content_unique_total",
+        "reused_duplicate_files",
+        "cross_category_duplicate_entries",
+        "migrated_from_schema_version",
+        "metadata_migrated_at",
+        "imported_from_schema_version",
+    }
+)
+PORTABLE_IMAGE_FIELDS = frozenset(
+    {
+        "content_sha256",
+        "relative_path",
+        "entry_id",
+        "category",
+        "category_description",
+        "category_tag",
+        "category_context_hash",
+        "category_fit",
+        "category_review_status",
+        "category_review_reason",
+        "category_review_context_hash",
+        "manual_confirmation_context_hash",
+        "suggested_category",
+        "reclassification_status",
+        "reclassified_from_category",
+        "reclassified_to_category",
+        "reclassification_reason",
+        "reclassified_at",
+        "reclassification_history",
+        "caption",
+        "tags",
+        "visible_text",
+        "caption_status",
+        "provenance",
+        "auto_caption",
+        "auto_tags",
+        "auto_visible_text",
+        "auto_category_fit",
+        "auto_category_review_status",
+        "auto_category_review_reason",
+        "manual_caption",
+        "manual_tags",
+        "manual_visible_text",
+        "manual_override",
+        "vision_model",
+        "prompt_version",
+        "text_hash",
+        "legacy_text_hash",
+        "updated_at",
     }
 )
 
@@ -1803,19 +1844,21 @@ def reset_local_embedding_state(
         raise SemanticMetadataCompatibilityError(
             f"不支持 semantic_metadata.json 版本 {source_version}"
         )
-    payload = dict(data or {})
-    for key in LOCAL_EMBEDDING_FIELDS | PORTABLE_PRIVATE_FIELDS:
-        payload.pop(key, None)
-    images = payload.get("images", {})
+    payload = {
+        key: copy.deepcopy(data[key]) for key in PORTABLE_METADATA_FIELDS if key in data
+    }
+    images = data.get("images", {})
     normalized_images: dict[str, dict[str, Any]] = {}
     if isinstance(images, dict):
         for entry_id, value in images.items():
             if not isinstance(value, dict):
                 continue
-            item = dict(value)
+            item = {
+                key: copy.deepcopy(value[key])
+                for key in PORTABLE_IMAGE_FIELDS
+                if key in value
+            }
             item["embedding_status"] = "pending"
-            for key in LOCAL_EMBEDDING_FIELDS:
-                item.pop(key, None)
             item["error"] = None
             normalized_images[str(entry_id)] = item
     payload["images"] = normalized_images
@@ -1824,7 +1867,10 @@ def reset_local_embedding_state(
 
 
 def reconcile_metadata(
-    pack_dir: Path | str, external_data: dict[str, Any] | None = None
+    pack_dir: Path | str,
+    external_data: dict[str, Any] | None = None,
+    *,
+    prefer_external_manual: bool = False,
 ) -> dict[str, Any]:
     """合并磁盘与语义记录，并按具体文件路径隔离人工内容和向量状态。"""
     root = Path(pack_dir).resolve()
@@ -1876,10 +1922,20 @@ def reconcile_metadata(
     def choose_previous(entry_id: str, digest: str) -> tuple[dict[str, Any], bool]:
         exact_local = local_images.get(entry_id)
         exact_external = external_images.get(entry_id)
-        for candidate in (exact_local, exact_external):
+        manual_exact_candidates = (
+            (exact_external, exact_local)
+            if prefer_external_manual
+            else (exact_local, exact_external)
+        )
+        for candidate in manual_exact_candidates:
             if isinstance(candidate, dict) and (
                 candidate.get("provenance") in {"manual", "mixed"}
-                or (candidate.get("caption") and candidate.get("tags"))
+                or candidate.get("manual_override")
+            ):
+                return candidate, True
+        for candidate in (exact_local, exact_external):
+            if isinstance(candidate, dict) and (
+                candidate.get("caption") and candidate.get("tags")
             ):
                 return candidate, True
         for candidate in (exact_local, exact_external):
@@ -1887,11 +1943,17 @@ def reconcile_metadata(
                 return candidate, True
         # 移动/重命名时可复用内容描述作为起点，但分类判断、固定标签、人工
         # 确认和向量一律失效，下一轮必须携带新分类重新识别。
-        content_candidates = records_for_content(local_images, digest)
-        content_candidates.extend(records_for_content(external_images, digest))
+        local_content_candidates = records_for_content(local_images, digest)
+        external_content_candidates = records_for_content(external_images, digest)
+        content_candidates = local_content_candidates + external_content_candidates
+        manual_content_candidates = (
+            external_content_candidates + local_content_candidates
+            if prefer_external_manual
+            else content_candidates
+        )
         manual_candidates = [
             item
-            for item in content_candidates
+            for item in manual_content_candidates
             if item.get("provenance") in {"manual", "mixed"}
             or item.get("manual_override")
         ]

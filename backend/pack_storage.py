@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -37,7 +38,9 @@ from .pack_protocol import (
 )
 from .semantic_index import index_is_ready, load_index_manifest
 from .semantic_storage import (
+    LEGACY_METADATA_BACKUP_NAME,
     get_pack_semantic_summary,
+    import_metadata_file,
     load_metadata,
     reconcile_metadata,
     reset_local_embedding_state,
@@ -70,8 +73,78 @@ def _load_json(path: Path, default):
 
 def _save_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as file_obj:
-        json.dump(data, file_obj, ensure_ascii=False, indent=2)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file_obj:
+            json.dump(data, file_obj, ensure_ascii=False, indent=2)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def _restore_file_snapshot(path: Path, content: bytes | None) -> None:
+    """Restore one transaction control file from an exact byte snapshot.
+
+    Args:
+        path: Runtime control file to restore.
+        content: Original bytes, or ``None`` if the file did not exist.
+    """
+    if content is None:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".rollback", dir=path.parent
+    )
+    try:
+        with os.fdopen(fd, "wb") as file_obj:
+            file_obj.write(content)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def _safe_nonnegative_int(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _index_bundle_details(index_root: Path) -> tuple[dict, Path | None]:
+    """Resolve the manifest-selected FAISS file from old or snapshot bundles.
+
+    Args:
+        index_root: Extracted semantic index directory.
+
+    Returns:
+        The parsed manifest and its safe existing FAISS file, if any.
+    """
+    manifest = _load_json(index_root / "index_manifest.json", {})
+    if not isinstance(manifest, dict):
+        return {}, None
+    filename = str(manifest.get("index_file") or "index.faiss").strip()
+    if (
+        not filename
+        or Path(filename).name != filename
+        or not filename.endswith(".faiss")
+    ):
+        return manifest, None
+    index_path = index_root / filename
+    return manifest, index_path if index_path.is_file() else None
 
 
 def _directory_size(path: Path) -> int:
@@ -628,6 +701,7 @@ def _prepare_import_pack(
         }
 
     shutil.copytree(pack_root, target_root, ignore=ignore_transfer_files)
+    (target_root / LEGACY_METADATA_BACKUP_NAME).unlink(missing_ok=True)
     manifest = _load_json(target_root / "manifest.json", {})
     if not isinstance(manifest, dict):
         raise ValueError("manifest.json 格式无效")
@@ -660,7 +734,9 @@ def inspect_pack_archive(zip_path: Path, suggested_pack_id: str | None = None) -
         image_count = _count_images(prepared_root / "memes")
         categories = manifest.get("categories", {})
         semantic_path = prepared_root / "semantic_metadata.json"
-        semantic_data = _load_json(semantic_path, {}) if semantic_path.is_file() else {}
+        semantic_data = load_metadata(prepared_root) if semantic_path.is_file() else {}
+        if semantic_data.get("metadata_read_only"):
+            raise ValueError(str(semantic_data.get("metadata_error") or "语义文件无效"))
         semantic_images = (
             semantic_data.get("images", {}) if isinstance(semantic_data, dict) else {}
         )
@@ -670,10 +746,8 @@ def inspect_pack_archive(zip_path: Path, suggested_pack_id: str | None = None) -
             if isinstance(item, dict) and item.get("caption_status") == "done"
         )
         declared_vectors = bool(transfer_info.get("features", {}).get("vectors", False))
-        vector_files_present = bool(
-            (pack_root / "semantic_index" / "index.faiss").is_file()
-            and (pack_root / "semantic_index" / "index_manifest.json").is_file()
-        )
+        _, bundled_index_path = _index_bundle_details(pack_root / "semantic_index")
+        vector_files_present = bundled_index_path is not None
         warnings = []
         if detected_format == "legacy":
             warnings.append("已识别为旧版无语义化压缩包，导入时会自动转换为新版结构。")
@@ -721,7 +795,10 @@ def get_pack_export_capabilities(pack_id: str) -> dict:
         "vector_backup_available": vector_backup_available,
         "embedding_provider_id": str(index_manifest.get("embedding_provider_id") or ""),
         "embedding_model": str(index_manifest.get("embedding_model") or ""),
-        "embedding_dimension": int(index_manifest.get("embedding_dimension", 0) or 0),
+        "embedding_dimension": _safe_nonnegative_int(
+            index_manifest.get("embedding_dimension", 0)
+        )
+        or 0,
     }
 
 
@@ -745,6 +822,10 @@ def import_pack_archive(
     set_as_default: bool = False,
     operation_guard: PackOperationGuard | None = None,
     suggested_pack_id: str | None = None,
+    embedding_provider_id: str = "",
+    embedding_model: str = "",
+    embedding_dimension: int = 0,
+    preserve_existing_manual: bool = True,
 ) -> dict:
     if not zip_path.is_file():
         raise FileNotFoundError("压缩包不存在")
@@ -798,20 +879,44 @@ def import_pack_archive(
         semantic_file = prepared_pack_dir / "semantic_metadata.json"
         declared_vectors = bool(transfer_info.get("features", {}).get("vectors", False))
         source_index_dir = pack_root / "semantic_index"
-        vector_files_present = bool(
-            (source_index_dir / "index.faiss").is_file()
-            and (source_index_dir / "index_manifest.json").is_file()
+        source_index_manifest, bundled_index_path = _index_bundle_details(
+            source_index_dir
         )
-        wants_vector_restore = bool(
+        vector_files_present = bundled_index_path is not None
+        restore_candidate = bool(
             transfer_info.get("export_mode") == "backup"
             and declared_vectors
             and vector_files_present
             and semantic_file.is_file()
         )
+        expected_dimension = _safe_nonnegative_int(embedding_dimension) or 0
+        expected_signature_available = bool(
+            str(embedding_provider_id or "").strip() and expected_dimension > 0
+        )
+        archive_dimension = _safe_nonnegative_int(
+            source_index_manifest.get("embedding_dimension", 0)
+        )
+        signature_matches = bool(
+            expected_signature_available
+            and str(source_index_manifest.get("embedding_provider_id") or "")
+            == str(embedding_provider_id or "")
+            and str(source_index_manifest.get("embedding_model") or "")
+            == str(embedding_model or "")
+            and archive_dimension == expected_dimension
+        )
+        wants_vector_restore = bool(restore_candidate and signature_matches)
+        if restore_candidate and not expected_signature_available:
+            vector_warning = (
+                "当前未提供本机向量模型信息，已保留语义描述并放弃压缩包向量。"
+            )
+        elif restore_candidate and not signature_matches:
+            vector_warning = (
+                "压缩包向量模型或维度与本机不一致，已保留语义描述并等待重建。"
+            )
 
         if semantic_file.is_file():
             # 无论新旧包都先按图片内容复核路径和哈希，避免错误记录指向其他文件。
-            imported_data = _load_json(semantic_file, {})
+            imported_data = import_metadata_file(semantic_file)
             if wants_vector_restore:
                 reconciled = reconcile_metadata(
                     prepared_pack_dir, external_data=imported_data
@@ -819,13 +924,49 @@ def import_pack_archive(
                 reconciled["pack_id"] = pack_id
                 save_metadata(prepared_pack_dir, reconciled)
             else:
-                portable_data = reset_local_embedding_state(imported_data)
+                portable_data = reset_local_embedding_state(
+                    imported_data, prepared_pack_dir
+                )
                 reconciled = reconcile_metadata(
                     prepared_pack_dir, external_data=portable_data
                 )
                 reconciled = reset_local_embedding_state(reconciled)
                 reconciled["pack_id"] = pack_id
                 save_metadata(prepared_pack_dir, reconciled)
+
+        target_pack_dir = PACKS_DIR / pack_id
+        manual_data_preserved = False
+        existing_metadata = None
+        if overwrite and target_pack_dir.is_dir():
+            existing_metadata_path = target_pack_dir / "semantic_metadata.json"
+            if existing_metadata_path.is_file():
+                existing_metadata = load_metadata(target_pack_dir)
+                if existing_metadata.get("metadata_read_only"):
+                    raise ValueError(
+                        "现有图包语义文件无法安全读取，拒绝覆盖以保护人工内容："
+                        f"{existing_metadata.get('metadata_error') or '未知错误'}"
+                    )
+        if preserve_existing_manual and existing_metadata is not None:
+            manual_data_preserved = any(
+                isinstance(item, dict)
+                and (
+                    item.get("manual_override")
+                    or item.get("provenance") in {"manual", "mixed"}
+                )
+                for item in existing_metadata.get("images", {}).values()
+            )
+            if manual_data_preserved:
+                merged = reconcile_metadata(
+                    prepared_pack_dir,
+                    external_data=existing_metadata,
+                    prefer_external_manual=True,
+                )
+                merged["pack_id"] = pack_id
+                save_metadata(prepared_pack_dir, reset_local_embedding_state(merged))
+                wants_vector_restore = False
+                vector_warning = (
+                    "已保留现有图包的人工语义；为避免错配，压缩包向量已放弃并等待重建。"
+                )
 
         prepared_index_dir = workspace / "prepared_index"
         if wants_vector_restore:
@@ -845,6 +986,9 @@ def import_pack_archive(
                     validation_runtime,
                     pack_id,
                     metadata=load_metadata(prepared_pack_dir),
+                    embedding_provider_id=str(embedding_provider_id or ""),
+                    embedding_model=str(embedding_model or ""),
+                    embedding_dimension=expected_dimension,
                 )
             except Exception:
                 vectors_restored = False
@@ -853,89 +997,141 @@ def import_pack_archive(
                 portable = reset_local_embedding_state(load_metadata(prepared_pack_dir))
                 portable["pack_id"] = pack_id
                 save_metadata(prepared_pack_dir, portable)
-        elif declared_vectors:
+        elif declared_vectors and not vector_warning:
             vector_warning = "压缩包缺少完整向量索引，已按无向量包导入。"
 
-        target_pack_dir = PACKS_DIR / pack_id
         target_index_dir = PLUGIN_DATA_DIR / "semantic_indexes" / pack_id
         old_pack_dir = workspace / "replaced_pack"
         old_index_dir = workspace / "replaced_index"
-        if target_pack_dir.exists() and not overwrite:
+        target_existed = target_pack_dir.exists()
+        if target_existed and not overwrite:
             raise FileExistsError(f"表情包 {pack_id} 已存在，请重新检查后再导入")
-        if target_pack_dir.exists() and overwrite:
-            if operation_guard:
-                operation_guard(pack_id, "覆盖安装资源包")
-            shutil.move(str(target_pack_dir), str(old_pack_dir))
-        if target_index_dir.exists():
-            target_index_dir.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(target_index_dir), str(old_index_dir))
+
+        # Capture every rollback source before the first runtime mutation. A failed
+        # snapshot must leave the installed pack and index exactly where they were.
+        registry_snapshot = (
+            REGISTRY_PATH.read_bytes() if REGISTRY_PATH.is_file() else None
+        )
+        rules_snapshot = (
+            SELECTION_RULES_PATH.read_bytes()
+            if SELECTION_RULES_PATH.is_file()
+            else None
+        )
+        previous_empty_snapshot = workspace / "previous_empty_pack"
+        previous_empty_index_snapshot = workspace / "previous_empty_index"
+        previous_empty_id = str(previous_single_empty_pack_id or "").strip()
+        previous_empty_dir = (
+            PACKS_DIR / previous_empty_id if previous_empty_id else None
+        )
+        previous_empty_index = (
+            PLUGIN_DATA_DIR / "semantic_indexes" / previous_empty_id
+            if previous_empty_id
+            else None
+        )
+        if (
+            previous_empty_dir is not None
+            and previous_empty_id != pack_id
+            and previous_empty_dir.is_dir()
+        ):
+            shutil.copytree(previous_empty_dir, previous_empty_snapshot)
+        if previous_empty_index is not None and previous_empty_index.is_dir():
+            shutil.copytree(previous_empty_index, previous_empty_index_snapshot)
+
+        old_pack_moved = False
+        old_index_moved = False
+        new_pack_installed = False
         try:
+            if target_existed and overwrite:
+                if operation_guard:
+                    operation_guard(pack_id, "覆盖安装资源包")
+                shutil.move(str(target_pack_dir), str(old_pack_dir))
+                old_pack_moved = True
+            if target_index_dir.exists():
+                target_index_dir.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(target_index_dir), str(old_index_dir))
+                old_index_moved = True
+
             PACKS_DIR.mkdir(parents=True, exist_ok=True)
             prepared_pack_dir.rename(target_pack_dir)
+            new_pack_installed = True
             if vectors_restored:
                 target_index_dir.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(prepared_index_dir, target_index_dir)
+
+            registry = _load_registry()
+            installed = registry["installed_packs"]
+            manifest = _load_manifest(pack_id)
+            registry_entry_replaced = False
+            for item in installed:
+                if str(item.get("id") or "") != pack_id:
+                    continue
+                item.update(
+                    {
+                        "id": pack_id,
+                        "name": str(manifest.get("name") or pack_id),
+                        "version": str(manifest.get("version") or "1.0.0"),
+                        "enabled": True,
+                        "installed_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+                registry_entry_replaced = True
+                break
+
+            if not registry_entry_replaced:
+                installed.append(
+                    {
+                        "id": pack_id,
+                        "name": str(manifest.get("name") or pack_id),
+                        "version": str(manifest.get("version") or "1.0.0"),
+                        "enabled": True,
+                        "installed_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+            _save_registry(registry)
+
+            post_install = _apply_post_install_policy(
+                new_pack_id=pack_id,
+                previous_single_empty_pack_id=previous_single_empty_pack_id,
+                set_as_default=set_as_default,
+                operation_guard=operation_guard,
+            )
         except Exception:
-            shutil.rmtree(target_pack_dir, ignore_errors=True)
-            shutil.rmtree(target_index_dir, ignore_errors=True)
-            if old_pack_dir.exists():
+            if new_pack_installed:
+                shutil.rmtree(target_pack_dir, ignore_errors=True)
+            if vectors_restored or old_index_moved:
+                shutil.rmtree(target_index_dir, ignore_errors=True)
+            if old_pack_moved and old_pack_dir.exists():
                 shutil.move(str(old_pack_dir), str(target_pack_dir))
-            if old_index_dir.exists():
+            if old_index_moved and old_index_dir.exists():
                 target_index_dir.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(old_index_dir), str(target_index_dir))
+            if previous_empty_dir is not None and previous_empty_snapshot.is_dir():
+                if not previous_empty_dir.exists():
+                    shutil.copytree(previous_empty_snapshot, previous_empty_dir)
+            if (
+                previous_empty_index is not None
+                and previous_empty_index_snapshot.is_dir()
+                and not previous_empty_index.exists()
+            ):
+                previous_empty_index.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(previous_empty_index_snapshot, previous_empty_index)
+            _restore_file_snapshot(REGISTRY_PATH, registry_snapshot)
+            _restore_file_snapshot(SELECTION_RULES_PATH, rules_snapshot)
             raise
 
-    registry = _load_registry()
-    installed = registry["installed_packs"]
-    manifest = _load_manifest(pack_id)
-    replaced = False
-    for item in installed:
-        if str(item.get("id") or "") != pack_id:
-            continue
-        item.update(
-            {
-                "id": pack_id,
-                "name": str(manifest.get("name") or pack_id),
-                "version": str(manifest.get("version") or "1.0.0"),
-                "enabled": True,
-                "installed_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-        replaced = True
-        break
-
-    if not replaced:
-        installed.append(
-            {
-                "id": pack_id,
-                "name": str(manifest.get("name") or pack_id),
-                "version": str(manifest.get("version") or "1.0.0"),
-                "enabled": True,
-                "installed_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-
-    _save_registry(registry)
-
-    post_install = _apply_post_install_policy(
-        new_pack_id=pack_id,
-        previous_single_empty_pack_id=previous_single_empty_pack_id,
-        set_as_default=set_as_default,
-        operation_guard=operation_guard,
-    )
-
-    return {
-        "pack_id": pack_id,
-        "name": str(manifest.get("name") or pack_id),
-        "version": str(manifest.get("version") or "1.0.0"),
-        "overwritten": overwrite and replaced,
-        "detected_format": detected_format,
-        "export_mode": str(transfer_info.get("export_mode") or "share"),
-        "semantic_metadata": (target_pack_dir / "semantic_metadata.json").is_file(),
-        "vectors_restored": vectors_restored,
-        "vector_warning": vector_warning or None,
-        **post_install,
-    }
+        return {
+            "pack_id": pack_id,
+            "name": str(manifest.get("name") or pack_id),
+            "version": str(manifest.get("version") or "1.0.0"),
+            "overwritten": bool(overwrite and target_existed),
+            "detected_format": detected_format,
+            "export_mode": str(transfer_info.get("export_mode") or "share"),
+            "semantic_metadata": (target_pack_dir / "semantic_metadata.json").is_file(),
+            "vectors_restored": vectors_restored,
+            "vector_warning": vector_warning or None,
+            "manual_data_preserved": manual_data_preserved,
+            **post_install,
+        }
 
 
 def export_pack_archive(
@@ -1000,12 +1196,14 @@ def export_pack_archive(
         semantic_file = staging / "semantic_metadata.json"
         vectors_included = False
         if export_mode == "share" and include_semantic:
+            (staging / LEGACY_METADATA_BACKUP_NAME).unlink(missing_ok=True)
             if semantic_file.exists():
                 portable = reset_local_embedding_state(
-                    _load_json(semantic_file, {}), staging
+                    import_metadata_file(semantic_file), staging
                 )
                 portable = reconcile_metadata(staging, external_data=portable)
                 save_metadata(staging, reset_local_embedding_state(portable))
+                (staging / LEGACY_METADATA_BACKUP_NAME).unlink(missing_ok=True)
         elif export_mode == "share" and semantic_file.exists():
             semantic_file.unlink()
         elif export_mode == "backup":
@@ -1337,7 +1535,9 @@ def get_selection_rules() -> dict:
     }
 
 
-def _validate_and_normalize_rules(rules: list[dict]) -> list[dict]:
+def _validate_and_normalize_rules(
+    rules: list[dict], available_pack_ids: set[str] | None = None
+) -> list[dict]:
     if not isinstance(rules, list) or not rules:
         raise ValueError("rules 不能为空")
 
@@ -1359,7 +1559,12 @@ def _validate_and_normalize_rules(rules: list[dict]) -> list[dict]:
             raise ValueError(f"第 {index + 1} 条规则 scope 非法")
         if not pack_id:
             raise ValueError(f"第 {index + 1} 条规则缺少 pack_id")
-        if not (PACKS_DIR / pack_id).is_dir():
+        pack_exists = (
+            pack_id in available_pack_ids
+            if available_pack_ids is not None
+            else (PACKS_DIR / pack_id).is_dir()
+        )
+        if not pack_exists:
             raise ValueError(f"第 {index + 1} 条规则引用的 pack 不存在: {pack_id}")
 
         normalized_rule = {"id": rule_id, "scope": scope, "pack_id": pack_id}
@@ -1406,6 +1611,7 @@ def export_runtime_backup(
 ) -> dict:
     target_dir = Path(output_dir).expanduser().resolve() if output_dir else BACKUP_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     archive_base = target_dir / f"runtime_backup_{timestamp}"
@@ -1431,11 +1637,13 @@ def export_runtime_backup(
                 semantic_file = copied_pack_dir / "semantic_metadata.json"
                 if not copied_pack_dir.is_dir() or not semantic_file.is_file():
                     continue
+                (copied_pack_dir / LEGACY_METADATA_BACKUP_NAME).unlink(missing_ok=True)
                 portable = reset_local_embedding_state(
-                    _load_json(semantic_file, {}), copied_pack_dir
+                    import_metadata_file(semantic_file), copied_pack_dir
                 )
                 portable = reconcile_metadata(copied_pack_dir, external_data=portable)
                 save_metadata(copied_pack_dir, reset_local_embedding_state(portable))
+                (copied_pack_dir / LEGACY_METADATA_BACKUP_NAME).unlink(missing_ok=True)
 
         archive_path = shutil.make_archive(
             str(archive_base), "zip", root_dir=snapshot_root
@@ -1461,6 +1669,7 @@ def import_runtime_backup(
     overwrite: bool = False,
     operation_guard: PackOperationGuard | None = None,
 ) -> dict:
+    """Validate and restore a runtime backup as one rollback-safe transaction."""
     if not backup_zip_path.is_file():
         raise FileNotFoundError("备份压缩包不存在")
 
@@ -1471,6 +1680,7 @@ def import_runtime_backup(
         extract_root = Path(tmp_dir)
         _extract_zip_safely(backup_zip_path, extract_root)
         backup_root = _find_backup_root(extract_root)
+        _require_regular_tree(backup_root, "恢复全量备份")
 
         backup_packs_dir = backup_root / "packs"
         backup_registry = backup_root / "registry.json"
@@ -1480,59 +1690,230 @@ def import_runtime_backup(
         if not backup_packs_dir.is_dir() and not backup_registry.is_file():
             raise ValueError("备份包中没有可恢复的数据")
 
-        if overwrite and PACKS_DIR.is_dir():
-            if operation_guard:
-                # 必须在删除任何目录前一次性检查完，避免恢复到一半才发现活动任务。
-                for pack_dir in PACKS_DIR.iterdir():
-                    if pack_dir.is_dir():
-                        operation_guard(pack_dir.name, "覆盖恢复全量备份")
-            shutil.rmtree(PACKS_DIR)
-            PACKS_DIR.mkdir(parents=True, exist_ok=True)
-
-        restored_packs = 0
+        prepared_packs = extract_root / "prepared_packs"
+        prepared_packs.mkdir()
+        prepared_manifests: dict[str, dict] = {}
         if backup_packs_dir.is_dir():
-            PACKS_DIR.mkdir(parents=True, exist_ok=True)
-            for pack_dir in backup_packs_dir.iterdir():
-                if not pack_dir.is_dir():
+            for source_pack_dir in sorted(backup_packs_dir.iterdir()):
+                if not source_pack_dir.is_dir():
                     continue
-                target_pack_dir = PACKS_DIR / pack_dir.name
-                if target_pack_dir.exists() and not overwrite:
-                    continue
-                if target_pack_dir.exists() and overwrite:
-                    if operation_guard:
-                        operation_guard(pack_dir.name, "覆盖恢复资源包")
-                    shutil.rmtree(target_pack_dir)
-                shutil.copytree(pack_dir, target_pack_dir)
-                semantic_file = target_pack_dir / "semantic_metadata.json"
+                pack_id = validate_pack_id(source_pack_dir.name, "备份表情包")
+                prepared_pack_dir = prepared_packs / pack_id
+                shutil.copytree(source_pack_dir, prepared_pack_dir)
+                prepared_manifests[pack_id] = validate_pack_directory(
+                    prepared_pack_dir, context=f"备份表情包 {pack_id}"
+                )
+                semantic_file = prepared_pack_dir / "semantic_metadata.json"
                 if semantic_file.is_file():
                     portable = reset_local_embedding_state(
-                        _load_json(semantic_file, {}), target_pack_dir
+                        import_metadata_file(semantic_file), prepared_pack_dir
                     )
                     reconciled = reconcile_metadata(
-                        target_pack_dir, external_data=portable
+                        prepared_pack_dir, external_data=portable
                     )
                     save_metadata(
-                        target_pack_dir,
+                        prepared_pack_dir,
                         reset_local_embedding_state(reconciled),
                     )
-                # 全量备份不包含本机 FAISS 文件；恢复后不能沿用旧状态。
-                shutil.rmtree(
-                    PLUGIN_DATA_DIR / "semantic_indexes" / pack_dir.name,
-                    ignore_errors=True,
+                    (prepared_pack_dir / LEGACY_METADATA_BACKUP_NAME).unlink(
+                        missing_ok=True
+                    )
+
+        current_pack_ids = (
+            {path.name for path in PACKS_DIR.iterdir() if path.is_dir()}
+            if PACKS_DIR.is_dir()
+            else set()
+        )
+        if overwrite and backup_packs_dir.is_dir():
+            for current_pack_id in sorted(current_pack_ids):
+                current_semantic_file = (
+                    PACKS_DIR / current_pack_id / "semantic_metadata.json"
                 )
-                restored_packs += 1
+                if not current_semantic_file.is_file():
+                    continue
+                current_metadata = load_metadata(PACKS_DIR / current_pack_id)
+                if current_metadata.get("metadata_read_only"):
+                    raise ValueError(
+                        "现有图包语义文件无法安全读取，拒绝全量覆盖恢复："
+                        f"{current_metadata.get('metadata_error') or '未知错误'}"
+                    )
+        backup_pack_ids = set(prepared_manifests)
+        available_pack_ids = (
+            backup_pack_ids
+            if overwrite and backup_packs_dir.is_dir()
+            else current_pack_ids | backup_pack_ids
+        )
 
         if backup_registry.is_file():
-            shutil.copy2(backup_registry, REGISTRY_PATH)
+            try:
+                registry_data = json.loads(
+                    backup_registry.read_text(encoding="utf-8-sig")
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(f"备份中的 registry.json 无法解析: {exc}") from exc
+            if not isinstance(registry_data, dict):
+                raise ValueError("备份中的 registry.json 格式无效")
+            backup_entries = _normalize_installed_packs(
+                registry_data.get("installed_packs", [])
+            )
+        else:
+            backup_entries = []
+        current_entries = _load_registry().get("installed_packs", [])
+        if overwrite:
+            merged_entries = list(backup_entries)
+        else:
+            # Existing packs are not replaced, so their local registry settings
+            # must also win over entries carried by the backup.
+            current_entry_ids = {
+                str(item.get("id") or "").strip() for item in current_entries
+            }
+            merged_entries = list(current_entries)
+            merged_entries.extend(
+                item
+                for item in backup_entries
+                if str(item.get("id") or "").strip() not in current_entry_ids
+            )
+        entry_by_id = {
+            str(item.get("id") or "").strip(): dict(item)
+            for item in merged_entries
+            if str(item.get("id") or "").strip() in available_pack_ids
+        }
+        for pack_id in sorted(available_pack_ids):
+            if pack_id in entry_by_id:
+                continue
+            manifest = prepared_manifests.get(pack_id) or _load_manifest(pack_id)
+            entry_by_id[pack_id] = {
+                "id": pack_id,
+                "name": str(manifest.get("name") or pack_id),
+                "version": str(manifest.get("version") or "1.0.0"),
+                "enabled": True,
+                "installed_at": datetime.now(timezone.utc).isoformat(),
+            }
+        registry_payload = {
+            "schema_version": RUNTIME_SCHEMA_VERSION,
+            "installed_packs": list(entry_by_id.values()),
+        }
+
+        rules_payload = None
         if backup_rules.is_file():
-            rules_data = _load_json(backup_rules, {})
+            try:
+                rules_data = json.loads(backup_rules.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    f"备份中的 selection_rules.json 无法解析: {exc}"
+                ) from exc
             if not isinstance(rules_data, dict):
                 raise ValueError("备份中的 selection_rules.json 格式无效")
-            save_selection_rules(rules_data.get("rules", []))
-        if backup_community.is_file():
-            shutil.copy2(backup_community, COMMUNITY_CACHE_PATH)
+            rules_payload = {
+                "schema_version": RUNTIME_SCHEMA_VERSION,
+                "rules": _validate_and_normalize_rules(
+                    rules_data.get("rules", []), available_pack_ids
+                ),
+            }
+        elif overwrite and backup_packs_dir.is_dir():
+            current_rules = _load_selection_rules().get("rules", [])
+            rules_payload = {
+                "schema_version": RUNTIME_SCHEMA_VERSION,
+                "rules": _validate_and_normalize_rules(
+                    current_rules, available_pack_ids
+                ),
+            }
 
-    return {
-        "restored_packs": restored_packs,
-        "runtime_dir": str(PLUGIN_DATA_DIR),
-    }
+        community_payload = None
+        if backup_community.is_file():
+            try:
+                community_payload = json.loads(
+                    backup_community.read_text(encoding="utf-8-sig")
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    f"备份中的 community_cache.json 无法解析: {exc}"
+                ) from exc
+            if not isinstance(community_payload, dict):
+                raise ValueError("备份中的 community_cache.json 格式无效")
+
+        if operation_guard:
+            for pack_id in sorted(current_pack_ids):
+                operation_guard(pack_id, "恢复全量备份")
+
+        registry_snapshot = (
+            REGISTRY_PATH.read_bytes() if REGISTRY_PATH.is_file() else None
+        )
+        rules_snapshot = (
+            SELECTION_RULES_PATH.read_bytes()
+            if SELECTION_RULES_PATH.is_file()
+            else None
+        )
+        community_snapshot = (
+            COMMUNITY_CACHE_PATH.read_bytes()
+            if COMMUNITY_CACHE_PATH.is_file()
+            else None
+        )
+        semantic_indexes_dir = PLUGIN_DATA_DIR / "semantic_indexes"
+        old_packs_dir = extract_root / "old_runtime_packs"
+        old_indexes_dir = extract_root / "old_runtime_indexes"
+        added_pack_ids: list[str] = []
+        moved_index_dirs: dict[str, Path] = {}
+        packs_swapped = False
+        indexes_swapped = False
+        try:
+            if overwrite and backup_packs_dir.is_dir():
+                if PACKS_DIR.exists():
+                    shutil.move(str(PACKS_DIR), str(old_packs_dir))
+                shutil.move(str(prepared_packs), str(PACKS_DIR))
+                packs_swapped = True
+                if semantic_indexes_dir.exists():
+                    shutil.move(str(semantic_indexes_dir), str(old_indexes_dir))
+                    indexes_swapped = True
+                semantic_indexes_dir.mkdir(parents=True, exist_ok=True)
+                restored_packs = len(backup_pack_ids)
+            else:
+                PACKS_DIR.mkdir(parents=True, exist_ok=True)
+                restored_packs = 0
+                for prepared_pack_dir in sorted(prepared_packs.iterdir()):
+                    target_pack_dir = PACKS_DIR / prepared_pack_dir.name
+                    if target_pack_dir.exists():
+                        continue
+                    shutil.move(str(prepared_pack_dir), str(target_pack_dir))
+                    added_pack_ids.append(prepared_pack_dir.name)
+                    target_index_dir = semantic_indexes_dir / prepared_pack_dir.name
+                    if target_index_dir.exists():
+                        moved_index = (
+                            extract_root / f"old_index_{prepared_pack_dir.name}"
+                        )
+                        shutil.move(str(target_index_dir), str(moved_index))
+                        moved_index_dirs[prepared_pack_dir.name] = moved_index
+                    restored_packs += 1
+
+            _save_registry(registry_payload)
+            if rules_payload is not None:
+                _save_selection_rules(rules_payload)
+            if community_payload is not None:
+                _save_json(COMMUNITY_CACHE_PATH, community_payload)
+        except Exception:
+            if packs_swapped:
+                shutil.rmtree(PACKS_DIR, ignore_errors=True)
+                if old_packs_dir.exists():
+                    shutil.move(str(old_packs_dir), str(PACKS_DIR))
+            else:
+                for pack_id in added_pack_ids:
+                    shutil.rmtree(PACKS_DIR / pack_id, ignore_errors=True)
+            if indexes_swapped:
+                shutil.rmtree(semantic_indexes_dir, ignore_errors=True)
+                if old_indexes_dir.exists():
+                    shutil.move(str(old_indexes_dir), str(semantic_indexes_dir))
+            else:
+                for pack_id, moved_index in moved_index_dirs.items():
+                    target_index_dir = semantic_indexes_dir / pack_id
+                    if moved_index.exists() and not target_index_dir.exists():
+                        target_index_dir.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(moved_index), str(target_index_dir))
+            _restore_file_snapshot(REGISTRY_PATH, registry_snapshot)
+            _restore_file_snapshot(SELECTION_RULES_PATH, rules_snapshot)
+            _restore_file_snapshot(COMMUNITY_CACHE_PATH, community_snapshot)
+            raise
+
+        return {
+            "restored_packs": restored_packs,
+            "runtime_dir": str(PLUGIN_DATA_DIR),
+        }

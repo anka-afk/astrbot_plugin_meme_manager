@@ -378,6 +378,9 @@ async function initApp() {
     "pack-import-set-default",
   );
   const packImportOverwrite = document.getElementById("pack-import-overwrite");
+  const packImportOverwriteManual = document.getElementById(
+    "pack-import-overwrite-manual",
+  );
   const packImportResetBtn = document.getElementById("pack-import-reset-btn");
   const packImportConfirmBtn = document.getElementById(
     "pack-import-confirm-btn",
@@ -911,6 +914,7 @@ async function initApp() {
     packImportWarning?.classList.add("hidden");
     if (packImportSetDefault) packImportSetDefault.checked = false;
     if (packImportOverwrite) packImportOverwrite.checked = false;
+    if (packImportOverwriteManual) packImportOverwriteManual.checked = false;
     if (!keepResult) setPackTransferResult(packImportResult, "", "");
   }
 
@@ -996,8 +1000,9 @@ async function initApp() {
     if (packImportOverwrite?.checked) {
       const confirmed = await showConfirm({
         title: "确认覆盖同名表情包？",
-        description:
-          "如果压缩包中的 ID 已存在，原表情包及其向量会被替换。建议先导出自用备份。",
+        description: packImportOverwriteManual?.checked
+          ? "原表情包、向量和本机人工语义都会被替换。建议先导出自用备份。"
+          : "原表情包及其向量会被替换，但本机人工描述、标签和图片文字会保留。",
         confirmLabel: "确认覆盖并导入",
         confirmClassName: "danger",
       });
@@ -1012,6 +1017,9 @@ async function initApp() {
       const data = await apiPost("packs/import/apply", {
         import_token: pendingPackImportToken,
         overwrite: Boolean(packImportOverwrite?.checked),
+        overwrite_manual_semantics: Boolean(
+          packImportOverwrite?.checked && packImportOverwriteManual?.checked,
+        ),
         set_as_default: Boolean(packImportSetDefault?.checked),
       });
       const importedPackId = String(data?.pack_id || "").trim();

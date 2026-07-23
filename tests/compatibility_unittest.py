@@ -5,7 +5,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from backend.semantic_index import EmbeddingAdapter, build_index, index_is_ready
+from backend.semantic_index import (
+    EmbeddingAdapter,
+    _manifest_int,
+    build_index,
+    index_is_ready,
+)
 from backend.semantic_models import PROMPT_VERSION, runtime_category_mapping
 from backend.semantic_query import validate_selected_id
 from backend.semantic_storage import (
@@ -61,6 +66,11 @@ def reviewed(item):
 
 
 class SemanticCompatibilityTests(unittest.TestCase):
+    def test_index_manifest_integer_fields_reject_booleans_and_decimals(self):
+        self.assertIsNone(_manifest_int(True))
+        self.assertIsNone(_manifest_int(2.5))
+        self.assertEqual(_manifest_int("2"), 2)
+
     def _pack(self, root, categories):
         pack = Path(root) / "demo"
         for category, files in categories.items():

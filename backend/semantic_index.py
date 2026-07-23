@@ -45,9 +45,13 @@ def _manifest_int(value: Any) -> int | None:
     Returns:
         The parsed integer, or ``None`` when the field is invalid.
     """
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
         return None
     return parsed if parsed >= 0 else None
 
