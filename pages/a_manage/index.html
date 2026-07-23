@@ -554,9 +554,14 @@
             <span id="image-preview-category-review-state" class="image-preview-category-review-state"></span>
             <p id="image-preview-category-review-reason" class="image-preview-category-review-reason hidden"></p>
             <p id="image-preview-reclassification" class="image-preview-reclassification hidden"></p>
-            <button id="image-preview-category-confirm-btn" type="button" class="secondary hidden">
-              确认当前分类正确
-            </button>
+            <div id="image-preview-review-actions" class="image-preview-review-actions hidden">
+              <button id="image-preview-category-confirm-btn" type="button" class="secondary hidden">
+                确认当前分类正确
+              </button>
+              <button id="image-preview-review-edit-btn" type="button" class="hidden">
+                修改语义或分类
+              </button>
+            </div>
           </div>
           <div class="image-preview-semantic-section image-preview-read-view">
             <p class="image-preview-semantic-label">图片含义</p>
@@ -597,10 +602,35 @@
             </button>
           </div>
           <form id="image-preview-edit-form" class="image-preview-edit-form hidden">
+            <div class="image-preview-review-rewrite">
+              <div class="image-preview-edit-field">
+                <label for="image-preview-review-instruction">人工复审意见</label>
+                <textarea
+                  id="image-preview-review-instruction"
+                  rows="3"
+                  maxlength="2000"
+                  placeholder="例如：这不是生气，而是看到离谱内容后无语；请重新识别图片文字，并改写含义和标签。"
+                ></textarea>
+              </div>
+              <button id="image-preview-review-rewrite-btn" type="button" class="secondary">
+                让视觉模型按意见重写
+              </button>
+              <p id="image-preview-review-rewrite-status" class="image-preview-review-rewrite-status">
+                模型只会生成候选内容，不会直接覆盖；检查后仍需点击保存。
+              </p>
+            </div>
             <div class="image-preview-edit-field">
               <label>固定分类标签（只读）</label>
               <div id="image-preview-fixed-tags" class="image-preview-fixed-tags"></div>
-              <small>如需改变固定分类，请先关闭窗口并把图片移动到其他分类。</small>
+              <div class="image-preview-category-move-row">
+                <select id="image-preview-target-category" aria-label="目标分类">
+                  <option value="">选择要移动到的分类</option>
+                </select>
+                <button id="image-preview-move-category-btn" type="button" class="secondary">
+                  移动当前图片
+                </button>
+              </div>
+              <small>移动只影响当前路径；成功后固定分类标签会自动更新，其他同内容图片不变。</small>
             </div>
             <div class="image-preview-edit-field">
               <label for="image-preview-caption-input">图片含义描述</label>

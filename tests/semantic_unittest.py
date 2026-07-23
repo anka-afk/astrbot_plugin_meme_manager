@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import faiss
 from backend.semantic_caption import (
@@ -47,6 +48,7 @@ from backend.semantic_storage import (
     get_pack_semantic_summary,
     load_metadata,
     metadata_items,
+    move_image_to_category,
     reconcile_metadata,
     reset_local_embedding_state,
     restore_image_auto_semantic,
@@ -1873,7 +1875,12 @@ class SemanticMvpTest(unittest.TestCase):
         self.assertIn("semantic/save_image", script)
         self.assertIn("semantic/save_image_and_vector", script)
         self.assertIn("semantic/restore_image_auto", script)
+        self.assertIn("semantic/propose_image_revision", script)
+        self.assertIn("semantic/move_image", script)
         self.assertIn("image-preview-edit-form", page)
+        self.assertIn("image-preview-review-edit-btn", page)
+        self.assertIn("image-preview-review-instruction", page)
+        self.assertIn("image-preview-move-category-btn", page)
         self.assertIn("image-preview-save-vector-btn", page)
         self.assertIn("image-preview-restore-auto-btn", page)
         self.assertIn("固定分类标签（只读）", page)
@@ -1884,8 +1891,50 @@ class SemanticMvpTest(unittest.TestCase):
         self.assertIn("semanticReviewAvailable", script)
         self.assertIn("if (semanticReviewAvailable && review)", script)
         self.assertIn("reclassification_status", script)
+        self.assertIn(
+            'const needsHumanReview = ["needs_review", "manual_rejected"]', script
+        )
         self.assertIn('value="reclassified"', semantic_page)
         self.assertIn("自动重分类：", semantic_script)
+
+    def test_only_needs_review_image_can_show_confirm_category_action(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            image_dir = root / "memes" / "foo"
+            image_dir.mkdir(parents=True)
+            image = image_dir / "one.png"
+            image.write_bytes(b"confirm-visibility")
+            metadata = reconcile_metadata(root)
+            item = next(iter(metadata["images"].values()))
+            item.update(
+                {
+                    "caption": "自动描述",
+                    "tags": ["普通标签"],
+                    "caption_status": "done",
+                    "category_fit": "match",
+                    "category_review_status": "auto_match",
+                    "category_review_context_hash": item["category_context_hash"],
+                }
+            )
+            save_metadata(root, metadata)
+            self.assertFalse(
+                get_image_semantic_detail(root, image)["can_confirm_category"]
+            )
+
+            metadata = load_metadata(root)
+            item = next(iter(metadata["images"].values()))
+            item.update(
+                {
+                    "category_fit": "uncertain",
+                    "category_review_status": "needs_review",
+                    "category_review_reason": "画面证据不够明确",
+                    "category_review_context_hash": item["category_context_hash"],
+                }
+            )
+            save_metadata(root, metadata)
+            detail = get_image_semantic_detail(root, image)
+            self.assertTrue(detail["can_confirm_category"])
+            self.assertEqual(detail["category_review_status"], "needs_review")
 
     def test_v1_metadata_is_discarded_for_clean_rebuild(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -2091,6 +2140,124 @@ class SemanticMvpTest(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_review_instruction_generates_preview_without_overwriting_metadata(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                foo_dir = pack / "memes" / "foo"
+                bar_dir = pack / "memes" / "bar"
+                foo_dir.mkdir(parents=True)
+                bar_dir.mkdir(parents=True)
+                (pack / "memes_data.json").write_text(
+                    json.dumps({"foo": "原分类", "bar": "更合适的分类"}),
+                    encoding="utf-8",
+                )
+                image = foo_dir / "one.png"
+                image.write_bytes(b"review-rewrite")
+                metadata = reconcile_metadata(pack)
+                item = next(iter(metadata["images"].values()))
+                item.update(
+                    {
+                        "caption": "原来的错误描述",
+                        "tags": ["错误标签"],
+                        "visible_text": "旧文字",
+                        "caption_status": "done",
+                        "embedding_status": "done",
+                        "category_fit": "uncertain",
+                        "category_review_status": "needs_review",
+                        "category_review_reason": "需要人工判断",
+                        "category_review_context_hash": item["category_context_hash"],
+                    }
+                )
+                save_metadata(pack, metadata)
+                before = load_metadata(pack)["images"]
+                context = CategoryVisionContext(
+                    {
+                        "caption": "按人工意见纠正后的描述",
+                        "tags": ["category:other", "纠正标签", "无语"],
+                        "visible_text": "重新识别的文字",
+                        "category_fit": "conflict",
+                        "category_review_reason": "更像另一个分类",
+                        "suggested_category": "bar",
+                    }
+                )
+                manager = SemanticTaskManager(
+                    root,
+                    context=context,
+                    config={"vision_provider_id": "fake-vision"},
+                )
+                opened = get_image_semantic_detail(pack, image)
+                proposal = await manager.propose_image_semantic_revision(
+                    "demo",
+                    image,
+                    review_instruction="这不是开心，是看到离谱内容后无语",
+                    expected_content_sha256=opened["content_sha256"],
+                    expected_entry_id=opened["entry_id"],
+                )
+
+                self.assertEqual(proposal["caption"], "按人工意见纠正后的描述")
+                self.assertEqual(proposal["tags"], ["纠正标签", "无语"])
+                self.assertEqual(proposal["suggested_category"], "bar")
+                self.assertEqual(proposal["vision_requests"], 1)
+                self.assertEqual(len(context.requests), 1)
+                prompt = context.requests[0]["prompt"]
+                self.assertIn("人工复审纠错", prompt)
+                self.assertIn("这不是开心，是看到离谱内容后无语", prompt)
+                self.assertIn("原来的错误描述", prompt)
+                self.assertEqual(load_metadata(pack)["images"], before)
+
+        asyncio.run(run())
+
+    def test_review_revision_requires_visual_provider_and_idle_task(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                image_dir = pack / "memes" / "foo"
+                image_dir.mkdir(parents=True)
+                image = image_dir / "one.png"
+                image.write_bytes(b"review-no-provider")
+                reconcile_metadata(pack)
+                manager = SemanticTaskManager(
+                    root, context=FakeContext(FakeEmbedding())
+                )
+                opened = get_image_semantic_detail(pack, image)
+                with self.assertRaisesRegex(RuntimeError, "没有可用的视觉模型"):
+                    await manager.propose_image_semantic_revision(
+                        "demo",
+                        image,
+                        review_instruction="重新判断",
+                        expected_content_sha256=opened["content_sha256"],
+                        expected_entry_id=opened["entry_id"],
+                    )
+
+                manager = SemanticTaskManager(
+                    root,
+                    context=CategoryVisionContext(
+                        {
+                            "caption": "不会请求",
+                            "tags": ["不会请求"],
+                            "visible_text": "",
+                            "category_fit": "match",
+                            "category_review_reason": "",
+                            "suggested_category": "",
+                        }
+                    ),
+                    config={"vision_provider_id": "fake-vision"},
+                )
+                manager._save_state("demo", {"task_status": "paused"})
+                with self.assertRaisesRegex(RuntimeError, "暂停或中断"):
+                    await manager.propose_image_semantic_revision(
+                        "demo",
+                        image,
+                        review_instruction="不应请求",
+                        expected_content_sha256=opened["content_sha256"],
+                        expected_entry_id=opened["entry_id"],
+                    )
+
+        asyncio.run(run())
+
     def test_manual_semantic_persists_fixed_tag_and_restores_only_explicitly(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -2217,6 +2384,182 @@ class SemanticMvpTest(unittest.TestCase):
             self.assertEqual(second_detail["caption"], "原自动描述")
             self.assertEqual(second_detail["embedding_status"], "done")
             self.assertFalse(second_detail["manual_modified"])
+
+    def test_manual_category_move_updates_only_current_path_and_fixed_tag(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            foo_dir = root / "memes" / "foo"
+            bar_dir = root / "memes" / "bar"
+            other_dir = root / "memes" / "other"
+            foo_dir.mkdir(parents=True)
+            bar_dir.mkdir(parents=True)
+            other_dir.mkdir(parents=True)
+            source = foo_dir / "one.png"
+            duplicate = other_dir / "copy.png"
+            source.write_bytes(b"same-move-content")
+            duplicate.write_bytes(b"same-move-content")
+            metadata = reconcile_metadata(root)
+            for item in metadata["images"].values():
+                is_source = item["relative_path"].endswith("one.png")
+                item.update(
+                    {
+                        "caption": "只属于当前路径的描述"
+                        if is_source
+                        else "另一条重复图片描述",
+                        "tags": ["当前路径标签"] if is_source else ["其他标签"],
+                        "caption_status": "done",
+                        "embedding_status": "done",
+                    }
+                )
+                mark_category_reviewed(item)
+            save_metadata(root, metadata)
+            opened = get_image_semantic_detail(root, source)
+            save_manual_image_semantic(
+                root,
+                source,
+                caption="人工保留的图片含义",
+                tags=["人工标签"],
+                visible_text="人工文字",
+                expected_content_sha256=opened["content_sha256"],
+                expected_entry_id=opened["entry_id"],
+            )
+            opened = get_image_semantic_detail(root, source)
+
+            moved = move_image_to_category(
+                root,
+                source,
+                "bar",
+                expected_content_sha256=opened["content_sha256"],
+                expected_entry_id=opened["entry_id"],
+            )
+
+            moved_path = bar_dir / "one.png"
+            self.assertFalse(source.exists())
+            self.assertTrue(moved_path.is_file())
+            self.assertEqual(moved["source_category"], "foo")
+            detail = moved["semantic"]
+            self.assertEqual(detail["category"], "bar")
+            self.assertEqual(detail["tags"], ["category:bar", "人工标签"])
+            self.assertEqual(detail["caption"], "人工保留的图片含义")
+            self.assertEqual(detail["visible_text"], "人工文字")
+            self.assertTrue(detail["manual_modified"])
+            self.assertEqual(detail["category_review_status"], "manual_confirmed")
+            self.assertFalse(detail["can_confirm_category"])
+            self.assertEqual(detail["embedding_status"], "pending")
+
+            other = get_image_semantic_detail(root, duplicate)
+            self.assertEqual(other["category"], "other")
+            self.assertEqual(other["caption"], "另一条重复图片描述")
+            self.assertEqual(other["embedding_status"], "done")
+            self.assertFalse(other["manual_modified"])
+            self.assertEqual(other["same_content_paths"], ["memes/bar/one.png"])
+
+    def test_manual_category_move_rejects_collision_and_paused_task(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                foo_dir = pack / "memes" / "foo"
+                bar_dir = pack / "memes" / "bar"
+                foo_dir.mkdir(parents=True)
+                bar_dir.mkdir(parents=True)
+                source = foo_dir / "one.png"
+                source.write_bytes(b"move-source")
+                (bar_dir / "one.png").write_bytes(b"move-target")
+                reconcile_metadata(pack)
+                opened = get_image_semantic_detail(pack, source)
+                with self.assertRaisesRegex(FileExistsError, "同名图片"):
+                    move_image_to_category(
+                        pack,
+                        source,
+                        "bar",
+                        expected_content_sha256=opened["content_sha256"],
+                        expected_entry_id=opened["entry_id"],
+                    )
+                self.assertTrue(source.is_file())
+
+                (bar_dir / "one.png").unlink()
+                manager = SemanticTaskManager(root)
+                manager._save_state("demo", {"task_status": "paused"})
+                with self.assertRaisesRegex(RuntimeError, "暂停或中断"):
+                    await manager.move_image_category(
+                        "demo",
+                        source,
+                        "bar",
+                        expected_content_sha256=opened["content_sha256"],
+                        expected_entry_id=opened["entry_id"],
+                    )
+                self.assertTrue(source.is_file())
+
+        asyncio.run(run())
+
+    def test_automatic_category_move_waits_for_new_category_caption(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            foo_dir = root / "memes" / "foo"
+            bar_dir = root / "memes" / "bar"
+            foo_dir.mkdir(parents=True)
+            bar_dir.mkdir(parents=True)
+            source = foo_dir / "one.png"
+            source.write_bytes(b"automatic-move")
+            metadata = reconcile_metadata(root)
+            item = next(iter(metadata["images"].values()))
+            item.update(
+                {
+                    "caption": "按旧分类生成的描述",
+                    "tags": ["旧分类语义"],
+                    "caption_status": "done",
+                    "embedding_status": "done",
+                }
+            )
+            mark_category_reviewed(item)
+            save_metadata(root, metadata)
+            opened = get_image_semantic_detail(root, source)
+
+            moved = move_image_to_category(
+                root,
+                source,
+                "bar",
+                expected_content_sha256=opened["content_sha256"],
+                expected_entry_id=opened["entry_id"],
+            )["semantic"]
+
+            self.assertFalse(moved["manual_modified"])
+            self.assertEqual(moved["caption_status"], "pending")
+            self.assertEqual(moved["embedding_status"], "pending")
+            self.assertEqual(moved["category_review_status"], "manual_confirmed")
+            self.assertEqual(moved["tags"][0], "category:bar")
+
+    def test_manual_category_move_rolls_file_back_when_metadata_write_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            foo_dir = root / "memes" / "foo"
+            bar_dir = root / "memes" / "bar"
+            foo_dir.mkdir(parents=True)
+            bar_dir.mkdir(parents=True)
+            source = foo_dir / "one.png"
+            target = bar_dir / "one.png"
+            source.write_bytes(b"rollback-move")
+            save_metadata(root, reconcile_metadata(root))
+            opened = get_image_semantic_detail(root, source)
+            before = load_metadata(root)
+
+            with patch(
+                "backend.semantic_storage.save_metadata",
+                side_effect=OSError("simulated metadata failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "simulated metadata failure"):
+                    move_image_to_category(
+                        root,
+                        source,
+                        "bar",
+                        expected_content_sha256=opened["content_sha256"],
+                        expected_entry_id=opened["entry_id"],
+                    )
+
+            self.assertTrue(source.is_file())
+            self.assertFalse(target.exists())
+            self.assertEqual(load_metadata(root), before)
 
     def test_stale_image_edit_is_rejected_after_move_delete_or_content_change(self):
         def create_image(root: Path, content: bytes) -> Path:

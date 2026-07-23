@@ -25,6 +25,7 @@ from .semantic_models import (
     SemanticImage,
     category_analysis_is_current,
     ensure_category_tag,
+    is_category_tag,
     text_hash,
     utc_now,
 )
@@ -34,12 +35,14 @@ from .semantic_storage import (
     get_image_semantic_detail,
     load_category_descriptions,
     load_metadata,
+    move_image_to_category,
     reconcile_metadata,
     restore_image_auto_semantic,
     safe_relative_path,
     save_manual_image_semantic,
     save_metadata,
     set_image_embedding_failure,
+    validate_image_edit_snapshot,
 )
 
 
@@ -309,6 +312,104 @@ class SemanticTaskManager:
             return restore_image_auto_semantic(
                 self._pack_dir(pack_id),
                 image_path,
+                expected_content_sha256=expected_content_sha256,
+                expected_entry_id=expected_entry_id,
+            )
+
+    async def propose_image_semantic_revision(
+        self,
+        pack_id: str,
+        image_path: Path | str,
+        *,
+        review_instruction: str,
+        expected_content_sha256: str = "",
+        expected_entry_id: str = "",
+    ) -> dict[str, Any]:
+        """按人工复审意见调用视觉模型，只返回候选内容而不写入语义。"""
+        instruction = str(review_instruction or "").strip()
+        if not instruction:
+            raise ValueError("请先填写人工复审意见")
+        if len(instruction) > 2000:
+            raise ValueError("人工复审意见不能超过 2000 个字符")
+
+        pack_id = self._validate_pack_id(pack_id)
+        pack_dir = self._pack_dir(pack_id)
+        async with self._lock(pack_id):
+            self.assert_pack_mutation_allowed(pack_id, "调用视觉模型重写图片语义")
+            vision = self._vision_provider_details()
+            if not vision["ready"]:
+                raise RuntimeError("当前没有可用的视觉模型，请先在插件配置中选择")
+            snapshot = validate_image_edit_snapshot(
+                pack_dir,
+                image_path,
+                expected_content_sha256=expected_content_sha256,
+                expected_entry_id=expected_entry_id,
+            )
+            item = snapshot["item"]
+            try:
+                proposal = await generate_caption(
+                    self.context,
+                    snapshot["source"],
+                    str(vision["id"]),
+                    category=item.category,
+                    category_description=item.category_description,
+                    available_categories=load_category_descriptions(pack_dir),
+                    review_instruction=instruction,
+                    current_semantic={
+                        "caption": item.caption,
+                        "tags": [tag for tag in item.tags if not is_category_tag(tag)],
+                        "visible_text": item.visible_text,
+                    },
+                )
+            except Exception as exc:
+                self._record_vision_usage(
+                    pack_id,
+                    getattr(exc, "token_usage", None),
+                )
+                raise
+            self._record_vision_usage(pack_id, proposal.get("token_usage"))
+            validate_image_edit_snapshot(
+                pack_dir,
+                image_path,
+                expected_content_sha256=snapshot["content_sha256"],
+                expected_entry_id=snapshot["entry_id"],
+            )
+            return {
+                "caption": str(proposal.get("caption") or "").strip(),
+                "tags": [
+                    tag for tag in proposal.get("tags", []) if not is_category_tag(tag)
+                ],
+                "visible_text": str(proposal.get("visible_text") or "").strip(),
+                "category_fit": str(proposal.get("category_fit") or "uncertain"),
+                "category_review_reason": str(
+                    proposal.get("category_review_reason") or ""
+                ).strip(),
+                "suggested_category": str(
+                    proposal.get("suggested_category") or ""
+                ).strip(),
+                "vision_model": str(proposal.get("vision_model") or vision["id"]),
+                "vision_requests": int(
+                    (proposal.get("token_usage") or {}).get("calls", 1) or 1
+                ),
+            }
+
+    async def move_image_category(
+        self,
+        pack_id: str,
+        image_path: Path | str,
+        target_category: str,
+        *,
+        expected_content_sha256: str = "",
+        expected_entry_id: str = "",
+    ) -> dict[str, Any]:
+        """在图包锁内只移动当前路径，并原子迁移该路径的语义记录。"""
+        pack_id = self._validate_pack_id(pack_id)
+        async with self._lock(pack_id):
+            self.assert_pack_mutation_allowed(pack_id, "移动图片分类")
+            return move_image_to_category(
+                self._pack_dir(pack_id),
+                image_path,
+                target_category,
                 expected_content_sha256=expected_content_sha256,
                 expected_entry_id=expected_entry_id,
             )

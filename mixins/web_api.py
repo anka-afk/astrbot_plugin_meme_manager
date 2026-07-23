@@ -223,6 +223,18 @@ class WebAPIMixin:
             "人工确认图片当前分类",
         )
         self._register_webui_api(
+            "semantic/propose_image_revision",
+            self._api_semantic_propose_image_revision,
+            ["POST"],
+            "按人工复审意见生成单张图片语义候选",
+        )
+        self._register_webui_api(
+            "semantic/move_image",
+            self._api_semantic_move_image,
+            ["POST"],
+            "安全移动单张图片到其他分类",
+        )
+        self._register_webui_api(
             "semantic/save_image",
             self._api_semantic_save_image,
             ["POST"],
@@ -1554,6 +1566,87 @@ class WebAPIMixin:
 
     async def _api_semantic_save_image_and_vector(self):
         return await self._api_semantic_save_image_impl(update_vector=True)
+
+    async def _api_semantic_propose_image_revision(self):
+        try:
+            data = await request.get_json() or {}
+            (
+                pack_id,
+                category,
+                filename,
+                image_path,
+            ) = await self._semantic_image_edit_request(data)
+            proposal = await self.semantic_task_manager.propose_image_semantic_revision(
+                pack_id,
+                image_path,
+                review_instruction=str(data.get("review_instruction") or ""),
+                expected_content_sha256=str(data.get("expected_content_sha256") or ""),
+                expected_entry_id=str(data.get("expected_entry_id") or ""),
+            )
+            return jsonify(
+                {
+                    "message": "视觉模型已生成候选内容；检查后请点击保存，当前语义尚未改变",
+                    "pack_id": pack_id,
+                    "category": category,
+                    "filename": filename,
+                    "proposal": proposal,
+                }
+            ), 200
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
+        except RuntimeError as exc:
+            status = 503 if "没有可用的视觉模型" in str(exc) else 409
+            return jsonify({"message": str(exc)}), status
+        except Exception as exc:
+            logger.error("按人工复审意见生成图片语义失败: %s", exc, exc_info=True)
+            return jsonify({"message": f"视觉模型生成失败：{str(exc)[:300]}"}), 502
+
+    async def _api_semantic_move_image(self):
+        try:
+            data = await request.get_json() or {}
+            (
+                pack_id,
+                _category,
+                _filename,
+                image_path,
+            ) = await self._semantic_image_edit_request(data)
+            result = await self.semantic_task_manager.move_image_category(
+                pack_id,
+                image_path,
+                str(data.get("target_category") or ""),
+                expected_content_sha256=str(data.get("expected_content_sha256") or ""),
+                expected_entry_id=str(data.get("expected_entry_id") or ""),
+            )
+            needs_caption = (
+                result.get("semantic", {}).get("caption_status") == "pending"
+            )
+            return jsonify(
+                {
+                    "message": (
+                        f"已把当前图片移动到分类 {result['target_category']}；"
+                        + (
+                            "固定分类标签已更新，自动描述需要按新分类重新生成，向量等待更新"
+                            if needs_caption
+                            else "固定分类标签已更新，向量等待更新"
+                        )
+                    ),
+                    "pack_id": pack_id,
+                    **result,
+                }
+            ), 200
+        except FileExistsError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("移动单张图片分类失败: %s", exc, exc_info=True)
+            return jsonify({"message": "移动图片分类失败"}), 500
 
     async def _api_semantic_save_image_impl(self, *, update_vector: bool):
         try:

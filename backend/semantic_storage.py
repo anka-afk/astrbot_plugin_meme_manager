@@ -552,7 +552,7 @@ def get_image_semantic_detail(
         "reclassified_at": str(item.get("reclassified_at") or ""),
         "can_confirm_category": bool(
             item.get("caption_status") == "done"
-            and item.get("category_review_status") != "manual_confirmed"
+            and item.get("category_review_status") == "needs_review"
         ),
         "can_edit_semantic": True,
         "manual_override": manual_modified,
@@ -635,6 +635,30 @@ def _assert_image_snapshot_unchanged(
     )
     if current_digest != expected_digest or current_entry_id != expected_entry_id:
         raise RuntimeError("图片位置或内容已发生变化，请重新打开后再编辑")
+
+
+def validate_image_edit_snapshot(
+    pack_dir: Path | str,
+    image_path: Path | str,
+    *,
+    expected_content_sha256: str = "",
+    expected_entry_id: str = "",
+) -> dict[str, Any]:
+    """校验单图编辑快照，并返回模型调用所需的当前只读上下文。"""
+    root, source, digest, entry_id, _metadata, raw_item = _resolve_image_edit_snapshot(
+        pack_dir,
+        image_path,
+        expected_content_sha256=expected_content_sha256,
+        expected_entry_id=expected_entry_id,
+    )
+    item = SemanticImage.from_dict(raw_item)
+    return {
+        "root": root,
+        "source": source,
+        "content_sha256": digest,
+        "entry_id": entry_id,
+        "item": item,
+    }
 
 
 def save_manual_image_semantic(
@@ -781,6 +805,108 @@ def restore_image_auto_semantic(
     metadata["last_manual_restore_at"] = item.updated_at
     save_metadata(root, metadata)
     return get_image_semantic_detail(root, source)
+
+
+def move_image_to_category(
+    pack_dir: Path | str,
+    image_path: Path | str,
+    target_category: str,
+    *,
+    expected_content_sha256: str = "",
+    expected_entry_id: str = "",
+) -> dict[str, Any]:
+    """把当前路径的单张图片移动到已有分类，并同步迁移其语义记录。"""
+    normalized_target = str(target_category or "").strip()
+    if not _is_safe_category_key(normalized_target):
+        raise ValueError("目标分类无效")
+    root, source, digest, entry_id, metadata, raw_item = _resolve_image_edit_snapshot(
+        pack_dir,
+        image_path,
+        expected_content_sha256=expected_content_sha256,
+        expected_entry_id=expected_entry_id,
+    )
+    source_category = source.parent.name
+    if normalized_target == source_category:
+        raise ValueError("图片已经位于所选分类")
+
+    memes_root = (root / "memes").resolve()
+    requested_target_dir = memes_root / normalized_target
+    if requested_target_dir.is_symlink():
+        raise ValueError("不允许把图片移动到符号链接分类")
+    target_dir = requested_target_dir.resolve()
+    try:
+        target_dir.relative_to(memes_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("目标分类无效") from exc
+    if not target_dir.is_dir():
+        raise FileNotFoundError("目标分类不存在，请刷新页面后重试")
+
+    target = target_dir / source.name
+    if target.is_symlink() or target.exists():
+        raise FileExistsError("目标分类中已有同名图片，请先处理重名文件")
+
+    moved_at = utc_now()
+    updated_metadata = copy.deepcopy(metadata)
+    updated_images = updated_metadata.setdefault("images", {})
+    updated_images.pop(entry_id, None)
+    moved_payload = copy.deepcopy(raw_item)
+    moved_payload.update(
+        {
+            "category": normalized_target,
+            "category_description": str(
+                load_category_descriptions(root).get(normalized_target, "")
+            ).strip(),
+            "relative_path": target.relative_to(root).as_posix(),
+        }
+    )
+    for tag_field in ("tags", "auto_tags", "manual_tags"):
+        moved_payload[tag_field] = [
+            tag
+            for tag in normalize_tags(moved_payload.get(tag_field))
+            if not is_category_tag(tag)
+        ]
+    moved_item = SemanticImage.from_dict(moved_payload)
+    moved_item.category_fit = "match"
+    moved_item.category_review_status = "manual_confirmed"
+    moved_item.category_review_reason = ""
+    moved_item.category_review_context_hash = moved_item.category_context_hash
+    moved_item.manual_confirmation_context_hash = moved_item.category_context_hash
+    moved_item.suggested_category = ""
+    keeps_manual_content = bool(
+        moved_item.manual_override or moved_item.provenance in {"manual", "mixed"}
+    )
+    moved_item.caption_status = (
+        "done"
+        if keeps_manual_content and moved_item.caption and moved_item.tags
+        else "pending"
+    )
+    moved_item.embedding_status = "pending"
+    moved_item.text_hash = (
+        text_hash(moved_item.vector_text) if moved_item.caption else ""
+    )
+    moved_item.error = None
+    moved_item.updated_at = moved_at
+    updated_images[moved_item.entry_id] = moved_item.to_dict()
+    updated_metadata["requires_local_index_rebuild"] = True
+    updated_metadata["last_manual_category_move_at"] = moved_at
+
+    _assert_image_snapshot_unchanged(root, source, digest, entry_id)
+    source.rename(target)
+    try:
+        if file_sha256(target) != digest:
+            raise RuntimeError("图片移动后内容校验失败")
+        save_metadata(root, updated_metadata)
+    except Exception:
+        if target.is_file() and not source.exists():
+            target.rename(source)
+        raise
+
+    return {
+        "source_category": source_category,
+        "target_category": normalized_target,
+        "filename": target.name,
+        "semantic": get_image_semantic_detail(root, target),
+    }
 
 
 def set_image_embedding_failure(
@@ -1400,16 +1526,24 @@ def metadata_items(
         status = str(status).strip().lower()
         predicates = {
             "all": lambda item: True,
-            "pending": lambda item: item.get("caption_status") == "pending"
-            or item.get("embedding_status") == "pending",
-            "running": lambda item: item.get("caption_status") == "running"
-            or item.get("embedding_status") == "running",
-            "failed": lambda item: item.get("caption_status") == "failed"
-            or item.get("embedding_status") == "failed",
+            "pending": lambda item: (
+                item.get("caption_status") == "pending"
+                or item.get("embedding_status") == "pending"
+            ),
+            "running": lambda item: (
+                item.get("caption_status") == "running"
+                or item.get("embedding_status") == "running"
+            ),
+            "failed": lambda item: (
+                item.get("caption_status") == "failed"
+                or item.get("embedding_status") == "failed"
+            ),
             "caption_failed": lambda item: item.get("caption_status") == "failed",
             "embedding_failed": lambda item: item.get("embedding_status") == "failed",
-            "completed": lambda item: item.get("caption_status") == "done"
-            and item.get("embedding_status") == "done",
+            "completed": lambda item: (
+                item.get("caption_status") == "done"
+                and item.get("embedding_status") == "done"
+            ),
             "caption_done": lambda item: item.get("caption_status") == "done",
             "embedding_done": lambda item: item.get("embedding_status") == "done",
             "reclassified": lambda item: bool(item.get("reclassification_status")),

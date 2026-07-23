@@ -205,6 +205,12 @@ async function initApp() {
   const imagePreviewCategoryConfirmBtn = document.getElementById(
     "image-preview-category-confirm-btn",
   );
+  const imagePreviewReviewActions = document.getElementById(
+    "image-preview-review-actions",
+  );
+  const imagePreviewReviewEditBtn = document.getElementById(
+    "image-preview-review-edit-btn",
+  );
   const imagePreviewSourceState = document.getElementById(
     "image-preview-source-state",
   );
@@ -226,6 +232,21 @@ async function initApp() {
   );
   const imagePreviewFixedTags = document.getElementById(
     "image-preview-fixed-tags",
+  );
+  const imagePreviewReviewInstruction = document.getElementById(
+    "image-preview-review-instruction",
+  );
+  const imagePreviewReviewRewriteBtn = document.getElementById(
+    "image-preview-review-rewrite-btn",
+  );
+  const imagePreviewReviewRewriteStatus = document.getElementById(
+    "image-preview-review-rewrite-status",
+  );
+  const imagePreviewTargetCategory = document.getElementById(
+    "image-preview-target-category",
+  );
+  const imagePreviewMoveCategoryBtn = document.getElementById(
+    "image-preview-move-category-btn",
   );
   const imagePreviewCaptionInput = document.getElementById(
     "image-preview-caption-input",
@@ -953,6 +974,10 @@ async function initApp() {
     const reviewStatus = String(
       semantic?.category_review_status || "unchecked",
     );
+    const canEdit = !loading && !error && Boolean(semantic?.can_edit_semantic);
+    const needsHumanReview = ["needs_review", "manual_rejected"].includes(
+      reviewStatus,
+    );
     const showCategoryReview =
       loading || (!error && normalizedStatus !== "none");
     imagePreviewCategoryReview?.classList.toggle(
@@ -1003,8 +1028,17 @@ async function initApp() {
     }
     imagePreviewCategoryConfirmBtn?.classList.toggle(
       "hidden",
-      loading || error || !semantic?.can_confirm_category,
+      !canEdit || !semantic?.can_confirm_category,
     );
+    imagePreviewReviewEditBtn?.classList.toggle(
+      "hidden",
+      !canEdit || !needsHumanReview,
+    );
+    const showReviewActions = Boolean(
+      canEdit &&
+        (semantic?.can_confirm_category || needsHumanReview),
+    );
+    imagePreviewReviewActions?.classList.toggle("hidden", !showReviewActions);
     const manualModified = Boolean(semantic?.manual_modified);
     if (imagePreviewSourceState) {
       imagePreviewSourceState.textContent = manualModified
@@ -1051,9 +1085,17 @@ async function initApp() {
         loading || duplicatePaths.length === 0,
       );
     }
-    const canEdit = !loading && !error && Boolean(semantic?.can_edit_semantic);
-    imagePreviewSemanticActions?.classList.toggle("hidden", !canEdit);
-    imagePreviewEditBtn?.classList.toggle("hidden", !canEdit);
+    const showBottomActions = Boolean(
+      canEdit && (!needsHumanReview || semantic?.can_restore_auto),
+    );
+    imagePreviewSemanticActions?.classList.toggle(
+      "hidden",
+      !showBottomActions,
+    );
+    imagePreviewEditBtn?.classList.toggle(
+      "hidden",
+      !canEdit || needsHumanReview,
+    );
     imagePreviewRestoreAutoBtn?.classList.toggle(
       "hidden",
       !canEdit || !semantic?.can_restore_auto,
@@ -1157,6 +1199,39 @@ async function initApp() {
         imagePreviewFixedTags.appendChild(chip);
       });
     }
+    if (imagePreviewReviewInstruction) {
+      imagePreviewReviewInstruction.value = "";
+    }
+    if (imagePreviewReviewRewriteStatus) {
+      imagePreviewReviewRewriteStatus.textContent =
+        "模型只会生成候选内容，不会直接覆盖；检查后仍需点击保存。";
+      imagePreviewReviewRewriteStatus.classList.remove("has-proposal");
+    }
+    if (imagePreviewTargetCategory) {
+      imagePreviewTargetCategory.replaceChildren();
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "选择要移动到的分类";
+      imagePreviewTargetCategory.appendChild(placeholder);
+      const currentCategory = String(imagePreviewState?.category || "");
+      const categories = Array.from(
+        new Set([
+          ...Object.keys(latestEmojiData || {}),
+          ...Object.keys(latestTagDescriptions || {}),
+        ]),
+      )
+        .filter((category) => category && category !== currentCategory)
+        .sort((left, right) => left.localeCompare(right, "zh-CN"));
+      categories.forEach((category) => {
+        const option = document.createElement("option");
+        option.value = category;
+        option.textContent = category;
+        imagePreviewTargetCategory.appendChild(option);
+      });
+      if (imagePreviewMoveCategoryBtn) {
+        imagePreviewMoveCategoryBtn.disabled = categories.length === 0;
+      }
+    }
     const duplicateCount = Number(semantic.same_content_count || 0);
     if (imagePreviewEditScope) {
       imagePreviewEditScope.textContent = duplicateCount
@@ -1177,22 +1252,34 @@ async function initApp() {
     );
   }
 
-  function imageSemanticEditPayload() {
+  function imageSemanticSnapshotPayload() {
     const state = imagePreviewState;
     const semantic = state?.semantic || {};
-    if (!state || String(activeManagePackId || "") !== String(state.packId || "")) {
+    if (
+      !state ||
+      String(activeManagePackId || "") !== String(state.packId || "")
+    ) {
       throw new Error("当前图包已经切换，请重新打开图片后再编辑。");
     }
-    const caption = String(imagePreviewCaptionInput?.value || "").trim();
-    if (!caption) {
-      throw new Error("图片含义不能为空。");
+    if (!semantic.content_sha256 || !semantic.entry_id) {
+      throw new Error("图片编辑快照无效，请重新打开图片后再操作。");
     }
     return {
       expected_pack_id: state.packId,
       category: state.category,
       filename: state.emoji,
-      expected_content_sha256: String(semantic.content_sha256 || ""),
-      expected_entry_id: String(semantic.entry_id || ""),
+      expected_content_sha256: String(semantic.content_sha256),
+      expected_entry_id: String(semantic.entry_id),
+    };
+  }
+
+  function imageSemanticEditPayload() {
+    const caption = String(imagePreviewCaptionInput?.value || "").trim();
+    if (!caption) {
+      throw new Error("图片含义不能为空。");
+    }
+    return {
+      ...imageSemanticSnapshotPayload(),
       caption,
       tags: parseManualSemanticTags(imagePreviewTagsInput?.value),
       visible_text: String(imagePreviewVisibleTextInput?.value || "").trim(),
@@ -1200,21 +1287,187 @@ async function initApp() {
     };
   }
 
-  function setImageSemanticSaving(saving, activeButton = null) {
+  function setImageSemanticSaving(
+    saving,
+    activeButton = null,
+    busyLabel = "保存中...",
+  ) {
     [
       imagePreviewEditCancelBtn,
       imagePreviewSaveBtn,
       imagePreviewSaveVectorBtn,
       imagePreviewEditBtn,
+      imagePreviewReviewEditBtn,
       imagePreviewRestoreAutoBtn,
       imagePreviewCategoryConfirmBtn,
+      imagePreviewReviewRewriteBtn,
+      imagePreviewMoveCategoryBtn,
     ].forEach((button) => {
       if (button) button.disabled = saving;
     });
+    [
+      imagePreviewCaptionInput,
+      imagePreviewTagsInput,
+      imagePreviewVisibleTextInput,
+      imagePreviewCategoryDecision,
+      imagePreviewReviewInstruction,
+      imagePreviewTargetCategory,
+    ].forEach((field) => {
+      if (field) field.disabled = saving;
+    });
+    if (!saving && imagePreviewMoveCategoryBtn) {
+      imagePreviewMoveCategoryBtn.disabled =
+        !imagePreviewTargetCategory ||
+        imagePreviewTargetCategory.options.length <= 1;
+    }
     if (saving && activeButton) {
-      setButtonBusy(activeButton, "保存中...");
+      setButtonBusy(activeButton, busyLabel);
     } else if (!saving && activeButton) {
       restoreButton(activeButton);
+    }
+  }
+
+  async function requestImageSemanticRevision() {
+    const previewState = imagePreviewState;
+    const reviewInstruction = String(
+      imagePreviewReviewInstruction?.value || "",
+    ).trim();
+    if (!reviewInstruction) {
+      showToast(
+        "请先写明哪里判断错了，以及希望模型怎样修改。",
+        "warning",
+        "缺少复审意见",
+      );
+      imagePreviewReviewInstruction?.focus();
+      return;
+    }
+    try {
+      const payload = {
+        ...imageSemanticSnapshotPayload(),
+        review_instruction: reviewInstruction,
+      };
+      setImageSemanticSaving(
+        true,
+        imagePreviewReviewRewriteBtn,
+        "视觉模型分析中...",
+      );
+      const result = await apiPost("semantic/propose_image_revision", payload);
+      if (imagePreviewState !== previewState) return;
+      const proposal = result?.proposal || {};
+      if (imagePreviewCaptionInput) {
+        imagePreviewCaptionInput.value = String(proposal.caption || "");
+      }
+      if (imagePreviewTagsInput) {
+        imagePreviewTagsInput.value = Array.isArray(proposal.tags)
+          ? proposal.tags.join("，")
+          : "";
+      }
+      if (imagePreviewVisibleTextInput) {
+        imagePreviewVisibleTextInput.value = String(
+          proposal.visible_text || "",
+        );
+      }
+      const categoryFit = String(proposal.category_fit || "uncertain");
+      if (imagePreviewCategoryDecision) {
+        imagePreviewCategoryDecision.value =
+          categoryFit === "match"
+            ? "match"
+            : categoryFit === "conflict"
+              ? "mismatch"
+              : "keep";
+      }
+      const suggestedCategory = String(
+        proposal.suggested_category || "",
+      ).trim();
+      if (
+        suggestedCategory &&
+        imagePreviewTargetCategory &&
+        Array.from(imagePreviewTargetCategory.options).some(
+          (option) => option.value === suggestedCategory,
+        )
+      ) {
+        imagePreviewTargetCategory.value = suggestedCategory;
+      }
+      if (imagePreviewReviewRewriteStatus) {
+        const reviewReason = String(
+          proposal.category_review_reason || "",
+        ).trim();
+        imagePreviewReviewRewriteStatus.textContent = [
+          "视觉模型候选已填入，尚未保存。",
+          reviewReason ? `分类判断：${reviewReason}` : "",
+          suggestedCategory ? `建议移动到：${suggestedCategory}` : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        imagePreviewReviewRewriteStatus.classList.add("has-proposal");
+      }
+      showToast(
+        result?.message || "视觉模型候选已填入，请检查后再保存。",
+        "success",
+        "候选已生成",
+        4800,
+      );
+    } catch (error) {
+      showToast(error?.message || String(error), "error", "重写失败", 4800);
+    } finally {
+      setImageSemanticSaving(false, imagePreviewReviewRewriteBtn);
+    }
+  }
+
+  async function moveCurrentImageCategory() {
+    const previewState = imagePreviewState;
+    const targetCategory = String(
+      imagePreviewTargetCategory?.value || "",
+    ).trim();
+    if (!previewState || !targetCategory) {
+      showToast("请先选择目标分类。", "warning", "缺少目标分类");
+      return;
+    }
+    const duplicateCount = Number(
+      previewState.semantic?.same_content_count || 0,
+    );
+    const confirmed = await showConfirm({
+      title: "确认移动当前图片",
+      description:
+        `将只移动 ${previewState.category}/${previewState.emoji} 到分类「${targetCategory}」。` +
+        `${duplicateCount ? `另外 ${duplicateCount} 张同内容图片不会改变。` : ""}` +
+        "当前表单中尚未保存的修改不会自动写入；移动后请重新检查并保存语义。",
+      confirmLabel: "移动当前图片",
+    });
+    if (!confirmed) return;
+
+    try {
+      const payload = {
+        ...imageSemanticSnapshotPayload(),
+        target_category: targetCategory,
+      };
+      setImageSemanticSaving(
+        true,
+        imagePreviewMoveCategoryBtn,
+        "移动中...",
+      );
+      const result = await apiPost("semantic/move_image", payload);
+      if (imagePreviewState === previewState) {
+        previewState.category = String(result?.target_category || targetCategory);
+        previewState.emoji = String(result?.filename || previewState.emoji);
+        previewState.semantic = result?.semantic || {};
+        if (imagePreviewImg) {
+          imagePreviewImg.alt = `表情包预览：${previewState.emoji}`;
+        }
+        renderImageSemantic(previewState.semantic);
+        setImageSemanticEditing(true);
+      }
+      await fetchEmojis();
+      showToast(
+        result?.message || "图片分类已移动，向量等待更新。",
+        "success",
+        "移动成功",
+        4800,
+      );
+    } catch (error) {
+      showToast(error?.message || String(error), "error", "移动失败", 4800);
+    } finally {
+      setImageSemanticSaving(false, imagePreviewMoveCategoryBtn);
     }
   }
 
@@ -5064,6 +5317,9 @@ async function initApp() {
   imagePreviewEditBtn?.addEventListener("click", () => {
     setImageSemanticEditing(true);
   });
+  imagePreviewReviewEditBtn?.addEventListener("click", () => {
+    setImageSemanticEditing(true);
+  });
   imagePreviewEditCancelBtn?.addEventListener("click", () => {
     setImageSemanticEditing(false);
   });
@@ -5073,6 +5329,12 @@ async function initApp() {
   });
   imagePreviewSaveVectorBtn?.addEventListener("click", () => {
     void saveCurrentImageSemantic({ updateVector: true });
+  });
+  imagePreviewReviewRewriteBtn?.addEventListener("click", () => {
+    void requestImageSemanticRevision();
+  });
+  imagePreviewMoveCategoryBtn?.addEventListener("click", () => {
+    void moveCurrentImageCategory();
   });
   imagePreviewRestoreAutoBtn?.addEventListener("click", () => {
     void restoreCurrentImageAutoSemantic();
