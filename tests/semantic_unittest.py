@@ -1792,7 +1792,33 @@ class SemanticMvpTest(unittest.TestCase):
             self.assertEqual(item["tags"][0], "category:foo")
             save_metadata(root, metadata)
             overview = get_category_review_overview(root)
+            self.assertTrue(overview["available"])
             self.assertEqual(overview["statistics"]["unchecked"], 1)
+
+    def test_unsemanticized_pack_has_no_category_review_entries(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            image_dir = root / "memes" / "foo"
+            image_dir.mkdir(parents=True)
+            (image_dir / "one.png").write_bytes(b"legacy-image")
+            (root / "semantic_metadata.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "pack_id": "legacy",
+                        "images": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            overview = get_category_review_overview(root)
+
+            self.assertFalse(overview["available"])
+            self.assertEqual(overview["semantic_status"], "none")
+            self.assertEqual(overview["items"], [])
+            self.assertEqual(overview["statistics"]["total"], 0)
+            self.assertEqual(overview["statistics"]["unchecked"], 0)
 
     def test_manual_confirmation_is_saved_and_homepage_assets_expose_review_controls(
         self,
@@ -1826,9 +1852,13 @@ class SemanticMvpTest(unittest.TestCase):
         semantic_script = Path("pages/semantic/script.js").read_text(encoding="utf-8")
         self.assertIn('data-review-filter="needs_review"', page)
         self.assertIn('data-review-filter="reclassified"', page)
+        self.assertIn('id="semantic-review-toolbar"', page)
+        self.assertIn('class="semantic-review-toolbar hidden"', page)
         self.assertIn("image-preview-category-confirm-btn", page)
         self.assertIn("image-preview-reclassification", page)
         self.assertIn("semantic/confirm_category", script)
+        self.assertIn("semanticReviewAvailable", script)
+        self.assertIn("if (semanticReviewAvailable && review)", script)
         self.assertIn("reclassification_status", script)
         self.assertIn('value="reclassified"', semantic_page)
         self.assertIn("自动重分类：", semantic_script)

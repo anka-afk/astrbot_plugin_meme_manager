@@ -115,6 +115,7 @@ async function initApp() {
   let latestTagDescriptions = {};
   let semanticReviewByPath = new Map();
   let semanticReviewStatistics = {};
+  let semanticReviewAvailable = false;
   let activeSemanticReviewFilter = "all";
   let dangerConfirmResolver = null;
   let dangerConfirmStage = "ack";
@@ -189,6 +190,9 @@ async function initApp() {
   const imagePreviewCategoryTag = document.getElementById(
     "image-preview-category-tag",
   );
+  const imagePreviewCategoryReview = document.getElementById(
+    "image-preview-category-review",
+  );
   const imagePreviewCategoryReviewState = document.getElementById(
     "image-preview-category-review-state",
   );
@@ -202,6 +206,9 @@ async function initApp() {
     "image-preview-category-confirm-btn",
   );
   const semanticReviewStats = document.getElementById("semantic-review-stats");
+  const semanticReviewToolbar = document.getElementById(
+    "semantic-review-toolbar",
+  );
   const moveTargetModalRoot = document.getElementById("move-target-modal");
   const moveTargetModalTitle = document.getElementById(
     "move-target-modal-title",
@@ -342,6 +349,7 @@ async function initApp() {
     });
 
     if (!pack || !packSemanticStatusText) {
+      applySemanticReviewData({ available: false });
       if (packSemanticStatusText) {
         packSemanticStatusText.textContent = "未语义化";
       }
@@ -378,6 +386,7 @@ async function initApp() {
       imageCount > 0
         ? "当前图包还没有可用的图片语义描述。"
         : "空图包无需语义化。";
+    applySemanticReviewData({ available: false });
   }
 
   async function refreshManagePackSummaries() {
@@ -542,6 +551,7 @@ async function initApp() {
     setButtonBusy(switchManagePackBtn, "切换中...");
     const previousActivePackId = activeManagePackId;
     activeManagePackId = targetPackId;
+    applySemanticReviewData({ available: false });
     updateManagePackSemanticAppearance(targetPackId);
     try {
       syncManagedPackQuery(targetPackId);
@@ -661,14 +671,24 @@ async function initApp() {
   }
 
   function applySemanticReviewData(payload) {
-    const items = Array.isArray(payload?.items) ? payload.items : [];
+    semanticReviewAvailable = Boolean(payload?.available);
+    const items =
+      semanticReviewAvailable && Array.isArray(payload?.items)
+        ? payload.items
+        : [];
     semanticReviewByPath = new Map(
       items.map((item) => [
         semanticReviewKey(item?.category, item?.filename),
         item,
       ]),
     );
-    semanticReviewStatistics = payload?.statistics || {};
+    semanticReviewStatistics = semanticReviewAvailable
+      ? payload?.statistics || {}
+      : {};
+    if (!semanticReviewAvailable) {
+      activeSemanticReviewFilter = "all";
+    }
+    semanticReviewToolbar?.classList.toggle("hidden", !semanticReviewAvailable);
     updateSemanticReviewToolbar();
   }
 
@@ -883,6 +903,12 @@ async function initApp() {
     }
     const reviewStatus = String(
       semantic?.category_review_status || "unchecked",
+    );
+    const showCategoryReview =
+      loading || (!error && normalizedStatus !== "none");
+    imagePreviewCategoryReview?.classList.toggle(
+      "hidden",
+      !showCategoryReview,
     );
     if (imagePreviewCategoryTag) {
       imagePreviewCategoryTag.textContent = loading
@@ -3239,46 +3265,45 @@ async function initApp() {
 
           const review = semanticReviewByPath.get(
             semanticReviewKey(category, emoji),
-          ) || {
-            category_tag: `category:${category}`,
-            category_review_status: "unchecked",
-          };
-          const reviewStatus = String(
-            review.category_review_status || "unchecked",
           );
-          const reclassificationStatus = String(
-            review.reclassification_status || "",
-          );
-          emojiItem.classList.add(`review-${reviewStatus}`);
-          if (reclassificationStatus) {
-            emojiItem.classList.add("review-reclassified");
-          }
-          emojiItem.dataset.categoryReviewStatus = reviewStatus;
+          if (semanticReviewAvailable && review) {
+            const reviewStatus = String(
+              review.category_review_status || "unchecked",
+            );
+            const reclassificationStatus = String(
+              review.reclassification_status || "",
+            );
+            emojiItem.classList.add(`review-${reviewStatus}`);
+            if (reclassificationStatus) {
+              emojiItem.classList.add("review-reclassified");
+            }
+            emojiItem.dataset.categoryReviewStatus = reviewStatus;
 
-          const semanticBadge = document.createElement("span");
-          semanticBadge.className = "emoji-item-semantic-badge";
-          const fixedCategoryTag = String(
-            review.category_tag || `category:${category}`,
-          );
-          semanticBadge.textContent = `${fixedCategoryTag} · ${
-            reclassificationStatus ? "自动重分类 · " : ""
-          }${semanticReviewLabel(reviewStatus)}`;
-          const reviewReason = String(
-            review.category_review_reason || "",
-          ).trim();
-          semanticBadge.title =
-            reclassificationStatus
-              ? `${semanticBadge.textContent}；${String(
-                  review.reclassified_from_category || "原分类",
-                )} → ${String(
-                  review.reclassified_to_category || category,
-                )}；原因：${String(
-                  review.reclassification_reason || reviewReason,
-                )}`
-              : reviewStatus === "needs_review" && reviewReason
-                ? `${semanticBadge.textContent}；原因：${reviewReason}`
-                : semanticBadge.textContent;
-          emojiItem.appendChild(semanticBadge);
+            const semanticBadge = document.createElement("span");
+            semanticBadge.className = "emoji-item-semantic-badge";
+            const fixedCategoryTag = String(
+              review.category_tag || `category:${category}`,
+            );
+            semanticBadge.textContent = `${fixedCategoryTag} · ${
+              reclassificationStatus ? "自动重分类 · " : ""
+            }${semanticReviewLabel(reviewStatus)}`;
+            const reviewReason = String(
+              review.category_review_reason || "",
+            ).trim();
+            semanticBadge.title =
+              reclassificationStatus
+                ? `${semanticBadge.textContent}；${String(
+                    review.reclassified_from_category || "原分类",
+                  )} → ${String(
+                    review.reclassified_to_category || category,
+                  )}；原因：${String(
+                    review.reclassification_reason || reviewReason,
+                  )}`
+                : reviewStatus === "needs_review" && reviewReason
+                  ? `${semanticBadge.textContent}；原因：${reviewReason}`
+                  : semanticBadge.textContent;
+            emojiItem.appendChild(semanticBadge);
+          }
 
           const selectionIndicator = document.createElement("button");
           selectionIndicator.type = "button";

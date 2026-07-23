@@ -1120,6 +1120,27 @@ def metadata_items(
 def get_category_review_overview(pack_dir: Path | str) -> dict[str, Any]:
     """返回主页审核筛选所需的逐文件状态与统计。"""
     root = Path(pack_dir).resolve()
+    empty_statistics = {
+        "auto_match": 0,
+        "needs_review": 0,
+        "manual_confirmed": 0,
+        "unchecked": 0,
+        "total": 0,
+        "reclassified": 0,
+    }
+    semantic_status = str(
+        get_pack_semantic_summary(root).get("semantic_status") or "none"
+    )
+    if semantic_status == "none":
+        # 未开始语义化的普通图包、以及已废弃的旧版空元数据都不属于分类审核
+        # 范围。这里提前返回还能避免为整包图片计算哈希后伪造“尚未检查”。
+        return {
+            "available": False,
+            "semantic_status": "none",
+            "items": [],
+            "statistics": empty_statistics,
+        }
+
     # 主页读取必须保持只读；后台语义任务可能正持有同一份元数据，GET 接口
     # 如果在此 reconcile + save 会用旧快照覆盖刚完成的模型结果。
     metadata = load_metadata(root) if metadata_path(root).is_file() else {"images": {}}
@@ -1181,7 +1202,12 @@ def get_category_review_overview(pack_dir: Path | str) -> dict[str, Any]:
     statistics["reclassified"] = sum(
         1 for item in items if item.get("reclassification_status")
     )
-    return {"items": items, "statistics": statistics}
+    return {
+        "available": bool(items),
+        "semantic_status": semantic_status,
+        "items": items,
+        "statistics": statistics,
+    }
 
 
 def confirm_image_category(
