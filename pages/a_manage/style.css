@@ -1414,7 +1414,7 @@ button:disabled {
   position: fixed;
   top: 20px;
   right: 20px;
-  z-index: 9998;
+  z-index: 10006;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1550,6 +1550,11 @@ button:disabled {
 .image-preview-modal {
   z-index: 10002;
   background: rgba(15, 23, 42, 0.78);
+}
+
+.confirm-modal,
+.danger-modal {
+  z-index: 10005;
 }
 
 .image-preview-stage {
@@ -3206,8 +3211,7 @@ button.danger,
 
 .image-preview-semantic-actions,
 .image-preview-edit-actions,
-.image-preview-review-actions,
-.image-preview-category-move-row {
+.image-preview-review-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -3216,8 +3220,7 @@ button.danger,
 
 .image-preview-semantic-actions button,
 .image-preview-edit-actions button,
-.image-preview-review-actions button,
-.image-preview-category-move-row button {
+.image-preview-review-actions button {
   width: auto;
   min-height: 38px;
   padding: 9px 12px;
@@ -3299,16 +3302,6 @@ button.danger,
 .image-preview-review-rewrite-status.has-proposal {
   color: #166534;
   font-weight: 700;
-}
-
-.image-preview-category-move-row {
-  align-items: stretch;
-  margin-top: 2px;
-}
-
-.image-preview-category-move-row select {
-  flex: 1 1 180px;
-  min-width: 0;
 }
 
 .image-preview-fixed-tags {

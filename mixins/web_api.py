@@ -229,12 +229,6 @@ class WebAPIMixin:
             "按人工复审意见生成单张图片语义候选",
         )
         self._register_webui_api(
-            "semantic/move_image",
-            self._api_semantic_move_image,
-            ["POST"],
-            "安全移动单张图片到其他分类",
-        )
-        self._register_webui_api(
             "semantic/save_image",
             self._api_semantic_save_image,
             ["POST"],
@@ -1603,51 +1597,6 @@ class WebAPIMixin:
             logger.error("按人工复审意见生成图片语义失败: %s", exc, exc_info=True)
             return jsonify({"message": f"视觉模型生成失败：{str(exc)[:300]}"}), 502
 
-    async def _api_semantic_move_image(self):
-        try:
-            data = await request.get_json() or {}
-            (
-                pack_id,
-                _category,
-                _filename,
-                image_path,
-            ) = await self._semantic_image_edit_request(data)
-            result = await self.semantic_task_manager.move_image_category(
-                pack_id,
-                image_path,
-                str(data.get("target_category") or ""),
-                expected_content_sha256=str(data.get("expected_content_sha256") or ""),
-                expected_entry_id=str(data.get("expected_entry_id") or ""),
-            )
-            needs_caption = (
-                result.get("semantic", {}).get("caption_status") == "pending"
-            )
-            return jsonify(
-                {
-                    "message": (
-                        f"已把当前图片移动到分类 {result['target_category']}；"
-                        + (
-                            "固定分类标签已更新，自动描述需要按新分类重新生成，向量等待更新"
-                            if needs_caption
-                            else "固定分类标签已更新，向量等待更新"
-                        )
-                    ),
-                    "pack_id": pack_id,
-                    **result,
-                }
-            ), 200
-        except FileExistsError as exc:
-            return jsonify({"message": str(exc)}), 409
-        except FileNotFoundError as exc:
-            return jsonify({"message": str(exc)}), 404
-        except RuntimeError as exc:
-            return jsonify({"message": str(exc)}), 409
-        except ValueError as exc:
-            return jsonify({"message": str(exc)}), 400
-        except Exception as exc:
-            logger.error("移动单张图片分类失败: %s", exc, exc_info=True)
-            return jsonify({"message": "移动图片分类失败"}), 500
-
     async def _api_semantic_save_image_impl(self, *, update_vector: bool):
         try:
             data = await request.get_json() or {}
@@ -1667,17 +1616,24 @@ class WebAPIMixin:
                 expected_content_sha256=str(data.get("expected_content_sha256") or ""),
                 expected_entry_id=str(data.get("expected_entry_id") or ""),
                 update_vector=update_vector,
+                target_category=str(data.get("target_category") or ""),
             )
             vector_status = str(result.get("vector_update", {}).get("status") or "")
+            moved = bool(result.get("moved"))
             if not update_vector:
                 message = "人工语义已保存，向量等待更新"
             elif vector_status == "done":
-                message = "人工语义已保存，当前图片向量已更新"
+                message = (
+                    "人工语义已保存，分类已移动，当前图片向量已更新"
+                    if moved
+                    else "人工语义已保存，当前图片向量已更新"
+                )
             else:
-                message = str(
+                base_message = str(
                     result.get("vector_update", {}).get("message")
                     or "人工语义已保存，向量等待更新"
                 )
+                message = f"分类已移动；{base_message}" if moved else base_message
             return jsonify(
                 {
                     "message": message,
@@ -1687,6 +1643,8 @@ class WebAPIMixin:
                     **result,
                 }
             ), 200
+        except FileExistsError as exc:
+            return jsonify({"message": str(exc)}), 409
         except FileNotFoundError as exc:
             return jsonify({"message": str(exc)}), 404
         except RuntimeError as exc:

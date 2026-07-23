@@ -245,9 +245,6 @@ async function initApp() {
   const imagePreviewTargetCategory = document.getElementById(
     "image-preview-target-category",
   );
-  const imagePreviewMoveCategoryBtn = document.getElementById(
-    "image-preview-move-category-btn",
-  );
   const imagePreviewCaptionInput = document.getElementById(
     "image-preview-caption-input",
   );
@@ -1211,7 +1208,7 @@ async function initApp() {
       imagePreviewTargetCategory.replaceChildren();
       const placeholder = document.createElement("option");
       placeholder.value = "";
-      placeholder.textContent = "选择要移动到的分类";
+      placeholder.textContent = "保持当前分类";
       imagePreviewTargetCategory.appendChild(placeholder);
       const currentCategory = String(imagePreviewState?.category || "");
       const categories = Array.from(
@@ -1228,9 +1225,7 @@ async function initApp() {
         option.textContent = category;
         imagePreviewTargetCategory.appendChild(option);
       });
-      if (imagePreviewMoveCategoryBtn) {
-        imagePreviewMoveCategoryBtn.disabled = categories.length === 0;
-      }
+      updateImageSemanticMoveChoice();
     }
     const duplicateCount = Number(semantic.same_content_count || 0);
     if (imagePreviewEditScope) {
@@ -1284,7 +1279,27 @@ async function initApp() {
       tags: parseManualSemanticTags(imagePreviewTagsInput?.value),
       visible_text: String(imagePreviewVisibleTextInput?.value || "").trim(),
       category_decision: String(imagePreviewCategoryDecision?.value || "keep"),
+      target_category: String(imagePreviewTargetCategory?.value || "").trim(),
     };
+  }
+
+  function updateImageSemanticMoveChoice() {
+    const targetCategory = String(
+      imagePreviewTargetCategory?.value || "",
+    ).trim();
+    const saving = imagePreviewEditForm?.dataset.saving === "true";
+    if (imagePreviewSaveBtn && !saving) {
+      imagePreviewSaveBtn.disabled = Boolean(targetCategory);
+      imagePreviewSaveBtn.title = targetCategory
+        ? "选择新分类后，需要同时更新该图向量"
+        : "只保存语义，向量等待后续更新";
+    }
+    if (imagePreviewSaveVectorBtn && !saving) {
+      imagePreviewSaveVectorBtn.disabled = false;
+      imagePreviewSaveVectorBtn.textContent = targetCategory
+        ? "保存、移动并更新该图向量"
+        : "保存并更新该图向量";
+    }
   }
 
   function setImageSemanticSaving(
@@ -1292,6 +1307,9 @@ async function initApp() {
     activeButton = null,
     busyLabel = "保存中...",
   ) {
+    if (imagePreviewEditForm) {
+      imagePreviewEditForm.dataset.saving = saving ? "true" : "false";
+    }
     [
       imagePreviewEditCancelBtn,
       imagePreviewSaveBtn,
@@ -1301,7 +1319,6 @@ async function initApp() {
       imagePreviewRestoreAutoBtn,
       imagePreviewCategoryConfirmBtn,
       imagePreviewReviewRewriteBtn,
-      imagePreviewMoveCategoryBtn,
     ].forEach((button) => {
       if (button) button.disabled = saving;
     });
@@ -1315,15 +1332,13 @@ async function initApp() {
     ].forEach((field) => {
       if (field) field.disabled = saving;
     });
-    if (!saving && imagePreviewMoveCategoryBtn) {
-      imagePreviewMoveCategoryBtn.disabled =
-        !imagePreviewTargetCategory ||
-        imagePreviewTargetCategory.options.length <= 1;
-    }
     if (saving && activeButton) {
       setButtonBusy(activeButton, busyLabel);
     } else if (!saving && activeButton) {
       restoreButton(activeButton);
+    }
+    if (!saving) {
+      updateImageSemanticMoveChoice();
     }
   }
 
@@ -1387,6 +1402,7 @@ async function initApp() {
         )
       ) {
         imagePreviewTargetCategory.value = suggestedCategory;
+        updateImageSemanticMoveChoice();
       }
       if (imagePreviewReviewRewriteStatus) {
         const reviewReason = String(
@@ -1414,63 +1430,6 @@ async function initApp() {
     }
   }
 
-  async function moveCurrentImageCategory() {
-    const previewState = imagePreviewState;
-    const targetCategory = String(
-      imagePreviewTargetCategory?.value || "",
-    ).trim();
-    if (!previewState || !targetCategory) {
-      showToast("请先选择目标分类。", "warning", "缺少目标分类");
-      return;
-    }
-    const duplicateCount = Number(
-      previewState.semantic?.same_content_count || 0,
-    );
-    const confirmed = await showConfirm({
-      title: "确认移动当前图片",
-      description:
-        `将只移动 ${previewState.category}/${previewState.emoji} 到分类「${targetCategory}」。` +
-        `${duplicateCount ? `另外 ${duplicateCount} 张同内容图片不会改变。` : ""}` +
-        "当前表单中尚未保存的修改不会自动写入；移动后请重新检查并保存语义。",
-      confirmLabel: "移动当前图片",
-    });
-    if (!confirmed) return;
-
-    try {
-      const payload = {
-        ...imageSemanticSnapshotPayload(),
-        target_category: targetCategory,
-      };
-      setImageSemanticSaving(
-        true,
-        imagePreviewMoveCategoryBtn,
-        "移动中...",
-      );
-      const result = await apiPost("semantic/move_image", payload);
-      if (imagePreviewState === previewState) {
-        previewState.category = String(result?.target_category || targetCategory);
-        previewState.emoji = String(result?.filename || previewState.emoji);
-        previewState.semantic = result?.semantic || {};
-        if (imagePreviewImg) {
-          imagePreviewImg.alt = `表情包预览：${previewState.emoji}`;
-        }
-        renderImageSemantic(previewState.semantic);
-        setImageSemanticEditing(true);
-      }
-      await fetchEmojis();
-      showToast(
-        result?.message || "图片分类已移动，向量等待更新。",
-        "success",
-        "移动成功",
-        4800,
-      );
-    } catch (error) {
-      showToast(error?.message || String(error), "error", "移动失败", 4800);
-    } finally {
-      setImageSemanticSaving(false, imagePreviewMoveCategoryBtn);
-    }
-  }
-
   async function saveCurrentImageSemantic({ updateVector = false } = {}) {
     const activeButton = updateVector
       ? imagePreviewSaveVectorBtn
@@ -1478,12 +1437,30 @@ async function initApp() {
     const previewState = imagePreviewState;
     try {
       const payload = imageSemanticEditPayload();
-      setImageSemanticSaving(true, activeButton);
+      if (payload.target_category && !updateVector) {
+        throw new Error(
+          "选择新分类后，请点击“保存、移动并更新该图向量”。",
+        );
+      }
+      setImageSemanticSaving(
+        true,
+        activeButton,
+        payload.target_category ? "保存、移动并更新中..." : "保存中...",
+      );
       const endpoint = updateVector
         ? "semantic/save_image_and_vector"
         : "semantic/save_image";
       const result = await apiPost(endpoint, payload);
       if (imagePreviewState === previewState) {
+        if (result?.moved) {
+          previewState.category = String(
+            result?.category || result?.target_category || previewState.category,
+          );
+          previewState.emoji = String(result?.filename || previewState.emoji);
+          if (imagePreviewImg) {
+            imagePreviewImg.alt = `表情包预览：${previewState.emoji}`;
+          }
+        }
         renderImageSemantic(result?.semantic || {});
         setImageSemanticEditing(false);
       }
@@ -1494,7 +1471,11 @@ async function initApp() {
       showToast(
         result?.message || "人工语义已保存，向量等待更新。",
         toastType,
-        updateVector ? "保存与向量更新" : "保存成功",
+        result?.moved
+          ? "保存、移动与向量更新"
+          : updateVector
+            ? "保存与向量更新"
+            : "保存成功",
       );
     } catch (error) {
       showToast(error?.message || String(error), "error", "保存失败");
@@ -5333,8 +5314,8 @@ async function initApp() {
   imagePreviewReviewRewriteBtn?.addEventListener("click", () => {
     void requestImageSemanticRevision();
   });
-  imagePreviewMoveCategoryBtn?.addEventListener("click", () => {
-    void moveCurrentImageCategory();
+  imagePreviewTargetCategory?.addEventListener("change", () => {
+    updateImageSemanticMoveChoice();
   });
   imagePreviewRestoreAutoBtn?.addEventListener("click", () => {
     void restoreCurrentImageAutoSemantic();

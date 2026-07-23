@@ -48,12 +48,12 @@ from backend.semantic_storage import (
     get_pack_semantic_summary,
     load_metadata,
     metadata_items,
-    move_image_to_category,
     reconcile_metadata,
     reset_local_embedding_state,
     restore_image_auto_semantic,
     safe_relative_path,
     save_manual_image_semantic,
+    save_manual_image_semantic_and_move,
     save_metadata,
     semantic_metadata_is_complete,
 )
@@ -1865,6 +1865,7 @@ class SemanticMvpTest(unittest.TestCase):
         script = Path("pages/a_manage/script.js").read_text(encoding="utf-8")
         semantic_page = Path("pages/semantic/index.html").read_text(encoding="utf-8")
         semantic_script = Path("pages/semantic/script.js").read_text(encoding="utf-8")
+        style = Path("pages/a_manage/style.css").read_text(encoding="utf-8")
         self.assertIn('data-review-filter="needs_review"', page)
         self.assertIn('data-review-filter="reclassified"', page)
         self.assertIn('id="semantic-review-toolbar"', page)
@@ -1876,11 +1877,15 @@ class SemanticMvpTest(unittest.TestCase):
         self.assertIn("semantic/save_image_and_vector", script)
         self.assertIn("semantic/restore_image_auto", script)
         self.assertIn("semantic/propose_image_revision", script)
-        self.assertIn("semantic/move_image", script)
+        self.assertNotIn("semantic/move_image", script)
         self.assertIn("image-preview-edit-form", page)
         self.assertIn("image-preview-review-edit-btn", page)
         self.assertIn("image-preview-review-instruction", page)
-        self.assertIn("image-preview-move-category-btn", page)
+        self.assertNotIn("image-preview-move-category-btn", page)
+        self.assertIn("保存时移动到其他分类（可选）", page)
+        self.assertIn("保存、移动并更新该图向量", page)
+        self.assertIn("target_category", script)
+        self.assertIn("updateImageSemanticMoveChoice", script)
         self.assertIn("image-preview-save-vector-btn", page)
         self.assertIn("image-preview-restore-auto-btn", page)
         self.assertIn("固定分类标签（只读）", page)
@@ -1896,6 +1901,8 @@ class SemanticMvpTest(unittest.TestCase):
         )
         self.assertIn('value="reclassified"', semantic_page)
         self.assertIn("自动重分类：", semantic_script)
+        self.assertIn(".confirm-modal,\n.danger-modal {\n  z-index: 10005;", style)
+        self.assertIn("z-index: 10006;", style)
 
     def test_only_needs_review_image_can_show_confirm_category_action(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -2385,7 +2392,7 @@ class SemanticMvpTest(unittest.TestCase):
             self.assertEqual(second_detail["embedding_status"], "done")
             self.assertFalse(second_detail["manual_modified"])
 
-    def test_manual_category_move_updates_only_current_path_and_fixed_tag(self):
+    def test_combined_save_move_updates_only_current_path_and_fixed_tag(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             foo_dir = root / "memes" / "foo"
@@ -2414,21 +2421,13 @@ class SemanticMvpTest(unittest.TestCase):
                 mark_category_reviewed(item)
             save_metadata(root, metadata)
             opened = get_image_semantic_detail(root, source)
-            save_manual_image_semantic(
-                root,
-                source,
-                caption="人工保留的图片含义",
-                tags=["人工标签"],
-                visible_text="人工文字",
-                expected_content_sha256=opened["content_sha256"],
-                expected_entry_id=opened["entry_id"],
-            )
-            opened = get_image_semantic_detail(root, source)
-
-            moved = move_image_to_category(
+            moved = save_manual_image_semantic_and_move(
                 root,
                 source,
                 "bar",
+                caption="人工保留的图片含义",
+                tags=["人工标签"],
+                visible_text="人工文字",
                 expected_content_sha256=opened["content_sha256"],
                 expected_entry_id=opened["entry_id"],
             )
@@ -2454,7 +2453,22 @@ class SemanticMvpTest(unittest.TestCase):
             self.assertFalse(other["manual_modified"])
             self.assertEqual(other["same_content_paths"], ["memes/bar/one.png"])
 
-    def test_manual_category_move_rejects_collision_and_paused_task(self):
+            moved_record = next(
+                item
+                for item in load_metadata(root)["images"].values()
+                if item["relative_path"] == "memes/bar/one.png"
+            )
+            self.assertEqual(moved_record["auto_caption"], "")
+            restored = restore_image_auto_semantic(
+                root,
+                moved_path,
+                expected_content_sha256=detail["content_sha256"],
+                expected_entry_id=detail["entry_id"],
+            )
+            self.assertEqual(restored["caption_status"], "pending")
+            self.assertEqual(restored["tags"], ["category:bar"])
+
+    def test_combined_save_move_rejects_collision_and_paused_task(self):
         async def run():
             with tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
@@ -2469,10 +2483,12 @@ class SemanticMvpTest(unittest.TestCase):
                 reconcile_metadata(pack)
                 opened = get_image_semantic_detail(pack, source)
                 with self.assertRaisesRegex(FileExistsError, "同名图片"):
-                    move_image_to_category(
+                    save_manual_image_semantic_and_move(
                         pack,
                         source,
                         "bar",
+                        caption="目标重名时不应保存",
+                        tags=["不应保存"],
                         expected_content_sha256=opened["content_sha256"],
                         expected_entry_id=opened["entry_id"],
                     )
@@ -2482,55 +2498,21 @@ class SemanticMvpTest(unittest.TestCase):
                 manager = SemanticTaskManager(root)
                 manager._save_state("demo", {"task_status": "paused"})
                 with self.assertRaisesRegex(RuntimeError, "暂停或中断"):
-                    await manager.move_image_category(
+                    await manager.save_image_manual_semantic(
                         "demo",
                         source,
-                        "bar",
+                        caption="暂停时不应保存和移动",
+                        tags=["不应保存"],
                         expected_content_sha256=opened["content_sha256"],
                         expected_entry_id=opened["entry_id"],
+                        update_vector=True,
+                        target_category="bar",
                     )
                 self.assertTrue(source.is_file())
 
         asyncio.run(run())
 
-    def test_automatic_category_move_waits_for_new_category_caption(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            foo_dir = root / "memes" / "foo"
-            bar_dir = root / "memes" / "bar"
-            foo_dir.mkdir(parents=True)
-            bar_dir.mkdir(parents=True)
-            source = foo_dir / "one.png"
-            source.write_bytes(b"automatic-move")
-            metadata = reconcile_metadata(root)
-            item = next(iter(metadata["images"].values()))
-            item.update(
-                {
-                    "caption": "按旧分类生成的描述",
-                    "tags": ["旧分类语义"],
-                    "caption_status": "done",
-                    "embedding_status": "done",
-                }
-            )
-            mark_category_reviewed(item)
-            save_metadata(root, metadata)
-            opened = get_image_semantic_detail(root, source)
-
-            moved = move_image_to_category(
-                root,
-                source,
-                "bar",
-                expected_content_sha256=opened["content_sha256"],
-                expected_entry_id=opened["entry_id"],
-            )["semantic"]
-
-            self.assertFalse(moved["manual_modified"])
-            self.assertEqual(moved["caption_status"], "pending")
-            self.assertEqual(moved["embedding_status"], "pending")
-            self.assertEqual(moved["category_review_status"], "manual_confirmed")
-            self.assertEqual(moved["tags"][0], "category:bar")
-
-    def test_manual_category_move_rolls_file_back_when_metadata_write_fails(self):
+    def test_combined_save_move_rolls_back_when_metadata_write_fails(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             foo_dir = root / "memes" / "foo"
@@ -2549,10 +2531,12 @@ class SemanticMvpTest(unittest.TestCase):
                 side_effect=OSError("simulated metadata failure"),
             ):
                 with self.assertRaisesRegex(OSError, "simulated metadata failure"):
-                    move_image_to_category(
+                    save_manual_image_semantic_and_move(
                         root,
                         source,
                         "bar",
+                        caption="保存失败时不应移动",
+                        tags=["回滚"],
                         expected_content_sha256=opened["content_sha256"],
                         expected_entry_id=opened["entry_id"],
                     )
@@ -2624,7 +2608,9 @@ class SemanticMvpTest(unittest.TestCase):
                 root = Path(temp)
                 pack = root / "packs" / "demo"
                 image_dir = pack / "memes" / "foo"
+                target_dir = pack / "memes" / "bar"
                 image_dir.mkdir(parents=True)
+                target_dir.mkdir(parents=True)
                 image = image_dir / "one.png"
                 image.write_bytes(b"no-provider")
                 reconcile_metadata(pack)
@@ -2643,8 +2629,15 @@ class SemanticMvpTest(unittest.TestCase):
                     expected_content_sha256=opened["content_sha256"],
                     expected_entry_id=opened["entry_id"],
                     update_vector=True,
+                    target_category="bar",
                 )
                 self.assertTrue(result["semantic_saved"])
+                self.assertTrue(result["moved"])
+                self.assertFalse(image.exists())
+                image = target_dir / "one.png"
+                self.assertTrue(image.is_file())
+                self.assertEqual(result["semantic"]["category"], "bar")
+                self.assertEqual(result["semantic"]["tags"][0], "category:bar")
                 self.assertEqual(result["vector_update"]["status"], "waiting_provider")
                 self.assertEqual(result["semantic"]["embedding_status"], "pending")
 
@@ -2665,18 +2658,37 @@ class SemanticMvpTest(unittest.TestCase):
                 root = Path(temp)
                 pack = root / "packs" / "demo"
                 image_dir = pack / "memes" / "foo"
+                target_dir = pack / "memes" / "bar"
+                duplicate_dir = pack / "memes" / "other"
                 image_dir.mkdir(parents=True)
+                target_dir.mkdir(parents=True)
+                duplicate_dir.mkdir(parents=True)
                 first = image_dir / "one.png"
                 second = image_dir / "two.png"
+                duplicate = duplicate_dir / "copy.png"
                 first.write_bytes(b"first")
                 second.write_bytes(b"second")
+                duplicate.write_bytes(b"first")
                 metadata = reconcile_metadata(pack)
                 for item in metadata["images"].values():
                     is_first = item["relative_path"].endswith("one.png")
+                    is_duplicate = item["relative_path"].endswith("copy.png")
                     item.update(
                         {
-                            "caption": "心虚装傻" if is_first else "开心庆祝",
-                            "tags": ["心虚"] if is_first else ["开心"],
+                            "caption": (
+                                "心虚装傻"
+                                if is_first
+                                else "重复图片的独立描述"
+                                if is_duplicate
+                                else "开心庆祝"
+                            ),
+                            "tags": (
+                                ["心虚"]
+                                if is_first
+                                else ["独立"]
+                                if is_duplicate
+                                else ["开心"]
+                            ),
                             "caption_status": "done",
                         }
                     )
@@ -2694,6 +2706,17 @@ class SemanticMvpTest(unittest.TestCase):
                     config={"embedding_provider_id": "fake-embedding"},
                 )
                 opened = get_image_semantic_detail(pack, first)
+                with self.assertRaisesRegex(ValueError, "保存并更新该图向量"):
+                    await manager.save_image_manual_semantic(
+                        "demo",
+                        first,
+                        caption="不能只保存后移动",
+                        tags=["人工"],
+                        expected_content_sha256=opened["content_sha256"],
+                        expected_entry_id=opened["entry_id"],
+                        target_category="bar",
+                    )
+                self.assertTrue(first.is_file())
                 result = await manager.save_image_manual_semantic(
                     "demo",
                     first,
@@ -2702,15 +2725,35 @@ class SemanticMvpTest(unittest.TestCase):
                     expected_content_sha256=opened["content_sha256"],
                     expected_entry_id=opened["entry_id"],
                     update_vector=True,
+                    target_category="bar",
                 )
                 self.assertEqual(result["vector_update"]["status"], "done")
                 self.assertEqual(result["vector_update"]["requested_images"], 1)
+                self.assertEqual(result["vector_update"]["reused_images"], 2)
+                self.assertTrue(result["moved"])
+                self.assertFalse(first.exists())
+                moved_first = target_dir / "one.png"
+                self.assertTrue(moved_first.is_file())
+                self.assertEqual(result["semantic"]["category"], "bar")
+                self.assertEqual(result["semantic"]["tags"][0], "category:bar")
+                self.assertEqual(
+                    result["semantic"]["category_review_status"],
+                    "manual_confirmed",
+                )
                 self.assertEqual(provider.batch_calls, 1)
                 self.assertEqual([len(texts) for texts in provider.batch_texts], [1])
                 self.assertIn("人工修正为非常心虚", provider.batch_texts[0][0])
+                self.assertIn("category:bar", provider.batch_texts[0][0])
                 self.assertEqual(
                     get_image_semantic_detail(pack, second)["caption"], "开心庆祝"
                 )
+                duplicate_detail = get_image_semantic_detail(pack, duplicate)
+                self.assertEqual(
+                    duplicate_detail["caption"],
+                    "重复图片的独立描述",
+                )
+                self.assertEqual(duplicate_detail["category"], "other")
+                self.assertFalse(duplicate_detail["manual_modified"])
                 self.assertTrue(
                     index_is_ready(
                         root,

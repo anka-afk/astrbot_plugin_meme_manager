@@ -35,11 +35,11 @@ from .semantic_storage import (
     get_image_semantic_detail,
     load_category_descriptions,
     load_metadata,
-    move_image_to_category,
     reconcile_metadata,
     restore_image_auto_semantic,
     safe_relative_path,
     save_manual_image_semantic,
+    save_manual_image_semantic_and_move,
     save_metadata,
     set_image_embedding_failure,
     validate_image_edit_snapshot,
@@ -182,26 +182,56 @@ class SemanticTaskManager:
         expected_content_sha256: str = "",
         expected_entry_id: str = "",
         update_vector: bool = False,
+        target_category: str = "",
     ) -> dict[str, Any]:
         """保存单图人工语义，并可在同一图包锁内只更新该图向量。"""
         pack_id = self._validate_pack_id(pack_id)
         pack_dir = self._pack_dir(pack_id)
+        normalized_target = str(target_category or "").strip()
+        if normalized_target and not update_vector:
+            raise ValueError("移动分类必须使用“保存并更新该图向量”")
         current_task = asyncio.current_task()
         async with self._lock(pack_id):
-            self.assert_pack_mutation_allowed(pack_id, "保存图片人工语义")
-            detail = save_manual_image_semantic(
-                pack_dir,
-                image_path,
-                caption=caption,
-                tags=tags,
-                visible_text=visible_text,
-                category_decision=category_decision,
-                expected_content_sha256=expected_content_sha256,
-                expected_entry_id=expected_entry_id,
+            operation = (
+                "保存图片人工语义并移动分类"
+                if normalized_target
+                else "保存图片人工语义"
             )
+            self.assert_pack_mutation_allowed(pack_id, operation)
+            move_result: dict[str, Any] = {}
+            effective_image_path = Path(image_path)
+            if normalized_target:
+                move_result = save_manual_image_semantic_and_move(
+                    pack_dir,
+                    image_path,
+                    normalized_target,
+                    caption=caption,
+                    tags=tags,
+                    visible_text=visible_text,
+                    expected_content_sha256=expected_content_sha256,
+                    expected_entry_id=expected_entry_id,
+                )
+                detail = move_result["semantic"]
+                effective_image_path = Path(move_result["image_path"])
+            else:
+                detail = save_manual_image_semantic(
+                    pack_dir,
+                    image_path,
+                    caption=caption,
+                    tags=tags,
+                    visible_text=visible_text,
+                    category_decision=category_decision,
+                    expected_content_sha256=expected_content_sha256,
+                    expected_entry_id=expected_entry_id,
+                )
             result = {
                 "semantic": detail,
                 "semantic_saved": True,
+                "moved": bool(move_result),
+                "source_category": str(move_result.get("source_category") or ""),
+                "target_category": str(move_result.get("target_category") or ""),
+                "category": str(detail.get("category") or ""),
+                "filename": Path(str(detail.get("relative_path") or "")).name,
                 "vector_update": {
                     "status": "pending",
                     "provider_available": False,
@@ -238,7 +268,7 @@ class SemanticTaskManager:
                 except Exception as exc:
                     failed_detail = set_image_embedding_failure(
                         pack_dir,
-                        image_path,
+                        effective_image_path,
                         self._safe_error(exc, pack_id),
                         expected_content_sha256=detail["content_sha256"],
                         expected_entry_id=detail["entry_id"],
@@ -262,7 +292,10 @@ class SemanticTaskManager:
                         target_entry_ids={detail["entry_id"]},
                     )
                 except Exception as exc:
-                    latest_detail = get_image_semantic_detail(pack_dir, image_path)
+                    latest_detail = get_image_semantic_detail(
+                        pack_dir,
+                        effective_image_path,
+                    )
                     result["semantic"] = latest_detail
                     failed = latest_detail.get("embedding_status") == "failed"
                     result["vector_update"].update(
@@ -277,7 +310,10 @@ class SemanticTaskManager:
                     )
                     return result
 
-                latest_detail = get_image_semantic_detail(pack_dir, image_path)
+                latest_detail = get_image_semantic_detail(
+                    pack_dir,
+                    effective_image_path,
+                )
                 result["semantic"] = latest_detail
                 result["vector_update"].update(
                     {
@@ -392,27 +428,6 @@ class SemanticTaskManager:
                     (proposal.get("token_usage") or {}).get("calls", 1) or 1
                 ),
             }
-
-    async def move_image_category(
-        self,
-        pack_id: str,
-        image_path: Path | str,
-        target_category: str,
-        *,
-        expected_content_sha256: str = "",
-        expected_entry_id: str = "",
-    ) -> dict[str, Any]:
-        """在图包锁内只移动当前路径，并原子迁移该路径的语义记录。"""
-        pack_id = self._validate_pack_id(pack_id)
-        async with self._lock(pack_id):
-            self.assert_pack_mutation_allowed(pack_id, "移动图片分类")
-            return move_image_to_category(
-                self._pack_dir(pack_id),
-                image_path,
-                target_category,
-                expected_content_sha256=expected_content_sha256,
-                expected_entry_id=expected_entry_id,
-            )
 
     async def run_locked_pack_mutation(
         self, pack_id: str, operation: str, mutation: Any

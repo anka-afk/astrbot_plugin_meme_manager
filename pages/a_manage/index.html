@@ -622,15 +622,6 @@
             <div class="image-preview-edit-field">
               <label>固定分类标签（只读）</label>
               <div id="image-preview-fixed-tags" class="image-preview-fixed-tags"></div>
-              <div class="image-preview-category-move-row">
-                <select id="image-preview-target-category" aria-label="目标分类">
-                  <option value="">选择要移动到的分类</option>
-                </select>
-                <button id="image-preview-move-category-btn" type="button" class="secondary">
-                  移动当前图片
-                </button>
-              </div>
-              <small>移动只影响当前路径；成功后固定分类标签会自动更新，其他同内容图片不变。</small>
             </div>
             <div class="image-preview-edit-field">
               <label for="image-preview-caption-input">图片含义描述</label>
@@ -649,8 +640,17 @@
               <select id="image-preview-category-decision">
                 <option value="keep">保持现有判断</option>
                 <option value="match">确认当前分类正确</option>
-                <option value="mismatch">确认当前分类不正确（保存后请移动图片）</option>
+                <option value="mismatch">确认当前分类不正确</option>
               </select>
+            </div>
+            <div class="image-preview-edit-field">
+              <label for="image-preview-target-category">保存时移动到其他分类（可选）</label>
+              <select id="image-preview-target-category">
+                <option value="">保持当前分类</option>
+              </select>
+              <small>
+                选择新分类后，请点击“保存、移动并更新该图向量”。系统会一次完成保存、移动和单图向量更新，其他同内容图片不变。
+              </small>
             </div>
             <p id="image-preview-edit-scope" class="image-preview-edit-scope">
               只修改当前路径的图片。
