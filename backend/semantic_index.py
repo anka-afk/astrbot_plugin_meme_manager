@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from .semantic_models import (
+    SCHEMA_VERSION,
     SemanticImage,
     build_id_map,
+    category_analysis_is_current,
     normalize_vector,
     text_hash,
     utc_now,
@@ -281,6 +283,7 @@ def index_is_ready(
         for digest, item in images.items()
         if isinstance(item, dict)
         and item.get("caption_status") == "done"
+        and category_analysis_is_current(item)
         and item.get("embedding_status") == "done"
         and item.get("caption")
         and item.get("tags")
@@ -337,7 +340,11 @@ async def build_index(
     metadata = load_metadata(pack_dir)
     candidates: list[tuple[str, dict[str, Any]]] = []
     for digest, value in metadata.get("images", {}).items():
-        if not isinstance(value, dict) or value.get("caption_status") != "done":
+        if (
+            not isinstance(value, dict)
+            or value.get("caption_status") != "done"
+            or not category_analysis_is_current(value)
+        ):
             continue
         if not value.get("caption") or not value.get("tags"):
             continue
@@ -425,7 +432,7 @@ async def build_index(
     _write_faiss_index(plugin_data_dir, pack_id, index)
     manifest = {
         "pack_id": pack_id,
-        "metadata_schema_version": "1.0",
+        "metadata_schema_version": SCHEMA_VERSION,
         "index_format": INDEX_FORMAT,
         "embedding_provider_id": embedding.provider_id,
         "embedding_model": embedding.model_name,
@@ -480,7 +487,11 @@ async def search_index(
     for score, faiss_id in zip(scores[0].tolist(), ids[0].tolist()):
         digest = id_to_digest.get(int(faiss_id))
         item = data.get("images", {}).get(digest) if digest else None
-        if not isinstance(item, dict) or item.get("caption_status") != "done":
+        if (
+            not isinstance(item, dict)
+            or item.get("caption_status") != "done"
+            or not category_analysis_is_current(item)
+        ):
             continue
         if float(score) < float(min_score):
             continue
@@ -490,7 +501,10 @@ async def search_index(
     return [
         {
             "id": id_map[digest],
-            "content_sha256": digest,
+            "entry_id": digest,
+            "content_sha256": str(item.get("content_sha256") or ""),
+            "category": str(item.get("category") or ""),
+            "category_tag": str(item.get("category_tag") or ""),
             "caption": str(item.get("caption") or ""),
             "tags": item.get("tags") or [],
             "score": score,

@@ -3161,6 +3161,113 @@ button.danger,
   line-height: 1.55;
 }
 
+.semantic-review-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 0 0 22px;
+  padding: 18px 20px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.semantic-review-toolbar-copy h2,
+.semantic-review-toolbar-copy p {
+  margin: 0;
+}
+
+.semantic-review-toolbar-copy > p:last-child {
+  margin-top: 5px;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.semantic-review-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.semantic-review-stats button {
+  width: auto;
+  padding: 8px 11px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #334155;
+  box-shadow: none;
+}
+
+.semantic-review-stats button.active {
+  background: #2563eb;
+  color: #fff;
+}
+
+.emoji-item-semantic-badge {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 3;
+  max-width: calc(100% - 16px);
+  padding: 4px 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #fff;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.emoji-item.review-needs_review {
+  outline: 3px solid #f59e0b;
+}
+
+.emoji-item.review-manual_confirmed {
+  outline: 3px solid #22c55e;
+}
+
+.image-preview-category-review {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(241, 245, 249, 0.84);
+}
+
+.image-preview-category-tag,
+.image-preview-category-review-state {
+  width: fit-content;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.image-preview-category-review-reason {
+  margin: 0;
+  color: #92400e;
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 760px) {
+  .semantic-review-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .semantic-review-stats {
+    justify-content: flex-start;
+  }
+}
+
 @media (max-width: 820px) {
   .image-preview-stage {
     width: min(94vw, 680px);

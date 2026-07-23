@@ -272,6 +272,20 @@
             </div>
           </div>
         </div>
+        <section class="semantic-review-toolbar" aria-label="分类审核筛选">
+          <div class="semantic-review-toolbar-copy">
+            <p class="eyebrow">Category Review</p>
+            <h2>分类审核</h2>
+            <p>固定标签沿用原始分类键；可筛出需要复核、已确认和尚未检查的图片。</p>
+          </div>
+          <div id="semantic-review-stats" class="semantic-review-stats" role="group">
+            <button type="button" data-review-filter="all" class="active">全部 <span>0</span></button>
+            <button type="button" data-review-filter="auto_match">自动符合 <span>0</span></button>
+            <button type="button" data-review-filter="needs_review">建议复核 <span>0</span></button>
+            <button type="button" data-review-filter="manual_confirmed">已人工确认 <span>0</span></button>
+            <button type="button" data-review-filter="unchecked">尚未检查 <span>0</span></button>
+          </div>
+        </section>
         <div id="emoji-categories"></div>
         <button id="add-category-btn">
           <i class="fas fa-plus-circle icon"></i>添加分类
@@ -514,6 +528,14 @@
             id="image-preview-semantic-filename"
             class="image-preview-semantic-filename"
           ></p>
+          <div class="image-preview-category-review">
+            <span id="image-preview-category-tag" class="image-preview-category-tag"></span>
+            <span id="image-preview-category-review-state" class="image-preview-category-review-state"></span>
+            <p id="image-preview-category-review-reason" class="image-preview-category-review-reason hidden"></p>
+            <button id="image-preview-category-confirm-btn" type="button" class="secondary hidden">
+              确认当前分类正确
+            </button>
+          </div>
           <div class="image-preview-semantic-section">
             <p class="image-preview-semantic-label">图片含义</p>
             <p

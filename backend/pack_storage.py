@@ -8,14 +8,6 @@ from pathlib import Path
 
 import requests
 
-from .pack_protocol import (
-    validate_community_index,
-    validate_pack_directory,
-    validate_pack_manifest,
-    is_official_pack_entry,
-    validate_source_descriptor,
-)
-
 from ..config import (
     BACKUP_DIR,
     COMMUNITY_CACHE_PATH,
@@ -28,6 +20,13 @@ from ..config import (
     RUNTIME_SCHEMA_VERSION,
     SELECTION_RULES_PATH,
     TEMP_DIR,
+)
+from .pack_protocol import (
+    is_official_pack_entry,
+    validate_community_index,
+    validate_pack_directory,
+    validate_pack_manifest,
+    validate_source_descriptor,
 )
 from .semantic_storage import (
     get_pack_semantic_summary,
@@ -257,9 +256,7 @@ def list_installed_packs() -> list[dict]:
         pack_data = {
             "id": pack_id,
             "name": str(item.get("name") or manifest.get("name") or pack_id),
-            "version": str(
-                item.get("version") or manifest.get("version") or "0.0.0"
-            ),
+            "version": str(item.get("version") or manifest.get("version") or "0.0.0"),
             "enabled": bool(item.get("enabled", True)),
             "installed_at": item.get("installed_at"),
             "is_default": pack_id == default_pack_id,
@@ -269,9 +266,7 @@ def list_installed_packs() -> list[dict]:
                 if memes_dir.is_dir()
                 else 0
             ),
-            "has_semantic_metadata": (
-                pack_dir / "semantic_metadata.json"
-            ).is_file(),
+            "has_semantic_metadata": (pack_dir / "semantic_metadata.json").is_file(),
         }
         pack_data.update(get_pack_semantic_summary(pack_dir, image_count))
         packs.append(pack_data)
@@ -518,12 +513,17 @@ def export_pack_archive(
         if include_semantic:
             if semantic_file.exists():
                 portable = reset_local_embedding_state(_load_json(semantic_file, {}))
-                _save_json(semantic_file, portable)
+                portable = reconcile_metadata(staging, external_data=portable)
+                save_metadata(staging, reset_local_embedding_state(portable))
         elif semantic_file.exists():
             semantic_file.unlink()
         archive_path = shutil.make_archive(str(archive_base), "zip", root_dir=staging)
 
-    return {"pack_id": pack_id, "archive_path": archive_path, "include_semantic": include_semantic}
+    return {
+        "pack_id": pack_id,
+        "archive_path": archive_path,
+        "include_semantic": include_semantic,
+    }
 
 
 def uninstall_pack(
@@ -658,7 +658,6 @@ def fetch_and_cache_community_index(index_url: str) -> dict:
         raise ValueError(f"社区索引不是有效 JSON: {exc}") from exc
 
     index_data = validate_community_index(index_data)
-    packs = index_data.get("packs", [])
 
     cache_payload = {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
@@ -902,6 +901,13 @@ def export_runtime_backup(
                     if pack_dir.is_dir():
                         operation_guard(pack_dir.name, "导出全量备份")
             shutil.copytree(PACKS_DIR, snapshot_root / "packs", dirs_exist_ok=True)
+            for copied_pack_dir in (snapshot_root / "packs").iterdir():
+                semantic_file = copied_pack_dir / "semantic_metadata.json"
+                if not copied_pack_dir.is_dir() or not semantic_file.is_file():
+                    continue
+                portable = reset_local_embedding_state(_load_json(semantic_file, {}))
+                portable = reconcile_metadata(copied_pack_dir, external_data=portable)
+                save_metadata(copied_pack_dir, reset_local_embedding_state(portable))
 
         archive_path = shutil.make_archive(
             str(archive_base), "zip", root_dir=snapshot_root
@@ -969,6 +975,18 @@ def import_runtime_backup(
                         operation_guard(pack_dir.name, "覆盖恢复资源包")
                     shutil.rmtree(target_pack_dir)
                 shutil.copytree(pack_dir, target_pack_dir)
+                semantic_file = target_pack_dir / "semantic_metadata.json"
+                if semantic_file.is_file():
+                    portable = reset_local_embedding_state(
+                        _load_json(semantic_file, {})
+                    )
+                    reconciled = reconcile_metadata(
+                        target_pack_dir, external_data=portable
+                    )
+                    save_metadata(
+                        target_pack_dir,
+                        reset_local_embedding_state(reconciled),
+                    )
                 # 全量备份不包含本机 FAISS 文件；恢复后不能沿用旧状态。
                 shutil.rmtree(
                     PLUGIN_DATA_DIR / "semantic_indexes" / pack_dir.name,

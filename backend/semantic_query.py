@@ -67,6 +67,7 @@ async def search_memes(
     )
     for item in candidates:
         item.pop("content_sha256", None)
+        item.pop("entry_id", None)
         item.pop("score", None)
     if not candidates:
         return {"ok": True, "candidates": [], "reason": "没有找到足够匹配的表情包"}
@@ -76,7 +77,7 @@ async def search_memes(
 def candidate_records(
     pack_dir: Path | str, candidates: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """为事件上下文补回完整哈希，但不把它暴露给 LLM。"""
+    """为事件上下文补回完整语义键和内容哈希，但不把它们暴露给 LLM。"""
     metadata = load_metadata(pack_dir)
     records = []
     for candidate in candidates:
@@ -85,17 +86,18 @@ def candidate_records(
         if not prefix:
             continue
         matches = [
-            (digest, item)
-            for digest, item in metadata.get("images", {}).items()
-            if str(digest).startswith(prefix)
+            (entry_id, item)
+            for entry_id, item in metadata.get("images", {}).items()
+            if str(entry_id).startswith(prefix)
         ]
         if len(matches) != 1:
             continue
-        digest, item = matches[0]
+        entry_id, item = matches[0]
         records.append(
             {
                 **candidate,
-                "content_sha256": digest,
+                "entry_id": entry_id,
+                "content_sha256": str(item.get("content_sha256") or ""),
                 "caption": item.get("caption", ""),
                 "tags": item.get("tags", []),
             }
@@ -136,18 +138,18 @@ def validate_selected_id(event: Any, value: str, pack_dir: Path | str) -> Path |
     )
     if not isinstance(candidate, dict):
         return None
-    digest = str(candidate.get("content_sha256") or "")
-    if not digest.startswith(prefix):
+    entry_id = str(candidate.get("entry_id") or "")
+    if not entry_id.startswith(prefix):
         return None
     metadata = load_metadata(pack_dir)
-    record = metadata.get("images", {}).get(digest)
+    record = metadata.get("images", {}).get(entry_id)
     if not isinstance(record, dict):
         return None
     path = safe_relative_path(pack_dir, record.get("relative_path", ""))
     if path is None or not path.is_file():
         return None
     try:
-        if file_sha256(path) != digest:
+        if file_sha256(path) != str(record.get("content_sha256") or ""):
             return None
     except OSError:
         return None

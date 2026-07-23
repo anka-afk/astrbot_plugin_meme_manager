@@ -32,6 +32,7 @@ from ..backend.semantic_query import (
     search_memes,
     validate_selected_id,
 )
+from ..backend.semantic_storage import invalidate_semantic_metadata
 from ..config import MEMES_DIR, PLUGIN_DATA_DIR
 
 
@@ -328,6 +329,8 @@ class EventHandlerMixin:
                 )
             yield event.chain_result(result_msg)
             await self.reload_emotions()
+            if saved_files:
+                invalidate_semantic_metadata(MEMES_DIR.parent)
         except Exception as e:
             yield event.plain_result(f"保存失败了：{str(e)}")
         finally:

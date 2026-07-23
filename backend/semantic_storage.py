@@ -12,8 +12,14 @@ from typing import Any
 from .semantic_models import (
     IMAGE_EXTENSIONS,
     SCHEMA_VERSION,
+    SemanticImage,
+    build_category_tag,
     build_semantic_text,
+    category_analysis_is_current,
+    category_context_hash,
+    ensure_category_tag,
     normalize_tags,
+    semantic_entry_id,
     text_hash,
     utc_now,
 )
@@ -48,8 +54,47 @@ def file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
+def load_category_descriptions(pack_dir: Path | str) -> dict[str, str]:
+    """读取图包分类描述，优先使用可编辑的 memes_data.json。"""
+    root = Path(pack_dir).resolve()
+    descriptions: dict[str, str] = {}
+    data_path = root / "memes_data.json"
+    if data_path.is_file():
+        try:
+            payload = json.loads(data_path.read_text(encoding="utf-8-sig"))
+            if isinstance(payload, dict):
+                descriptions.update(
+                    {
+                        str(key).strip(): str(value or "").strip()
+                        for key, value in payload.items()
+                        if str(key or "").strip()
+                    }
+                )
+        except (OSError, json.JSONDecodeError):
+            pass
+    manifest_path = root / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+            categories = (
+                manifest.get("categories", {}) if isinstance(manifest, dict) else {}
+            )
+            if isinstance(categories, dict):
+                for name, meta in categories.items():
+                    category = str(name or "").strip()
+                    if not category or category in descriptions:
+                        continue
+                    description = (
+                        meta.get("description") if isinstance(meta, dict) else meta
+                    )
+                    descriptions[category] = str(description or "请添加描述").strip()
+        except (OSError, json.JSONDecodeError):
+            pass
+    return descriptions
+
+
 def scan_images(pack_dir: Path | str) -> list[dict[str, str]]:
-    """扫描图片并按 SHA-256 去重，保留每个哈希遇到的第一条路径。"""
+    """按“内容 + 分类”扫描；同内容跨分类必须产生独立语义记录。"""
     root = Path(pack_dir).resolve()
     memes_root = root / "memes"
     if not memes_root.is_dir():
@@ -65,11 +110,93 @@ def scan_images(pack_dir: Path | str) -> list[dict[str, str]]:
         digest = file_sha256(path)
         relative = path.relative_to(root).as_posix()
         category = path.parent.name
-        found.setdefault(
-            digest,
-            {"content_sha256": digest, "relative_path": relative, "category": category},
-        )
+        entry_id = semantic_entry_id(digest, category)
+        if entry_id not in found:
+            found[entry_id] = {
+                "entry_id": entry_id,
+                "content_sha256": digest,
+                "relative_path": relative,
+                "category": category,
+            }
     return list(found.values())
+
+
+def _is_sha256(value: Any) -> bool:
+    text = str(value or "").lower()
+    return len(text) == 64 and all(char in "0123456789abcdef" for char in text)
+
+
+def _normalize_image_records(
+    images: Any, category_descriptions: dict[str, str]
+) -> dict[str, dict[str, Any]]:
+    """规范 v2 记录，并统一改用“内容加分类”的稳定键。"""
+    if not isinstance(images, dict):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for key, raw_value in images.items():
+        if not isinstance(raw_value, dict):
+            continue
+        value = dict(raw_value)
+        digest = str(value.get("content_sha256") or "").lower()
+        if not _is_sha256(digest) and _is_sha256(key):
+            # 允许 v2 文件仍以内容哈希作字典键；正式条目键不能反推图片内容。
+            digest = str(key).lower()
+        if not _is_sha256(digest):
+            continue
+        category = str(value.get("category") or "").strip()
+        description = str(
+            category_descriptions.get(category, value.get("category_description") or "")
+        ).strip()
+        entry_id = semantic_entry_id(digest, category)
+        old_context = str(value.get("category_context_hash") or "")
+        new_context = category_context_hash(digest, category, description)
+        context_changed = bool(old_context and old_context != new_context)
+        previous_fixed_tag = str(value.get("category_tag") or "").strip()
+        source_tags = [
+            tag
+            for tag in normalize_tags(value.get("tags"))
+            if not previous_fixed_tag or tag != previous_fixed_tag
+        ]
+        value.update(
+            {
+                "entry_id": entry_id,
+                "content_sha256": digest,
+                "category": category,
+                "category_description": description,
+                "category_tag": build_category_tag(category),
+                "category_context_hash": new_context,
+                "tags": ensure_category_tag(source_tags, category),
+            }
+        )
+        value.setdefault("relative_path", "")
+        value.setdefault(
+            "caption_status",
+            "done" if value.get("caption") and value.get("tags") else "pending",
+        )
+        value.setdefault("embedding_status", "pending")
+        if context_changed:
+            # 分类名/描述变化后必须重新让模型判断；已有描述仍保留，人工内容
+            # 也不会在这里被删除，但旧确认和旧向量立即失效。
+            value["caption_status"] = "pending"
+            value["embedding_status"] = "pending"
+            value["category_review_status"] = "unchecked"
+            value["category_fit"] = "uncertain"
+            value["category_review_reason"] = ""
+            value["category_review_context_hash"] = ""
+            value["manual_confirmation_context_hash"] = ""
+            value["text_hash"] = ""
+        elif not old_context:
+            # v2 导入数据若缺少上下文指纹，保留描述但重新做分类符合判断。
+            value.setdefault("category_review_status", "unchecked")
+            value.setdefault("category_review_reason", "")
+            value.setdefault("category_review_context_hash", "")
+            value.setdefault("manual_confirmation_context_hash", "")
+            if value.get("caption_status") == "done":
+                value["embedding_status"] = "pending"
+                value["text_hash"] = ""
+        item = SemanticImage.from_dict(value).to_dict()
+        normalized[entry_id] = item
+    return normalized
 
 
 def load_metadata(pack_dir: Path | str) -> dict[str, Any]:
@@ -87,20 +214,19 @@ def load_metadata(pack_dir: Path | str) -> dict[str, Any]:
         data = {}
     if not isinstance(data, dict):
         data = {}
-    images = data.get("images")
-    if not isinstance(images, dict):
-        images = {}
-    normalized: dict[str, dict[str, Any]] = {}
-    for key, value in images.items():
-        if not isinstance(value, dict):
-            continue
-        digest = str(value.get("content_sha256") or key).lower()
-        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-            continue
-        value = dict(value)
-        value["content_sha256"] = digest
-        normalized[digest] = value
-    data["schema_version"] = str(data.get("schema_version") or SCHEMA_VERSION)
+    loaded_schema_version = str(data.get("schema_version") or "")
+    if loaded_schema_version != SCHEMA_VERSION:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "pack_id": str(data.get("pack_id") or Path(pack_dir).name),
+            "generated_at": utc_now(),
+            "images": {},
+            "legacy_semantic_data_discarded": bool(data),
+            "requires_local_index_rebuild": True,
+        }
+    category_descriptions = load_category_descriptions(pack_dir)
+    normalized = _normalize_image_records(data.get("images"), category_descriptions)
+    data["schema_version"] = SCHEMA_VERSION
     data["pack_id"] = str(data.get("pack_id") or Path(pack_dir).name)
     data.setdefault("generated_at", utc_now())
     data["images"] = normalized
@@ -143,7 +269,7 @@ def semantic_metadata_is_complete(
     complete = False
     if metadata_file.is_file() and image_paths and isinstance(images, dict) and images:
         scanned = scan_images(root)
-        current_hashes = {str(item.get("content_sha256") or "") for item in scanned}
+        current_entry_ids = {str(item.get("entry_id") or "") for item in scanned}
         try:
             recorded_file_total = int(metadata.get("file_total"))
             recorded_unique_total = int(metadata.get("unique_total"))
@@ -151,20 +277,21 @@ def semantic_metadata_is_complete(
             recorded_file_total = -1
             recorded_unique_total = -1
         complete = bool(
-            current_hashes
-            and set(images) == current_hashes
+            current_entry_ids
+            and set(images) == current_entry_ids
             and recorded_file_total == len(image_paths)
-            and recorded_unique_total == len(current_hashes)
+            and recorded_unique_total == len(current_entry_ids)
             and all(
-                isinstance(images.get(digest), dict)
-                and images[digest].get("caption_status") == "done"
-                and str(images[digest].get("caption") or "").strip()
-                and normalize_tags(images[digest].get("tags"))
+                isinstance(images.get(entry_id), dict)
+                and images[entry_id].get("caption_status") == "done"
+                and category_analysis_is_current(images[entry_id])
+                and str(images[entry_id].get("caption") or "").strip()
+                and normalize_tags(images[entry_id].get("tags"))
                 and (
                     not require_embeddings
-                    or images[digest].get("embedding_status") == "done"
+                    or images[entry_id].get("embedding_status") == "done"
                 )
-                for digest in current_hashes
+                for entry_id in current_entry_ids
             )
         )
     return complete
@@ -175,7 +302,8 @@ def get_pack_semantic_summary(
 ) -> dict[str, Any]:
     """返回适合 WebUI 展示的图包语义化进度摘要。
 
-    语义任务会按图片内容去重，因此 ``unique_total`` 可能小于实际文件数。
+    语义任务按“图片内容 + 分类”去重，因此跨分类重复内容会有独立记录；同一
+    分类中的完全重复文件仍可共用语义。
     完成状态同时校验上次语义扫描时的文件数，避免在完整语义化后新增图片，
     主页仍错误显示为“已完成语义化”。
     """
@@ -227,7 +355,7 @@ def get_pack_semantic_summary(
 
     raw_snapshot_total = metadata.get("file_total")
     if raw_snapshot_total is None:
-        # 旧版或外部语义文件没有文件数快照时，不能仅凭“现有记录都完成”
+        # 外部语义文件没有文件数快照时，不能仅凭“现有记录都完成”
         # 就断言整个图包已完成；至少要求记录数能覆盖当前文件数。
         snapshot_file_total = semantic_total
     else:
@@ -270,7 +398,7 @@ def get_pack_semantic_summary(
 def get_image_semantic_detail(
     pack_dir: Path | str, image_path: Path | str
 ) -> dict[str, Any]:
-    """按图片内容哈希读取单张图片的语义，重复图片可共用同一条结果。"""
+    """按图片内容加当前分类读取语义，跨分类重复图片互不覆盖。"""
     root = Path(pack_dir).resolve()
     memes_root = (root / "memes").resolve()
     source = Path(image_path).resolve()
@@ -289,6 +417,10 @@ def get_image_semantic_detail(
         "caption_status": "pending",
         "embedding_status": "pending",
         "error": "",
+        "category_tag": build_category_tag(source.parent.name),
+        "category_review_status": "unchecked",
+        "category_review_reason": "",
+        "can_confirm_category": False,
     }
     metadata = load_metadata(root)
     images = metadata.get("images", {})
@@ -296,7 +428,8 @@ def get_image_semantic_detail(
         return empty_result
 
     digest = file_sha256(source)
-    item = images.get(digest)
+    entry_id = semantic_entry_id(digest, source.parent.name)
+    item = images.get(entry_id)
     if not isinstance(item, dict):
         return empty_result
 
@@ -311,12 +444,26 @@ def get_image_semantic_detail(
         status = "pending"
     return {
         "status": status,
+        "entry_id": entry_id,
         "caption": caption,
         "tags": tags,
         "visible_text": str(item.get("visible_text") or "").strip(),
         "caption_status": caption_status,
         "embedding_status": str(item.get("embedding_status") or "pending"),
         "error": str(item.get("error") or "").strip(),
+        "category": str(item.get("category") or source.parent.name),
+        "category_description": str(item.get("category_description") or ""),
+        "category_tag": str(
+            item.get("category_tag") or build_category_tag(source.parent.name)
+        ),
+        "category_review_status": str(
+            item.get("category_review_status") or "unchecked"
+        ),
+        "category_review_reason": str(item.get("category_review_reason") or ""),
+        "can_confirm_category": bool(
+            item.get("caption_status") == "done"
+            and item.get("category_review_status") != "manual_confirmed"
+        ),
     }
 
 
@@ -325,11 +472,12 @@ def save_metadata(pack_dir: Path | str, data: dict[str, Any]) -> Path:
     target = metadata_path(pack_dir)
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(data or {})
-    payload["schema_version"] = str(payload.get("schema_version") or SCHEMA_VERSION)
+    payload["schema_version"] = SCHEMA_VERSION
     payload["pack_id"] = str(payload.get("pack_id") or target.parent.name)
     payload.setdefault("generated_at", utc_now())
-    if not isinstance(payload.get("images"), dict):
-        payload["images"] = {}
+    payload["images"] = _normalize_image_records(
+        payload.get("images"), load_category_descriptions(target.parent)
+    )
     fd, temp_name = tempfile.mkstemp(
         prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
     )
@@ -370,7 +518,7 @@ def reset_local_embedding_state(data: dict[str, Any]) -> dict[str, Any]:
     images = payload.get("images", {})
     normalized_images: dict[str, dict[str, Any]] = {}
     if isinstance(images, dict):
-        for digest, value in images.items():
+        for entry_id, value in images.items():
             if not isinstance(value, dict):
                 continue
             item = dict(value)
@@ -396,7 +544,7 @@ def reset_local_embedding_state(data: dict[str, Any]) -> dict[str, Any]:
                 item.pop(key, None)
             if item.get("caption_status") == "done":
                 item["error"] = None
-            normalized_images[str(digest)] = item
+            normalized_images[str(entry_id)] = item
     payload["images"] = normalized_images
     payload["requires_local_index_rebuild"] = True
     return payload
@@ -405,60 +553,106 @@ def reset_local_embedding_state(data: dict[str, Any]) -> dict[str, Any]:
 def reconcile_metadata(
     pack_dir: Path | str, external_data: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    """将磁盘扫描结果与现有/外部语义记录合并，并校验路径和哈希。"""
+    """合并磁盘与语义记录，并按内容加分类隔离审核及向量状态。"""
     root = Path(pack_dir).resolve()
+    descriptions = load_category_descriptions(root)
     existing = load_metadata(root)
-    external_images = (
-        (external_data or {}).get("images", {})
-        if isinstance(external_data, dict)
-        else {}
+    external_is_current = bool(
+        isinstance(external_data, dict)
+        and str(external_data.get("schema_version") or "") == SCHEMA_VERSION
     )
-    if not isinstance(external_images, dict):
-        external_images = {}
-    normalized_external: dict[str, dict[str, Any]] = {}
-    for key, value in external_images.items():
-        if not isinstance(value, dict):
-            continue
-        digest = str(value.get("content_sha256") or key).lower()
-        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-            continue
-        normalized_external[digest] = dict(value)
-    external_images = normalized_external
-    images: dict[str, dict[str, Any]] = {}
+    external_images = _normalize_image_records(
+        (external_data or {}).get("images", {}) if external_is_current else {},
+        descriptions,
+    )
+    local_images = existing.get("images", {})
     scanned = scan_images(root)
-    scanned_by_hash = {item["content_sha256"]: item for item in scanned}
-    for digest, scan in scanned_by_hash.items():
-        local_item = existing.get("images", {}).get(digest) or {}
-        external_item = external_images.get(digest) or {}
-        local_is_reusable = bool(
-            isinstance(local_item, dict)
-            and local_item.get("caption_status") == "done"
-            and local_item.get("caption")
-            and local_item.get("tags")
-        )
-        external_is_reusable = bool(
-            isinstance(external_item, dict)
-            and external_item.get("caption")
-            and external_item.get("tags")
-            and external_item.get("caption_status") in {None, "done"}
-        )
-        if (
-            isinstance(local_item, dict)
-            and local_item.get("provenance") in {"manual", "mixed"}
-        ) or local_is_reusable:
-            previous = local_item
-        elif external_is_reusable:
-            previous = external_item
-        else:
-            previous = local_item or external_item
-        if not isinstance(previous, dict):
-            previous = {}
+    scanned_by_id = {item["entry_id"]: item for item in scanned}
+
+    def records_for_content(
+        source: dict[str, dict[str, Any]], digest: str
+    ) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in source.values()
+            if isinstance(item, dict)
+            and str(item.get("content_sha256") or "").lower() == digest
+        ]
+
+    def choose_previous(entry_id: str, digest: str) -> tuple[dict[str, Any], bool]:
+        exact_local = local_images.get(entry_id)
+        exact_external = external_images.get(entry_id)
+        for candidate in (exact_local, exact_external):
+            if isinstance(candidate, dict) and (
+                candidate.get("provenance") in {"manual", "mixed"}
+                or (candidate.get("caption") and candidate.get("tags"))
+            ):
+                return candidate, True
+        for candidate in (exact_local, exact_external):
+            if isinstance(candidate, dict):
+                return candidate, True
+        # 移动/重命名时可复用内容描述作为起点，但分类判断、固定标签、人工
+        # 确认和向量一律失效，下一轮必须携带新分类重新识别。
+        content_candidates = records_for_content(local_images, digest)
+        content_candidates.extend(records_for_content(external_images, digest))
+        manual_candidates = [
+            item
+            for item in content_candidates
+            if item.get("provenance") in {"manual", "mixed"}
+            or item.get("manual_override")
+        ]
+        reusable = manual_candidates or [
+            item
+            for item in content_candidates
+            if item.get("caption") and item.get("tags")
+        ]
+        if not reusable:
+            return {}, False
+        candidate = dict(reusable[0])
+        source_entry_id = str(candidate.get("entry_id") or "")
+        if source_entry_id in scanned_by_id:
+            # 来源记录仍在磁盘上，说明这是另一个分类中新出现的重复图，而不是
+            # 原图被移动/分类被重命名。人工内容只属于来源条目，不能把保护状态
+            # 复制到新分类，否则视觉模型无法按新分类重新生成语义。
+            candidate["manual_override"] = False
+            candidate["manual_tags"] = []
+            candidate["provenance"] = "ai"
+        return candidate, False
+
+    images: dict[str, dict[str, Any]] = {}
+    for entry_id, scan in scanned_by_id.items():
+        digest = scan["content_sha256"]
+        previous, exact_context = choose_previous(entry_id, digest)
         item = dict(previous)
-        item["content_sha256"] = digest
-        item["relative_path"] = scan["relative_path"]
-        item["category"] = scan["category"]
+        category = scan["category"]
+        description = str(descriptions.get(category, "")).strip()
+        current_context = category_context_hash(digest, category, description)
+        previous_context = str(item.get("category_context_hash") or "")
+        previous_fixed_tag = str(item.get("category_tag") or "").strip()
+        item.update(
+            {
+                "entry_id": entry_id,
+                "content_sha256": digest,
+                "relative_path": scan["relative_path"],
+                "category": category,
+                "category_description": description,
+                "category_tag": build_category_tag(category),
+                "category_context_hash": current_context,
+            }
+        )
         item.setdefault("caption", "")
-        item.setdefault("tags", [])
+        source_tags = [
+            tag
+            for tag in normalize_tags(item.get("tags"))
+            if not previous_fixed_tag or tag != previous_fixed_tag
+        ]
+        item["tags"] = ensure_category_tag(source_tags, category)
+        for tag_field in ("manual_tags", "auto_tags"):
+            item[tag_field] = [
+                tag
+                for tag in normalize_tags(item.get(tag_field))
+                if not previous_fixed_tag or tag != previous_fixed_tag
+            ]
         item.setdefault("visible_text", "")
         item.setdefault(
             "caption_status",
@@ -471,6 +665,22 @@ def reconcile_metadata(
         item.setdefault("manual_override", False)
         item.setdefault("prompt_version", "meme-semantic-v1")
         item.setdefault("error", None)
+        item.setdefault("category_fit", "uncertain")
+        item.setdefault("category_review_status", "unchecked")
+        item.setdefault("category_review_reason", "")
+        item.setdefault("category_review_context_hash", "")
+        item.setdefault("manual_confirmation_context_hash", "")
+        context_changed = bool(previous_context and previous_context != current_context)
+        if not exact_context or context_changed:
+            item["caption_status"] = "pending"
+            item["embedding_status"] = "pending"
+            item["category_review_status"] = "unchecked"
+            item["category_fit"] = "uncertain"
+            item["category_review_reason"] = ""
+            item["category_review_context_hash"] = ""
+            item["manual_confirmation_context_hash"] = ""
+            item["text_hash"] = ""
+            item["error"] = None
         if item.get("caption_status") == "done" and (
             not str(item.get("caption") or "").strip() or not item.get("tags")
         ):
@@ -482,32 +692,30 @@ def reconcile_metadata(
             item.get("tags", []),
             item.get("visible_text", ""),
             item.get("category", ""),
+            item.get("category_description", ""),
         )
         calculated_hash = text_hash(current_text)
         if item.get("text_hash") and item["text_hash"] != calculated_hash:
             item["embedding_status"] = "pending"
         item["text_hash"] = calculated_hash if item.get("caption") else ""
-        images[digest] = item
-    # 保留导入文件中当前不存在/哈希不匹配的记录，但明确标成待处理，方便用户看到并重试。
-    for source in (existing.get("images", {}), external_images):
-        for digest, value in source.items():
-            if (
-                digest in images
-                or not isinstance(value, dict)
-                or len(str(digest)) != 64
-                or any(char not in "0123456789abcdef" for char in str(digest).lower())
-            ):
+        normalized_item = SemanticImage.from_dict(item).to_dict()
+        images[entry_id] = normalized_item
+    # 仅保留本次外部导入中缺图的记录供用户排查；本地已删除、移动或重命名
+    # 产生的旧记录必须移除，否则旧分类标签会进入下一次索引队列。
+    for source in (external_images,):
+        for entry_id, value in source.items():
+            if entry_id in images or not isinstance(value, dict):
                 continue
             item = dict(value)
-            item["content_sha256"] = str(digest).lower()
             if safe_relative_path(root, item.get("relative_path", "")) is None:
                 item["relative_path"] = ""
             item["caption_status"] = "pending"
             item["embedding_status"] = "pending"
             item["error"] = "图片不存在或内容哈希不匹配"
             item["updated_at"] = utc_now()
-            images[item["content_sha256"]] = item
+            images[str(entry_id)] = SemanticImage.from_dict(item).to_dict()
     result = dict(existing)
+    result["schema_version"] = SCHEMA_VERSION
     result["pack_id"] = root.name
     result["images"] = images
     result["file_total"] = (
@@ -519,9 +727,21 @@ def reconcile_metadata(
         if (root / "memes").is_dir()
         else 0
     )
-    result["unique_total"] = len(scanned_by_hash)
-    result["reused_duplicate_files"] = max(
-        0, result["file_total"] - len(scanned_by_hash)
+    result["unique_total"] = len(scanned_by_id)
+    result["content_unique_total"] = len(
+        {scan["content_sha256"] for scan in scanned_by_id.values()}
+    )
+    result["reused_duplicate_files"] = max(0, result["file_total"] - len(scanned_by_id))
+    result["cross_category_duplicate_entries"] = max(
+        0, result["unique_total"] - result["content_unique_total"]
+    )
+    result["requires_local_index_rebuild"] = bool(
+        set(local_images) != set(images)
+        or any(
+            item.get("embedding_status") != "done"
+            for entry_id, item in images.items()
+            if entry_id in scanned_by_id and isinstance(item, dict)
+        )
     )
     return result
 
@@ -592,3 +812,92 @@ def metadata_items(
         )
 
     return sorted(items, key=item_sort_key)
+
+
+def get_category_review_overview(pack_dir: Path | str) -> dict[str, Any]:
+    """返回主页审核筛选所需的逐文件状态与统计。"""
+    root = Path(pack_dir).resolve()
+    # 主页读取必须保持只读；后台语义任务可能正持有同一份元数据，GET 接口
+    # 如果在此 reconcile + save 会用旧快照覆盖刚完成的模型结果。
+    metadata = load_metadata(root) if metadata_path(root).is_file() else {"images": {}}
+    images = metadata.get("images", {})
+    items: list[dict[str, Any]] = []
+    memes_root = root / "memes"
+    if memes_root.is_dir():
+        for path in sorted(memes_root.rglob("*")):
+            if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+                continue
+            try:
+                path.resolve().relative_to(memes_root.resolve())
+            except ValueError:
+                continue
+            digest = file_sha256(path)
+            category = path.parent.name
+            entry_id = semantic_entry_id(digest, category)
+            record = images.get(entry_id, {})
+            status = str(record.get("category_review_status") or "unchecked")
+            items.append(
+                {
+                    "entry_id": entry_id,
+                    "relative_path": path.relative_to(root).as_posix(),
+                    "category": category,
+                    "filename": path.name,
+                    "category_tag": str(
+                        record.get("category_tag") or build_category_tag(category)
+                    ),
+                    "category_review_status": status,
+                    "category_review_reason": str(
+                        record.get("category_review_reason") or ""
+                    ),
+                    "caption_status": str(record.get("caption_status") or "pending"),
+                }
+            )
+    statistics = {
+        status: sum(1 for item in items if item.get("category_review_status") == status)
+        for status in (
+            "auto_match",
+            "needs_review",
+            "manual_confirmed",
+            "unchecked",
+        )
+    }
+    statistics["total"] = len(items)
+    return {"items": items, "statistics": statistics}
+
+
+def confirm_image_category(
+    pack_dir: Path | str, image_path: Path | str
+) -> dict[str, Any]:
+    """由用户确认当前分类，并把确认绑定到当前图片和分类描述。"""
+    root = Path(pack_dir).resolve()
+    memes_root = (root / "memes").resolve()
+    source = Path(image_path).resolve()
+    try:
+        source.relative_to(memes_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("图片路径不属于当前表情包") from exc
+    if not source.is_file():
+        raise FileNotFoundError("图片不存在")
+    metadata = reconcile_metadata(root)
+    digest = file_sha256(source)
+    entry_id = semantic_entry_id(digest, source.parent.name)
+    raw_item = metadata.get("images", {}).get(entry_id)
+    if not isinstance(raw_item, dict):
+        raise ValueError("图片尚未建立语义审核记录")
+    item = SemanticImage.from_dict(raw_item)
+    item.category_review_status = "manual_confirmed"
+    item.category_fit = "match"
+    item.category_review_reason = ""
+    item.category_review_context_hash = item.category_context_hash
+    item.manual_confirmation_context_hash = item.category_context_hash
+    item.updated_at = utc_now()
+    raw_item.update(item.to_dict())
+    save_metadata(root, metadata)
+    return get_image_semantic_detail(root, source)
+
+
+def invalidate_semantic_metadata(pack_dir: Path | str) -> dict[str, Any]:
+    """文件或分类变更后立即刷新元数据，使旧标签、确认和向量失效。"""
+    metadata = reconcile_metadata(pack_dir)
+    save_metadata(pack_dir, metadata)
+    return metadata

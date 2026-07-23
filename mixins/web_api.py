@@ -44,8 +44,10 @@ from ..backend.pack_storage import (
 )
 from ..backend.semantic_index import EmbeddingAdapter, index_is_ready
 from ..backend.semantic_storage import (
+    get_category_review_overview,
     get_image_semantic_detail,
     import_metadata_file,
+    invalidate_semantic_metadata,
     load_metadata,
     metadata_items,
 )
@@ -205,6 +207,18 @@ class WebAPIMixin:
             self._api_get_meme_image_semantic,
             ["GET"],
             "获取单张表情图片的语义描述",
+        )
+        self._register_webui_api(
+            "semantic/reviews",
+            self._api_semantic_reviews,
+            ["GET"],
+            "获取分类审核状态和统计",
+        )
+        self._register_webui_api(
+            "semantic/confirm_category",
+            self._api_semantic_confirm_category,
+            ["POST"],
+            "人工确认图片当前分类",
         )
 
         # Phase 3: pack-aware API
@@ -408,6 +422,24 @@ class WebAPIMixin:
             return jsonify({"message": str(exc)}), 409
         return None
 
+    async def _run_default_pack_mutation(self, operation: str, mutation):
+        """让分类/移动操作与同图包语义任务共享同一把锁。"""
+        pack_id = str(MEMES_DIR.parent.name or "").strip()
+        manager = getattr(self, "semantic_task_manager", None)
+        if manager is None or not pack_id:
+            return mutation()
+        return await manager.run_locked_pack_mutation(pack_id, operation, mutation)
+
+    @staticmethod
+    def _invalidate_default_pack_semantics() -> None:
+        pack_dir = MEMES_DIR.resolve().parent
+        if not (pack_dir / "semantic_metadata.json").is_file():
+            return
+        try:
+            invalidate_semantic_metadata(pack_dir)
+        except Exception as exc:
+            logger.error("图片变更后刷新语义元数据失败: %s", exc, exc_info=True)
+
     def _finish_img_host_local_operation(self) -> None:
         active = getattr(self, "_img_host_local_operation", None)
         if not isinstance(active, dict):
@@ -415,6 +447,16 @@ class WebAPIMixin:
         pack_id = str(active.get("pack_id") or "").strip()
         manager = getattr(self, "semantic_task_manager", None)
         if manager is not None and pack_id:
+            pack_dir = PACKS_DIR / pack_id
+            if (pack_dir / "semantic_metadata.json").is_file():
+                try:
+                    invalidate_semantic_metadata(pack_dir)
+                except Exception as exc:
+                    logger.error(
+                        "图床任务结束后刷新语义元数据失败: %s",
+                        exc,
+                        exc_info=True,
+                    )
             manager.end_external_pack_operation(pack_id)
         self._img_host_local_operation = None
 
@@ -559,13 +601,16 @@ class WebAPIMixin:
             image_file = files["file"]
             if not image_file or not image_file.filename:
                 return jsonify({"message": "无效的图片文件"}), 400
-            conflict = self._guard_default_pack_file_operation("上传表情图片")
-            if conflict:
-                return conflict
             logger.info(f"收到上传请求: 类别={category}, 文件名={image_file.filename}")
             try:
-                result = add_emoji_to_category(category, image_file)
-                self.category_manager.sync_with_filesystem()
+
+                def mutate():
+                    add_result = add_emoji_to_category(category, image_file)
+                    self.category_manager.sync_with_filesystem()
+                    self._invalidate_default_pack_semantics()
+                    return add_result
+
+                result = await self._run_default_pack_mutation("上传表情图片", mutate)
                 logger.info(f"表情添加成功: {result['path']}")
                 return (
                     jsonify(
@@ -591,6 +636,8 @@ class WebAPIMixin:
                     ),
                     409,
                 )
+            except RuntimeError as e:
+                return jsonify({"message": str(e)}), 409
         except Exception as e:
             logger.error(f"处理上传请求时出错: {e}", exc_info=True)
             return jsonify({"message": f"处理上传请求时出错: {str(e)}"}), 500
@@ -601,10 +648,18 @@ class WebAPIMixin:
         image_file = data.get("image_file")
         if not category or not image_file:
             return jsonify({"message": "分类和文件名不能为空"}), 400
-        conflict = self._guard_default_pack_file_operation("删除表情图片")
-        if conflict:
-            return conflict
-        if delete_emoji_from_category(category, image_file):
+
+        def mutate():
+            deleted = delete_emoji_from_category(category, image_file)
+            if deleted:
+                self._invalidate_default_pack_semantics()
+            return deleted
+
+        try:
+            deleted = await self._run_default_pack_mutation("删除表情图片", mutate)
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        if deleted:
             return (
                 jsonify(
                     {
@@ -623,10 +678,17 @@ class WebAPIMixin:
         image_files = data.get("image_files")
         if not category or not isinstance(image_files, list) or not image_files:
             return jsonify({"message": "分类和文件名列表不能为空"}), 400
-        conflict = self._guard_default_pack_file_operation("批量删除表情图片")
-        if conflict:
-            return conflict
-        result = batch_delete_emojis(category, image_files)
+
+        def mutate():
+            delete_result = batch_delete_emojis(category, image_files)
+            if delete_result.get("deleted_files"):
+                self._invalidate_default_pack_semantics()
+            return delete_result
+
+        try:
+            result = await self._run_default_pack_mutation("批量删除表情图片", mutate)
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
         if not result["category_exists"]:
             return jsonify({"message": "分类未找到"}), 404
         return (
@@ -652,10 +714,19 @@ class WebAPIMixin:
             return jsonify({"message": "源分类、目标分类和文件名不能为空"}), 400
         if source_category == target_category:
             return jsonify({"message": "源分类和目标分类不能相同"}), 400
-        conflict = self._guard_default_pack_file_operation("移动表情图片")
-        if conflict:
-            return conflict
-        result = move_emoji_to_category(source_category, image_file, target_category)
+
+        def mutate():
+            move_result = move_emoji_to_category(
+                source_category, image_file, target_category
+            )
+            if move_result.get("moved"):
+                self._invalidate_default_pack_semantics()
+            return move_result
+
+        try:
+            result = await self._run_default_pack_mutation("移动表情图片", mutate)
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
         if not result["source_category_exists"]:
             return jsonify({"message": "源分类未找到"}), 404
         if result["conflict"]:
@@ -688,10 +759,19 @@ class WebAPIMixin:
             return jsonify({"message": "源分类、目标分类和文件名列表不能为空"}), 400
         if source_category == target_category:
             return jsonify({"message": "源分类和目标分类不能相同"}), 400
-        conflict = self._guard_default_pack_file_operation("批量移动表情图片")
-        if conflict:
-            return conflict
-        result = batch_move_emojis(source_category, image_files, target_category)
+
+        def mutate():
+            move_result = batch_move_emojis(
+                source_category, image_files, target_category
+            )
+            if move_result.get("moved_files"):
+                self._invalidate_default_pack_semantics()
+            return move_result
+
+        try:
+            result = await self._run_default_pack_mutation("批量移动表情图片", mutate)
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
         if not result["source_category_exists"]:
             return jsonify({"message": "源分类未找到"}), 404
         return (
@@ -723,10 +803,19 @@ class WebAPIMixin:
             or not image_files
         ):
             return jsonify({"message": "源分类、目标分类和文件名列表不能为空"}), 400
-        conflict = self._guard_default_pack_file_operation("批量复制表情图片")
-        if conflict:
-            return conflict
-        result = batch_copy_emojis(source_category, image_files, target_category)
+
+        def mutate():
+            copy_result = batch_copy_emojis(
+                source_category, image_files, target_category
+            )
+            if copy_result.get("copied_files"):
+                self._invalidate_default_pack_semantics()
+            return copy_result
+
+        try:
+            result = await self._run_default_pack_mutation("批量复制表情图片", mutate)
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
         if not result["source_category_exists"]:
             return jsonify({"message": "源分类未找到"}), 404
         return (
@@ -747,10 +836,16 @@ class WebAPIMixin:
         )
 
     async def _api_clear_all_emojis(self):
-        conflict = self._guard_default_pack_file_operation("清空全部表情图片")
-        if conflict:
-            return conflict
-        result = clear_all_emojis()
+        def mutate():
+            clear_result = clear_all_emojis()
+            if any(clear_result.get("deleted_by_category", {}).values()):
+                self._invalidate_default_pack_semantics()
+            return clear_result
+
+        try:
+            result = await self._run_default_pack_mutation("清空全部表情图片", mutate)
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
         deleted_count = sum(result["deleted_by_category"].values())
         return (
             jsonify(
@@ -782,12 +877,15 @@ class WebAPIMixin:
             category = data.get("category")
             if not category:
                 return jsonify({"message": "分类不能为空"}), 400
-            conflict = self._guard_default_pack_file_operation("删除表情分类")
-            if conflict:
-                return conflict
-            if self.category_manager.delete_category(category):
+            deleted = await self._run_default_pack_mutation(
+                "删除表情分类",
+                lambda: self.category_manager.delete_category(category),
+            )
+            if deleted:
                 return jsonify({"message": "分类删除成功"}), 200
             return jsonify({"message": "分类删除失败"}), 500
+        except RuntimeError as e:
+            return jsonify({"message": str(e)}), 409
         except Exception as e:
             return jsonify({"message": f"分类删除失败: {str(e)}"}), 500
 
@@ -796,10 +894,17 @@ class WebAPIMixin:
         category = data.get("category")
         if not category:
             return jsonify({"message": "分类不能为空"}), 400
-        conflict = self._guard_default_pack_file_operation("清空表情分类")
-        if conflict:
-            return conflict
-        result = clear_category_emojis(category)
+
+        def mutate():
+            clear_result = clear_category_emojis(category)
+            if clear_result.get("deleted_files"):
+                self._invalidate_default_pack_semantics()
+            return clear_result
+
+        try:
+            result = await self._run_default_pack_mutation("清空表情分类", mutate)
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
         if not result["category_exists"]:
             return jsonify({"message": "分类未找到"}), 404
         return (
@@ -821,12 +926,18 @@ class WebAPIMixin:
             description = data.get("description", "请添加描述")
             if not category:
                 return jsonify({"message": "分类不能为空"}), 400
-            if self.category_manager.create_category(category, description):
+            created = await self._run_default_pack_mutation(
+                "创建表情分类",
+                lambda: self.category_manager.create_category(category, description),
+            )
+            if created:
                 return (
                     jsonify({"message": "分类创建成功", "description": description}),
                     200,
                 )
             return jsonify({"message": "分类创建失败"}), 500
+        except RuntimeError as e:
+            return jsonify({"message": str(e)}), 409
         except Exception as e:
             return jsonify({"message": f"分类创建失败: {str(e)}"}), 500
 
@@ -837,12 +948,15 @@ class WebAPIMixin:
             new_name = data.get("new_name")
             if not old_name or not new_name:
                 return jsonify({"message": "旧分类名和新分类名不能为空"}), 400
-            conflict = self._guard_default_pack_file_operation("重命名表情分类")
-            if conflict:
-                return conflict
-            if self.category_manager.rename_category(old_name, new_name):
+            renamed = await self._run_default_pack_mutation(
+                "重命名表情分类",
+                lambda: self.category_manager.rename_category(old_name, new_name),
+            )
+            if renamed:
                 return jsonify({"message": "分类重命名成功"}), 200
             return jsonify({"message": "分类重命名失败"}), 500
+        except RuntimeError as e:
+            return jsonify({"message": str(e)}), 409
         except Exception as e:
             return jsonify({"message": f"分类重命名失败: {str(e)}"}), 500
 
@@ -853,9 +967,15 @@ class WebAPIMixin:
             description = data.get("description")
             if not category or not description:
                 return jsonify({"message": "分类和描述不能为空"}), 400
-            if self.category_manager.update_description(category, description):
+            updated = await self._run_default_pack_mutation(
+                "更新表情分类描述",
+                lambda: self.category_manager.update_description(category, description),
+            )
+            if updated:
                 return jsonify({"category": category, "description": description}), 200
             return jsonify({"message": "更新分类描述失败"}), 500
+        except RuntimeError as e:
+            return jsonify({"message": str(e)}), 409
         except Exception as e:
             return jsonify({"message": f"更新分类描述失败: {str(e)}"}), 500
 
@@ -865,9 +985,15 @@ class WebAPIMixin:
             category = data.get("category")
             if not category:
                 return jsonify({"message": "分类不能为空"}), 400
-            if self.category_manager.remove_from_config(category):
+            removed = await self._run_default_pack_mutation(
+                "移除表情分类配置",
+                lambda: self.category_manager.remove_from_config(category),
+            )
+            if removed:
                 return jsonify({"message": "已从配置中移除分类"}), 200
             return jsonify({"message": "从配置中移除分类失败"}), 500
+        except RuntimeError as e:
+            return jsonify({"message": str(e)}), 409
         except Exception as e:
             return jsonify({"message": f"从配置中移除分类失败: {str(e)}"}), 500
 
@@ -894,11 +1020,17 @@ class WebAPIMixin:
     async def _api_sync_config(self):
         try:
             logger.info("开始同步配置...")
-            if self.category_manager.sync_with_filesystem():
+            synced = await self._run_default_pack_mutation(
+                "同步表情分类配置",
+                self.category_manager.sync_with_filesystem,
+            )
+            if synced:
                 logger.info("配置同步成功")
                 return jsonify({"message": "配置同步成功"}), 200
             logger.warning("配置同步失败")
             return jsonify({"message": "配置同步失败"}), 500
+        except RuntimeError as e:
+            return jsonify({"message": str(e)}), 409
         except Exception as e:
             logger.error(f"配置同步失败: {e}")
             return jsonify({"message": f"配置同步失败: {str(e)}"}), 500
@@ -1338,6 +1470,71 @@ class WebAPIMixin:
             logger.error("读取图片语义失败: %s", exc, exc_info=True)
             return jsonify({"message": "读取图片语义失败"}), 500
 
+    async def _api_semantic_reviews(self):
+        try:
+            pack_id = await self._semantic_request_pack_id()
+            return jsonify(
+                {
+                    "pack_id": pack_id,
+                    **get_category_review_overview(PACKS_DIR / pack_id),
+                }
+            ), 200
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("读取分类审核状态失败: %s", exc, exc_info=True)
+            return jsonify({"message": "读取分类审核状态失败"}), 500
+
+    async def _api_semantic_confirm_category(self):
+        try:
+            data = await request.get_json() or {}
+            pack_id = await self._semantic_request_pack_id(data)
+            category = str(data.get("category") or "").strip()
+            filename = str(data.get("filename") or "").strip()
+            if not category or not filename:
+                raise ValueError("分类和文件名不能为空")
+            if (
+                category in {".", ".."}
+                or Path(category).name != category
+                or "/" in category
+                or "\\" in category
+                or filename in {".", ".."}
+                or Path(filename).name != filename
+                or "/" in filename
+                or "\\" in filename
+            ):
+                raise ValueError("分类或文件名无效")
+            pack_dir = (PACKS_DIR / pack_id).resolve()
+            memes_root = (pack_dir / "memes").resolve()
+            image_path = (memes_root / category / filename).resolve()
+            try:
+                image_path.relative_to(memes_root)
+            except ValueError as exc:
+                raise ValueError("图片路径无效") from exc
+            detail = await self.semantic_task_manager.confirm_category(
+                pack_id, image_path
+            )
+            return jsonify(
+                {
+                    "message": "已确认当前分类正确",
+                    "pack_id": pack_id,
+                    "category": category,
+                    "filename": filename,
+                    "semantic": detail,
+                }
+            ), 200
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("确认图片分类失败: %s", exc, exc_info=True)
+            return jsonify({"message": "确认图片分类失败"}), 500
+
     @staticmethod
     def _build_file_data_url(file_path, mime_type: str) -> str:
         with open(file_path, "rb") as image_file:
@@ -1426,9 +1623,7 @@ class WebAPIMixin:
             except (TypeError, ValueError):
                 page_size = 20
             page_size = min(100, max(10, page_size))
-            all_items = metadata_items(
-                PACKS_DIR / pack_id, request.args.get("status")
-            )
+            all_items = metadata_items(PACKS_DIR / pack_id, request.args.get("status"))
             total = len(all_items)
             total_pages = max(1, (total + page_size - 1) // page_size)
             page = min(page, total_pages)
@@ -1558,8 +1753,12 @@ class WebAPIMixin:
         try:
             data = await request.get_json() or {}
             pack_id = await self._semantic_request_pack_id(data)
-            result = await self.semantic_task_manager.clear_local_semantic_state(pack_id)
-            return jsonify({"message": "已清理本机任务与向量，图片描述已保留", **result}), 200
+            result = await self.semantic_task_manager.clear_local_semantic_state(
+                pack_id
+            )
+            return jsonify(
+                {"message": "已清理本机任务与向量，图片描述已保留", **result}
+            ), 200
         except FileNotFoundError as exc:
             return jsonify({"message": str(exc)}), 404
         except RuntimeError as exc:

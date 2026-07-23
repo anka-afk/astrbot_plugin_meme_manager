@@ -15,11 +15,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-SCHEMA_VERSION = "1.0"
-PROMPT_VERSION = "meme-semantic-v6"
-IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif"})
+SCHEMA_VERSION = "2.0"
+PROMPT_VERSION = "meme-semantic-v7-category-aware"
+IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp"})
 CAPTION_STATUSES = frozenset({"pending", "running", "done", "failed"})
-EMBEDDING_STATUSES = frozenset({"pending", "running", "done", "failed"})
+EMBEDDING_STATUSES = frozenset({"pending", "running", "done", "failed", "cleared"})
+CATEGORY_FITS = frozenset({"match", "uncertain", "conflict"})
+CATEGORY_REVIEW_STATUSES = frozenset(
+    {"unchecked", "auto_match", "needs_review", "manual_confirmed"}
+)
 TASK_STATUSES = frozenset(
     {"idle", "running", "paused", "completed", "completed_with_errors", "failed"}
 )
@@ -74,17 +78,110 @@ def normalize_tags(tags: Any) -> list[str]:
     return result
 
 
-def build_semantic_text(
-    caption: str, tags: Iterable[str], visible_text: str, category: str = ""
+def build_category_tag(category: str) -> str:
+    """返回后端维护的固定分类标签。"""
+    value = str(category or "").strip()
+    return f"category:{value}" if value else ""
+
+
+def is_category_tag(tag: Any) -> bool:
+    value = str(tag or "").strip()
+    return value.startswith("category:") or value.startswith("分类:")
+
+
+def ensure_category_tag(tags: Any, category: str) -> list[str]:
+    """把后端固定分类标签放在第一位，其余内容标签保持原样。"""
+    fixed_tag = build_category_tag(category)
+    content_tags = [tag for tag in normalize_tags(tags) if tag != fixed_tag]
+    return [fixed_tag, *content_tags] if fixed_tag else content_tags
+
+
+def category_review_is_complete(status: Any) -> bool:
+    """模型已判断或用户已确认时，分类审核才算完成。"""
+    return str(status or "") in {"auto_match", "needs_review", "manual_confirmed"}
+
+
+def category_analysis_is_current(item: Any) -> bool:
+    """分类已审核，且 AI 内容由当前分类感知提示词生成时才可建立索引。"""
+    if not isinstance(item, dict) or not category_review_is_complete(
+        item.get("category_review_status")
+    ):
+        return False
+    if item.get("manual_override") or item.get("provenance") in {"manual", "mixed"}:
+        return True
+    return str(item.get("prompt_version") or "") == PROMPT_VERSION
+
+
+def semantic_entry_id(content_sha256: str, category: str) -> str:
+    """按“图片内容 + 分类”生成稳定键，避免跨分类的重复图片互相覆盖。"""
+    digest = str(content_sha256 or "").strip().lower()
+    category_value = str(category or "").strip()
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise ValueError("content_sha256 必须是完整 SHA-256")
+    return hashlib.sha256(f"{digest}\0{category_value}".encode()).hexdigest()
+
+
+def category_context_hash(
+    content_sha256: str, category: str, category_description: str = ""
 ) -> str:
-    """按文档约定生成向量模型使用的标准文本。"""
+    """生成审核上下文指纹；图片、分类或描述变化都会得到不同结果。"""
+    digest = str(content_sha256 or "").strip().lower()
+    category_value = str(category or "").strip()
+    description_value = re.sub(r"\s+", " ", str(category_description or "")).strip()
+    return hashlib.sha256(
+        f"{digest}\0{category_value}\0{description_value}".encode()
+    ).hexdigest()
+
+
+def anchor_caption_to_category(
+    caption: str,
+    tags: Any,
+    category: str,
+    category_fit: str,
+    category_description: str = "",
+) -> str:
+    """在非明确冲突时，确保描述不会完全丢失用户已有分类这一主语。"""
+    value = str(caption or "").strip()
+    category_value = str(category or "").strip()
+    if not value or not category_value or category_fit == "conflict":
+        return value
+    if value.startswith(f"以当前分类“{category_value}”"):
+        return value
+    description = re.sub(r"\s+", " ", str(category_description or "")).strip()[:160]
+    description_hint = f"（{description}）" if description else ""
+    return (
+        f"以当前分类“{category_value}”{description_hint}所代表的情绪、态度或用途为主体："
+        f"{value}"
+    )
+
+
+def build_semantic_text(
+    caption: str,
+    tags: Iterable[str],
+    visible_text: str,
+    category: str = "",
+    category_description: str = "",
+) -> str:
+    """生成向量文本；固定分类只出现一次，但保持高权重的独立字段。"""
+    normalized_tags = ensure_category_tag(tags, category)
+    # 第一个标签是后端固定分类标签，已在独立字段中写入；后续标签即使也有
+    # 分类性质，仍视为模型或人工提供的普通内容标签并予以保留。
+    ordinary_tags = (
+        normalized_tags[1:] if category and normalized_tags else normalized_tags
+    )
     parts = [
         f"图片含义：{str(caption or '').strip()}",
-        f"标签：{'、'.join(normalize_tags(tags))}",
-        f"图片文字：{str(visible_text or '').strip()}",
     ]
     if category:
-        parts.append(f"分类：{str(category).strip()}")
+        parts.append(f"固定分类标签：{build_category_tag(category)}")
+    if category_description:
+        parts.append(f"分类含义：{str(category_description).strip()}")
+    parts.extend(
+        [
+            f"语义标签：{'、'.join(ordinary_tags)}",
+            f"图片文字：{str(visible_text or '').strip()}",
+        ]
+    )
     return "\n".join(parts)
 
 
@@ -265,6 +362,15 @@ class SemanticImage:
     content_sha256: str
     relative_path: str
     category: str = ""
+    entry_id: str = ""
+    category_description: str = ""
+    category_tag: str = ""
+    category_context_hash: str = ""
+    category_fit: str = "uncertain"
+    category_review_status: str = "unchecked"
+    category_review_reason: str = ""
+    category_review_context_hash: str = ""
+    manual_confirmation_context_hash: str = ""
     caption: str = ""
     tags: list[str] = field(default_factory=list)
     visible_text: str = ""
@@ -283,29 +389,71 @@ class SemanticImage:
     def __post_init__(self) -> None:
         self.content_sha256 = str(self.content_sha256 or "").lower()
         self.relative_path = str(self.relative_path or "").replace("\\", "/")
-        self.tags = normalize_tags(self.tags)
+        self.category = str(self.category or "").strip()
+        self.category_description = str(self.category_description or "").strip()
+        if len(self.content_sha256) == 64:
+            self.entry_id = semantic_entry_id(self.content_sha256, self.category)
+        self.category_tag = build_category_tag(self.category)
+        current_context_hash = category_context_hash(
+            self.content_sha256, self.category, self.category_description
+        )
+        if self.category_context_hash != current_context_hash:
+            self.category_context_hash = current_context_hash
+            self.category_review_status = "unchecked"
+            self.category_review_reason = ""
+            self.category_review_context_hash = ""
+            self.manual_confirmation_context_hash = ""
         self.auto_tags = normalize_tags(self.auto_tags)
         self.manual_tags = normalize_tags(self.manual_tags)
+        self.tags = ensure_category_tag(self.tags, self.category)
         if self.manual_override and self.manual_tags:
-            self.tags = list(self.manual_tags)
+            self.tags = ensure_category_tag(self.manual_tags, self.category)
         if self.caption_status not in CAPTION_STATUSES:
             self.caption_status = "pending"
         if self.embedding_status not in EMBEDDING_STATUSES:
             self.embedding_status = "pending"
+        if self.category_fit not in CATEGORY_FITS:
+            self.category_fit = "uncertain"
+        if self.category_review_status not in CATEGORY_REVIEW_STATUSES:
+            self.category_review_status = "unchecked"
+        if self.category_review_status == "manual_confirmed":
+            if self.manual_confirmation_context_hash != self.category_context_hash:
+                self.category_review_status = "unchecked"
+                self.manual_confirmation_context_hash = ""
+        elif (
+            self.category_review_status in {"auto_match", "needs_review"}
+            and self.category_review_context_hash != self.category_context_hash
+        ):
+            self.category_review_status = "unchecked"
+            self.category_review_reason = ""
+            self.category_review_context_hash = ""
         if not self.text_hash and self.caption:
             self.text_hash = text_hash(self.vector_text)
 
     @property
     def vector_text(self) -> str:
         return build_semantic_text(
-            self.caption, self.tags, self.visible_text, self.category
+            self.caption,
+            self.tags,
+            self.visible_text,
+            self.category,
+            self.category_description,
         )
 
     def to_dict(self) -> dict[str, Any]:
         data = {
             "content_sha256": self.content_sha256,
             "relative_path": self.relative_path,
+            "entry_id": self.entry_id,
             "category": self.category,
+            "category_description": self.category_description,
+            "category_tag": self.category_tag,
+            "category_context_hash": self.category_context_hash,
+            "category_fit": self.category_fit,
+            "category_review_status": self.category_review_status,
+            "category_review_reason": self.category_review_reason,
+            "category_review_context_hash": self.category_review_context_hash,
+            "manual_confirmation_context_hash": self.manual_confirmation_context_hash,
             "caption": self.caption,
             "tags": self.tags,
             "visible_text": self.visible_text,
@@ -370,3 +518,43 @@ def parse_caption_result(value: Any) -> tuple[str, list[str], str]:
     if not caption or not tags:
         raise ValueError("视觉模型结果缺少 caption 或 tags")
     return caption, tags, visible_text
+
+
+def parse_caption_result_with_review(
+    value: Any,
+) -> tuple[str, list[str], str, str, str]:
+    """解析带分类符合判断的视觉结果，并兼容旧模型的三字段结果。"""
+    original = value
+    if isinstance(value, str):
+        raw = value.strip()
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            decoder = json.JSONDecoder()
+            candidates = []
+            for start, character in enumerate(raw):
+                if character != "{":
+                    continue
+                try:
+                    candidate, _ = decoder.raw_decode(raw[start:])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(candidate, dict) and candidate.get("caption"):
+                    candidates.append(candidate)
+            value = candidates[-1] if candidates else original
+    caption, tags, visible_text = parse_caption_result(original)
+    payload = value if isinstance(value, dict) else {}
+    category_fit = str(payload.get("category_fit") or "uncertain").strip().lower()
+    if category_fit not in CATEGORY_FITS:
+        raise ValueError("视觉模型结果的 category_fit 无效")
+    reason = str(payload.get("category_review_reason") or "").strip()
+    reason = re.sub(r"\s+", " ", reason)[:240]
+    if category_fit == "match":
+        reason = ""
+    elif not reason:
+        reason = (
+            "模型未返回分类判断原因"
+            if "category_fit" in payload
+            else "模型未返回分类符合判断"
+        )
+    return caption, tags, visible_text, category_fit, reason

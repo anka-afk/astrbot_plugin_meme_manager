@@ -73,6 +73,7 @@ async function initApp() {
         "meme_image",
         "meme_image_data",
         "meme_image_semantic",
+        "semantic/reviews",
         "img_host/sync/status",
         "img_host/sync/task_status",
       ].includes(endpoint)
@@ -100,6 +101,9 @@ async function initApp() {
     if (selectedPackId && endpoint.startsWith("img_host/sync/")) {
       mergedBody.managed_pack_id = selectedPackId;
     }
+    if (selectedPackId && endpoint.startsWith("semantic/")) {
+      mergedBody.pack_id = selectedPackId;
+    }
     return await window.AstrBotPluginPage.apiPost(endpoint, mergedBody);
   }
 
@@ -108,6 +112,10 @@ async function initApp() {
     items: new Map(),
   };
   let latestEmojiData = {};
+  let latestTagDescriptions = {};
+  let semanticReviewByPath = new Map();
+  let semanticReviewStatistics = {};
+  let activeSemanticReviewFilter = "all";
   let dangerConfirmResolver = null;
   let dangerConfirmStage = "ack";
   let dangerConfirmTimer = null;
@@ -178,6 +186,19 @@ async function initApp() {
   const imagePreviewSemanticIndex = document.getElementById(
     "image-preview-semantic-index",
   );
+  const imagePreviewCategoryTag = document.getElementById(
+    "image-preview-category-tag",
+  );
+  const imagePreviewCategoryReviewState = document.getElementById(
+    "image-preview-category-review-state",
+  );
+  const imagePreviewCategoryReviewReason = document.getElementById(
+    "image-preview-category-review-reason",
+  );
+  const imagePreviewCategoryConfirmBtn = document.getElementById(
+    "image-preview-category-confirm-btn",
+  );
+  const semanticReviewStats = document.getElementById("semantic-review-stats");
   const moveTargetModalRoot = document.getElementById("move-target-modal");
   const moveTargetModalTitle = document.getElementById(
     "move-target-modal-title",
@@ -607,16 +628,63 @@ async function initApp() {
     }
   }
 
-  // 获取表情包数据和描述
+  function semanticReviewKey(category, filename) {
+    return `${String(category || "")}\u0000${String(filename || "")}`;
+  }
+
+  function semanticReviewLabel(status) {
+    return (
+      {
+        auto_match: "自动符合",
+        needs_review: "建议人工复核",
+        manual_confirmed: "已人工确认",
+        unchecked: "尚未检查",
+      }[String(status || "")] || "尚未检查"
+    );
+  }
+
+  function updateSemanticReviewToolbar() {
+    if (!semanticReviewStats) return;
+    semanticReviewStats.querySelectorAll("button[data-review-filter]").forEach((button) => {
+      const filter = String(button.dataset.reviewFilter || "all");
+      const count =
+        filter === "all"
+          ? Number(semanticReviewStatistics.total || 0)
+          : Number(semanticReviewStatistics[filter] || 0);
+      const value = button.querySelector("span");
+      if (value) value.textContent = String(count);
+      button.classList.toggle("active", filter === activeSemanticReviewFilter);
+    });
+  }
+
+  function applySemanticReviewData(payload) {
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+    semanticReviewByPath = new Map(
+      items.map((item) => [
+        semanticReviewKey(item?.category, item?.filename),
+        item,
+      ]),
+    );
+    semanticReviewStatistics = payload?.statistics || {};
+    updateSemanticReviewToolbar();
+  }
+
+  // 获取表情包数据、描述和分类审核状态
   async function fetchEmojis() {
     try {
-      const [emojiResponse, tagDescriptions] = await Promise.all([
+      const [emojiResponse, tagDescriptions, reviewResult] = await Promise.all([
         apiGet("emoji"),
         apiGet("emotions"),
+        apiGet("semantic/reviews").catch((error) => {
+          console.warn("读取分类审核状态失败:", error);
+          return { items: [], statistics: {} };
+        }),
       ]);
       clearDragMode();
       closeBatchContextMenu();
       latestEmojiData = emojiResponse;
+      latestTagDescriptions = tagDescriptions;
+      applySemanticReviewData(reviewResult);
       pruneSelectionState();
       displayCategories(emojiResponse, tagDescriptions);
       updateSidebar(emojiResponse, tagDescriptions);
@@ -810,6 +878,34 @@ async function initApp() {
     if (imagePreviewSemanticFilename) {
       imagePreviewSemanticFilename.textContent = imagePreviewState?.emoji || "";
     }
+    const reviewStatus = String(
+      semantic?.category_review_status || "unchecked",
+    );
+    if (imagePreviewCategoryTag) {
+      imagePreviewCategoryTag.textContent = loading
+        ? "读取固定标签…"
+        : String(
+            semantic?.category_tag ||
+              `category:${imagePreviewState?.category || ""}`,
+          );
+    }
+    if (imagePreviewCategoryReviewState) {
+      imagePreviewCategoryReviewState.textContent = loading
+        ? "读取审核状态…"
+        : semanticReviewLabel(reviewStatus);
+    }
+    const reviewReason = String(semantic?.category_review_reason || "").trim();
+    if (imagePreviewCategoryReviewReason) {
+      imagePreviewCategoryReviewReason.textContent = reviewReason;
+      imagePreviewCategoryReviewReason.classList.toggle(
+        "hidden",
+        loading || !reviewReason,
+      );
+    }
+    imagePreviewCategoryConfirmBtn?.classList.toggle(
+      "hidden",
+      loading || error || !semantic?.can_confirm_category,
+    );
     if (loading) {
       imagePreviewSemanticState.textContent = "读取中";
       imagePreviewSemanticCaption.textContent = "正在读取这张图片的语义信息…";
@@ -866,6 +962,27 @@ async function initApp() {
             ? "语义向量已建立，可用于搜索。"
             : "图片含义已生成，语义向量尚未完成。"
           : "";
+    }
+  }
+
+  async function confirmCurrentImageCategory() {
+    if (!imagePreviewState || !imagePreviewCategoryConfirmBtn) return;
+    const previewState = imagePreviewState;
+    setButtonBusy(imagePreviewCategoryConfirmBtn, "保存中...");
+    try {
+      const result = await apiPost("semantic/confirm_category", {
+        category: previewState.category,
+        filename: previewState.emoji,
+      });
+      if (imagePreviewState === previewState) {
+        renderImageSemantic(result?.semantic || {});
+      }
+      await fetchEmojis();
+      showToast("已保存人工确认；图片或分类变化后会自动失效。", "success");
+    } catch (error) {
+      showToast(error?.message || String(error), "error", "确认失败");
+    } finally {
+      restoreButton(imagePreviewCategoryConfirmBtn);
     }
   }
 
@@ -2923,7 +3040,26 @@ async function initApp() {
     const container = document.getElementById("emoji-categories");
     container.innerHTML = "";
 
-    const categoryEntries = Object.entries(emojiData || {});
+    const categoryEntries = Object.entries(emojiData || {})
+      .map(([category, emojis]) => {
+        const source = Array.isArray(emojis) ? emojis : [];
+        if (activeSemanticReviewFilter === "all") {
+          return [category, source];
+        }
+        return [
+          category,
+          source.filter((emoji) => {
+            const review = semanticReviewByPath.get(
+              semanticReviewKey(category, emoji),
+            );
+            return (
+              String(review?.category_review_status || "unchecked") ===
+              activeSemanticReviewFilter
+            );
+          }),
+        ];
+      })
+      .filter(([, emojis]) => activeSemanticReviewFilter === "all" || emojis.length);
     const totalEmojiCount = categoryEntries.reduce((total, [, emojis]) => {
       return total + (Array.isArray(emojis) ? emojis.length : 0);
     }, 0);
@@ -2931,7 +3067,9 @@ async function initApp() {
     if (!categoryEntries.length || totalEmojiCount === 0) {
       const hint = document.createElement("div");
       hint.className = "empty-pack-hint";
-      hint.innerHTML = `
+      hint.innerHTML =
+        activeSemanticReviewFilter === "all"
+          ? `
         <p class="empty-pack-hint-title">当前还没有表情包内容</p>
         <p class="empty-pack-hint-meta">你可以先新建分类上传表情，或前往资源广场下载官方包；也可直接一键安装官方包。</p>
         <div class="empty-pack-hint-actions">
@@ -2939,10 +3077,12 @@ async function initApp() {
           <button id="empty-hint-create-category" type="button">新建分类</button>
           <a id="empty-hint-open-catalog" href="#">前往资源广场下载</a>
         </div>
-      `;
+      `
+          : `<p class="empty-pack-hint-title">当前筛选条件下没有图片</p>
+             <p class="empty-pack-hint-meta">请选择其他分类审核状态，或切回“全部”。</p>`;
       container.appendChild(hint);
 
-      if (!emptyPackGuideShown) {
+      if (activeSemanticReviewFilter === "all" && !emptyPackGuideShown) {
         showToast(
           "当前是空表情包，建议前往资源广场下载官方包。",
           "info",
@@ -3070,6 +3210,33 @@ async function initApp() {
           emojiItem.dataset.loading = "false";
           emojiItem.tabIndex = 0;
 
+          const review = semanticReviewByPath.get(
+            semanticReviewKey(category, emoji),
+          ) || {
+            category_tag: `category:${category}`,
+            category_review_status: "unchecked",
+          };
+          const reviewStatus = String(
+            review.category_review_status || "unchecked",
+          );
+          emojiItem.classList.add(`review-${reviewStatus}`);
+          emojiItem.dataset.categoryReviewStatus = reviewStatus;
+
+          const semanticBadge = document.createElement("span");
+          semanticBadge.className = "emoji-item-semantic-badge";
+          const fixedCategoryTag = String(
+            review.category_tag || `category:${category}`,
+          );
+          semanticBadge.textContent = `${fixedCategoryTag} · ${semanticReviewLabel(reviewStatus)}`;
+          const reviewReason = String(
+            review.category_review_reason || "",
+          ).trim();
+          semanticBadge.title =
+            reviewStatus === "needs_review" && reviewReason
+              ? `${semanticBadge.textContent}；原因：${reviewReason}`
+              : semanticBadge.textContent;
+          emojiItem.appendChild(semanticBadge);
+
           const selectionIndicator = document.createElement("button");
           selectionIndicator.type = "button";
           selectionIndicator.className = "selection-indicator";
@@ -3092,11 +3259,13 @@ async function initApp() {
         });
       }
 
-      const { uploadBlock, fileInput } = createUploadDropzone(category);
+      if (activeSemanticReviewFilter === "all") {
+        const { uploadBlock, fileInput } = createUploadDropzone(category);
 
-      // 将文件输入框和上传块添加到表情包网格中
-      emojiGrid.appendChild(uploadBlock);
-      emojiGrid.appendChild(fileInput);
+        // 筛选状态下不显示上传入口，避免把新图片误认为筛选结果。
+        emojiGrid.appendChild(uploadBlock);
+        emojiGrid.appendChild(fileInput);
+      }
 
       categoryDiv.appendChild(emojiGrid);
       attachCategoryDropTarget(categoryDiv, category);
@@ -4530,6 +4699,17 @@ async function initApp() {
 
   await loadManagePackSwitcher();
   await fetchEmojis();
+  semanticReviewStats?.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-review-filter]");
+    if (!button) return;
+    activeSemanticReviewFilter = String(button.dataset.reviewFilter || "all");
+    updateSemanticReviewToolbar();
+    displayCategories(latestEmojiData, latestTagDescriptions);
+    updateSidebar(latestEmojiData, latestTagDescriptions);
+  });
+  imagePreviewCategoryConfirmBtn?.addEventListener("click", () => {
+    void confirmCurrentImageCategory();
+  });
   switchManagePackBtn?.addEventListener("click", () => {
     void switchManagePack();
   });
