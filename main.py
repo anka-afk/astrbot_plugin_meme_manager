@@ -12,6 +12,7 @@ from astrbot.api.star import Context, Star
 
 from .backend.category_manager import CategoryManager
 from .backend.semantic_index import EmbeddingAdapter, index_is_ready
+from .backend.semantic_models import runtime_category_mapping
 from .backend.semantic_query import (
     candidate_records,
     dumps_result,
@@ -846,7 +847,12 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             req.system_prompt = self._strip_meme_prompt(req.system_prompt)
             return
         pack_context = self._resolve_runtime_pack_context(event=event, req=req)
-        category_mapping = pack_context.get("category_mapping") or self.category_mapping
+        context_mapping = pack_context.get("category_mapping")
+        category_mapping = (
+            runtime_category_mapping(context_mapping)
+            if isinstance(context_mapping, dict)
+            else runtime_category_mapping(self.category_mapping)
+        )
         if not category_mapping:
             return
         category_mapping_string = dict_to_string(category_mapping)
@@ -857,8 +863,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
 
     def _reload_personas(self):
         pack_context = self._resolve_runtime_pack_context()
-        self.category_mapping = pack_context.get("category_mapping") or load_json(
-            MEMES_DATA_PATH, DEFAULT_CATEGORY_DESCRIPTIONS
+        context_mapping = pack_context.get("category_mapping")
+        self.category_mapping = runtime_category_mapping(
+            context_mapping
+            if isinstance(context_mapping, dict)
+            else load_json(MEMES_DATA_PATH, DEFAULT_CATEGORY_DESCRIPTIONS)
         )
         self.category_mapping_string = dict_to_string(self.category_mapping)
         self._apply_persona_prompts()

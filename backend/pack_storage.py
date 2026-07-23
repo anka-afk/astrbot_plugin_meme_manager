@@ -428,7 +428,7 @@ def import_pack_archive(
     if semantic_file.is_file():
         # 导入时重新按图片内容校验哈希；缺图/错图只保留为待处理状态。
         imported_data = _load_json(semantic_file, {})
-        portable_data = reset_local_embedding_state(imported_data)
+        portable_data = reset_local_embedding_state(imported_data, target_pack_dir)
         reconciled = reconcile_metadata(target_pack_dir, external_data=portable_data)
         reconciled = reset_local_embedding_state(reconciled)
         save_metadata(target_pack_dir, reconciled)
@@ -512,7 +512,9 @@ def export_pack_archive(
         semantic_file = staging / "semantic_metadata.json"
         if include_semantic:
             if semantic_file.exists():
-                portable = reset_local_embedding_state(_load_json(semantic_file, {}))
+                portable = reset_local_embedding_state(
+                    _load_json(semantic_file, {}), staging
+                )
                 portable = reconcile_metadata(staging, external_data=portable)
                 save_metadata(staging, reset_local_embedding_state(portable))
         elif semantic_file.exists():
@@ -905,7 +907,9 @@ def export_runtime_backup(
                 semantic_file = copied_pack_dir / "semantic_metadata.json"
                 if not copied_pack_dir.is_dir() or not semantic_file.is_file():
                     continue
-                portable = reset_local_embedding_state(_load_json(semantic_file, {}))
+                portable = reset_local_embedding_state(
+                    _load_json(semantic_file, {}), copied_pack_dir
+                )
                 portable = reconcile_metadata(copied_pack_dir, external_data=portable)
                 save_metadata(copied_pack_dir, reset_local_embedding_state(portable))
 
@@ -978,7 +982,7 @@ def import_runtime_backup(
                 semantic_file = target_pack_dir / "semantic_metadata.json"
                 if semantic_file.is_file():
                     portable = reset_local_embedding_state(
-                        _load_json(semantic_file, {})
+                        _load_json(semantic_file, {}), target_pack_dir
                     )
                     reconciled = reconcile_metadata(
                         target_pack_dir, external_data=portable

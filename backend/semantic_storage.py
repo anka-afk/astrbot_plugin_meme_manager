@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,54 @@ from .semantic_models import (
     text_hash,
     utc_now,
 )
+
+LEGACY_SCHEMA_VERSION = "1.0"
+LEGACY_METADATA_BACKUP_NAME = "semantic_metadata.pre-v2.backup.json"
+LOCAL_EMBEDDING_FIELDS = frozenset(
+    {
+        "embedding_provider_id",
+        "embedding_model",
+        "embedding_dimension",
+        "verified_embedding_dimension",
+        "embedding_verified_dimension",
+        "embedding_dimension_verified",
+        "dimension_verified",
+        "verified_dimension",
+        "index_dimension",
+        "index_embedding_dimension",
+        "embedding_signature",
+        "embedding",
+        "embeddings",
+        "vector",
+        "vectors",
+        "faiss_id",
+    }
+)
+PORTABLE_PRIVATE_FIELDS = frozenset(
+    {
+        "api_key",
+        "provider_config",
+        "vision_provider_id",
+        "configured_provider_id",
+        "effective_provider_id",
+        "base_url",
+        "local_path",
+        "source_path",
+        "last_error",
+        "task_error",
+        "error_items",
+        "active_items",
+        "current",
+    }
+)
+
+
+class SemanticMetadataCompatibilityError(ValueError):
+    """Raised when semantic metadata must remain read-only.
+
+    Args:
+        message: User-facing compatibility or corruption explanation.
+    """
 
 
 def metadata_path(pack_dir: Path | str) -> Path:
@@ -56,6 +105,35 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     finally:
         if os.path.exists(temp_name):
             os.unlink(temp_name)
+
+
+def _create_legacy_backup(path: Path, content: bytes) -> Path:
+    """Create the stable one-time backup used before the first v2 write.
+
+    Args:
+        path: Existing legacy semantic metadata path.
+        content: Exact source bytes read before migration.
+
+    Returns:
+        The stable backup path. An existing backup is never overwritten.
+
+    Raises:
+        OSError: If a new backup cannot be written safely.
+    """
+    backup_path = path.with_name(LEGACY_METADATA_BACKUP_NAME)
+    try:
+        fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return backup_path
+    try:
+        with os.fdopen(fd, "wb") as file_obj:
+            file_obj.write(content)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+    except Exception:
+        backup_path.unlink(missing_ok=True)
+        raise
+    return backup_path
 
 
 def safe_relative_path(pack_dir: Path | str, relative_path: str) -> Path | None:
@@ -156,6 +234,324 @@ def _is_sha256(value: Any) -> bool:
     return len(text) == 64 and all(char in "0123456789abcdef" for char in text)
 
 
+def _source_schema_version(data: dict[str, Any]) -> str:
+    """Return the normalized semantic schema version.
+
+    Args:
+        data: Parsed semantic metadata object.
+
+    Returns:
+        ``missing`` for legacy files without a version, otherwise the normalized
+        version string.
+    """
+    raw_version = data.get("schema_version")
+    if "schema_version" not in data or raw_version is None or raw_version == "":
+        return "missing"
+    return str(raw_version).strip()
+
+
+def _validate_metadata_records(data: dict[str, Any], source_label: str) -> None:
+    """Reject field shapes that would otherwise be silently discarded.
+
+    Args:
+        data: Parsed semantic metadata object.
+        source_label: Human-readable source used in the error message.
+
+    Raises:
+        SemanticMetadataCompatibilityError: If a supported schema has unsafe
+            field types or invalid record hashes.
+    """
+    images = data.get("images", {})
+    if "pack_id" in data and not isinstance(data.get("pack_id"), (str, type(None))):
+        raise SemanticMetadataCompatibilityError(
+            f"{source_label} 的 pack_id 字段类型错误，已保持原文件不变"
+        )
+    if not isinstance(images, dict):
+        raise SemanticMetadataCompatibilityError(
+            f"{source_label} 的 images 字段不是对象，已保持原文件不变"
+        )
+    for key, value in images.items():
+        if not isinstance(value, dict):
+            raise SemanticMetadataCompatibilityError(
+                f"{source_label} 的图片记录 {key!s} 不是对象，已保持原文件不变"
+            )
+        digest = value.get("content_sha256") or key
+        if not _is_sha256(digest):
+            raise SemanticMetadataCompatibilityError(
+                f"{source_label} 的图片记录 {key!s} 缺少有效内容哈希，已保持原文件不变"
+            )
+        for field in ("tags", "auto_tags", "manual_tags"):
+            raw_tags = value.get(field)
+            if raw_tags is not None and not isinstance(
+                raw_tags, (str, list, tuple, set)
+            ):
+                raise SemanticMetadataCompatibilityError(
+                    f"{source_label} 的 {field} 字段类型错误，已保持原文件不变"
+                )
+        if "manual_override" in value and not isinstance(
+            value.get("manual_override"), bool
+        ):
+            raise SemanticMetadataCompatibilityError(
+                f"{source_label} 的 manual_override 字段类型错误，已保持原文件不变"
+            )
+        for field in (
+            "relative_path",
+            "category",
+            "caption",
+            "visible_text",
+            "caption_status",
+            "embedding_status",
+            "provenance",
+            "vision_model",
+            "prompt_version",
+            "text_hash",
+            "updated_at",
+            "error",
+        ):
+            if field in value and not isinstance(value.get(field), (str, type(None))):
+                raise SemanticMetadataCompatibilityError(
+                    f"{source_label} 的 {field} 字段类型错误，已保持原文件不变"
+                )
+
+
+def _metadata_fault(
+    pack_dir: Path | str,
+    message: str,
+    *,
+    source_schema_version: str = "",
+) -> dict[str, Any]:
+    """Build a read-only status object without mutating the source file.
+
+    Args:
+        pack_dir: Root directory of the meme pack.
+        message: User-facing failure explanation.
+        source_schema_version: Unsupported or malformed source version.
+
+    Returns:
+        A metadata-shaped read-only fault object for status pages.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "pack_id": Path(pack_dir).name,
+        "generated_at": "",
+        "images": {},
+        "metadata_read_only": True,
+        "metadata_error": message,
+        "source_schema_version": source_schema_version,
+        "requires_local_index_rebuild": True,
+    }
+
+
+def _legacy_reusable_record(
+    source: dict[str, Any], *, preserve_manual: bool
+) -> dict[str, Any]:
+    """Convert one v1 record without adding disk-derived category fields.
+
+    Args:
+        source: One validated v1 image record.
+        preserve_manual: Whether this is the exact original relative path.
+
+    Returns:
+        A v2-compatible content record awaiting category review and embedding.
+    """
+    source = dict(source)
+    manual = bool(
+        source.get("manual_override") or source.get("provenance") in {"manual", "mixed"}
+    )
+    if manual and not preserve_manual:
+        caption = str(source.get("auto_caption") or "").strip()
+        tags = normalize_tags(source.get("auto_tags")) if caption else []
+        visible_text = str(source.get("auto_visible_text") or "").strip()
+        provenance = "ai"
+    else:
+        caption = str(source.get("caption") or "").strip()
+        tags = normalize_tags(source.get("tags"))
+        visible_text = str(source.get("visible_text") or "").strip()
+        provenance = str(source.get("provenance") or "ai").strip() or "ai"
+    tags = [tag for tag in tags if not is_category_tag(tag)]
+    raw_status = str(source.get("caption_status") or "").strip()
+    if raw_status == "running":
+        caption_status = "pending"
+    elif raw_status in {"pending", "done", "failed"}:
+        caption_status = raw_status
+    else:
+        caption_status = "done" if caption and tags else "pending"
+    if caption_status == "done" and (not caption or not tags):
+        caption_status = "pending"
+    error = source.get("error")
+    if error is not None:
+        error = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]+", " ", str(error))[:1000]
+    legacy_hash = str(source.get("text_hash") or "").strip()
+    return {
+        "caption": caption,
+        "tags": tags,
+        "visible_text": visible_text,
+        "caption_status": caption_status,
+        "embedding_status": "pending",
+        "provenance": provenance,
+        "auto_caption": str(source.get("auto_caption") or "").strip(),
+        "auto_tags": [
+            tag
+            for tag in normalize_tags(source.get("auto_tags"))
+            if not is_category_tag(tag)
+        ],
+        "auto_visible_text": str(source.get("auto_visible_text") or "").strip(),
+        "manual_caption": (
+            str(source.get("manual_caption") or source.get("caption") or "").strip()
+            if manual and preserve_manual
+            else ""
+        ),
+        "manual_tags": (
+            [
+                tag
+                for tag in normalize_tags(
+                    source.get("manual_tags") or source.get("tags")
+                )
+                if not is_category_tag(tag)
+            ]
+            if manual and preserve_manual
+            else []
+        ),
+        "manual_visible_text": (
+            str(
+                source.get("manual_visible_text") or source.get("visible_text") or ""
+            ).strip()
+            if manual and preserve_manual
+            else ""
+        ),
+        "manual_override": bool(manual and preserve_manual),
+        "vision_model": str(source.get("vision_model") or "").strip(),
+        "prompt_version": str(source.get("prompt_version") or "").strip(),
+        "text_hash": "",
+        "legacy_text_hash": legacy_hash,
+        "updated_at": str(source.get("updated_at") or utc_now()),
+        "error": error,
+        "category_fit": "uncertain",
+        "category_review_status": "unchecked",
+        "category_review_reason": "",
+        "category_review_context_hash": "",
+        "manual_confirmation_context_hash": "",
+        "suggested_category": "",
+    }
+
+
+def migrate_legacy_metadata(
+    data: dict[str, Any],
+    scanned_images: list[dict[str, str]],
+    category_descriptions: dict[str, str],
+    pack_id: str,
+) -> dict[str, Any]:
+    """Purely migrate known v1 or versionless metadata to path-scoped v2 data.
+
+    Args:
+        data: Parsed v1 semantic metadata.
+        scanned_images: Current disk image scan for the target pack.
+        category_descriptions: Current category descriptions from the target pack.
+        pack_id: Target meme pack identifier.
+
+    Returns:
+        In-memory v2 metadata. The caller decides when to persist it under a
+        pack lock.
+
+    Raises:
+        SemanticMetadataCompatibilityError: If the source is not a supported
+            legacy schema or contains unsafe field types.
+    """
+    if not isinstance(data, dict):
+        raise SemanticMetadataCompatibilityError("旧语义文件根节点不是对象")
+    source_version = _source_schema_version(data)
+    if source_version not in {"missing", "1", LEGACY_SCHEMA_VERSION}:
+        raise SemanticMetadataCompatibilityError(
+            f"不支持迁移 semantic_metadata.json 版本 {source_version}"
+        )
+    _validate_metadata_records(data, "旧 semantic_metadata.json")
+    raw_images = data.get("images", {})
+    legacy_records: list[dict[str, Any]] = []
+    for key, raw_value in raw_images.items():
+        value = dict(raw_value)
+        value["content_sha256"] = str(value.get("content_sha256") or key).lower()
+        value["relative_path"] = str(value.get("relative_path") or "").replace(
+            "\\", "/"
+        )
+        legacy_records.append(value)
+
+    images: dict[str, dict[str, Any]] = {}
+    for scan in scanned_images:
+        digest = scan["content_sha256"]
+        relative_path = scan["relative_path"]
+        exact = next(
+            (
+                item
+                for item in legacy_records
+                if item["content_sha256"] == digest
+                and item["relative_path"] == relative_path
+            ),
+            None,
+        )
+        candidates = [
+            item for item in legacy_records if item["content_sha256"] == digest
+        ]
+        source = exact or next(
+            (
+                item
+                for item in candidates
+                if item.get("caption") and normalize_tags(item.get("tags"))
+            ),
+            candidates[0] if candidates else {},
+        )
+        item = _legacy_reusable_record(source, preserve_manual=exact is not None)
+        category = scan["category"]
+        description = str(category_descriptions.get(category) or "").strip()
+        item.update(
+            {
+                "entry_id": scan["entry_id"],
+                "content_sha256": digest,
+                "relative_path": relative_path,
+                "category": category,
+                "category_description": description,
+                "category_tag": build_category_tag(category),
+                "category_context_hash": category_context_hash(
+                    digest, category, description
+                ),
+                "tags": ensure_category_tag(item.get("tags"), category),
+            }
+        )
+        item["manual_tags"] = [
+            tag for tag in item.get("manual_tags", []) if not is_category_tag(tag)
+        ]
+        item["auto_tags"] = [
+            tag for tag in item.get("auto_tags", []) if not is_category_tag(tag)
+        ]
+        images[scan["entry_id"]] = SemanticImage.from_dict(item).to_dict()
+
+    result = {
+        key: copy.deepcopy(value)
+        for key, value in data.items()
+        if key not in LOCAL_EMBEDDING_FIELDS and key != "images"
+    }
+    result.update(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "pack_id": str(pack_id or data.get("pack_id") or ""),
+            "images": images,
+            "file_total": len(scanned_images),
+            "unique_total": len(scanned_images),
+            "content_unique_total": len(
+                {item["content_sha256"] for item in scanned_images}
+            ),
+            "requires_local_index_rebuild": True,
+            "metadata_migration_required": True,
+            "migrated_from_schema_version": (
+                LEGACY_SCHEMA_VERSION if source_version == "1" else source_version
+            ),
+            "legacy_index_compatible": False,
+            "legacy_semantic_content_count": len(raw_images),
+        }
+    )
+    result.setdefault("generated_at", utc_now())
+    return result
+
+
 def _normalize_image_records(
     images: Any, category_descriptions: dict[str, str]
 ) -> dict[str, dict[str, Any]]:
@@ -182,12 +578,15 @@ def _normalize_image_records(
         old_context = str(value.get("category_context_hash") or "")
         new_context = category_context_hash(digest, category, description)
         context_changed = bool(old_context and old_context != new_context)
-        previous_fixed_tag = str(value.get("category_tag") or "").strip()
         source_tags = [
-            tag
-            for tag in normalize_tags(value.get("tags"))
-            if not previous_fixed_tag or tag != previous_fixed_tag
+            tag for tag in normalize_tags(value.get("tags")) if not is_category_tag(tag)
         ]
+        for tag_field in ("manual_tags", "auto_tags"):
+            value[tag_field] = [
+                tag
+                for tag in normalize_tags(value.get(tag_field))
+                if not is_category_tag(tag)
+            ]
         value.update(
             {
                 "entry_id": entry_id,
@@ -241,20 +640,48 @@ def load_metadata(pack_dir: Path | str) -> dict[str, Any]:
         }
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError):
-        data = {}
+    except (OSError, json.JSONDecodeError) as exc:
+        return _metadata_fault(
+            pack_dir,
+            f"semantic_metadata.json 无法解析，原文件已保持不变：{exc}",
+        )
     if not isinstance(data, dict):
-        data = {}
-    loaded_schema_version = str(data.get("schema_version") or "")
+        return _metadata_fault(
+            pack_dir,
+            "semantic_metadata.json 根节点不是对象，原文件已保持不变",
+        )
+    loaded_schema_version = _source_schema_version(data)
+    if loaded_schema_version in {"missing", "1", LEGACY_SCHEMA_VERSION}:
+        try:
+            return migrate_legacy_metadata(
+                data,
+                scan_images(pack_dir),
+                load_category_descriptions(pack_dir),
+                Path(pack_dir).name,
+            )
+        except SemanticMetadataCompatibilityError as exc:
+            return _metadata_fault(
+                pack_dir,
+                str(exc),
+                source_schema_version=loaded_schema_version,
+            )
     if loaded_schema_version != SCHEMA_VERSION:
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "pack_id": str(data.get("pack_id") or Path(pack_dir).name),
-            "generated_at": utc_now(),
-            "images": {},
-            "legacy_semantic_data_discarded": bool(data),
-            "requires_local_index_rebuild": True,
-        }
+        return _metadata_fault(
+            pack_dir,
+            (
+                f"不支持 semantic_metadata.json 版本 {loaded_schema_version}；"
+                "请升级程序后再处理，原文件已保持不变"
+            ),
+            source_schema_version=loaded_schema_version,
+        )
+    try:
+        _validate_metadata_records(data, "semantic_metadata.json")
+    except SemanticMetadataCompatibilityError as exc:
+        return _metadata_fault(
+            pack_dir,
+            str(exc),
+            source_schema_version=loaded_schema_version,
+        )
     category_descriptions = load_category_descriptions(pack_dir)
     normalized = _normalize_image_records(data.get("images"), category_descriptions)
     data["schema_version"] = SCHEMA_VERSION
@@ -320,6 +747,7 @@ def semantic_metadata_is_complete(
                 and normalize_tags(images[entry_id].get("tags"))
                 and (
                     not require_embeddings
+                    or images[entry_id].get("category") == REVIEW_CATEGORY
                     or images[entry_id].get("embedding_status") == "done"
                 )
                 for entry_id in current_entry_ids
@@ -366,9 +794,37 @@ def get_pack_semantic_summary(
         }
 
     metadata = load_metadata(root)
+    if metadata.get("metadata_read_only"):
+        return {
+            "semantic_status": "error",
+            "semantic_caption_done": 0,
+            "semantic_caption_total": 0,
+            "semantic_caption_failed": 0,
+            "semantic_file_total": current_file_total,
+            "semantic_snapshot_matches": False,
+            "semantic_files_changed": False,
+            "semantic_metadata_read_only": True,
+            "semantic_metadata_error": str(metadata.get("metadata_error") or ""),
+        }
     images = [
         item for item in metadata.get("images", {}).values() if isinstance(item, dict)
     ]
+    if metadata.get("metadata_migration_required") and not int(
+        metadata.get("legacy_semantic_content_count", 0) or 0
+    ):
+        return {
+            "semantic_status": "none",
+            "semantic_caption_done": 0,
+            "semantic_caption_total": 0,
+            "semantic_caption_failed": 0,
+            "semantic_file_total": current_file_total,
+            "semantic_snapshot_matches": False,
+            "semantic_files_changed": False,
+            "semantic_metadata_migration_required": True,
+            "semantic_metadata_migrated_from": str(
+                metadata.get("migrated_from_schema_version") or ""
+            ),
+        }
     caption_done = sum(
         1
         for item in images
@@ -421,6 +877,12 @@ def get_pack_semantic_summary(
         "semantic_snapshot_matches": snapshot_matches,
         "semantic_files_changed": bool(
             not snapshot_matches or (completion_candidate and not strictly_complete)
+        ),
+        "semantic_metadata_migration_required": bool(
+            metadata.get("metadata_migration_required")
+        ),
+        "semantic_metadata_migrated_from": str(
+            metadata.get("migrated_from_schema_version") or ""
         ),
     }
 
@@ -571,12 +1033,48 @@ def save_metadata(pack_dir: Path | str, data: dict[str, Any]) -> Path:
     target = metadata_path(pack_dir)
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(data or {})
+    if payload.get("metadata_read_only"):
+        raise SemanticMetadataCompatibilityError(
+            str(payload.get("metadata_error") or "语义元数据处于只读故障状态")
+        )
+    legacy_source: bytes | None = None
+    if target.is_file():
+        try:
+            legacy_candidate = target.read_bytes()
+            existing_data = json.loads(legacy_candidate.decode("utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SemanticMetadataCompatibilityError(
+                f"现有 semantic_metadata.json 无法解析，拒绝覆盖：{exc}"
+            ) from exc
+        if not isinstance(existing_data, dict):
+            raise SemanticMetadataCompatibilityError(
+                "现有 semantic_metadata.json 根节点不是对象，拒绝覆盖"
+            )
+        existing_version = _source_schema_version(existing_data)
+        if existing_version in {"missing", "1", LEGACY_SCHEMA_VERSION}:
+            _validate_metadata_records(existing_data, "现有旧语义文件")
+            legacy_source = legacy_candidate
+        elif existing_version == SCHEMA_VERSION:
+            _validate_metadata_records(existing_data, "现有 semantic_metadata.json")
+        else:
+            raise SemanticMetadataCompatibilityError(
+                f"现有 semantic_metadata.json 版本 {existing_version} 不受支持，拒绝覆盖"
+            )
+    migrated = bool(payload.pop("metadata_migration_required", False))
+    payload.pop("metadata_read_only", None)
+    payload.pop("metadata_error", None)
+    payload.pop("source_schema_version", None)
     payload["schema_version"] = SCHEMA_VERSION
     payload["pack_id"] = str(payload.get("pack_id") or target.parent.name)
     payload.setdefault("generated_at", utc_now())
+    if migrated:
+        payload.setdefault("metadata_migrated_at", utc_now())
+    _validate_metadata_records(payload, "待保存语义数据")
     payload["images"] = _normalize_image_records(
         payload.get("images"), load_category_descriptions(target.parent)
     )
+    if legacy_source is not None:
+        _create_legacy_backup(target, legacy_source)
     _write_json_atomic(target, payload)
     return target
 
@@ -1269,27 +1767,44 @@ def apply_conflict_reclassifications(
     return result
 
 
-def reset_local_embedding_state(data: dict[str, Any]) -> dict[str, Any]:
-    """移除只对生成者本机有效的向量状态，保留可发布的图片语义描述。"""
+def reset_local_embedding_state(
+    data: dict[str, Any], pack_dir: Path | str | None = None
+) -> dict[str, Any]:
+    """移除本机向量状态，并在提供图包目录时迁移旧语义数据。
+
+    Args:
+        data: Parsed semantic metadata.
+        pack_dir: Target pack directory required for v1 or versionless data.
+
+    Returns:
+        Portable current-schema metadata with local vector state cleared.
+
+    Raises:
+        SemanticMetadataCompatibilityError: If legacy data has no target pack
+            context, has unsafe fields, or uses an unsupported future version.
+    """
+    if not isinstance(data, dict):
+        raise SemanticMetadataCompatibilityError("语义元数据根节点不是对象")
+    source_version = _source_schema_version(data)
+    if source_version in {"missing", "1", LEGACY_SCHEMA_VERSION}:
+        if pack_dir is None:
+            raise SemanticMetadataCompatibilityError(
+                "旧语义数据需要图包目录才能迁移，拒绝清空或覆盖"
+            )
+        data = migrate_legacy_metadata(
+            data,
+            scan_images(pack_dir),
+            load_category_descriptions(pack_dir),
+            Path(pack_dir).name,
+        )
+    elif source_version == SCHEMA_VERSION:
+        _validate_metadata_records(data, "语义元数据")
+    else:
+        raise SemanticMetadataCompatibilityError(
+            f"不支持 semantic_metadata.json 版本 {source_version}"
+        )
     payload = dict(data or {})
-    for key in (
-        "embedding_provider_id",
-        "embedding_model",
-        "embedding_dimension",
-        "verified_embedding_dimension",
-        "embedding_verified_dimension",
-        "embedding_dimension_verified",
-        "dimension_verified",
-        "verified_dimension",
-        "index_dimension",
-        "index_embedding_dimension",
-        "embedding_signature",
-        "embedding",
-        "embeddings",
-        "vector",
-        "vectors",
-        "faiss_id",
-    ):
+    for key in LOCAL_EMBEDDING_FIELDS | PORTABLE_PRIVATE_FIELDS:
         payload.pop(key, None)
     images = payload.get("images", {})
     normalized_images: dict[str, dict[str, Any]] = {}
@@ -1299,27 +1814,9 @@ def reset_local_embedding_state(data: dict[str, Any]) -> dict[str, Any]:
                 continue
             item = dict(value)
             item["embedding_status"] = "pending"
-            for key in (
-                "embedding_provider_id",
-                "embedding_model",
-                "embedding_dimension",
-                "verified_embedding_dimension",
-                "embedding_verified_dimension",
-                "embedding_dimension_verified",
-                "dimension_verified",
-                "verified_dimension",
-                "index_dimension",
-                "index_embedding_dimension",
-                "embedding_signature",
-                "embedding",
-                "embeddings",
-                "vector",
-                "vectors",
-                "faiss_id",
-            ):
+            for key in LOCAL_EMBEDDING_FIELDS:
                 item.pop(key, None)
-            if item.get("caption_status") == "done":
-                item["error"] = None
+            item["error"] = None
             normalized_images[str(entry_id)] = item
     payload["images"] = normalized_images
     payload["requires_local_index_rebuild"] = True
@@ -1333,16 +1830,37 @@ def reconcile_metadata(
     root = Path(pack_dir).resolve()
     descriptions = load_category_descriptions(root)
     existing = load_metadata(root)
-    external_is_current = bool(
-        isinstance(external_data, dict)
-        and str(external_data.get("schema_version") or "") == SCHEMA_VERSION
-    )
+    if existing.get("metadata_read_only"):
+        raise SemanticMetadataCompatibilityError(
+            str(existing.get("metadata_error") or "语义元数据处于只读故障状态")
+        )
+    scanned = scan_images(root)
+    normalized_external_data: dict[str, Any] = {}
+    external_migrated = False
+    if external_data is not None:
+        if not isinstance(external_data, dict):
+            raise SemanticMetadataCompatibilityError("外部语义元数据根节点不是对象")
+        external_version = _source_schema_version(external_data)
+        if external_version in {"missing", "1", LEGACY_SCHEMA_VERSION}:
+            normalized_external_data = migrate_legacy_metadata(
+                external_data,
+                scanned,
+                descriptions,
+                root.name,
+            )
+            external_migrated = True
+        elif external_version == SCHEMA_VERSION:
+            _validate_metadata_records(external_data, "外部 semantic_metadata.json")
+            normalized_external_data = external_data
+        else:
+            raise SemanticMetadataCompatibilityError(
+                f"不支持外部 semantic_metadata.json 版本 {external_version}"
+            )
     external_images = _normalize_image_records(
-        (external_data or {}).get("images", {}) if external_is_current else {},
+        normalized_external_data.get("images", {}),
         descriptions,
     )
     local_images = existing.get("images", {})
-    scanned = scan_images(root)
     scanned_by_id = {item["entry_id"]: item for item in scanned}
 
     def records_for_content(
@@ -1425,7 +1943,6 @@ def reconcile_metadata(
         description = str(descriptions.get(category, "")).strip()
         current_context = category_context_hash(digest, category, description)
         previous_context = str(item.get("category_context_hash") or "")
-        previous_fixed_tag = str(item.get("category_tag") or "").strip()
         item.update(
             {
                 "entry_id": entry_id,
@@ -1439,16 +1956,14 @@ def reconcile_metadata(
         )
         item.setdefault("caption", "")
         source_tags = [
-            tag
-            for tag in normalize_tags(item.get("tags"))
-            if not previous_fixed_tag or tag != previous_fixed_tag
+            tag for tag in normalize_tags(item.get("tags")) if not is_category_tag(tag)
         ]
         item["tags"] = ensure_category_tag(source_tags, category)
         for tag_field in ("manual_tags", "auto_tags"):
             item[tag_field] = [
                 tag
                 for tag in normalize_tags(item.get(tag_field))
-                if not previous_fixed_tag or tag != previous_fixed_tag
+                if not is_category_tag(tag)
             ]
         item.setdefault("visible_text", "")
         item.setdefault(
@@ -1512,6 +2027,10 @@ def reconcile_metadata(
             item["updated_at"] = utc_now()
             images[str(entry_id)] = SemanticImage.from_dict(item).to_dict()
     result = dict(existing)
+    if external_migrated:
+        result["imported_from_schema_version"] = str(
+            normalized_external_data.get("migrated_from_schema_version") or "1.0"
+        )
     result["schema_version"] = SCHEMA_VERSION
     result["pack_id"] = root.name
     result["images"] = images

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .semantic_index import EmbeddingAdapter, search_index
-from .semantic_models import parse_meme_id
+from .semantic_models import REVIEW_CATEGORY, parse_meme_id
 from .semantic_storage import (
     file_sha256,
     load_metadata,
@@ -144,6 +144,8 @@ def validate_selected_id(event: Any, value: str, pack_dir: Path | str) -> Path |
     metadata = load_metadata(pack_dir)
     record = metadata.get("images", {}).get(entry_id)
     if not isinstance(record, dict):
+        return None
+    if str(record.get("category") or "") == REVIEW_CATEGORY:
         return None
     path = safe_relative_path(pack_dir, record.get("relative_path", ""))
     if path is None or not path.is_file():

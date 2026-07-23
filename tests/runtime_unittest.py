@@ -103,6 +103,43 @@ class RuntimeBehaviorTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_empty_selected_pack_does_not_reuse_previous_pack_categories(self):
+        class Plugin(EventHandlerMixin):
+            remove_invalid_alternative_markup = True
+            emotion_llm_enabled = False
+            max_emotions_per_message = 1
+            category_mapping = {"happy": "stale previous pack category"}
+
+            @staticmethod
+            def _semantic_mode_active(event):
+                return False
+
+            @staticmethod
+            def _resolve_runtime_pack_context(event=None):
+                return {"category_mapping": {}}
+
+            @staticmethod
+            def _read_config_value(
+                path,
+                default=None,
+                *,
+                legacy_paths=(),
+                legacy_keys=(),
+            ):
+                return default
+
+        async def run():
+            plugin = Plugin()
+            event = FakeEvent()
+            event.set_extra("meme_manager_semantic_response_processed", False)
+            response = SimpleNamespace(completion_text="must not send &&happy&&")
+
+            await plugin._resp_impl(event, response)
+
+            self.assertEqual(event.get_extra("found_emotions"), [])
+
+        asyncio.run(run())
+
     def test_blank_emotion_provider_reuses_and_caches_reply_provider(self):
         class Context:
             def __init__(self):

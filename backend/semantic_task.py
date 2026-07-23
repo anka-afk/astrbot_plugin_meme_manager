@@ -493,9 +493,7 @@ class SemanticTaskManager:
                 expected_entry_id=snapshot["entry_id"],
             )
             category_fit = str(proposal.get("category_fit") or "uncertain")
-            suggested_category = str(
-                proposal.get("suggested_category") or ""
-            ).strip()
+            suggested_category = str(proposal.get("suggested_category") or "").strip()
             selected_category, classification_action = _revision_category_choice(
                 current_category=item.category,
                 original_category=original_category,
@@ -906,12 +904,24 @@ class SemanticTaskManager:
         pack_dir = self._pack_dir(pack_id)
         state = self._load_state(pack_id)
         data = load_metadata(pack_dir)
+        metadata_read_only = bool(data.get("metadata_read_only"))
+        metadata_migration_required = bool(data.get("metadata_migration_required"))
         queue_cleared = bool(state.get("queue_cleared"))
-        if not data.get("images") and pack_dir.is_dir() and not queue_cleared:
+        if (
+            not data.get("images")
+            and pack_dir.is_dir()
+            and not queue_cleared
+            and not metadata_read_only
+        ):
             data = reconcile_metadata(pack_dir)
         task_status = str(state.get("task_status") or "idle")
         worker_alive = self._semantic_operation_is_alive(pack_id)
-        if not worker_alive and task_status in {"running", "paused"}:
+        if (
+            not worker_alive
+            and task_status in {"running", "paused"}
+            and not metadata_read_only
+            and not metadata_migration_required
+        ):
             # 进程重启或硬暂停后，旧请求已不可能再返回。把磁盘上
             # 的 running 记录恢复成 pending，避免记录列表永久显示“进行中”。
             data, recovered = self._reset_running_items(pack_id, data)
@@ -1066,7 +1076,18 @@ class SemanticTaskManager:
         if not worker_alive:
             active_items = []
         active_request_count = len(active_items)
-        if external_operation:
+        if metadata_read_only:
+            queue_status = "metadata_error"
+            status_message = str(
+                data.get("metadata_error") or "语义元数据无法安全读取，原文件已保持不变"
+            )
+        elif metadata_migration_required:
+            queue_status = "migration_required"
+            status_message = (
+                "检测到旧版语义数据，描述和人工内容已在内存中保留；"
+                "开始明确任务后才会备份并原子升级文件。"
+            )
+        elif external_operation:
             queue_status = "external_operation"
             status_message = (
                 f"资源包正在执行“{external_operation}”，完成前不能启动语义任务。"
@@ -1121,16 +1142,21 @@ class SemanticTaskManager:
             or (task_status == "running" and not worker_alive)
         )
         can_start = bool(
-            not worker_alive and not external_operation and task_status != "paused"
+            not metadata_read_only
+            and not worker_alive
+            and not external_operation
+            and task_status != "paused"
         )
         can_retry = bool(
             not worker_alive
+            and not metadata_read_only
             and not external_operation
             and task_status != "paused"
             and failed
         )
         can_rebuild_index = bool(
             not worker_alive
+            and not metadata_read_only
             and not external_operation
             and task_status != "paused"
             and caption_complete
@@ -1165,6 +1191,12 @@ class SemanticTaskManager:
             "other_tasks_warning": other_tasks_warning,
             "queue_status": queue_status,
             "status_message": status_message,
+            "metadata_read_only": metadata_read_only,
+            "metadata_error": str(data.get("metadata_error") or ""),
+            "metadata_migration_required": metadata_migration_required,
+            "migrated_from_schema_version": str(
+                data.get("migrated_from_schema_version") or ""
+            ),
             "can_pause": can_pause,
             "can_resume": can_resume,
             "can_start": can_start,

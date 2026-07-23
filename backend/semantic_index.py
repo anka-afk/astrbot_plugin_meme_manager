@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .semantic_models import (
+    REVIEW_CATEGORY,
     SCHEMA_VERSION,
     SemanticImage,
     build_id_map,
@@ -33,6 +34,22 @@ QUERY_CACHE_SIZE = 128
 INDEX_CACHE_SIZE = 16
 _QUERY_VECTOR_CACHE: OrderedDict[tuple[str, str], tuple[float, ...]] = OrderedDict()
 _FAISS_INDEX_CACHE: OrderedDict[str, tuple[tuple[int, int], Any]] = OrderedDict()
+
+
+def _manifest_int(value: Any) -> int | None:
+    """Parse a non-negative integer from an untrusted index manifest field.
+
+    Args:
+        value: Raw JSON field value.
+
+    Returns:
+        The parsed integer, or ``None`` when the field is invalid.
+    """
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
 
 
 def _import_faiss_modules():
@@ -308,8 +325,11 @@ def index_is_ready(
     manifest = load_index_manifest(plugin_data_dir, pack_id)
     if manifest.get("index_format") != INDEX_FORMAT:
         return False
-    item_count = int(manifest.get("item_count", 0) or 0)
-    if item_count <= 0:
+    if str(manifest.get("metadata_schema_version") or "") != SCHEMA_VERSION:
+        return False
+    item_count = _manifest_int(manifest.get("item_count", 0))
+    manifest_dimension = _manifest_int(manifest.get("embedding_dimension", 0))
+    if item_count is None or item_count <= 0 or manifest_dimension is None:
         return False
     if embedding_provider_id and str(
         manifest.get("embedding_provider_id") or ""
@@ -319,15 +339,13 @@ def index_is_ready(
         manifest.get("embedding_model") or ""
     ) != str(embedding_model):
         return False
-    if embedding_dimension and int(manifest.get("embedding_dimension", 0) or 0) != int(
-        embedding_dimension
-    ):
+    if embedding_dimension and manifest_dimension != int(embedding_dimension):
         return False
 
     index = _read_faiss_index(plugin_data_dir, pack_id, manifest)
     if index is None or int(index.ntotal) != item_count:
         return False
-    if int(index.d) != int(manifest.get("embedding_dimension", 0) or 0):
+    if int(index.d) != manifest_dimension:
         return False
 
     current = metadata or {}
@@ -339,6 +357,7 @@ def index_is_ready(
         digest: item
         for digest, item in images.items()
         if isinstance(item, dict)
+        and item.get("category") != REVIEW_CATEGORY
         and item.get("caption_status") == "done"
         and category_analysis_is_current(item)
         and item.get("embedding_status") == "done"
@@ -363,6 +382,8 @@ def _reconstruct_reusable_vectors(
     candidates: list[tuple[str, dict[str, Any]]],
 ) -> dict[str, list[float]]:
     if old_index is None or old_manifest.get("index_format") != INDEX_FORMAT:
+        return {}
+    if str(old_manifest.get("metadata_schema_version") or "") != SCHEMA_VERSION:
         return {}
     old_items = old_manifest.get("items", {})
     if not isinstance(old_items, dict):
@@ -413,6 +434,7 @@ async def build_index(
     for digest, value in metadata.get("images", {}).items():
         if (
             not isinstance(value, dict)
+            or value.get("category") == REVIEW_CATEGORY
             or value.get("caption_status") != "done"
             or not category_analysis_is_current(value)
         ):
@@ -428,9 +450,11 @@ async def build_index(
     old_manifest = load_index_manifest(plugin_data_dir, pack_id)
     same_provider = bool(
         old_manifest.get("index_format") == INDEX_FORMAT
+        and str(old_manifest.get("metadata_schema_version") or "") == SCHEMA_VERSION
         and old_manifest.get("embedding_provider_id") == embedding.provider_id
         and old_manifest.get("embedding_model", "") == embedding.model_name
-        and int(old_manifest.get("embedding_dimension", 0) or 0) == embedding.dimension
+        and _manifest_int(old_manifest.get("embedding_dimension", 0))
+        == embedding.dimension
     )
     old_index = (
         _read_faiss_index(plugin_data_dir, pack_id, old_manifest)
@@ -590,10 +614,11 @@ async def search_index(
     manifest = load_index_manifest(plugin_data_dir, pack_id)
     if manifest.get("index_format") != INDEX_FORMAT:
         return []
+    manifest_dimension = _manifest_int(manifest.get("embedding_dimension", 0))
     if (
         manifest.get("embedding_provider_id") != embedding.provider_id
         or manifest.get("embedding_model", "") != embedding.model_name
-        or int(manifest.get("embedding_dimension", 0) or 0) != embedding.dimension
+        or manifest_dimension != embedding.dimension
     ):
         return []
     index = _read_faiss_index(plugin_data_dir, pack_id, manifest)
@@ -608,11 +633,16 @@ async def search_index(
     if result_limit <= 0:
         return []
     scores, ids = index.search(query_vector, result_limit)
-    id_to_digest = {
-        int(item.get("faiss_id")): digest
-        for digest, item in manifest.get("items", {}).items()
-        if isinstance(item, dict) and item.get("faiss_id") is not None
-    }
+    id_to_digest = {}
+    raw_manifest_items = manifest.get("items", {})
+    if not isinstance(raw_manifest_items, dict):
+        return []
+    for digest, item in raw_manifest_items.items():
+        if not isinstance(item, dict):
+            continue
+        faiss_id = _manifest_int(item.get("faiss_id"))
+        if faiss_id is not None:
+            id_to_digest[faiss_id] = digest
     data = metadata or {}
     ranked = []
     for score, faiss_id in zip(scores[0].tolist(), ids[0].tolist()):
@@ -620,6 +650,7 @@ async def search_index(
         item = data.get("images", {}).get(digest) if digest else None
         if (
             not isinstance(item, dict)
+            or item.get("category") == REVIEW_CATEGORY
             or item.get("caption_status") != "done"
             or not category_analysis_is_current(item)
         ):

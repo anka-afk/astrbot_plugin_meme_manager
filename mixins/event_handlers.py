@@ -21,10 +21,12 @@ from astrbot.core.message.components import Image, Plain
 from astrbot.core.message.message_event_result import MessageChain, ResultContentType
 
 from ..backend.semantic_models import (
+    REVIEW_CATEGORY,
     compact_semantic_query,
     extract_and_clean_semantic_meme_references,
     extract_visible_semantic_reply,
     parse_semantic_query_result,
+    runtime_category_mapping,
 )
 from ..backend.semantic_query import (
     candidate_records,
@@ -126,7 +128,7 @@ class EventHandlerMixin:
         temp_files: list[str] = []
 
         for emotion in emotions:
-            if not emotion:
+            if not emotion or emotion == REVIEW_CATEGORY:
                 continue
 
             emotion_path = os.path.join(memes_root, emotion)
@@ -161,10 +163,13 @@ class EventHandlerMixin:
     ) -> dict:
         """对外兼容接口：清理消息中的表情标记并准备待发送表情图片。"""
         pack_context = self._resolve_runtime_pack_context(event=event)
-        runtime_category_mapping = (
-            pack_context.get("category_mapping") or self.category_mapping
+        context_mapping = pack_context.get("category_mapping")
+        active_category_mapping = (
+            runtime_category_mapping(context_mapping)
+            if isinstance(context_mapping, dict)
+            else runtime_category_mapping(self.category_mapping)
         )
-        valid_emoticons = set(runtime_category_mapping.keys())
+        valid_emoticons = set(active_category_mapping.keys())
 
         raw_components = self._normalize_outgoing_message_components(message)
         cleaned_components = []
@@ -538,12 +543,15 @@ class EventHandlerMixin:
             return await self._resp_semantic_impl(event, response, text)
 
         pack_context = self._resolve_runtime_pack_context(event=event)
-        runtime_category_mapping = (
-            pack_context.get("category_mapping") or self.category_mapping
+        context_mapping = pack_context.get("category_mapping")
+        active_category_mapping = (
+            runtime_category_mapping(context_mapping)
+            if isinstance(context_mapping, dict)
+            else runtime_category_mapping(self.category_mapping)
         )
 
         found_emotions: list[str] = []
-        valid_emoticons = set(runtime_category_mapping.keys())
+        valid_emoticons = set(active_category_mapping.keys())
 
         clean_text = text
 
@@ -940,7 +948,7 @@ class EventHandlerMixin:
                     emotion_images = []
                     temp_files = []  # 记录临时文件路径
                     for emotion in found_emotions:
-                        if not emotion:
+                        if not emotion or emotion == REVIEW_CATEGORY:
                             continue
 
                         emotion_path = os.path.join(memes_root, emotion)
@@ -1246,7 +1254,7 @@ class EventHandlerMixin:
                 return
 
             for emotion in found_emotions:
-                if not emotion:
+                if not emotion or emotion == REVIEW_CATEGORY:
                     continue
 
                 emotion_path = os.path.join(memes_root, emotion)

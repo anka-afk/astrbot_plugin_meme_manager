@@ -675,6 +675,7 @@ class SemanticMvpTest(unittest.TestCase):
     def test_public_semantic_state_removes_provider_and_dimension(self):
         portable = reset_local_embedding_state(
             {
+                "schema_version": "2.0",
                 "embedding_provider_id": "private-provider",
                 "embedding_dimension": 4096,
                 "images": {
@@ -1621,8 +1622,9 @@ class SemanticMvpTest(unittest.TestCase):
             ["category:happy", "开心", "分类:庆祝", "category:sad"], "sad"
         )
         self.assertEqual(tags[0], "category:sad")
-        self.assertIn("category:happy", tags[1:])
-        self.assertIn("分类:庆祝", tags[1:])
+        self.assertNotIn("category:happy", tags[1:])
+        self.assertNotIn("分类:庆祝", tags[1:])
+        self.assertEqual(tags[1:], ["开心"])
         self.assertEqual(tags.count("category:sad"), 1)
         vector_text = build_semantic_text("难过", tags, "", "sad", "悲伤和失落")
         self.assertEqual(vector_text.count("category:sad"), 1)
@@ -1948,7 +1950,7 @@ class SemanticMvpTest(unittest.TestCase):
             self.assertTrue(detail["can_confirm_category"])
             self.assertEqual(detail["category_review_status"], "needs_review")
 
-    def test_v1_metadata_is_discarded_for_clean_rebuild(self):
+    def test_v1_metadata_is_migrated_without_losing_semantics(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             image_dir = root / "memes" / "foo"
@@ -1975,19 +1977,25 @@ class SemanticMvpTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            discarded = load_metadata(root)
-            self.assertEqual(discarded["schema_version"], "2.0")
-            self.assertEqual(discarded["images"], {})
-            self.assertTrue(discarded["legacy_semantic_data_discarded"])
-            self.assertTrue(discarded["requires_local_index_rebuild"])
+            migrated = load_metadata(root)
+            self.assertEqual(migrated["schema_version"], "2.0")
+            self.assertEqual(len(migrated["images"]), 1)
+            self.assertTrue(migrated["metadata_migration_required"])
+            self.assertTrue(migrated["requires_local_index_rebuild"])
+            migrated_item = next(iter(migrated["images"].values()))
+            self.assertEqual(migrated_item["caption"], "旧版人工描述仍需保留")
+            self.assertEqual(migrated_item["tags"], ["category:foo", "旧标签"])
+            self.assertEqual(migrated_item["embedding_status"], "pending")
+            self.assertEqual(migrated_item["category_review_status"], "unchecked")
 
             rebuilt = reconcile_metadata(root)
             self.assertEqual(len(rebuilt["images"]), 1)
             item = next(iter(rebuilt["images"].values()))
-            self.assertEqual(item["caption"], "")
-            self.assertEqual(item["tags"][0], "category:foo")
+            self.assertEqual(item["caption"], "旧版人工描述仍需保留")
+            self.assertEqual(item["tags"], ["category:foo", "旧标签"])
             self.assertEqual(item["category_review_status"], "unchecked")
-            self.assertEqual(item["caption_status"], "pending")
+            self.assertEqual(item["caption_status"], "done")
+            self.assertEqual(item["embedding_status"], "pending")
 
     def test_v2_portable_semantics_keep_category_review_but_reset_vectors(self):
         with (
@@ -2222,9 +2230,7 @@ class SemanticMvpTest(unittest.TestCase):
                 self.assertEqual(proposal["current_category"], "foo")
                 self.assertEqual(proposal["original_category"], "bar")
                 self.assertEqual(proposal["selected_category"], "bar")
-                self.assertEqual(
-                    proposal["classification_action"], "return_original"
-                )
+                self.assertEqual(proposal["classification_action"], "return_original")
                 self.assertEqual(proposal["vision_requests"], 1)
                 self.assertEqual(len(context.requests), 1)
                 prompt = context.requests[0]["prompt"]
@@ -3224,7 +3230,7 @@ class SemanticMvpTest(unittest.TestCase):
                 first_digest = "a" * 12 + "1" * 52
                 second_digest = "a" * 12 + "2" * 52
                 metadata = {
-                    "schema_version": "1.0",
+                    "schema_version": "2.0",
                     "pack_id": "demo",
                     "images": {
                         first_digest: mark_category_reviewed(

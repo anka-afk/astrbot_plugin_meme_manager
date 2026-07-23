@@ -103,8 +103,26 @@ def is_category_tag(tag: Any) -> bool:
 def ensure_category_tag(tags: Any, category: str) -> list[str]:
     """把后端固定分类标签放在第一位，其余内容标签保持原样。"""
     fixed_tag = build_category_tag(category)
-    content_tags = [tag for tag in normalize_tags(tags) if tag != fixed_tag]
+    content_tags = [tag for tag in normalize_tags(tags) if not is_category_tag(tag)]
     return [fixed_tag, *content_tags] if fixed_tag else content_tags
+
+
+def runtime_category_mapping(mapping: Any) -> dict[str, str]:
+    """Remove non-chat review buckets from a runtime category mapping.
+
+    Args:
+        mapping: Category-to-description mapping loaded from a pack.
+
+    Returns:
+        A normalized mapping that cannot expose ``needs_review`` to chat mode.
+    """
+    if not isinstance(mapping, dict):
+        return {}
+    return {
+        str(category).strip(): str(description)
+        for category, description in mapping.items()
+        if str(category).strip() and str(category).strip() != REVIEW_CATEGORY
+    }
 
 
 def category_review_is_complete(status: Any) -> bool:
@@ -422,6 +440,7 @@ class SemanticImage:
     vision_model: str = ""
     prompt_version: str = PROMPT_VERSION
     text_hash: str = ""
+    legacy_text_hash: str = ""
     updated_at: str = field(default_factory=utc_now)
     error: str | None = None
 
@@ -557,6 +576,7 @@ class SemanticImage:
             "vision_model": self.vision_model,
             "prompt_version": self.prompt_version,
             "text_hash": self.text_hash,
+            "legacy_text_hash": self.legacy_text_hash,
             "updated_at": self.updated_at,
             "error": self.error,
         }
