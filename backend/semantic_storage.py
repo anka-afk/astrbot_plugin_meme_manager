@@ -21,6 +21,7 @@ from .semantic_models import (
     category_analysis_is_current,
     category_context_hash,
     ensure_category_tag,
+    is_category_tag,
     normalize_tags,
     semantic_entry_id,
     text_hash,
@@ -122,12 +123,12 @@ def load_category_descriptions(pack_dir: Path | str) -> dict[str, str]:
 
 
 def scan_images(pack_dir: Path | str) -> list[dict[str, str]]:
-    """按“内容 + 分类”扫描；同内容跨分类必须产生独立语义记录。"""
+    """逐文件扫描图片；同内容的不同路径也必须能独立人工修改。"""
     root = Path(pack_dir).resolve()
     memes_root = root / "memes"
     if not memes_root.is_dir():
         return []
-    found: dict[str, dict[str, str]] = {}
+    found: list[dict[str, str]] = []
     for path in sorted(memes_root.rglob("*")):
         if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
             continue
@@ -138,15 +139,16 @@ def scan_images(pack_dir: Path | str) -> list[dict[str, str]]:
         digest = file_sha256(path)
         relative = path.relative_to(root).as_posix()
         category = path.parent.name
-        entry_id = semantic_entry_id(digest, category)
-        if entry_id not in found:
-            found[entry_id] = {
+        entry_id = semantic_entry_id(digest, category, relative)
+        found.append(
+            {
                 "entry_id": entry_id,
                 "content_sha256": digest,
                 "relative_path": relative,
                 "category": category,
             }
-    return list(found.values())
+        )
+    return found
 
 
 def _is_sha256(value: Any) -> bool:
@@ -172,10 +174,11 @@ def _normalize_image_records(
         if not _is_sha256(digest):
             continue
         category = str(value.get("category") or "").strip()
+        relative_path = str(value.get("relative_path") or "").replace("\\", "/")
         description = str(
             category_descriptions.get(category, value.get("category_description") or "")
         ).strip()
-        entry_id = semantic_entry_id(digest, category)
+        entry_id = semantic_entry_id(digest, category, relative_path)
         old_context = str(value.get("category_context_hash") or "")
         new_context = category_context_hash(digest, category, description)
         context_changed = bool(old_context and old_context != new_context)
@@ -189,6 +192,7 @@ def _normalize_image_records(
             {
                 "entry_id": entry_id,
                 "content_sha256": digest,
+                "relative_path": relative_path,
                 "category": category,
                 "category_description": description,
                 "category_tag": build_category_tag(category),
@@ -196,7 +200,6 @@ def _normalize_image_records(
                 "tags": ensure_category_tag(source_tags, category),
             }
         )
-        value.setdefault("relative_path", "")
         value.setdefault(
             "caption_status",
             "done" if value.get("caption") and value.get("tags") else "pending",
@@ -330,8 +333,7 @@ def get_pack_semantic_summary(
 ) -> dict[str, Any]:
     """返回适合 WebUI 展示的图包语义化进度摘要。
 
-    语义任务按“图片内容 + 分类”去重，因此跨分类重复内容会有独立记录；同一
-    分类中的完全重复文件仍可共用语义。
+    语义任务按具体文件路径保留独立记录，因此同内容图片也能被逐张人工修改。
     完成状态同时校验上次语义扫描时的文件数，避免在完整语义化后新增图片，
     主页仍错误显示为“已完成语义化”。
     """
@@ -426,10 +428,13 @@ def get_pack_semantic_summary(
 def get_image_semantic_detail(
     pack_dir: Path | str, image_path: Path | str
 ) -> dict[str, Any]:
-    """按图片内容加当前分类读取语义，跨分类重复图片互不覆盖。"""
+    """按当前文件路径读取语义，并报告同内容的其他文件但不共享修改。"""
     root = Path(pack_dir).resolve()
     memes_root = (root / "memes").resolve()
-    source = Path(image_path).resolve()
+    requested_source = Path(image_path)
+    if requested_source.is_symlink():
+        raise ValueError("不允许通过符号链接编辑图片")
+    source = requested_source.resolve()
     try:
         source.relative_to(memes_root)
     except (OSError, RuntimeError, ValueError) as exc:
@@ -437,15 +442,45 @@ def get_image_semantic_detail(
     if not source.is_file():
         raise FileNotFoundError("图片不存在")
 
+    digest = file_sha256(source)
+    relative_path = source.relative_to(root).as_posix()
+    category = source.parent.name
+    entry_id = semantic_entry_id(digest, category, relative_path)
+    same_content_paths: list[str] = []
+    source_size = source.stat().st_size
+    if memes_root.is_dir():
+        for candidate in sorted(memes_root.rglob("*")):
+            if (
+                candidate == source
+                or not candidate.is_file()
+                or candidate.suffix.lower() not in IMAGE_EXTENSIONS
+            ):
+                continue
+            try:
+                candidate.resolve().relative_to(memes_root)
+                if candidate.stat().st_size != source_size:
+                    continue
+                if file_sha256(candidate) == digest:
+                    same_content_paths.append(candidate.relative_to(root).as_posix())
+            except (OSError, RuntimeError, ValueError):
+                continue
+
     empty_result = {
         "status": "none",
+        "entry_id": entry_id,
+        "content_sha256": digest,
+        "relative_path": relative_path,
         "caption": "",
         "tags": [],
+        "editable_tags": [],
         "visible_text": "",
         "caption_status": "pending",
         "embedding_status": "pending",
         "error": "",
-        "category_tag": build_category_tag(source.parent.name),
+        "embedding_error": "",
+        "category": category,
+        "category_tag": build_category_tag(category),
+        "fixed_category_tags": [build_category_tag(category)],
         "category_review_status": "unchecked",
         "category_review_reason": "",
         "reclassification_status": "",
@@ -454,14 +489,21 @@ def get_image_semantic_detail(
         "reclassification_reason": "",
         "reclassified_at": "",
         "can_confirm_category": False,
+        "can_edit_semantic": True,
+        "manual_override": False,
+        "manual_modified": False,
+        "generation_source": "automatic",
+        "can_restore_auto": False,
+        "same_content_paths": same_content_paths,
+        "same_content_count": len(same_content_paths),
+        "edit_scope": "current_path",
+        "shared_update": False,
     }
     metadata = load_metadata(root)
     images = metadata.get("images", {})
     if not images:
         return empty_result
 
-    digest = file_sha256(source)
-    entry_id = semantic_entry_id(digest, source.parent.name)
     item = images.get(entry_id)
     if not isinstance(item, dict):
         return empty_result
@@ -475,20 +517,30 @@ def get_image_semantic_detail(
         status = "failed"
     else:
         status = "pending"
+    category_tag = str(item.get("category_tag") or build_category_tag(category))
+    editable_tags = [tag for tag in tags if not is_category_tag(tag)]
+    manual_modified = bool(
+        item.get("manual_override") or item.get("provenance") in {"manual", "mixed"}
+    )
+    error = str(item.get("error") or "").strip()
+    embedding_status = str(item.get("embedding_status") or "pending")
     return {
         "status": status,
         "entry_id": entry_id,
+        "content_sha256": digest,
+        "relative_path": relative_path,
         "caption": caption,
         "tags": tags,
+        "editable_tags": editable_tags,
         "visible_text": str(item.get("visible_text") or "").strip(),
         "caption_status": caption_status,
-        "embedding_status": str(item.get("embedding_status") or "pending"),
-        "error": str(item.get("error") or "").strip(),
-        "category": str(item.get("category") or source.parent.name),
+        "embedding_status": embedding_status,
+        "error": error,
+        "embedding_error": error if embedding_status == "failed" else "",
+        "category": str(item.get("category") or category),
         "category_description": str(item.get("category_description") or ""),
-        "category_tag": str(
-            item.get("category_tag") or build_category_tag(source.parent.name)
-        ),
+        "category_tag": category_tag,
+        "fixed_category_tags": [category_tag] if category_tag else [],
         "category_review_status": str(
             item.get("category_review_status") or "unchecked"
         ),
@@ -502,6 +554,15 @@ def get_image_semantic_detail(
             item.get("caption_status") == "done"
             and item.get("category_review_status") != "manual_confirmed"
         ),
+        "can_edit_semantic": True,
+        "manual_override": manual_modified,
+        "manual_modified": manual_modified,
+        "generation_source": "manual" if manual_modified else "automatic",
+        "can_restore_auto": manual_modified,
+        "same_content_paths": same_content_paths,
+        "same_content_count": len(same_content_paths),
+        "edit_scope": "current_path",
+        "shared_update": False,
     }
 
 
@@ -518,6 +579,234 @@ def save_metadata(pack_dir: Path | str, data: dict[str, Any]) -> Path:
     )
     _write_json_atomic(target, payload)
     return target
+
+
+def _resolve_image_edit_snapshot(
+    pack_dir: Path | str,
+    image_path: Path | str,
+    *,
+    expected_content_sha256: str = "",
+    expected_entry_id: str = "",
+) -> tuple[Path, Path, str, str, dict[str, Any], dict[str, Any]]:
+    """重新核对编辑对象，拒绝删除、移动、换图或旧页面提交。"""
+    root = Path(pack_dir).resolve()
+    memes_root = (root / "memes").resolve()
+    requested_source = Path(image_path)
+    if requested_source.is_symlink():
+        raise ValueError("不允许通过符号链接编辑图片")
+    source = requested_source.resolve()
+    try:
+        source.relative_to(memes_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("图片路径不属于当前表情包") from exc
+    if not source.is_file():
+        raise FileNotFoundError("图片已被删除或移动，请重新打开后再编辑")
+    if source.suffix.lower() not in IMAGE_EXTENSIONS:
+        raise ValueError("当前文件不是支持的图片格式")
+
+    digest = file_sha256(source)
+    expected_digest = str(expected_content_sha256 or "").strip().lower()
+    if expected_digest and digest != expected_digest:
+        raise RuntimeError("图片内容已发生变化，请重新打开后再编辑")
+    relative_path = source.relative_to(root).as_posix()
+    entry_id = semantic_entry_id(digest, source.parent.name, relative_path)
+    if expected_entry_id and str(expected_entry_id) != entry_id:
+        raise RuntimeError("图片位置或内容已发生变化，请重新打开后再编辑")
+
+    metadata = reconcile_metadata(root)
+    raw_item = metadata.get("images", {}).get(entry_id)
+    if not isinstance(raw_item, dict):
+        raise RuntimeError("图片语义记录已发生变化，请重新打开后再编辑")
+    if str(raw_item.get("relative_path") or "") != relative_path:
+        raise RuntimeError("图片位置已发生变化，请重新打开后再编辑")
+    return root, source, digest, entry_id, metadata, raw_item
+
+
+def _assert_image_snapshot_unchanged(
+    root: Path, source: Path, expected_digest: str, expected_entry_id: str
+) -> None:
+    """写入前最后复核文件，缩小外部文件变更造成的竞态窗口。"""
+    if not source.is_file():
+        raise FileNotFoundError("图片已被删除或移动，请重新打开后再编辑")
+    current_digest = file_sha256(source)
+    relative_path = source.relative_to(root).as_posix()
+    current_entry_id = semantic_entry_id(
+        current_digest, source.parent.name, relative_path
+    )
+    if current_digest != expected_digest or current_entry_id != expected_entry_id:
+        raise RuntimeError("图片位置或内容已发生变化，请重新打开后再编辑")
+
+
+def save_manual_image_semantic(
+    pack_dir: Path | str,
+    image_path: Path | str,
+    *,
+    caption: str,
+    tags: Any,
+    visible_text: str = "",
+    category_decision: str = "keep",
+    expected_content_sha256: str = "",
+    expected_entry_id: str = "",
+) -> dict[str, Any]:
+    """原子保存一张图片的人工语义，并只让该记录等待向量更新。"""
+    normalized_caption = str(caption or "").strip()
+    normalized_visible_text = str(visible_text or "").strip()
+    if not normalized_caption:
+        raise ValueError("图片含义不能为空")
+    if len(normalized_caption) > 4000:
+        raise ValueError("图片含义不能超过 4000 个字符")
+    if len(normalized_visible_text) > 4000:
+        raise ValueError("图片内文字不能超过 4000 个字符")
+    normalized_tags = normalize_tags(tags)
+    if len(normalized_tags) > 50 or any(len(tag) > 80 for tag in normalized_tags):
+        raise ValueError("普通语义标签最多 50 个，每个不能超过 80 个字符")
+
+    root, source, digest, entry_id, metadata, raw_item = _resolve_image_edit_snapshot(
+        pack_dir,
+        image_path,
+        expected_content_sha256=expected_content_sha256,
+        expected_entry_id=expected_entry_id,
+    )
+    item = SemanticImage.from_dict(raw_item)
+    fixed_tag = item.category_tag
+    illegal_fixed_tags = [
+        tag for tag in normalized_tags if is_category_tag(tag) and tag != fixed_tag
+    ]
+    if illegal_fixed_tags:
+        raise ValueError("固定分类标签不能在语义标签中新增或修改；请移动图片分类")
+    editable_tags = [
+        tag for tag in normalized_tags if tag != fixed_tag and not is_category_tag(tag)
+    ]
+
+    was_manual = bool(item.manual_override or item.provenance in {"manual", "mixed"})
+    if not was_manual:
+        item.auto_caption = item.caption
+        item.auto_tags = [tag for tag in item.tags if tag != fixed_tag]
+        item.auto_visible_text = item.visible_text
+        item.auto_category_fit = item.category_fit
+        item.auto_category_review_status = item.category_review_status
+        item.auto_category_review_reason = item.category_review_reason
+
+    item.manual_caption = normalized_caption
+    item.manual_tags = editable_tags
+    item.manual_visible_text = normalized_visible_text
+    item.caption = normalized_caption
+    item.tags = ensure_category_tag(editable_tags, item.category)
+    item.visible_text = normalized_visible_text
+    item.manual_override = True
+    item.provenance = "manual"
+    decision = str(category_decision or "keep").strip().lower()
+    if decision == "match":
+        item.category_fit = "match"
+        item.category_review_status = "manual_confirmed"
+        item.category_review_reason = ""
+        item.category_review_context_hash = item.category_context_hash
+        item.manual_confirmation_context_hash = item.category_context_hash
+    elif decision in {"mismatch", "conflict"}:
+        item.category_fit = "conflict"
+        item.category_review_status = "manual_rejected"
+        item.category_review_reason = "人工确认当前分类不符合，请移动到正确分类"
+        item.category_review_context_hash = item.category_context_hash
+        item.manual_confirmation_context_hash = item.category_context_hash
+    elif decision != "keep":
+        raise ValueError("分类确认状态无效")
+
+    item.caption_status = "done"
+    item.embedding_status = "pending"
+    item.text_hash = text_hash(item.vector_text)
+    item.error = None
+    item.updated_at = utc_now()
+    _assert_image_snapshot_unchanged(root, source, digest, entry_id)
+    raw_item.update(item.to_dict())
+    metadata["requires_local_index_rebuild"] = True
+    metadata["last_manual_edit_at"] = item.updated_at
+    save_metadata(root, metadata)
+    return get_image_semantic_detail(root, source)
+
+
+def restore_image_auto_semantic(
+    pack_dir: Path | str,
+    image_path: Path | str,
+    *,
+    expected_content_sha256: str = "",
+    expected_entry_id: str = "",
+) -> dict[str, Any]:
+    """显式放弃当前路径的人工内容，恢复旧自动结果或等待重新生成。"""
+    root, source, digest, entry_id, metadata, raw_item = _resolve_image_edit_snapshot(
+        pack_dir,
+        image_path,
+        expected_content_sha256=expected_content_sha256,
+        expected_entry_id=expected_entry_id,
+    )
+    item = SemanticImage.from_dict(raw_item)
+    if not (item.manual_override or item.provenance in {"manual", "mixed"}):
+        raise ValueError("这张图片当前没有人工修改，无需恢复")
+
+    item.manual_override = False
+    item.provenance = "ai"
+    item.manual_caption = ""
+    item.manual_tags = []
+    item.manual_visible_text = ""
+    if item.auto_caption and item.auto_tags:
+        item.caption = item.auto_caption
+        item.tags = ensure_category_tag(item.auto_tags, item.category)
+        item.visible_text = item.auto_visible_text
+        item.category_fit = item.auto_category_fit
+        item.category_review_status = item.auto_category_review_status
+        item.category_review_reason = item.auto_category_review_reason
+        if item.category_review_status in {"auto_match", "needs_review"}:
+            item.category_review_context_hash = item.category_context_hash
+        else:
+            item.category_review_status = "unchecked"
+            item.category_review_context_hash = ""
+        item.caption_status = "done"
+        item.text_hash = text_hash(item.vector_text)
+    else:
+        item.caption = ""
+        item.tags = ensure_category_tag([], item.category)
+        item.visible_text = ""
+        item.category_fit = "uncertain"
+        item.category_review_status = "unchecked"
+        item.category_review_reason = ""
+        item.category_review_context_hash = ""
+        item.caption_status = "pending"
+        item.text_hash = ""
+    item.manual_confirmation_context_hash = ""
+    item.embedding_status = "pending"
+    item.error = None
+    item.updated_at = utc_now()
+    _assert_image_snapshot_unchanged(root, source, digest, entry_id)
+    raw_item.update(item.to_dict())
+    metadata["requires_local_index_rebuild"] = True
+    metadata["last_manual_restore_at"] = item.updated_at
+    save_metadata(root, metadata)
+    return get_image_semantic_detail(root, source)
+
+
+def set_image_embedding_failure(
+    pack_dir: Path | str,
+    image_path: Path | str,
+    error: str,
+    *,
+    expected_content_sha256: str = "",
+    expected_entry_id: str = "",
+) -> dict[str, Any]:
+    """记录单图向量更新失败，不改变已保存的人工语义。"""
+    root, source, digest, entry_id, metadata, raw_item = _resolve_image_edit_snapshot(
+        pack_dir,
+        image_path,
+        expected_content_sha256=expected_content_sha256,
+        expected_entry_id=expected_entry_id,
+    )
+    item = SemanticImage.from_dict(raw_item)
+    item.embedding_status = "failed"
+    item.error = str(error or "向量更新失败").strip()[:1000]
+    item.updated_at = utc_now()
+    _assert_image_snapshot_unchanged(root, source, digest, entry_id)
+    raw_item.update(item.to_dict())
+    metadata["requires_local_index_rebuild"] = True
+    save_metadata(root, metadata)
+    return get_image_semantic_detail(root, source)
 
 
 def _is_safe_category_key(category: str) -> bool:
@@ -681,7 +970,10 @@ def apply_conflict_reclassifications(
                 "status": move_status,
                 "at": moved_at,
             }
-            new_entry_id = semantic_entry_id(item.content_sha256, target_category)
+            target_relative_path = target.relative_to(root).as_posix()
+            new_entry_id = semantic_entry_id(
+                item.content_sha256, target_category, target_relative_path
+            )
             existing_target = images.get(new_entry_id)
             keep_existing_target = bool(
                 isinstance(existing_target, dict)
@@ -703,7 +995,7 @@ def apply_conflict_reclassifications(
                 previous_fixed_tag = build_category_tag(item.category)
                 moved_value.update(
                     {
-                        "relative_path": target.relative_to(root).as_posix(),
+                        "relative_path": target_relative_path,
                         "category": target_category,
                         "category_description": str(
                             descriptions.get(target_category) or ""
@@ -777,7 +1069,11 @@ def apply_conflict_reclassifications(
                 {item["content_sha256"] for item in scanned}
             )
             data["reused_duplicate_files"] = max(
-                0, data["file_total"] - data["unique_total"]
+                0,
+                data["file_total"]
+                - len(
+                    {(entry["content_sha256"], entry["category"]) for entry in scanned}
+                ),
             )
             data["cross_category_duplicate_entries"] = max(
                 0, data["unique_total"] - data["content_unique_total"]
@@ -855,7 +1151,7 @@ def reset_local_embedding_state(data: dict[str, Any]) -> dict[str, Any]:
 def reconcile_metadata(
     pack_dir: Path | str, external_data: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    """合并磁盘与语义记录，并按内容加分类隔离审核及向量状态。"""
+    """合并磁盘与语义记录，并按具体文件路径隔离人工内容和向量状态。"""
     root = Path(pack_dir).resolve()
     descriptions = load_category_descriptions(root)
     existing = load_metadata(root)
@@ -916,9 +1212,30 @@ def reconcile_metadata(
             # 来源记录仍在磁盘上，说明这是另一个分类中新出现的重复图，而不是
             # 原图被移动/分类被重命名。人工内容只属于来源条目，不能把保护状态
             # 复制到新分类，否则视觉模型无法按新分类重新生成语义。
+            was_manual = bool(
+                candidate.get("manual_override")
+                or candidate.get("provenance") in {"manual", "mixed"}
+            )
             candidate["manual_override"] = False
+            candidate["manual_caption"] = ""
             candidate["manual_tags"] = []
+            candidate["manual_visible_text"] = ""
             candidate["provenance"] = "ai"
+            if was_manual:
+                candidate["caption"] = str(candidate.get("auto_caption") or "")
+                candidate["tags"] = normalize_tags(candidate.get("auto_tags"))
+                candidate["visible_text"] = str(
+                    candidate.get("auto_visible_text") or ""
+                )
+                candidate["category_fit"] = str(
+                    candidate.get("auto_category_fit") or "uncertain"
+                )
+                candidate["category_review_status"] = str(
+                    candidate.get("auto_category_review_status") or "unchecked"
+                )
+                candidate["category_review_reason"] = str(
+                    candidate.get("auto_category_review_reason") or ""
+                )
         return candidate, False
 
     images: dict[str, dict[str, Any]] = {}
@@ -1033,9 +1350,25 @@ def reconcile_metadata(
     result["content_unique_total"] = len(
         {scan["content_sha256"] for scan in scanned_by_id.values()}
     )
-    result["reused_duplicate_files"] = max(0, result["file_total"] - len(scanned_by_id))
+    result["reused_duplicate_files"] = max(
+        0,
+        result["file_total"]
+        - len(
+            {
+                (scan["content_sha256"], scan["category"])
+                for scan in scanned_by_id.values()
+            }
+        ),
+    )
     result["cross_category_duplicate_entries"] = max(
-        0, result["unique_total"] - result["content_unique_total"]
+        0,
+        len(
+            {
+                (scan["content_sha256"], scan["category"])
+                for scan in scanned_by_id.values()
+            }
+        )
+        - result["content_unique_total"],
     )
     result["requires_local_index_rebuild"] = bool(
         set(local_images) != set(images)
@@ -1124,6 +1457,7 @@ def get_category_review_overview(pack_dir: Path | str) -> dict[str, Any]:
         "auto_match": 0,
         "needs_review": 0,
         "manual_confirmed": 0,
+        "manual_rejected": 0,
         "unchecked": 0,
         "total": 0,
         "reclassified": 0,
@@ -1157,13 +1491,14 @@ def get_category_review_overview(pack_dir: Path | str) -> dict[str, Any]:
                 continue
             digest = file_sha256(path)
             category = path.parent.name
-            entry_id = semantic_entry_id(digest, category)
+            relative_path = path.relative_to(root).as_posix()
+            entry_id = semantic_entry_id(digest, category, relative_path)
             record = images.get(entry_id, {})
             status = str(record.get("category_review_status") or "unchecked")
             items.append(
                 {
                     "entry_id": entry_id,
-                    "relative_path": path.relative_to(root).as_posix(),
+                    "relative_path": relative_path,
                     "category": category,
                     "filename": path.name,
                     "category_tag": str(
@@ -1195,6 +1530,7 @@ def get_category_review_overview(pack_dir: Path | str) -> dict[str, Any]:
             "auto_match",
             "needs_review",
             "manual_confirmed",
+            "manual_rejected",
             "unchecked",
         )
     }
@@ -1211,24 +1547,19 @@ def get_category_review_overview(pack_dir: Path | str) -> dict[str, Any]:
 
 
 def confirm_image_category(
-    pack_dir: Path | str, image_path: Path | str
+    pack_dir: Path | str,
+    image_path: Path | str,
+    *,
+    expected_content_sha256: str = "",
+    expected_entry_id: str = "",
 ) -> dict[str, Any]:
     """由用户确认当前分类，并把确认绑定到当前图片和分类描述。"""
-    root = Path(pack_dir).resolve()
-    memes_root = (root / "memes").resolve()
-    source = Path(image_path).resolve()
-    try:
-        source.relative_to(memes_root)
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise ValueError("图片路径不属于当前表情包") from exc
-    if not source.is_file():
-        raise FileNotFoundError("图片不存在")
-    metadata = reconcile_metadata(root)
-    digest = file_sha256(source)
-    entry_id = semantic_entry_id(digest, source.parent.name)
-    raw_item = metadata.get("images", {}).get(entry_id)
-    if not isinstance(raw_item, dict):
-        raise ValueError("图片尚未建立语义审核记录")
+    root, source, digest, entry_id, metadata, raw_item = _resolve_image_edit_snapshot(
+        pack_dir,
+        image_path,
+        expected_content_sha256=expected_content_sha256,
+        expected_entry_id=expected_entry_id,
+    )
     item = SemanticImage.from_dict(raw_item)
     item.category_review_status = "manual_confirmed"
     item.category_fit = "match"
@@ -1236,6 +1567,7 @@ def confirm_image_category(
     item.category_review_context_hash = item.category_context_hash
     item.manual_confirmation_context_hash = item.category_context_hash
     item.updated_at = utc_now()
+    _assert_image_snapshot_unchanged(root, source, digest, entry_id)
     raw_item.update(item.to_dict())
     save_metadata(root, metadata)
     return get_image_semantic_detail(root, source)

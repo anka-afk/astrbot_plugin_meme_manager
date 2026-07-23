@@ -14,6 +14,7 @@ from backend.semantic_index import (
     EmbeddingAdapter,
     build_index,
     index_is_ready,
+    load_index_manifest,
     search_index,
 )
 from backend.semantic_models import (
@@ -48,7 +49,9 @@ from backend.semantic_storage import (
     metadata_items,
     reconcile_metadata,
     reset_local_embedding_state,
+    restore_image_auto_semantic,
     safe_relative_path,
+    save_manual_image_semantic,
     save_metadata,
     semantic_metadata_is_complete,
 )
@@ -70,9 +73,11 @@ class FakeEmbedding:
     def __init__(self):
         self.single_calls = 0
         self.batch_calls = 0
+        self.batch_texts = []
 
     async def get_embeddings(self, texts):
         self.batch_calls += 1
+        self.batch_texts.append(list(texts))
         return [[1.0, 0.0] if "心虚" in text else [0.0, 1.0] for text in texts]
 
     async def get_embedding(self, text):
@@ -485,7 +490,10 @@ class SemanticMvpTest(unittest.TestCase):
                 )
                 self.assertEqual(task_state["embedding_provider_id"], "fake-embedding")
                 self.assertEqual(task_state["embedding_dimension"], 2)
-                index_path = root / "semantic_indexes" / "demo" / "index.faiss"
+                index_manifest = load_index_manifest(root, "demo")
+                index_path = (
+                    root / "semantic_indexes" / "demo" / index_manifest["index_file"]
+                )
                 self.assertEqual(faiss.read_index(str(index_path)).ntotal, 1)
 
         asyncio.run(run())
@@ -654,7 +662,7 @@ class SemanticMvpTest(unittest.TestCase):
                     current["images"][digest]["embedding_status"], "cleared"
                 )
                 self.assertFalse(
-                    (root / "semantic_indexes" / "demo" / "index.faiss").exists()
+                    list((root / "semantic_indexes" / "demo").glob("index*.faiss"))
                 )
                 self.assertEqual(result["task_status"], "idle")
                 self.assertEqual(result["pending"], 0)
@@ -1537,15 +1545,19 @@ class SemanticMvpTest(unittest.TestCase):
 
             self.assertEqual(result["moved"], 1)
             merged = load_metadata(pack)
-            self.assertEqual(len(merged["images"]), 1)
-            self.assertEqual(merged["unique_total"], 1)
+            self.assertEqual(len(merged["images"]), 2)
+            self.assertEqual(merged["unique_total"], 2)
             self.assertEqual(merged["file_total"], 2)
             self.assertEqual(merged["reused_duplicate_files"], 1)
-            item = next(iter(merged["images"].values()))
+            item = next(
+                value
+                for value in merged["images"].values()
+                if value.get("reclassification_status")
+            )
             self.assertEqual(item["category"], "sigh")
             self.assertEqual(item["reclassification_status"], "auto_reclassified")
             overview = get_category_review_overview(pack)
-            self.assertEqual(overview["statistics"]["reclassified"], 2)
+            self.assertEqual(overview["statistics"]["reclassified"], 1)
 
     def test_task_persists_conflict_review_reason_and_fixed_tag(self):
         async def run():
@@ -1742,6 +1754,7 @@ class SemanticMvpTest(unittest.TestCase):
                 self.assertFalse(give_item["manual_override"])
                 self.assertEqual(give_item["manual_tags"], [])
                 self.assertEqual(give_item["provenance"], "ai")
+                self.assertNotEqual(give_item["caption"], "foo 分类的人工描述")
                 self.assertEqual(give_item["category_review_status"], "unchecked")
                 save_metadata(pack, reconciled)
 
@@ -1857,6 +1870,17 @@ class SemanticMvpTest(unittest.TestCase):
         self.assertIn("image-preview-category-confirm-btn", page)
         self.assertIn("image-preview-reclassification", page)
         self.assertIn("semantic/confirm_category", script)
+        self.assertIn("semantic/save_image", script)
+        self.assertIn("semantic/save_image_and_vector", script)
+        self.assertIn("semantic/restore_image_auto", script)
+        self.assertIn("image-preview-edit-form", page)
+        self.assertIn("image-preview-save-vector-btn", page)
+        self.assertIn("image-preview-restore-auto-btn", page)
+        self.assertIn("固定分类标签（只读）", page)
+        self.assertIn("人工修改", script)
+        self.assertIn("语义已保存，向量待更新", script)
+        self.assertIn("向量更新完成", script)
+        self.assertIn("向量更新失败", script)
         self.assertIn("semanticReviewAvailable", script)
         self.assertIn("if (semanticReviewAvailable && review)", script)
         self.assertIn("reclassification_status", script)
@@ -2012,7 +2036,13 @@ class SemanticMvpTest(unittest.TestCase):
                 current = next(iter(load_metadata(pack)["images"].values()))
                 self.assertEqual(current["caption"], "用户亲自修正的描述")
                 self.assertEqual(current["tags"], ["category:foo", "用户标签"])
-                self.assertEqual(current["category_review_status"], "auto_match")
+                self.assertEqual(current["category_review_status"], "unchecked")
+                self.assertEqual(len(context.requests), 0)
+                await manager.start("demo", mode="caption_only", force=True)
+                await manager._tasks["demo"]
+                forced = next(iter(load_metadata(pack)["images"].values()))
+                self.assertEqual(forced["caption"], "用户亲自修正的描述")
+                self.assertEqual(len(context.requests), 0)
 
         asyncio.run(run())
 
@@ -2058,6 +2088,359 @@ class SemanticMvpTest(unittest.TestCase):
                 self.assertTrue(current["caption"].endswith("新版分类感知描述"))
                 self.assertEqual(current["prompt_version"], PROMPT_VERSION)
                 self.assertEqual(len(context.requests), 1)
+
+        asyncio.run(run())
+
+    def test_manual_semantic_persists_fixed_tag_and_restores_only_explicitly(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            image_dir = root / "memes" / "foo"
+            image_dir.mkdir(parents=True)
+            image = image_dir / "one.png"
+            image.write_bytes(b"manual-edit")
+            metadata = reconcile_metadata(root)
+            item = next(iter(metadata["images"].values()))
+            item.update(
+                {
+                    "caption": "自动描述",
+                    "tags": ["自动标签"],
+                    "visible_text": "自动文字",
+                    "caption_status": "done",
+                    "embedding_status": "done",
+                }
+            )
+            mark_category_reviewed(item)
+            save_metadata(root, metadata)
+            opened = get_image_semantic_detail(root, image)
+
+            saved = save_manual_image_semantic(
+                root,
+                image,
+                caption="人工修正后的含义",
+                tags=[],
+                visible_text="人工看到的文字",
+                category_decision="match",
+                expected_content_sha256=opened["content_sha256"],
+                expected_entry_id=opened["entry_id"],
+            )
+            self.assertTrue(saved["manual_modified"])
+            self.assertEqual(saved["caption"], "人工修正后的含义")
+            self.assertEqual(saved["tags"], ["category:foo"])
+            self.assertEqual(saved["editable_tags"], [])
+            self.assertEqual(saved["embedding_status"], "pending")
+            self.assertEqual(saved["category_review_status"], "manual_confirmed")
+            current = next(iter(load_metadata(root)["images"].values()))
+            self.assertTrue(current["manual_override"])
+            self.assertEqual(current["manual_caption"], "人工修正后的含义")
+            self.assertTrue(current["text_hash"])
+            self.assertIsNone(current["error"])
+
+            restored = restore_image_auto_semantic(
+                root,
+                image,
+                expected_content_sha256=saved["content_sha256"],
+                expected_entry_id=saved["entry_id"],
+            )
+            self.assertFalse(restored["manual_modified"])
+            self.assertEqual(restored["caption"], "自动描述")
+            self.assertEqual(restored["tags"], ["category:foo", "自动标签"])
+            self.assertEqual(restored["embedding_status"], "pending")
+            with self.assertRaisesRegex(ValueError, "没有人工修改"):
+                restore_image_auto_semantic(root, image)
+
+    def test_manual_semantic_rejects_fixed_tag_injection_and_marks_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            image_dir = root / "memes" / "foo"
+            image_dir.mkdir(parents=True)
+            image = image_dir / "one.png"
+            image.write_bytes(b"fixed-tag")
+            reconcile_metadata(root)
+            with self.assertRaisesRegex(ValueError, "固定分类标签"):
+                save_manual_image_semantic(
+                    root,
+                    image,
+                    caption="人工描述",
+                    tags=["category:other"],
+                )
+            saved = save_manual_image_semantic(
+                root,
+                image,
+                caption="人工描述",
+                tags=["普通标签"],
+                category_decision="mismatch",
+            )
+            self.assertEqual(saved["tags"][0], "category:foo")
+            self.assertEqual(saved["category_review_status"], "manual_rejected")
+            self.assertEqual(
+                saved["category_review_reason"],
+                "人工确认当前分类不符合，请移动到正确分类",
+            )
+
+    def test_same_content_paths_are_manually_edited_independently(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            image_dir = root / "memes" / "foo"
+            image_dir.mkdir(parents=True)
+            first = image_dir / "one.png"
+            second = image_dir / "copy.png"
+            first.write_bytes(b"same-path-content")
+            second.write_bytes(b"same-path-content")
+            metadata = reconcile_metadata(root)
+            self.assertEqual(len(metadata["images"]), 2)
+            for item in metadata["images"].values():
+                item.update(
+                    {
+                        "caption": "原自动描述",
+                        "tags": ["原标签"],
+                        "caption_status": "done",
+                        "embedding_status": "done",
+                    }
+                )
+                mark_category_reviewed(item)
+            save_metadata(root, metadata)
+
+            first_detail = get_image_semantic_detail(root, first)
+            self.assertEqual(first_detail["same_content_count"], 1)
+            save_manual_image_semantic(
+                root,
+                first,
+                caption="只属于 one 的人工描述",
+                tags=["只改当前"],
+                expected_content_sha256=first_detail["content_sha256"],
+                expected_entry_id=first_detail["entry_id"],
+            )
+            edited_first = get_image_semantic_detail(root, first)
+            self.assertEqual(edited_first["caption"], "只属于 one 的人工描述")
+            self.assertEqual(edited_first["embedding_status"], "pending")
+            second_detail = get_image_semantic_detail(root, second)
+            self.assertEqual(second_detail["caption"], "原自动描述")
+            self.assertEqual(second_detail["embedding_status"], "done")
+            self.assertFalse(second_detail["manual_modified"])
+
+    def test_stale_image_edit_is_rejected_after_move_delete_or_content_change(self):
+        def create_image(root: Path, content: bytes) -> Path:
+            image_dir = root / "memes" / "foo"
+            image_dir.mkdir(parents=True)
+            image = image_dir / "one.png"
+            image.write_bytes(content)
+            reconcile_metadata(root)
+            return image
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            image = create_image(root, b"move")
+            opened = get_image_semantic_detail(root, image)
+            moved = image.with_name("moved.png")
+            image.rename(moved)
+            with self.assertRaisesRegex(FileNotFoundError, "删除或移动"):
+                save_manual_image_semantic(
+                    root,
+                    image,
+                    caption="旧页面保存",
+                    tags=[],
+                    expected_content_sha256=opened["content_sha256"],
+                    expected_entry_id=opened["entry_id"],
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            image = create_image(root, b"delete")
+            opened = get_image_semantic_detail(root, image)
+            image.unlink()
+            with self.assertRaisesRegex(FileNotFoundError, "删除或移动"):
+                save_manual_image_semantic(
+                    root,
+                    image,
+                    caption="旧页面保存",
+                    tags=[],
+                    expected_content_sha256=opened["content_sha256"],
+                    expected_entry_id=opened["entry_id"],
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            image = create_image(root, b"before")
+            opened = get_image_semantic_detail(root, image)
+            image.write_bytes(b"after")
+            with self.assertRaisesRegex(RuntimeError, "内容已发生变化"):
+                save_manual_image_semantic(
+                    root,
+                    image,
+                    caption="旧页面保存",
+                    tags=[],
+                    expected_content_sha256=opened["content_sha256"],
+                    expected_entry_id=opened["entry_id"],
+                )
+
+    def test_manual_save_succeeds_without_embedding_provider_and_task_state_blocks_it(
+        self,
+    ):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                image_dir = pack / "memes" / "foo"
+                image_dir.mkdir(parents=True)
+                image = image_dir / "one.png"
+                image.write_bytes(b"no-provider")
+                reconcile_metadata(pack)
+                empty_context = type(
+                    "EmptyContext",
+                    (),
+                    {"get_all_embedding_providers": lambda self: []},
+                )()
+                manager = SemanticTaskManager(root, context=empty_context)
+                opened = get_image_semantic_detail(pack, image)
+                result = await manager.save_image_manual_semantic(
+                    "demo",
+                    image,
+                    caption="没有向量模型也要保存",
+                    tags=["人工"],
+                    expected_content_sha256=opened["content_sha256"],
+                    expected_entry_id=opened["entry_id"],
+                    update_vector=True,
+                )
+                self.assertTrue(result["semantic_saved"])
+                self.assertEqual(result["vector_update"]["status"], "waiting_provider")
+                self.assertEqual(result["semantic"]["embedding_status"], "pending")
+
+                manager._save_state("demo", {"task_status": "paused"})
+                with self.assertRaisesRegex(RuntimeError, "暂停或中断"):
+                    await manager.save_image_manual_semantic(
+                        "demo",
+                        image,
+                        caption="不应保存",
+                        tags=[],
+                    )
+
+        asyncio.run(run())
+
+    def test_manual_vector_update_requests_only_changed_image_and_reuses_others(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                image_dir = pack / "memes" / "foo"
+                image_dir.mkdir(parents=True)
+                first = image_dir / "one.png"
+                second = image_dir / "two.png"
+                first.write_bytes(b"first")
+                second.write_bytes(b"second")
+                metadata = reconcile_metadata(pack)
+                for item in metadata["images"].values():
+                    is_first = item["relative_path"].endswith("one.png")
+                    item.update(
+                        {
+                            "caption": "心虚装傻" if is_first else "开心庆祝",
+                            "tags": ["心虚"] if is_first else ["开心"],
+                            "caption_status": "done",
+                        }
+                    )
+                    mark_category_reviewed(item)
+                save_metadata(pack, metadata)
+                provider = FakeEmbedding()
+                adapter = EmbeddingAdapter(provider)
+                await build_index(pack, root, "demo", adapter)
+                provider.batch_calls = 0
+                provider.batch_texts.clear()
+
+                manager = SemanticTaskManager(
+                    root,
+                    context=FakeContext(provider),
+                    config={"embedding_provider_id": "fake-embedding"},
+                )
+                opened = get_image_semantic_detail(pack, first)
+                result = await manager.save_image_manual_semantic(
+                    "demo",
+                    first,
+                    caption="人工修正为非常心虚",
+                    tags=["心虚", "装傻"],
+                    expected_content_sha256=opened["content_sha256"],
+                    expected_entry_id=opened["entry_id"],
+                    update_vector=True,
+                )
+                self.assertEqual(result["vector_update"]["status"], "done")
+                self.assertEqual(result["vector_update"]["requested_images"], 1)
+                self.assertEqual(provider.batch_calls, 1)
+                self.assertEqual([len(texts) for texts in provider.batch_texts], [1])
+                self.assertIn("人工修正为非常心虚", provider.batch_texts[0][0])
+                self.assertEqual(
+                    get_image_semantic_detail(pack, second)["caption"], "开心庆祝"
+                )
+                self.assertTrue(
+                    index_is_ready(
+                        root,
+                        "demo",
+                        load_metadata(pack),
+                        adapter.provider_id,
+                        adapter.model_name,
+                        adapter.dimension,
+                    )
+                )
+
+        asyncio.run(run())
+
+    def test_manual_vector_update_keeps_old_index_if_image_changes_during_request(self):
+        async def run():
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                pack = root / "packs" / "demo"
+                image_dir = pack / "memes" / "foo"
+                image_dir.mkdir(parents=True)
+                image = image_dir / "one.png"
+                image.write_bytes(b"before-vector")
+                metadata = reconcile_metadata(pack)
+                item = next(iter(metadata["images"].values()))
+                item.update(
+                    {
+                        "caption": "原描述",
+                        "tags": ["原标签"],
+                        "caption_status": "done",
+                    }
+                )
+                mark_category_reviewed(item)
+                save_metadata(pack, metadata)
+                initial_provider = FakeEmbedding()
+                await build_index(
+                    pack,
+                    root,
+                    "demo",
+                    EmbeddingAdapter(initial_provider),
+                )
+                old_manifest = load_index_manifest(root, "demo")
+
+                class ReplacingEmbedding(FakeEmbedding):
+                    async def get_embeddings(self, texts):
+                        image.write_bytes(b"changed-during-vector")
+                        return await super().get_embeddings(texts)
+
+                replacing_provider = ReplacingEmbedding()
+                manager = SemanticTaskManager(
+                    root,
+                    context=FakeContext(replacing_provider),
+                    config={"embedding_provider_id": "fake-embedding"},
+                )
+                opened = get_image_semantic_detail(pack, image)
+                result = await manager.save_image_manual_semantic(
+                    "demo",
+                    image,
+                    caption="人工新描述",
+                    tags=["人工"],
+                    category_decision="match",
+                    expected_content_sha256=opened["content_sha256"],
+                    expected_entry_id=opened["entry_id"],
+                    update_vector=True,
+                )
+                self.assertEqual(result["vector_update"]["status"], "pending")
+                self.assertIn(
+                    "图片已被删除、移动或替换", result["vector_update"]["message"]
+                )
+                self.assertEqual(
+                    load_index_manifest(root, "demo")["index_file"],
+                    old_manifest["index_file"],
+                )
+                self.assertEqual(replacing_provider.batch_calls, 1)
 
         asyncio.run(run())
 
@@ -2163,6 +2546,7 @@ class SemanticMvpTest(unittest.TestCase):
                     "images": {
                         moved_entry_id.upper(): {
                             "content_sha256": moved_digest.upper(),
+                            "relative_path": "memes/a/moved.png",
                             "category": "a",
                             "caption": "从外部记录复用",
                             "tags": ["外部语义"],
@@ -2216,6 +2600,25 @@ class SemanticMvpTest(unittest.TestCase):
             )
             self.assertEqual(missing_item["relative_path"], "")
 
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            memes = root / "memes" / "a"
+            memes.mkdir(parents=True)
+            real_image = memes / "real.png"
+            real_image.write_bytes(b"internal-link")
+            linked_image = memes / "linked.png"
+            linked_image.symlink_to(real_image)
+            reconcile_metadata(root)
+            with self.assertRaisesRegex(ValueError, "符号链接"):
+                get_image_semantic_detail(root, linked_image)
+            with self.assertRaisesRegex(ValueError, "符号链接"):
+                save_manual_image_semantic(
+                    root,
+                    linked_image,
+                    caption="不应通过链接保存",
+                    tags=[],
+                )
+
     def test_caption_result_requires_fine_grained_fields(self):
         caption, tags, visible_text = parse_caption_result(
             '{"caption":"心虚装傻","tags":["心虚","尴尬"],"visible_text":""}'
@@ -2258,7 +2661,7 @@ class SemanticMvpTest(unittest.TestCase):
                 fake_embedding = FakeEmbedding()
                 adapter = EmbeddingAdapter(fake_embedding)
                 manifest = await build_index(pack, root, "demo", adapter)
-                index_path = root / "semantic_indexes" / "demo" / "index.faiss"
+                index_path = root / "semantic_indexes" / "demo" / manifest["index_file"]
                 self.assertEqual(manifest["index_format"], "faiss-indexflatip-v1")
                 self.assertEqual(faiss.read_index(str(index_path)).ntotal, 2)
                 with self.assertRaises((UnicodeDecodeError, json.JSONDecodeError)):

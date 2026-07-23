@@ -22,7 +22,13 @@ CAPTION_STATUSES = frozenset({"pending", "running", "done", "failed"})
 EMBEDDING_STATUSES = frozenset({"pending", "running", "done", "failed", "cleared"})
 CATEGORY_FITS = frozenset({"match", "uncertain", "conflict"})
 CATEGORY_REVIEW_STATUSES = frozenset(
-    {"unchecked", "auto_match", "needs_review", "manual_confirmed"}
+    {
+        "unchecked",
+        "auto_match",
+        "needs_review",
+        "manual_confirmed",
+        "manual_rejected",
+    }
 )
 RECLASSIFICATION_STATUSES = frozenset({"", "auto_reclassified", "moved_to_review"})
 REVIEW_CATEGORY = "needs_review"
@@ -103,7 +109,12 @@ def ensure_category_tag(tags: Any, category: str) -> list[str]:
 
 def category_review_is_complete(status: Any) -> bool:
     """模型已判断或用户已确认时，分类审核才算完成。"""
-    return str(status or "") in {"auto_match", "needs_review", "manual_confirmed"}
+    return str(status or "") in {
+        "auto_match",
+        "needs_review",
+        "manual_confirmed",
+        "manual_rejected",
+    }
 
 
 def category_analysis_is_current(item: Any) -> bool:
@@ -117,13 +128,22 @@ def category_analysis_is_current(item: Any) -> bool:
     return str(item.get("prompt_version") or "") == PROMPT_VERSION
 
 
-def semantic_entry_id(content_sha256: str, category: str) -> str:
-    """按“图片内容 + 分类”生成稳定键，避免跨分类的重复图片互相覆盖。"""
+def semantic_entry_id(
+    content_sha256: str, category: str, relative_path: str = ""
+) -> str:
+    """按“图片内容 + 分类 + 路径”生成稳定键。
+
+    ``relative_path`` 保持可选是为了读取旧数据和兼容调用方；当前磁盘扫描会
+    始终传入路径，使同内容图片也能被逐文件人工修改。
+    """
     digest = str(content_sha256 or "").strip().lower()
     category_value = str(category or "").strip()
+    path_value = str(relative_path or "").strip().replace("\\", "/")
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise ValueError("content_sha256 必须是完整 SHA-256")
-    return hashlib.sha256(f"{digest}\0{category_value}".encode()).hexdigest()
+    return hashlib.sha256(
+        f"{digest}\0{category_value}\0{path_value}".encode()
+    ).hexdigest()
 
 
 def category_context_hash(
@@ -389,8 +409,15 @@ class SemanticImage:
     caption_status: str = "pending"
     embedding_status: str = "pending"
     provenance: str = "ai"
+    auto_caption: str = ""
     auto_tags: list[str] = field(default_factory=list)
+    auto_visible_text: str = ""
+    auto_category_fit: str = "uncertain"
+    auto_category_review_status: str = "unchecked"
+    auto_category_review_reason: str = ""
+    manual_caption: str = ""
     manual_tags: list[str] = field(default_factory=list)
+    manual_visible_text: str = ""
     manual_override: bool = False
     vision_model: str = ""
     prompt_version: str = PROMPT_VERSION
@@ -428,7 +455,9 @@ class SemanticImage:
             if isinstance(value, dict)
         ]
         if len(self.content_sha256) == 64:
-            self.entry_id = semantic_entry_id(self.content_sha256, self.category)
+            self.entry_id = semantic_entry_id(
+                self.content_sha256, self.category, self.relative_path
+            )
         self.category_tag = build_category_tag(self.category)
         current_context_hash = category_context_hash(
             self.content_sha256, self.category, self.category_description
@@ -439,11 +468,23 @@ class SemanticImage:
             self.category_review_reason = ""
             self.category_review_context_hash = ""
             self.manual_confirmation_context_hash = ""
+        self.tags = ensure_category_tag(self.tags, self.category)
         self.auto_tags = normalize_tags(self.auto_tags)
         self.manual_tags = normalize_tags(self.manual_tags)
-        self.tags = ensure_category_tag(self.tags, self.category)
-        if self.manual_override and self.manual_tags:
+        if self.manual_override:
+            if not self.manual_tags:
+                self.manual_tags = [
+                    tag for tag in self.tags if tag != self.category_tag
+                ]
             self.tags = ensure_category_tag(self.manual_tags, self.category)
+            self.caption = str(self.manual_caption or self.caption or "").strip()
+            self.visible_text = str(
+                self.manual_visible_text or self.visible_text or ""
+            ).strip()
+        if self.auto_category_fit not in CATEGORY_FITS:
+            self.auto_category_fit = "uncertain"
+        if self.auto_category_review_status not in CATEGORY_REVIEW_STATUSES:
+            self.auto_category_review_status = "unchecked"
         if self.caption_status not in CAPTION_STATUSES:
             self.caption_status = "pending"
         if self.embedding_status not in EMBEDDING_STATUSES:
@@ -452,7 +493,7 @@ class SemanticImage:
             self.category_fit = "uncertain"
         if self.category_review_status not in CATEGORY_REVIEW_STATUSES:
             self.category_review_status = "unchecked"
-        if self.category_review_status == "manual_confirmed":
+        if self.category_review_status in {"manual_confirmed", "manual_rejected"}:
             if self.manual_confirmation_context_hash != self.category_context_hash:
                 self.category_review_status = "unchecked"
                 self.manual_confirmation_context_hash = ""
@@ -503,8 +544,15 @@ class SemanticImage:
             "caption_status": self.caption_status,
             "embedding_status": self.embedding_status,
             "provenance": self.provenance,
+            "auto_caption": self.auto_caption,
             "auto_tags": self.auto_tags,
+            "auto_visible_text": self.auto_visible_text,
+            "auto_category_fit": self.auto_category_fit,
+            "auto_category_review_status": self.auto_category_review_status,
+            "auto_category_review_reason": self.auto_category_review_reason,
+            "manual_caption": self.manual_caption,
             "manual_tags": self.manual_tags,
+            "manual_visible_text": self.manual_visible_text,
             "manual_override": self.manual_override,
             "vision_model": self.vision_model,
             "prompt_version": self.prompt_version,

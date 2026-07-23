@@ -31,11 +31,15 @@ from .semantic_models import (
 from .semantic_storage import (
     apply_conflict_reclassifications,
     confirm_image_category,
+    get_image_semantic_detail,
     load_category_descriptions,
     load_metadata,
     reconcile_metadata,
+    restore_image_auto_semantic,
     safe_relative_path,
+    save_manual_image_semantic,
     save_metadata,
+    set_image_embedding_failure,
 )
 
 
@@ -145,13 +149,169 @@ class SemanticTaskManager:
             )
 
     async def confirm_category(
-        self, pack_id: str, image_path: Path | str
+        self,
+        pack_id: str,
+        image_path: Path | str,
+        *,
+        expected_content_sha256: str = "",
+        expected_entry_id: str = "",
     ) -> dict[str, Any]:
         """在图包任务锁内保存人工确认，避免与开始语义任务并发覆盖。"""
         pack_id = self._validate_pack_id(pack_id)
         async with self._lock(pack_id):
             self.assert_pack_mutation_allowed(pack_id, "确认图片分类")
-            return confirm_image_category(self._pack_dir(pack_id), image_path)
+            return confirm_image_category(
+                self._pack_dir(pack_id),
+                image_path,
+                expected_content_sha256=expected_content_sha256,
+                expected_entry_id=expected_entry_id,
+            )
+
+    async def save_image_manual_semantic(
+        self,
+        pack_id: str,
+        image_path: Path | str,
+        *,
+        caption: str,
+        tags: Any,
+        visible_text: str = "",
+        category_decision: str = "keep",
+        expected_content_sha256: str = "",
+        expected_entry_id: str = "",
+        update_vector: bool = False,
+    ) -> dict[str, Any]:
+        """保存单图人工语义，并可在同一图包锁内只更新该图向量。"""
+        pack_id = self._validate_pack_id(pack_id)
+        pack_dir = self._pack_dir(pack_id)
+        current_task = asyncio.current_task()
+        async with self._lock(pack_id):
+            self.assert_pack_mutation_allowed(pack_id, "保存图片人工语义")
+            detail = save_manual_image_semantic(
+                pack_dir,
+                image_path,
+                caption=caption,
+                tags=tags,
+                visible_text=visible_text,
+                category_decision=category_decision,
+                expected_content_sha256=expected_content_sha256,
+                expected_entry_id=expected_entry_id,
+            )
+            result = {
+                "semantic": detail,
+                "semantic_saved": True,
+                "vector_update": {
+                    "status": "pending",
+                    "provider_available": False,
+                    "requested_images": 0,
+                    "reused_images": 0,
+                },
+            }
+            if not update_vector:
+                return result
+
+            embedding = self._embedding_adapter(pack_id)
+            if not embedding.ready:
+                result["vector_update"].update(
+                    {
+                        "status": "waiting_provider",
+                        "message": "语义已保存，当前没有可用向量模型，向量等待更新",
+                    }
+                )
+                return result
+            result["vector_update"]["provider_available"] = True
+            if current_task is None:
+                result["vector_update"].update(
+                    {
+                        "status": "pending",
+                        "message": "语义已保存，但当前请求无法登记向量任务，请稍后重试",
+                    }
+                )
+                return result
+
+            self._index_tasks[pack_id] = current_task
+            try:
+                try:
+                    await self._verify_embedding_dimension(pack_id, embedding)
+                except Exception as exc:
+                    failed_detail = set_image_embedding_failure(
+                        pack_dir,
+                        image_path,
+                        self._safe_error(exc, pack_id),
+                        expected_content_sha256=detail["content_sha256"],
+                        expected_entry_id=detail["entry_id"],
+                    )
+                    result["semantic"] = failed_detail
+                    result["vector_update"].update(
+                        {
+                            "status": "failed",
+                            "message": "语义已保存，但向量模型校验失败",
+                        }
+                    )
+                    return result
+
+                try:
+                    manifest = await build_index(
+                        pack_dir,
+                        self.plugin_data_dir,
+                        pack_id,
+                        embedding,
+                        force=False,
+                        target_entry_ids={detail["entry_id"]},
+                    )
+                except Exception as exc:
+                    latest_detail = get_image_semantic_detail(pack_dir, image_path)
+                    result["semantic"] = latest_detail
+                    failed = latest_detail.get("embedding_status") == "failed"
+                    result["vector_update"].update(
+                        {
+                            "status": "failed" if failed else "pending",
+                            "message": (
+                                "语义已保存，但当前图片向量更新失败"
+                                if failed
+                                else f"语义已保存，向量等待更新：{self._safe_error(exc, pack_id)}"
+                            ),
+                        }
+                    )
+                    return result
+
+                latest_detail = get_image_semantic_detail(pack_dir, image_path)
+                result["semantic"] = latest_detail
+                result["vector_update"].update(
+                    {
+                        "status": "done",
+                        "requested_images": int(
+                            manifest.get("requested_embedding_count", 0) or 0
+                        ),
+                        "reused_images": int(
+                            manifest.get("reused_vector_count", 0) or 0
+                        ),
+                        "item_count": int(manifest.get("item_count", 0) or 0),
+                        "message": "人工语义和当前图片向量已更新",
+                    }
+                )
+                return result
+            finally:
+                if self._index_tasks.get(pack_id) is current_task:
+                    self._index_tasks.pop(pack_id, None)
+
+    async def restore_image_auto_semantic(
+        self,
+        pack_id: str,
+        image_path: Path | str,
+        *,
+        expected_content_sha256: str = "",
+        expected_entry_id: str = "",
+    ) -> dict[str, Any]:
+        """在图包锁内显式放弃当前路径的人工修改。"""
+        pack_id = self._validate_pack_id(pack_id)
+        async with self._lock(pack_id):
+            self.assert_pack_mutation_allowed(pack_id, "恢复图片自动语义")
+            return restore_image_auto_semantic(
+                self._pack_dir(pack_id),
+                image_path,
+                expected_content_sha256=expected_content_sha256,
+                expected_entry_id=expected_entry_id,
+            )
 
     async def run_locked_pack_mutation(
         self, pack_id: str, operation: str, mutation: Any
@@ -944,6 +1104,11 @@ class SemanticTaskManager:
             metadata = reconcile_metadata(pack_dir, external_data=external_data)
             if force:
                 for item in metadata.get("images", {}).values():
+                    if item.get("manual_override") or item.get("provenance") in {
+                        "manual",
+                        "mixed",
+                    }:
+                        continue
                     item["caption_status"] = "pending"
                     item["embedding_status"] = "pending"
                     item["error"] = None
@@ -964,6 +1129,10 @@ class SemanticTaskManager:
             # 点击“强制重新生成”（force=True）。
             needs_caption = any(
                 isinstance(item, dict)
+                and not (
+                    item.get("manual_override")
+                    or item.get("provenance") in {"manual", "mixed"}
+                )
                 and (
                     item.get("caption_status") != "done"
                     or not category_analysis_is_current(item)
@@ -1332,8 +1501,9 @@ class SemanticTaskManager:
             self._pause_events.pop(pack_id, None)
 
             index_root = self.plugin_data_dir / "semantic_indexes" / pack_id
-            for name in ("index.faiss", "index_manifest.json"):
-                (index_root / name).unlink(missing_ok=True)
+            for index_file in index_root.glob("index*.faiss"):
+                index_file.unlink(missing_ok=True)
+            (index_root / "index_manifest.json").unlink(missing_ok=True)
 
             metadata = load_metadata(pack_dir)
             kept_images = {}
@@ -1429,6 +1599,8 @@ class SemanticTaskManager:
         semaphore: asyncio.Semaphore,
     ) -> None:
         item = SemanticImage.from_dict(raw_item)
+        if item.manual_override or item.provenance in {"manual", "mixed"}:
+            return
         if (
             not force
             and item.caption_status == "done"
@@ -1498,7 +1670,9 @@ class SemanticTaskManager:
                 item.caption = caption["caption"]
                 item.tags = ensure_category_tag(caption["tags"], item.category)
                 item.visible_text = caption["visible_text"]
-            item.auto_tags = caption["tags"]
+                item.auto_caption = item.caption
+                item.auto_tags = caption["tags"]
+                item.auto_visible_text = item.visible_text
             item.vision_model = caption.get("vision_model", "")
             item.prompt_version = caption.get("prompt_version", item.prompt_version)
             item.category_fit = str(caption.get("category_fit") or "uncertain")
@@ -1525,6 +1699,10 @@ class SemanticTaskManager:
                     ).strip()
                 item.category_review_context_hash = item.category_context_hash
                 item.manual_confirmation_context_hash = ""
+            if not manual_content:
+                item.auto_category_fit = item.category_fit
+                item.auto_category_review_status = item.category_review_status
+                item.auto_category_review_reason = item.category_review_reason
             item.caption_status = "done"
             item.embedding_status = "pending"
             item.text_hash = text_hash(item.vector_text)
@@ -1605,6 +1783,10 @@ class SemanticTaskManager:
                 )
                 for digest, raw_item in list(metadata.get("images", {}).items())
                 if isinstance(raw_item, dict)
+                and not (
+                    raw_item.get("manual_override")
+                    or raw_item.get("provenance") in {"manual", "mixed"}
+                )
                 and (
                     force
                     or raw_item.get("caption_status") != "done"

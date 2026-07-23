@@ -3032,8 +3032,8 @@ button.danger,
 }
 
 .image-preview-semantic {
-  flex: 0 0 min(340px, 32vw);
-  width: min(340px, 32vw);
+  flex: 0 0 min(420px, 38vw);
+  width: min(420px, 38vw);
   max-height: 88svh;
   padding: 20px;
   overflow-y: auto;
@@ -3115,6 +3115,49 @@ button.danger,
   font-size: 12px;
 }
 
+.image-preview-semantic-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: -4px 0 12px;
+}
+
+.image-preview-status-badge {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.image-preview-status-badge.status-manual,
+.image-preview-status-badge.status-done {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.image-preview-status-badge.status-pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.image-preview-status-badge.status-failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.image-preview-duplicate-notice,
+.image-preview-edit-scope {
+  margin: 0 0 12px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
 .image-preview-semantic-section {
   margin-top: 15px;
 }
@@ -3159,6 +3202,95 @@ button.danger,
   color: #64748b;
   font-size: 12px;
   line-height: 1.55;
+}
+
+.image-preview-semantic-actions,
+.image-preview-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.image-preview-semantic-actions button,
+.image-preview-edit-actions button {
+  width: auto;
+  min-height: 38px;
+  padding: 9px 12px;
+}
+
+.image-preview-edit-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid rgba(148, 163, 184, 0.28);
+}
+
+.image-preview-edit-form.hidden {
+  display: none;
+}
+
+.image-preview-edit-field {
+  display: grid;
+  gap: 6px;
+}
+
+.image-preview-edit-field label {
+  color: #334155;
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.image-preview-edit-field textarea,
+.image-preview-edit-field input,
+.image-preview-edit-field select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 11px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #0f172a;
+  font: inherit;
+  line-height: 1.5;
+}
+
+.image-preview-edit-field textarea {
+  resize: vertical;
+}
+
+.image-preview-edit-field small {
+  color: #64748b;
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.image-preview-fixed-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.image-preview-fixed-tags span {
+  padding: 5px 9px;
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.image-preview-semantic.editing .image-preview-read-view,
+.image-preview-semantic.editing .image-preview-category-review,
+.image-preview-semantic.editing .image-preview-semantic-index,
+.image-preview-semantic.editing .image-preview-semantic-actions {
+  display: none;
+}
+
+.emoji-item.review-manual_rejected {
+  outline: 3px solid #ef4444;
 }
 
 .semantic-review-toolbar {
