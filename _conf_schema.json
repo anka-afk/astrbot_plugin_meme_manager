@@ -146,6 +146,18 @@
       }
     }
   },
+  "community": {
+    "description": "社区资源安装",
+    "type": "object",
+    "items": {
+      "github_accelerator_url": {
+        "description": "GitHub 下载加速链接",
+        "type": "string",
+        "default": "https://ghfast.top/",
+        "hint": "默认使用加速。留空后将回退 GitHub 原生链接。"
+      }
+    }
+  },
   "semantic": {
     "description": "新版语义检索与图包语义化",
     "type": "object",

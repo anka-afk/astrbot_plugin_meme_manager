@@ -63,6 +63,47 @@ ARCHIVE_JSON_SIZE_LIMITS = {
 }
 
 
+def _build_accelerated_url(raw_url: str, github_accelerator_url: str) -> str:
+    accelerator = str(github_accelerator_url or "").strip()
+    url = str(raw_url or "").strip()
+    if not accelerator or not url:
+        return url
+    if "{url}" in accelerator:
+        return accelerator.replace("{url}", url)
+    if accelerator.endswith("/"):
+        return f"{accelerator}{url}"
+    return f"{accelerator}/{url}"
+
+
+def _http_get_with_optional_acceleration(
+    raw_url: str,
+    timeout: int,
+    github_accelerator_url: str = "",
+) -> requests.Response:
+    request_url = _build_accelerated_url(raw_url, github_accelerator_url)
+    last_error = None
+
+    if request_url and request_url != raw_url:
+        try:
+            accelerated_response = requests.get(request_url, timeout=timeout)
+            if accelerated_response.status_code == 200:
+                return accelerated_response
+            last_error = ValueError(
+                "加速地址请求失败，状态码: "
+                f"{accelerated_response.status_code}"
+            )
+        except Exception as exc:
+            last_error = exc
+
+    try:
+        native_response = requests.get(raw_url, timeout=timeout)
+        return native_response
+    except Exception as exc:
+        if last_error is not None:
+            raise ValueError(f"加速与原生请求均失败: {last_error}; {exc}") from exc
+        raise
+
+
 def _load_json(path: Path, default):
     try:
         with path.open(encoding="utf-8-sig") as file_obj:
@@ -1358,21 +1399,37 @@ def uninstall_pack(
     }
 
 
-def _download_github_archive(repo: str, ref: str, target_zip_path: Path) -> None:
+def _download_github_archive(
+    repo: str,
+    ref: str,
+    target_zip_path: Path,
+    github_accelerator_url: str = "",
+) -> None:
     archive_url = f"https://github.com/{repo}/archive/{ref}.zip"
-    response = requests.get(archive_url, timeout=30)
+    response = _http_get_with_optional_acceleration(
+        archive_url,
+        timeout=30,
+        github_accelerator_url=github_accelerator_url,
+    )
     if response.status_code != 200:
         raise ValueError(f"下载 GitHub 压缩包失败，状态码: {response.status_code}")
     target_zip_path.parent.mkdir(parents=True, exist_ok=True)
     target_zip_path.write_bytes(response.content)
 
 
-def fetch_and_cache_community_index(index_url: str) -> dict:
+def fetch_and_cache_community_index(
+    index_url: str,
+    github_accelerator_url: str = "",
+) -> dict:
     index_url = str(index_url or "").strip()
     if not index_url:
         raise ValueError("index_url 不能为空")
 
-    response = requests.get(index_url, timeout=20)
+    response = _http_get_with_optional_acceleration(
+        index_url,
+        timeout=20,
+        github_accelerator_url=github_accelerator_url,
+    )
     if response.status_code != 200:
         raise ValueError(f"下载社区索引失败，状态码: {response.status_code}")
 
@@ -1425,6 +1482,7 @@ def install_pack_from_github_source(
     overwrite: bool = False,
     set_as_default: bool = False,
     operation_guard: PackOperationGuard | None = None,
+    github_accelerator_url: str = "",
 ) -> dict:
     github_source = validate_source_descriptor(source)
     repo = github_source["repo"]
@@ -1437,7 +1495,12 @@ def install_pack_from_github_source(
     ) as tmp_dir:
         tmp_root = Path(tmp_dir)
         remote_zip = tmp_root / "remote.zip"
-        _download_github_archive(repo, ref, remote_zip)
+        _download_github_archive(
+            repo,
+            ref,
+            remote_zip,
+            github_accelerator_url=github_accelerator_url,
+        )
 
         extract_dir = tmp_root / "extract"
         extract_dir.mkdir(parents=True, exist_ok=True)
@@ -1484,6 +1547,7 @@ def install_first_official_pack_from_index(
     overwrite: bool = False,
     set_as_default: bool = True,
     operation_guard: PackOperationGuard | None = None,
+    github_accelerator_url: str = "",
 ) -> dict:
     """从社区索引安装首个官方包；若无官方条目则回退索引首项。"""
     cache_loaded = True
@@ -1491,7 +1555,10 @@ def install_first_official_pack_from_index(
         cache_data = load_cached_community_index()
     except Exception:
         cache_loaded = False
-        cache_data = fetch_and_cache_community_index(index_url)
+        cache_data = fetch_and_cache_community_index(
+            index_url,
+            github_accelerator_url=github_accelerator_url,
+        )
 
     packs = cache_data.get("index", {}).get("packs", [])
     if not isinstance(packs, list) or not packs:
@@ -1514,6 +1581,7 @@ def install_first_official_pack_from_index(
         overwrite=overwrite,
         set_as_default=set_as_default,
         operation_guard=operation_guard,
+        github_accelerator_url=github_accelerator_url,
     )
     result["selected_pack_id"] = str(selected_entry.get("id") or "").strip()
     result["selected_pack_name"] = str(

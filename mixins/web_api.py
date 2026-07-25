@@ -81,6 +81,14 @@ MAX_PACK_UPLOAD_REQUEST_BYTES = MAX_PACK_ARCHIVE_BYTES + 1024 * 1024
 class WebAPIMixin:
     """包含所有 WebUI 仪表盘 API 的注册与处理逻辑"""
 
+    def _get_github_accelerator_url(self) -> str:
+        value = self._read_config_value(
+            ("community", "github_accelerator_url"),
+            default="https://ghfast.top/",
+            legacy_keys=("github_accelerator_url",),
+        )
+        return str(value or "").strip()
+
     def _register_web_apis(self):
         # 将所有路由委托给 _register_webui_api
         self._register_webui_api(
@@ -2565,7 +2573,10 @@ class WebAPIMixin:
     async def _api_fetch_community_index(self):
         try:
             index_url = COMMUNITY_INDEX_URL
-            cache_data = fetch_and_cache_community_index(index_url)
+            cache_data = fetch_and_cache_community_index(
+                index_url,
+                github_accelerator_url=self._get_github_accelerator_url(),
+            )
             packs = cache_data.get("index", {}).get("packs", [])
             return (
                 jsonify(
@@ -2638,6 +2649,7 @@ class WebAPIMixin:
                 source=source,
                 overwrite=overwrite,
                 set_as_default=set_as_default,
+                github_accelerator_url=self._get_github_accelerator_url(),
             )
             self._reload_personas()
             return jsonify({"message": "社区表情包安装成功", **result}), 200
@@ -2671,6 +2683,7 @@ class WebAPIMixin:
                 index_url=COMMUNITY_INDEX_URL,
                 overwrite=overwrite,
                 set_as_default=set_as_default,
+                github_accelerator_url=self._get_github_accelerator_url(),
             )
             self._reload_personas()
             return jsonify({"message": "官方表情包安装成功", **result}), 200
