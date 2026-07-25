@@ -259,8 +259,12 @@ def _write_faiss_index(plugin_data_dir: Path | str, pack_id: str, index: Any) ->
     os.close(fd)
     try:
         faiss.write_index(index, temp_name)
-        with open(temp_name, "rb") as file_obj:
-            os.fsync(file_obj.fileno())
+        try:
+            with open(temp_name, "rb+") as file_obj:
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+        except OSError:
+            pass
         os.replace(temp_name, path)
         stat = path.stat()
         cache_key = str(path)
