@@ -395,7 +395,7 @@ async def send_in_two_steps(context, event, chain: MessageChain):
 
 - [astrbot_plugin_smart_imagechat_hub](https://github.com/QingchenWait/astrbot_plugin_smart_imagechat_hub)：负责自动收集群聊表情包并进行 AI 标签整理（建议关闭主动发图能力）
 - [astrbot_plugin_meme_manager](https://github.com/anka-afk/astrbot_plugin_meme_manager)：负责日常场景中的主动发图
-- [astrbot_plugin_meme_bridge](https://github.com/konley/astrbot_plugin_meme_bridge)：定时读取 `image_index.json`，按标签映射 + LLM 辅助分类，将图片同步到 meme_manager 的表情包中，并更新分类映射。(2026-07-09 目前并未完全适配 v4.0+ 的多包体系，临时使用[astrbot_plugin_meme_bridge_fork](https://github.com/anka-afk/astrbot_plugin_meme_bridge))
+- [astrbot_plugin_meme_bridge](https://github.com/konley/astrbot_plugin_meme_bridge)：定时读取 `image_index.json`，按标签映射 + LLM 辅助分类，将图片同步到 meme_manager 的表情包中，并更新分类映射。(2026-07-26 目前并未完全适配 v4.0+ 的多包体系，临时使用[astrbot_plugin_meme_bridge_fork](https://github.com/anka-afk/astrbot_plugin_meme_bridge))
 
 不保证桥接方案的长期可用性与效果，若你有兴趣，可自行 fork 并维护。
 
