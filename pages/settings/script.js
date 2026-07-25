@@ -73,6 +73,53 @@ async function initSettingsPage() {
   const importBackupBtn = document.getElementById("import-backup-btn");
   const importResult = document.getElementById("import-result");
 
+  const transferPackSelect = document.getElementById("transfer-pack-select");
+  const transferCurrentPack = document.getElementById("transfer-current-pack");
+  const exportModeInputs = Array.from(
+    document.querySelectorAll('input[name="export-mode"]'),
+  );
+  const exportModeBackup = document.getElementById("export-mode-backup");
+  const vectorBackupHint = document.getElementById("vector-backup-hint");
+  const exportPackDownloadBtn = document.getElementById(
+    "export-pack-download-btn",
+  );
+  const exportPackResult = document.getElementById("export-pack-result");
+  const packImportDropzone = document.getElementById("pack-import-dropzone");
+  const packImportFile = document.getElementById("pack-import-file");
+  const packImportFileLabel = document.getElementById("pack-import-file-label");
+  const packImportPreview = document.getElementById("pack-import-preview");
+  const packImportPreviewName = document.getElementById(
+    "pack-import-preview-name",
+  );
+  const packImportPreviewFormat = document.getElementById(
+    "pack-import-preview-format",
+  );
+  const packImportImageCount = document.getElementById(
+    "pack-import-image-count",
+  );
+  const packImportCategoryCount = document.getElementById(
+    "pack-import-category-count",
+  );
+  const packImportSemanticCount = document.getElementById(
+    "pack-import-semantic-count",
+  );
+  const packImportVectorState = document.getElementById(
+    "pack-import-vector-state",
+  );
+  const packImportWarning = document.getElementById("pack-import-warning");
+  const packImportSetDefault = document.getElementById(
+    "pack-import-set-default",
+  );
+  const packImportOverwrite = document.getElementById("pack-import-overwrite");
+  const packImportOverwriteManual = document.getElementById(
+    "pack-import-overwrite-manual",
+  );
+  const packImportResetBtn = document.getElementById("pack-import-reset-btn");
+  const packImportConfirmBtn = document.getElementById(
+    "pack-import-confirm-btn",
+  );
+  const packImportResult = document.getElementById("pack-import-result");
+
   const logList = document.getElementById("log-list");
 
   let installedPacks = [];
@@ -80,6 +127,10 @@ async function initSettingsPage() {
   let dragRuleIndex = -1;
   let personaTargets = [];
   let sessionTargets = [];
+  let migrationPacksById = new Map();
+  let activeTransferPackId = "";
+  let pendingPackImportToken = "";
+  let exportCapabilityRequestId = 0;
 
   async function apiGet(endpoint, params = {}) {
     return window.AstrBotPluginPage.apiGet(endpoint, params);
@@ -109,6 +160,350 @@ async function initSettingsPage() {
     button.disabled = false;
     if (button.dataset.originalHtml) {
       button.innerHTML = button.dataset.originalHtml;
+    }
+  }
+
+  function setPackTransferResult(element, message = "", type = "") {
+    if (!element) {
+      return;
+    }
+    element.textContent = String(message || "");
+    element.classList.toggle("success", type === "success");
+    element.classList.toggle("error", type === "error");
+  }
+
+  function selectedExportMode() {
+    return exportModeInputs.find((input) => input.checked)?.value || "share";
+  }
+
+  function updateExportModeAppearance() {
+    exportModeInputs.forEach((input) => {
+      const option = input.closest(".export-mode-option");
+      option?.classList.toggle("selected", input.checked);
+      option?.classList.toggle("disabled", input.disabled);
+    });
+    if (exportPackDownloadBtn) {
+      exportPackDownloadBtn.innerHTML =
+        selectedExportMode() === "backup"
+          ? '<i class="fas fa-download icon"></i>下载自用备份'
+          : '<i class="fas fa-download icon"></i>下载分享版';
+    }
+  }
+
+  function syncTransferPackOptions(preferredPackId = "") {
+    if (!transferPackSelect) {
+      return "";
+    }
+    transferPackSelect.innerHTML = "";
+    installedPacks.forEach((pack) => {
+      const packId = String(pack?.id || "").trim();
+      const packName = String(pack?.name || packId || "未命名");
+      const count = Number(pack?.image_count || 0);
+      const option = document.createElement("option");
+      option.value = packId;
+      option.textContent = `${packName} (${count} 张)`;
+      transferPackSelect.appendChild(option);
+    });
+
+    const candidateIds = new Set(
+      installedPacks.map((item) => String(item?.id || "").trim()),
+    );
+    const nextPackId =
+      (preferredPackId && candidateIds.has(String(preferredPackId).trim())
+        ? String(preferredPackId).trim()
+        : candidateIds.has(activeTransferPackId)
+          ? activeTransferPackId
+          : String(installedPacks[0]?.id || "").trim()) || "";
+
+    activeTransferPackId = nextPackId;
+    transferPackSelect.value = nextPackId;
+    return nextPackId;
+  }
+
+  async function refreshPackExportCapability(packId = activeTransferPackId) {
+    const normalizedPackId = String(packId || "").trim();
+    const requestId = ++exportCapabilityRequestId;
+    const pack = migrationPacksById.get(normalizedPackId);
+
+    if (transferCurrentPack) {
+      transferCurrentPack.textContent = pack
+        ? `当前：${pack.name || pack.id} · ${Number(pack.image_count || 0)} 张`
+        : normalizedPackId
+          ? `当前：${normalizedPackId}`
+          : "暂无可导出的表情包";
+    }
+
+    if (!normalizedPackId) {
+      if (exportPackDownloadBtn) exportPackDownloadBtn.disabled = true;
+      if (exportModeBackup) exportModeBackup.disabled = true;
+      if (vectorBackupHint)
+        vectorBackupHint.textContent = "当前没有可导出的表情包。";
+      updateExportModeAppearance();
+      return;
+    }
+
+    if (exportPackDownloadBtn) exportPackDownloadBtn.disabled = false;
+    if (exportModeBackup) {
+      if (exportModeBackup.checked) {
+        const shareInput = document.getElementById("export-mode-share");
+        if (shareInput) shareInput.checked = true;
+      }
+      exportModeBackup.disabled = true;
+    }
+    if (vectorBackupHint) {
+      vectorBackupHint.textContent = "正在检查当前表情包的向量状态…";
+    }
+    updateExportModeAppearance();
+
+    try {
+      const status = await apiGet("packs/export/status", {
+        pack_id: normalizedPackId,
+      });
+      if (requestId !== exportCapabilityRequestId) {
+        return;
+      }
+      const available = Boolean(status?.vector_backup_available);
+      if (exportModeBackup) exportModeBackup.disabled = !available;
+      if (!available && exportModeBackup?.checked) {
+        const shareInput = document.getElementById("export-mode-share");
+        if (shareInput) shareInput.checked = true;
+      }
+      if (vectorBackupHint) {
+        const modelHint = [
+          String(status?.embedding_model || "").trim(),
+          Number(status?.embedding_dimension || 0)
+            ? `${Number(status.embedding_dimension)} 维`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        vectorBackupHint.textContent = available
+          ? `包含完整本机向量${modelHint ? `（${modelHint}）` : ""}，适合迁回相同模型环境。`
+          : "当前没有完整向量；完成语义化并建立索引后才可导出。";
+      }
+    } catch (error) {
+      if (requestId !== exportCapabilityRequestId) {
+        return;
+      }
+      if (exportModeBackup) exportModeBackup.disabled = true;
+      if (vectorBackupHint) {
+        vectorBackupHint.textContent = "暂时无法读取向量状态，请稍后重试。";
+      }
+      addLog(`读取单包导出能力失败: ${error?.message || String(error)}`, true);
+    } finally {
+      if (requestId === exportCapabilityRequestId) {
+        updateExportModeAppearance();
+      }
+    }
+  }
+
+  async function downloadCurrentPack() {
+    const packId = String(activeTransferPackId || "").trim();
+    if (!packId) {
+      setPackTransferResult(
+        exportPackResult,
+        "当前没有可导出的表情包。",
+        "error",
+      );
+      addLog("当前没有可导出的表情包", true);
+      return;
+    }
+    const mode = selectedExportMode();
+    setLoading(exportPackDownloadBtn, "正在生成压缩包...");
+    setPackTransferResult(
+      exportPackResult,
+      "正在整理文件，请不要关闭页面。",
+      "",
+    );
+    try {
+      await window.AstrBotPluginPage.download("packs/export/download", {
+        pack_id: packId,
+        mode,
+      });
+      const label = mode === "backup" ? "带向量自用备份" : "无向量分享版";
+      setPackTransferResult(
+        exportPackResult,
+        `${label}已生成，并已开始下载。`,
+        "success",
+      );
+      addLog(`单包导出成功: ${packId} (${label})`);
+    } catch (error) {
+      setPackTransferResult(
+        exportPackResult,
+        error?.message || String(error),
+        "error",
+      );
+      addLog(`单包导出失败: ${error?.message || String(error)}`, true);
+    } finally {
+      clearLoading(exportPackDownloadBtn);
+      updateExportModeAppearance();
+    }
+  }
+
+  function resetPackImportPreview({ keepResult = false } = {}) {
+    pendingPackImportToken = "";
+    if (packImportFile) packImportFile.value = "";
+    if (packImportFileLabel)
+      packImportFileLabel.textContent = "选择或拖入 zip 文件";
+    packImportDropzone?.classList.remove("hidden");
+    packImportPreview?.classList.add("hidden");
+    packImportWarning?.classList.add("hidden");
+    if (packImportSetDefault) packImportSetDefault.checked = false;
+    if (packImportOverwrite) packImportOverwrite.checked = false;
+    if (packImportOverwriteManual) packImportOverwriteManual.checked = false;
+    if (!keepResult) setPackTransferResult(packImportResult, "", "");
+  }
+
+  function renderPackImportInspection(data) {
+    const formatLabels = {
+      v2: data?.export_mode === "backup" ? "新版带向量备份" : "新版分享包",
+      v1: "兼容版资源包",
+      legacy: "旧版无语义包 · 将自动转换",
+    };
+    if (packImportPreviewName) {
+      packImportPreviewName.textContent = `${data?.name || data?.pack_id || "待导入表情包"} (${data?.pack_id || "未知 ID"})`;
+    }
+    if (packImportPreviewFormat) {
+      packImportPreviewFormat.textContent =
+        formatLabels[data?.detected_format] || "已识别的表情包";
+    }
+    if (packImportImageCount) {
+      packImportImageCount.textContent = Number(data?.image_count || 0);
+    }
+    if (packImportCategoryCount) {
+      packImportCategoryCount.textContent = Number(data?.category_count || 0);
+    }
+    if (packImportSemanticCount) {
+      packImportSemanticCount.textContent = data?.semantic_metadata
+        ? `${Number(data?.semantic_done || 0)} 条`
+        : "无";
+    }
+    if (packImportVectorState) {
+      packImportVectorState.textContent = data?.vectors_present
+        ? "包含，将校验"
+        : "不包含";
+    }
+    const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+    if (packImportWarning) {
+      packImportWarning.textContent = warnings.join(" ");
+      packImportWarning.classList.toggle("hidden", warnings.length === 0);
+    }
+    packImportDropzone?.classList.add("hidden");
+    packImportPreview?.classList.remove("hidden");
+  }
+
+  async function stagePackImport(file) {
+    if (!file) {
+      return;
+    }
+    if (
+      !String(file.name || "")
+        .toLowerCase()
+        .endsWith(".zip")
+    ) {
+      setPackTransferResult(
+        packImportResult,
+        "请选择 zip 格式的表情包。",
+        "error",
+      );
+      addLog("单包导入失败: 文件格式不支持", true);
+      return;
+    }
+    pendingPackImportToken = "";
+    if (packImportFileLabel) {
+      packImportFileLabel.textContent = `正在检查 ${file.name}…`;
+    }
+    packImportDropzone?.classList.add("checking");
+    setPackTransferResult(packImportResult, "正在检查压缩包结构和兼容性…", "");
+    try {
+      const data = await window.AstrBotPluginPage.upload(
+        "packs/import/stage",
+        file,
+      );
+      pendingPackImportToken = String(data?.import_token || "").trim();
+      if (!pendingPackImportToken) {
+        throw new Error("服务器没有返回导入凭证");
+      }
+      renderPackImportInspection(data);
+      setPackTransferResult(
+        packImportResult,
+        "检查完成，请确认导入选项。",
+        "success",
+      );
+      addLog(`单包导入检查完成: ${data?.pack_id || file.name}`);
+    } catch (error) {
+      resetPackImportPreview({ keepResult: true });
+      setPackTransferResult(
+        packImportResult,
+        error?.message || String(error),
+        "error",
+      );
+      addLog(`单包导入检查失败: ${error?.message || String(error)}`, true);
+    } finally {
+      packImportDropzone?.classList.remove("checking");
+    }
+  }
+
+  async function confirmPackImport() {
+    if (!pendingPackImportToken) {
+      setPackTransferResult(
+        packImportResult,
+        "请先选择并检查压缩包。",
+        "error",
+      );
+      addLog("单包导入失败: 缺少导入凭证", true);
+      return;
+    }
+    if (packImportOverwrite?.checked) {
+      const confirmed = window.confirm(
+        packImportOverwriteManual?.checked
+          ? "同名表情包将被覆盖，且本机人工描述、标签和图片文字也会被替换。确定继续吗？"
+          : "同名表情包及其向量将被覆盖，但本机人工描述、标签和图片文字会保留。确定继续吗？",
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    setLoading(packImportConfirmBtn, "正在导入...");
+    setPackTransferResult(
+      packImportResult,
+      "正在安装表情包，请不要关闭页面。",
+      "",
+    );
+    try {
+      const data = await apiPost("packs/import/apply", {
+        import_token: pendingPackImportToken,
+        overwrite: Boolean(packImportOverwrite?.checked),
+        overwrite_manual_semantics: Boolean(
+          packImportOverwrite?.checked && packImportOverwriteManual?.checked,
+        ),
+        set_as_default: Boolean(packImportSetDefault?.checked),
+      });
+      const importedPackId = String(data?.pack_id || "").trim();
+      const vectorHint = data?.vectors_restored
+        ? "，向量已恢复"
+        : data?.vector_warning
+          ? `；${data.vector_warning}`
+          : "";
+
+      resetPackImportPreview({ keepResult: true });
+      setPackTransferResult(
+        packImportResult,
+        `已导入 ${data?.name || importedPackId}${vectorHint}`,
+        "success",
+      );
+      await refreshPacksAndRules(importedPackId);
+      addLog(`单包导入成功: ${importedPackId || data?.name || "未知表情包"}`);
+    } catch (error) {
+      setPackTransferResult(
+        packImportResult,
+        error?.message || String(error),
+        "error",
+      );
+      addLog(`单包导入失败: ${error?.message || String(error)}`, true);
+    } finally {
+      clearLoading(packImportConfirmBtn);
     }
   }
 
@@ -456,7 +851,7 @@ async function initSettingsPage() {
     renderRulesValidation();
   }
 
-  async function refreshPacksAndRules() {
+  async function refreshPacksAndRules(preferredTransferPackId = "") {
     const [packsResponse, rulesResponse, targetsResponse] = await Promise.all([
       apiGet("packs"),
       apiGet("settings/rules"),
@@ -466,6 +861,11 @@ async function initSettingsPage() {
     installedPacks = Array.isArray(packsResponse?.packs)
       ? packsResponse.packs
       : [];
+    migrationPacksById = new Map(
+      installedPacks
+        .map((pack) => [String(pack?.id || "").trim(), pack])
+        .filter(([packId]) => Boolean(packId)),
+    );
     rules = Array.isArray(rulesResponse?.rules) ? rulesResponse.rules : [];
     personaTargets = Array.isArray(targetsResponse?.persona_targets)
       ? targetsResponse.persona_targets
@@ -475,6 +875,8 @@ async function initSettingsPage() {
       : [];
     ensureDefaultRuleAtEnd(rulesResponse?.default_pack_id || "");
     renderRules();
+    const nextTransferPackId = syncTransferPackOptions(preferredTransferPackId);
+    await refreshPackExportCapability(nextTransferPackId);
   }
 
   function buildNewRule(scope) {
@@ -520,7 +922,10 @@ async function initSettingsPage() {
         );
         if (!shouldRebuild) continue;
         try {
-          await apiPost("semantic/rebuild-index", { pack_id: packId, force: true });
+          await apiPost("semantic/rebuild-index", {
+            pack_id: packId,
+            force: true,
+          });
           addLog(`资源包 ${packId} 的向量重建已完成`);
         } catch (rebuildError) {
           addLog(
@@ -614,6 +1019,54 @@ async function initSettingsPage() {
   importBackupBtn.addEventListener("click", () => {
     void importBackup();
   });
+
+  transferPackSelect?.addEventListener("change", () => {
+    activeTransferPackId = String(transferPackSelect.value || "").trim();
+    void refreshPackExportCapability(activeTransferPackId);
+  });
+
+  exportModeInputs.forEach((input) => {
+    input.addEventListener("change", updateExportModeAppearance);
+  });
+
+  exportPackDownloadBtn?.addEventListener("click", () => {
+    void downloadCurrentPack();
+  });
+
+  packImportFile?.addEventListener("change", (event) => {
+    const file = event.target?.files?.[0];
+    void stagePackImport(file);
+  });
+
+  ["dragenter", "dragover"].forEach((eventName) => {
+    packImportDropzone?.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      packImportDropzone.classList.add("dragover");
+    });
+  });
+
+  ["dragleave", "drop"].forEach((eventName) => {
+    packImportDropzone?.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      packImportDropzone.classList.remove("dragover");
+    });
+  });
+
+  packImportDropzone?.addEventListener("drop", (event) => {
+    const file = event.dataTransfer?.files?.[0];
+    void stagePackImport(file);
+  });
+
+  packImportResetBtn?.addEventListener("click", () => {
+    resetPackImportPreview();
+  });
+
+  packImportConfirmBtn?.addEventListener("click", () => {
+    void confirmPackImport();
+  });
+
+  updateExportModeAppearance();
+  resetPackImportPreview();
 
   try {
     await refreshPacksAndRules();

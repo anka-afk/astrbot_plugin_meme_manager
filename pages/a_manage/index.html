@@ -164,128 +164,6 @@
           </div>
         </div>
 
-        <section class="pack-transfer-panel" aria-labelledby="pack-transfer-title">
-          <div class="pack-transfer-heading">
-            <span class="pack-transfer-heading-icon">
-              <i class="fas fa-box-open"></i>
-            </span>
-            <div>
-              <h3 id="pack-transfer-title">表情包迁移</h3>
-              <p>导入、分享与自用备份</p>
-            </div>
-          </div>
-          <span id="transfer-current-pack" class="transfer-current-pack"
-            >正在读取当前表情包…</span
-          >
-
-          <details class="pack-transfer-section" open>
-            <summary>
-              <span class="pack-transfer-summary-icon share-icon">
-                <i class="fas fa-file-export"></i>
-              </span>
-              <span>
-                <strong>导出当前表情包</strong>
-                <small>分享或迁回自己的环境</small>
-              </span>
-              <i class="fas fa-chevron-down pack-transfer-chevron"></i>
-            </summary>
-            <div class="pack-transfer-section-body">
-              <div class="export-mode-list" role="radiogroup" aria-label="导出类型">
-                <label class="export-mode-option selected" for="export-mode-share">
-                  <input
-                    id="export-mode-share"
-                    name="export-mode"
-                    type="radio"
-                    value="share"
-                    checked
-                  />
-                  <span>
-                    <strong>分享版</strong>
-                    <small>不带向量，可上传资源广场</small>
-                  </span>
-                  <em>推荐</em>
-                </label>
-                <label class="export-mode-option" for="export-mode-backup">
-                  <input
-                    id="export-mode-backup"
-                    name="export-mode"
-                    type="radio"
-                    value="backup"
-                  />
-                  <span>
-                    <strong>自用备份</strong>
-                    <small id="vector-backup-hint">正在检查向量状态…</small>
-                  </span>
-                </label>
-              </div>
-              <button id="export-pack-download-btn" type="button">
-                <i class="fas fa-download icon"></i>下载分享版
-              </button>
-              <p id="export-pack-result" class="pack-transfer-result" aria-live="polite"></p>
-            </div>
-          </details>
-
-          <details class="pack-transfer-section">
-            <summary>
-              <span class="pack-transfer-summary-icon import-icon">
-                <i class="fas fa-file-import"></i>
-              </span>
-              <span>
-                <strong>从压缩包导入</strong>
-                <small>兼容新版与旧版表情包</small>
-              </span>
-              <i class="fas fa-chevron-down pack-transfer-chevron"></i>
-            </summary>
-            <div class="pack-transfer-section-body">
-              <label id="pack-import-dropzone" class="pack-import-dropzone" for="pack-import-file">
-                <input id="pack-import-file" type="file" accept=".zip,application/zip" />
-                <i class="fas fa-cloud-arrow-up"></i>
-                <span>
-                  <strong id="pack-import-file-label">选择或拖入 zip 文件</strong>
-                  <small>先检查，不会立即覆盖</small>
-                </span>
-              </label>
-
-              <div id="pack-import-preview" class="pack-import-preview hidden" aria-live="polite">
-                <div class="pack-import-preview-header">
-                  <div>
-                    <strong id="pack-import-preview-name">待导入表情包</strong>
-                    <span id="pack-import-preview-format">正在识别格式</span>
-                  </div>
-                  <button id="pack-import-reset-btn" type="button" class="secondary compact">
-                    重选
-                  </button>
-                </div>
-                <dl class="pack-import-preview-stats">
-                  <div><dt>图片</dt><dd id="pack-import-image-count">0</dd></div>
-                  <div><dt>分类</dt><dd id="pack-import-category-count">0</dd></div>
-                  <div><dt>语义</dt><dd id="pack-import-semantic-count">无</dd></div>
-                  <div><dt>向量</dt><dd id="pack-import-vector-state">不包含</dd></div>
-                </dl>
-                <p id="pack-import-warning" class="pack-import-warning hidden"></p>
-                <div class="pack-import-options">
-                  <label>
-                    <input id="pack-import-set-default" type="checkbox" />
-                    导入后设为默认表情包
-                  </label>
-                  <label>
-                    <input id="pack-import-overwrite" type="checkbox" />
-                    同名时覆盖现有表情包
-                  </label>
-                  <label>
-                    <input id="pack-import-overwrite-manual" type="checkbox" />
-                    同时覆盖本机人工描述、标签和图片文字
-                  </label>
-                </div>
-                <button id="pack-import-confirm-btn" type="button">
-                  <i class="fas fa-circle-check icon"></i>确认导入
-                </button>
-              </div>
-              <p id="pack-import-result" class="pack-transfer-result" aria-live="polite"></p>
-            </div>
-          </details>
-        </section>
-
         <div class="console-section-heading">
           <span><i class="fas fa-arrows-rotate"></i>同步管理</span>
         </div>
@@ -429,16 +307,36 @@
           <div class="semantic-review-toolbar-copy">
             <p class="eyebrow">Category Review</p>
             <h2>分类审核</h2>
-            <p>固定标签沿用原始分类键；可筛出需要复核、已确认和尚未检查的图片。</p>
+            <p>
+              固定标签沿用原始分类键；可筛出需要复核、已确认和尚未检查的图片。
+            </p>
           </div>
-          <div id="semantic-review-stats" class="semantic-review-stats" role="group">
-            <button type="button" data-review-filter="all" class="active">全部 <span>0</span></button>
-            <button type="button" data-review-filter="auto_match">自动符合 <span>0</span></button>
-            <button type="button" data-review-filter="needs_review">建议复核 <span>0</span></button>
-            <button type="button" data-review-filter="reclassified">自动重分类 <span>0</span></button>
-            <button type="button" data-review-filter="manual_confirmed">已人工确认 <span>0</span></button>
-            <button type="button" data-review-filter="manual_rejected">人工判定不符 <span>0</span></button>
-            <button type="button" data-review-filter="unchecked">尚未检查 <span>0</span></button>
+          <div
+            id="semantic-review-stats"
+            class="semantic-review-stats"
+            role="group"
+          >
+            <button type="button" data-review-filter="all" class="active">
+              全部 <span>0</span>
+            </button>
+            <button type="button" data-review-filter="auto_match">
+              自动符合 <span>0</span>
+            </button>
+            <button type="button" data-review-filter="needs_review">
+              建议复核 <span>0</span>
+            </button>
+            <button type="button" data-review-filter="reclassified">
+              自动重分类 <span>0</span>
+            </button>
+            <button type="button" data-review-filter="manual_confirmed">
+              已人工确认 <span>0</span>
+            </button>
+            <button type="button" data-review-filter="manual_rejected">
+              人工判定不符 <span>0</span>
+            </button>
+            <button type="button" data-review-filter="unchecked">
+              尚未检查 <span>0</span>
+            </button>
           </div>
         </section>
         <div id="emoji-categories"></div>
@@ -684,10 +582,14 @@
             class="image-preview-semantic-filename"
           ></p>
           <div class="image-preview-semantic-badges" aria-label="语义状态">
-            <span id="image-preview-source-state" class="image-preview-status-badge"
+            <span
+              id="image-preview-source-state"
+              class="image-preview-status-badge"
               >自动生成</span
             >
-            <span id="image-preview-vector-state" class="image-preview-status-badge"
+            <span
+              id="image-preview-vector-state"
+              class="image-preview-status-badge"
               >向量等待更新</span
             >
           </div>
@@ -699,15 +601,38 @@
             id="image-preview-category-review"
             class="image-preview-category-review"
           >
-            <span id="image-preview-category-tag" class="image-preview-category-tag"></span>
-            <span id="image-preview-category-review-state" class="image-preview-category-review-state"></span>
-            <p id="image-preview-category-review-reason" class="image-preview-category-review-reason hidden"></p>
-            <p id="image-preview-reclassification" class="image-preview-reclassification hidden"></p>
-            <div id="image-preview-review-actions" class="image-preview-review-actions hidden">
-              <button id="image-preview-category-confirm-btn" type="button" class="secondary hidden">
+            <span
+              id="image-preview-category-tag"
+              class="image-preview-category-tag"
+            ></span>
+            <span
+              id="image-preview-category-review-state"
+              class="image-preview-category-review-state"
+            ></span>
+            <p
+              id="image-preview-category-review-reason"
+              class="image-preview-category-review-reason hidden"
+            ></p>
+            <p
+              id="image-preview-reclassification"
+              class="image-preview-reclassification hidden"
+            ></p>
+            <div
+              id="image-preview-review-actions"
+              class="image-preview-review-actions hidden"
+            >
+              <button
+                id="image-preview-category-confirm-btn"
+                type="button"
+                class="secondary hidden"
+              >
                 确认当前分类正确
               </button>
-              <button id="image-preview-review-edit-btn" type="button" class="hidden">
+              <button
+                id="image-preview-review-edit-btn"
+                type="button"
+                class="hidden"
+              >
                 修改语义或分类
               </button>
             </div>
@@ -726,7 +651,10 @@
             class="image-preview-semantic-section image-preview-read-view hidden"
           >
             <p class="image-preview-semantic-label">语义标签</p>
-            <div id="image-preview-semantic-tags" class="image-preview-semantic-tags"></div>
+            <div
+              id="image-preview-semantic-tags"
+              class="image-preview-semantic-tags"
+            ></div>
           </div>
           <div
             id="image-preview-visible-text-wrap"
@@ -742,18 +670,30 @@
             id="image-preview-semantic-index"
             class="image-preview-semantic-index"
           ></p>
-          <div id="image-preview-semantic-actions" class="image-preview-semantic-actions">
+          <div
+            id="image-preview-semantic-actions"
+            class="image-preview-semantic-actions"
+          >
             <button id="image-preview-edit-btn" type="button">
               修改图片语义
             </button>
-            <button id="image-preview-restore-auto-btn" type="button" class="secondary hidden">
+            <button
+              id="image-preview-restore-auto-btn"
+              type="button"
+              class="secondary hidden"
+            >
               恢复自动生成
             </button>
           </div>
-          <form id="image-preview-edit-form" class="image-preview-edit-form hidden">
+          <form
+            id="image-preview-edit-form"
+            class="image-preview-edit-form hidden"
+          >
             <div class="image-preview-review-rewrite">
               <div class="image-preview-edit-field">
-                <label for="image-preview-review-instruction">人工复审意见</label>
+                <label for="image-preview-review-instruction"
+                  >人工复审意见</label
+                >
                 <textarea
                   id="image-preview-review-instruction"
                   rows="3"
@@ -761,31 +701,58 @@
                   placeholder="例如：这不是生气，而是看到离谱内容后无语；请重新识别图片文字，并改写含义和标签。"
                 ></textarea>
               </div>
-              <button id="image-preview-review-rewrite-btn" type="button" class="secondary">
+              <button
+                id="image-preview-review-rewrite-btn"
+                type="button"
+                class="secondary"
+              >
                 让视觉模型按意见重写
               </button>
-              <p id="image-preview-review-rewrite-status" class="image-preview-review-rewrite-status">
+              <p
+                id="image-preview-review-rewrite-status"
+                class="image-preview-review-rewrite-status"
+              >
                 模型会重写语义并自动选择分类；只生成候选，不会直接保存或移动。
               </p>
             </div>
             <div class="image-preview-edit-field">
               <label>固定分类标签（只读）</label>
-              <div id="image-preview-fixed-tags" class="image-preview-fixed-tags"></div>
+              <div
+                id="image-preview-fixed-tags"
+                class="image-preview-fixed-tags"
+              ></div>
             </div>
             <div class="image-preview-edit-field">
               <label for="image-preview-caption-input">图片含义描述</label>
-              <textarea id="image-preview-caption-input" rows="4" maxlength="4000" required></textarea>
+              <textarea
+                id="image-preview-caption-input"
+                rows="4"
+                maxlength="4000"
+                required
+              ></textarea>
             </div>
             <div class="image-preview-edit-field">
               <label for="image-preview-tags-input">普通语义标签</label>
-              <input id="image-preview-tags-input" type="text" placeholder="用中文逗号、英文逗号或换行分隔" />
+              <input
+                id="image-preview-tags-input"
+                type="text"
+                placeholder="用中文逗号、英文逗号或换行分隔"
+              />
             </div>
             <div class="image-preview-edit-field">
-              <label for="image-preview-visible-text-input">图片中可见文字</label>
-              <textarea id="image-preview-visible-text-input" rows="3" maxlength="4000"></textarea>
+              <label for="image-preview-visible-text-input"
+                >图片中可见文字</label
+              >
+              <textarea
+                id="image-preview-visible-text-input"
+                rows="3"
+                maxlength="4000"
+              ></textarea>
             </div>
             <div class="image-preview-edit-field">
-              <label for="image-preview-category-decision">当前分类人工判断</label>
+              <label for="image-preview-category-decision"
+                >当前分类人工判断</label
+              >
               <select id="image-preview-category-decision">
                 <option value="keep">保持现有判断</option>
                 <option value="match">确认当前分类正确</option>
@@ -793,7 +760,9 @@
               </select>
             </div>
             <div class="image-preview-edit-field">
-              <label for="image-preview-target-category">保存时移动到其他分类（可选）</label>
+              <label for="image-preview-target-category"
+                >保存时移动到其他分类（可选）</label
+              >
               <select id="image-preview-target-category">
                 <option value="">保持当前分类</option>
               </select>
@@ -805,9 +774,23 @@
               只修改当前路径的图片。
             </p>
             <div class="image-preview-edit-actions">
-              <button id="image-preview-edit-cancel-btn" type="button" class="secondary">取消</button>
-              <button id="image-preview-save-btn" type="submit" class="secondary">仅保存</button>
-              <button id="image-preview-save-vector-btn" type="button">保存并更新该图向量</button>
+              <button
+                id="image-preview-edit-cancel-btn"
+                type="button"
+                class="secondary"
+              >
+                取消
+              </button>
+              <button
+                id="image-preview-save-btn"
+                type="submit"
+                class="secondary"
+              >
+                仅保存
+              </button>
+              <button id="image-preview-save-vector-btn" type="button">
+                保存并更新该图向量
+              </button>
             </div>
           </form>
         </aside>
