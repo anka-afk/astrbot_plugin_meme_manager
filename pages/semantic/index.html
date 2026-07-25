@@ -19,18 +19,25 @@
           为图片生成描述和向量索引，让回复模型按语义选择更合适的表情包。
         </p>
       </div>
-      <div class="nav-actions">
+      <div class="nav-actions stacked-nav" aria-label="页面导航">
         <a
-          class="nav-link"
+          class="nav-link nav-layer nav-layer-left"
+          href="../catalog/index.html"
+          data-nav-target="../catalog/index.html"
+          data-nav-view="catalog"
+          ><i class="fas fa-chevron-left icon"></i>资源广场</a
+        >
+        <a
+          class="nav-link nav-layer nav-layer-center"
           href="../a_manage/index.html"
           data-nav-target="../a_manage/index.html"
           ><i class="fas fa-gear icon"></i>返回管理页</a
         >
         <a
-          class="nav-link"
+          class="nav-link nav-layer nav-layer-right"
           href="../settings/index.html"
           data-nav-target="../settings/index.html"
-          ><i class="fas fa-sliders icon"></i>设置中心</a
+          ><i class="fas fa-chevron-right icon"></i>设置中心</a
         >
       </div>
     </header>
@@ -51,8 +58,18 @@
             </div>
             <div class="field-row concurrency-field">
               <label for="concurrency">模型调用并发上限</label>
-              <input id="concurrency" type="number" min="1" max="16" step="1" value="1" aria-describedby="concurrency-hint" />
-              <small id="concurrency-hint">同时提交给视觉模型的图片上限，建议按模型限流设置。</small>
+              <input
+                id="concurrency"
+                type="number"
+                min="1"
+                max="16"
+                step="1"
+                value="1"
+                aria-describedby="concurrency-hint"
+              />
+              <small id="concurrency-hint"
+                >同时提交给视觉模型的图片上限，建议按模型限流设置。</small
+              >
             </div>
           </div>
         </div>
@@ -86,7 +103,11 @@
           </button>
         </div>
         <p id="notice" class="result" aria-live="polite"></p>
-        <p id="other-tasks-warning" class="result warning" aria-live="polite"></p>
+        <p
+          id="other-tasks-warning"
+          class="result warning"
+          aria-live="polite"
+        ></p>
       </section>
 
       <section class="panel status-panel">
@@ -105,7 +126,11 @@
           <h2><i class="fas fa-list-check icon"></i>最近记录</h2>
           <div class="records-toolbar">
             <label class="filter-label" for="records-filter">筛选</label>
-            <select id="records-filter" class="records-filter" aria-label="按任务状态筛选">
+            <select
+              id="records-filter"
+              class="records-filter"
+              aria-label="按任务状态筛选"
+            >
               <option value="all">全部</option>
               <option value="pending">待处理</option>
               <option value="running">进行中</option>
@@ -118,9 +143,13 @@
               <option value="completed">全部完成</option>
             </select>
             <span class="badge" id="record-count">0</span>
-            <button type="button" class="ghost page-button" id="records-prev">上一页</button>
+            <button type="button" class="ghost page-button" id="records-prev">
+              上一页
+            </button>
             <span class="page-label" id="records-page">第 1 / 1 页</span>
-            <button type="button" class="ghost page-button" id="records-next">下一页</button>
+            <button type="button" class="ghost page-button" id="records-next">
+              下一页
+            </button>
           </div>
         </div>
         <div id="items" class="records"></div>
@@ -128,7 +157,12 @@
     </main>
 
     <div id="dialog-mask" class="dialog-mask hidden" aria-hidden="true">
-      <section class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+      <section
+        class="dialog-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="dialog-title"
+      >
         <h3 id="dialog-title"></h3>
         <p id="dialog-message" class="dialog-message"></p>
         <div class="dialog-actions">
@@ -138,10 +172,17 @@
       </section>
     </div>
     <div id="image-preview-mask" class="dialog-mask hidden" aria-hidden="true">
-      <section class="image-preview-card" role="dialog" aria-modal="true" aria-labelledby="image-preview-title">
+      <section
+        class="image-preview-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="image-preview-title"
+      >
         <div class="image-preview-header">
           <h3 id="image-preview-title">表情包预览</h3>
-          <button id="image-preview-close" type="button" class="ghost">关闭</button>
+          <button id="image-preview-close" type="button" class="ghost">
+            关闭
+          </button>
         </div>
         <div class="image-preview-stage">
           <img id="image-preview-img" alt="表情包大图预览" />

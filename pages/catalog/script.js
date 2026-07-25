@@ -47,7 +47,9 @@ async function initCatalogPage() {
       if (!targetPath) {
         return;
       }
+      const navView = link.getAttribute("data-nav-view") || "";
       const nextUrl = withCurrentAuthParams(targetPath, {
+        view: navView || null,
         asset_token: token || null,
       });
       link.href = nextUrl.toString();
@@ -189,28 +191,24 @@ async function initCatalogPage() {
       ),
     );
     const features =
-      pack?.features && typeof pack.features === "object"
-        ? pack.features
-        : {};
+      pack?.features && typeof pack.features === "object" ? pack.features : {};
     const protocol =
-      pack?.protocol && typeof pack.protocol === "object"
-        ? pack.protocol
-        : {};
+      pack?.protocol && typeof pack.protocol === "object" ? pack.protocol : {};
     const formatVersion = Number(
       pack?.format_version || protocol?.format_version || 0,
     );
     const hasSemanticMetadata = Boolean(
       features.semantic_metadata ||
-        pack?.semantic_metadata ||
-        tags.has("semantic") ||
-        tags.has("semantic-v2") ||
-        tags.has("语义包"),
+      pack?.semantic_metadata ||
+      tags.has("semantic") ||
+      tags.has("semantic-v2") ||
+      tags.has("语义包"),
     );
     const isNewFormat = Boolean(
       hasSemanticMetadata ||
-        formatVersion >= 2 ||
-        tags.has("v2") ||
-        tags.has("new-format"),
+      formatVersion >= 2 ||
+      tags.has("v2") ||
+      tags.has("new-format"),
     );
 
     if (isNewFormat) {

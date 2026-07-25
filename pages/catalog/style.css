@@ -74,6 +74,17 @@ h1 {
   flex-wrap: wrap;
 }
 
+.nav-actions.stacked-nav {
+  gap: 0;
+  flex-wrap: nowrap;
+  align-items: center;
+  padding: 6px;
+  border: 1px solid rgba(196, 221, 214, 0.9);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 12px 28px rgba(20, 56, 59, 0.1);
+}
+
 .nav-link {
   text-decoration: none;
   color: var(--brand-strong);
@@ -86,6 +97,30 @@ h1 {
 
 .nav-link:hover {
   transform: translateY(-1px);
+}
+
+.nav-layer {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.nav-layer-left {
+  margin-right: -8px;
+  z-index: 1;
+  opacity: 0.92;
+}
+
+.nav-layer-center {
+  z-index: 3;
+  box-shadow: 0 10px 18px rgba(20, 56, 59, 0.12);
+}
+
+.nav-layer-right {
+  margin-left: -8px;
+  z-index: 2;
+  opacity: 0.96;
 }
 
 .layout {
@@ -376,8 +411,7 @@ button:disabled {
 
 .pack-card.semantic-pack {
   border-color: rgba(31, 111, 176, 0.28);
-  background:
-    linear-gradient(180deg, rgba(238, 248, 255, 0.92), #ffffff 46%);
+  background: linear-gradient(180deg, rgba(238, 248, 255, 0.92), #ffffff 46%);
   box-shadow: 0 12px 26px rgba(31, 111, 176, 0.09);
 }
 
@@ -436,8 +470,11 @@ button:disabled {
 
 .pack-card.official.semantic-pack {
   border-color: rgba(54, 142, 124, 0.38);
-  background:
-    linear-gradient(135deg, rgba(255, 249, 234, 0.96), rgba(237, 251, 246, 0.96));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 249, 234, 0.96),
+    rgba(237, 251, 246, 0.96)
+  );
 }
 
 .pack-title-row {
@@ -596,5 +633,16 @@ button:disabled {
 
   .page-header {
     flex-direction: column;
+  }
+
+  .nav-actions.stacked-nav {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .nav-layer-left,
+  .nav-layer-right {
+    margin: 0;
+    opacity: 1;
   }
 }
