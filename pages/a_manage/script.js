@@ -332,11 +332,68 @@ async function initApp() {
   const packSemanticStatusText = document.getElementById(
     "pack-semantic-status-text",
   );
+  const packVectorStatus = document.getElementById("pack-vector-status");
+  const packVectorStatusText = document.getElementById(
+    "pack-vector-status-text",
+  );
+  const rebuildPackVectorsBtn = document.getElementById(
+    "rebuild-pack-vectors-btn",
+  );
   const switchManagePackBtn = document.getElementById("switch-manage-pack-btn");
   const deleteManagePackBtn = document.getElementById("delete-manage-pack-btn");
+  const transferCurrentPack = document.getElementById("transfer-current-pack");
+  const exportModeInputs = Array.from(
+    document.querySelectorAll('input[name="export-mode"]'),
+  );
+  const exportModeBackup = document.getElementById("export-mode-backup");
+  const vectorBackupHint = document.getElementById("vector-backup-hint");
+  const exportPackDownloadBtn = document.getElementById(
+    "export-pack-download-btn",
+  );
+  const exportPackResult = document.getElementById("export-pack-result");
+  const packImportDropzone = document.getElementById("pack-import-dropzone");
+  const packImportFile = document.getElementById("pack-import-file");
+  const packImportFileLabel = document.getElementById("pack-import-file-label");
+  const packImportPreview = document.getElementById("pack-import-preview");
+  const packImportPreviewName = document.getElementById(
+    "pack-import-preview-name",
+  );
+  const packImportPreviewFormat = document.getElementById(
+    "pack-import-preview-format",
+  );
+  const packImportImageCount = document.getElementById(
+    "pack-import-image-count",
+  );
+  const packImportCategoryCount = document.getElementById(
+    "pack-import-category-count",
+  );
+  const packImportSemanticCount = document.getElementById(
+    "pack-import-semantic-count",
+  );
+  const packImportVectorState = document.getElementById(
+    "pack-import-vector-state",
+  );
+  const packImportWarning = document.getElementById("pack-import-warning");
+  const packImportSetDefault = document.getElementById(
+    "pack-import-set-default",
+  );
+  const packImportOverwrite = document.getElementById("pack-import-overwrite");
+  const packImportOverwriteManual = document.getElementById(
+    "pack-import-overwrite-manual",
+  );
+  const packImportResetBtn = document.getElementById("pack-import-reset-btn");
+  const packImportConfirmBtn = document.getElementById(
+    "pack-import-confirm-btn",
+  );
+  const packImportResult = document.getElementById("pack-import-result");
   let defaultManagePackId = "";
   let activeManagePackId = "";
   let managePacksById = new Map();
+  let pendingPackImportToken = "";
+  let exportCapabilityRequestId = 0;
+  let managePackVectorStatusRequestId = 0;
+  let latestManagePackVectorStatus = null;
+  let latestManagePackVectorStatusId = "";
   let confirmResolver = null;
   const MOBILE_LAYOUT_MEDIA = "(max-width: 960px)";
   const DRAG_HUD_OFFSET_X = 18;
@@ -396,6 +453,604 @@ async function initApp() {
     return `${name} (${id}) · ${imageCount} 张 · ${semanticLabel}`;
   }
 
+  function setPackTransferResult(element, message = "", type = "") {
+    if (!element) {
+      return;
+    }
+    element.textContent = String(message || "");
+    element.classList.toggle("success", type === "success");
+    element.classList.toggle("error", type === "error");
+  }
+
+  function selectedExportMode() {
+    return (
+      exportModeInputs.find((input) => input.checked)?.value || "share"
+    );
+  }
+
+  function updateExportModeAppearance() {
+    exportModeInputs.forEach((input) => {
+      const option = input.closest(".export-mode-option");
+      option?.classList.toggle("selected", input.checked);
+      option?.classList.toggle("disabled", input.disabled);
+    });
+    if (exportPackDownloadBtn) {
+      exportPackDownloadBtn.innerHTML =
+        selectedExportMode() === "backup"
+          ? '<i class="fas fa-download icon"></i>下载自用备份'
+          : '<i class="fas fa-download icon"></i>下载分享版';
+    }
+  }
+
+  async function refreshPackExportCapability(packId = activeManagePackId) {
+    const normalizedPackId = String(packId || "").trim();
+    const requestId = ++exportCapabilityRequestId;
+    const pack = managePacksById.get(normalizedPackId);
+    if (transferCurrentPack) {
+      transferCurrentPack.textContent = pack
+        ? `当前：${pack.name || pack.id} · ${Number(pack.image_count || 0)} 张`
+        : normalizedPackId
+          ? `当前：${normalizedPackId}`
+          : "暂无可导出的表情包";
+    }
+    if (!normalizedPackId) {
+      if (exportPackDownloadBtn) exportPackDownloadBtn.disabled = true;
+      if (exportModeBackup) exportModeBackup.disabled = true;
+      if (vectorBackupHint) vectorBackupHint.textContent = "当前没有可导出的表情包。";
+      updateExportModeAppearance();
+      return;
+    }
+
+    if (exportPackDownloadBtn) exportPackDownloadBtn.disabled = false;
+    if (exportModeBackup) {
+      if (exportModeBackup.checked) {
+        const shareInput = document.getElementById("export-mode-share");
+        if (shareInput) shareInput.checked = true;
+      }
+      exportModeBackup.disabled = true;
+    }
+    if (vectorBackupHint) vectorBackupHint.textContent = "正在检查当前表情包的向量状态…";
+    updateExportModeAppearance();
+    try {
+      const status = await apiGet("packs/export/status", {
+        pack_id: normalizedPackId,
+      });
+      if (requestId !== exportCapabilityRequestId) {
+        return;
+      }
+      const available = Boolean(status?.vector_backup_available);
+      if (exportModeBackup) exportModeBackup.disabled = !available;
+      if (!available && exportModeBackup?.checked) {
+        const shareInput = document.getElementById("export-mode-share");
+        if (shareInput) shareInput.checked = true;
+      }
+      if (vectorBackupHint) {
+        const modelHint = [
+          String(status?.embedding_model || "").trim(),
+          Number(status?.embedding_dimension || 0)
+            ? `${Number(status.embedding_dimension)} 维`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        vectorBackupHint.textContent = available
+          ? `包含完整本机向量${modelHint ? `（${modelHint}）` : ""}，适合迁回相同模型环境。`
+          : "当前没有完整向量；完成语义化并建立索引后才可导出。";
+      }
+    } catch (error) {
+      if (requestId !== exportCapabilityRequestId) {
+        return;
+      }
+      if (exportModeBackup) exportModeBackup.disabled = true;
+      if (vectorBackupHint) {
+        vectorBackupHint.textContent = "暂时无法读取向量状态，请稍后重试。";
+      }
+    } finally {
+      if (requestId === exportCapabilityRequestId) {
+        updateExportModeAppearance();
+      }
+    }
+  }
+
+  async function downloadCurrentPack() {
+    const packId = String(activeManagePackId || "").trim();
+    if (!packId) {
+      showToast("当前没有可导出的表情包。", "warning", "无法导出");
+      return;
+    }
+    const mode = selectedExportMode();
+    setButtonBusy(exportPackDownloadBtn, "正在生成压缩包…");
+    setPackTransferResult(exportPackResult, "正在整理文件，请不要关闭页面。", "");
+    try {
+      await window.AstrBotPluginPage.download("packs/export/download", {
+        pack_id: packId,
+        mode,
+      });
+      const label = mode === "backup" ? "带向量自用备份" : "无向量分享版";
+      setPackTransferResult(
+        exportPackResult,
+        `${label}已生成，并已开始下载。`,
+        "success",
+      );
+      showToast(`${label}已开始下载。`, "success", "导出成功");
+    } catch (error) {
+      setPackTransferResult(
+        exportPackResult,
+        error?.message || String(error),
+        "error",
+      );
+      showToast(error?.message || String(error), "error", "导出失败");
+    } finally {
+      restoreButton(exportPackDownloadBtn);
+      updateExportModeAppearance();
+    }
+  }
+
+  function packSupportsVectorStatus(packId) {
+    const pack = managePacksById.get(String(packId || "").trim());
+    return pack?.supports_vector_rebuild === true;
+  }
+
+  function hideManagePackVectorStatus() {
+    packVectorStatus?.classList.add("hidden");
+    rebuildPackVectorsBtn?.classList.add("hidden");
+    latestManagePackVectorStatus = null;
+    latestManagePackVectorStatusId = "";
+  }
+
+  function renderManagePackVectorStatus(packId, status, state = "ready") {
+    const normalizedPackId = String(packId || "").trim();
+    if (!normalizedPackId || !packSupportsVectorStatus(normalizedPackId)) {
+      hideManagePackVectorStatus();
+      return;
+    }
+
+    packVectorStatus?.classList.remove(
+      "hidden",
+      "vector-ready",
+      "vector-rebuild",
+      "vector-unconfigured",
+      "vector-pending",
+      "vector-loading",
+    );
+    rebuildPackVectorsBtn?.classList.remove("hidden");
+
+    if (state === "loading") {
+      packVectorStatus?.classList.add("vector-loading");
+      if (packVectorStatusText) {
+        packVectorStatusText.textContent = "正在读取向量维度…";
+      }
+      if (rebuildPackVectorsBtn) {
+        rebuildPackVectorsBtn.disabled = true;
+        rebuildPackVectorsBtn.innerHTML =
+          '<i class="fas fa-spinner fa-spin icon"></i>读取中';
+      }
+      return;
+    }
+
+    if (state === "error" || !status) {
+      packVectorStatus?.classList.add("vector-pending");
+      if (packVectorStatusText) {
+        packVectorStatusText.textContent = "向量状态读取失败";
+      }
+      if (packVectorStatus) {
+        packVectorStatus.title = "暂时无法读取当前包的向量状态，请稍后重试。";
+      }
+      if (rebuildPackVectorsBtn) {
+        rebuildPackVectorsBtn.disabled = true;
+        rebuildPackVectorsBtn.innerHTML =
+          '<i class="fas fa-arrows-rotate icon"></i>状态不可用';
+      }
+      return;
+    }
+
+    const providerReady = Boolean(status.embedding_provider_ready);
+    const captionComplete = Boolean(status.semantic_caption_complete);
+    const indexReady = Boolean(status.index_ready);
+    const rebuildRequired = Boolean(status.dimension_rebuild_required);
+    const configuredDimension = Number(
+      status.embedding_configured_dimension || 0,
+    );
+    const indexDimension = Number(status.index_embedding_dimension || 0);
+    const taskStatus = String(status.task_status || "idle");
+    const taskBusy = ["running", "paused"].includes(taskStatus);
+    const currentDimensionLabel = configuredDimension
+      ? `${configuredDimension} 维`
+      : "维度待检测";
+    const modelLabel = [
+      String(status.embedding_provider_id || "").trim(),
+      String(status.embedding_model || "").trim(),
+    ]
+      .filter(Boolean)
+      .join(" / ");
+
+    if (!providerReady) {
+      packVectorStatus?.classList.add("vector-unconfigured");
+      if (packVectorStatusText) {
+        packVectorStatusText.textContent = indexDimension
+          ? `索引 ${indexDimension} 维 · 未配置向量模型`
+          : "未配置向量模型";
+      }
+      if (packVectorStatus) {
+        packVectorStatus.title =
+          "当前没有可用的向量模型。已有语义描述不会丢失，配置模型后即可在此重建。";
+      }
+      if (rebuildPackVectorsBtn) {
+        rebuildPackVectorsBtn.disabled = true;
+        rebuildPackVectorsBtn.title =
+          "请先在插件配置中选择并启用向量模型。";
+        rebuildPackVectorsBtn.innerHTML =
+          '<i class="fas fa-circle-exclamation icon"></i>先配置向量模型';
+      }
+      return;
+    }
+
+    if (taskBusy) {
+      packVectorStatus?.classList.add("vector-pending");
+      if (packVectorStatusText) {
+        packVectorStatusText.textContent =
+          taskStatus === "paused"
+            ? `当前 ${currentDimensionLabel} · 任务已暂停`
+            : `当前 ${currentDimensionLabel} · 正在处理`;
+      }
+    } else if (!captionComplete) {
+      packVectorStatus?.classList.add("vector-pending");
+      if (packVectorStatusText) {
+        packVectorStatusText.textContent =
+          `当前 ${currentDimensionLabel} · 描述未完成`;
+      }
+    } else if (indexReady && !rebuildRequired) {
+      packVectorStatus?.classList.add("vector-ready");
+      if (packVectorStatusText) {
+        packVectorStatusText.textContent =
+          `向量 ${indexDimension || configuredDimension || "未知"} 维`;
+      }
+    } else {
+      packVectorStatus?.classList.add("vector-rebuild");
+      if (packVectorStatusText) {
+        const oldIndexHint =
+          indexDimension && indexDimension !== configuredDimension
+            ? ` · 原索引 ${indexDimension} 维`
+            : "";
+        packVectorStatusText.textContent =
+          `当前 ${currentDimensionLabel}${oldIndexHint} · 待重建`;
+      }
+    }
+
+    if (packVectorStatus) {
+      const indexHint = indexDimension
+        ? `包内索引为 ${indexDimension} 维。`
+        : "当前包还没有可用的本机向量索引。";
+      packVectorStatus.title =
+        `${modelLabel ? `当前模型：${modelLabel}；` : ""}` +
+        `模型维度：${currentDimensionLabel}；${indexHint}`;
+    }
+    if (rebuildPackVectorsBtn) {
+      rebuildPackVectorsBtn.disabled = taskBusy || !captionComplete;
+      rebuildPackVectorsBtn.title = taskBusy
+        ? "语义任务进行中，结束后才能重建向量。"
+        : !captionComplete
+          ? "请先完成当前包的全部语义描述。"
+          : "使用当前向量模型重新建立本机向量索引。";
+      rebuildPackVectorsBtn.innerHTML = taskBusy
+        ? '<i class="fas fa-spinner fa-spin icon"></i>正在处理'
+        : !captionComplete
+          ? '<i class="fas fa-clock icon"></i>等待语义描述'
+          : `<i class="fas fa-arrows-rotate icon"></i>按${
+              configuredDimension ? ` ${configuredDimension} 维` : "当前维度"
+            }重建`;
+    }
+  }
+
+  async function refreshManagePackVectorStatus(packId = activeManagePackId) {
+    const normalizedPackId = String(packId || "").trim();
+    const requestId = ++managePackVectorStatusRequestId;
+    if (!normalizedPackId || !packSupportsVectorStatus(normalizedPackId)) {
+      hideManagePackVectorStatus();
+      return null;
+    }
+
+    renderManagePackVectorStatus(normalizedPackId, null, "loading");
+    try {
+      const status = await apiGet("semantic/status", {
+        pack_id: normalizedPackId,
+      });
+      if (requestId !== managePackVectorStatusRequestId) {
+        return null;
+      }
+      latestManagePackVectorStatus = status;
+      latestManagePackVectorStatusId = normalizedPackId;
+      renderManagePackVectorStatus(normalizedPackId, status);
+      return status;
+    } catch (error) {
+      if (requestId === managePackVectorStatusRequestId) {
+        latestManagePackVectorStatus = null;
+        latestManagePackVectorStatusId = "";
+        renderManagePackVectorStatus(normalizedPackId, null, "error");
+      }
+      console.warn("读取当前图包向量状态失败:", error);
+      return null;
+    }
+  }
+
+  async function performVectorRebuild(packId, knownStatus = null) {
+    const normalizedPackId = String(packId || "").trim();
+    if (!normalizedPackId || !packSupportsVectorStatus(normalizedPackId)) {
+      showToast("旧版表情包不支持向量重建。", "warning", "无法重建");
+      return false;
+    }
+    const status =
+      knownStatus ||
+      (latestManagePackVectorStatusId === normalizedPackId
+        ? latestManagePackVectorStatus
+        : null) ||
+      (await refreshManagePackVectorStatus(normalizedPackId));
+    if (!status) {
+      showToast("暂时无法读取向量状态，请稍后重试。", "error", "无法重建");
+      return false;
+    }
+    if (!status.embedding_provider_ready) {
+      showToast(
+        "请先在插件配置中选择并启用向量模型。",
+        "warning",
+        "未配置向量模型",
+      );
+      return false;
+    }
+    if (!status.semantic_caption_complete) {
+      showToast("请先完成当前包的全部语义描述。", "warning", "暂不能重建");
+      return false;
+    }
+    if (["running", "paused"].includes(String(status.task_status || ""))) {
+      showToast("当前语义任务尚未结束。", "warning", "暂不能重建");
+      return false;
+    }
+
+    setButtonBusy(rebuildPackVectorsBtn, "正在重建…");
+    try {
+      showToast("正在按当前向量模型建立索引…", "info", "开始重建");
+      const result = await apiPost("semantic/rebuild-index", {
+        pack_id: normalizedPackId,
+        force: true,
+      });
+      await refreshManagePackSummaries();
+      showToast(result?.message || "向量索引已建立。", "success", "重建完成");
+      return true;
+    } catch (error) {
+      showToast(
+        error?.message || String(error),
+        "error",
+        "向量重建失败",
+        5000,
+      );
+      return false;
+    } finally {
+      restoreButton(rebuildPackVectorsBtn);
+      await refreshManagePackVectorStatus(normalizedPackId);
+    }
+  }
+
+  async function confirmAndRebuildVector(
+    packId,
+    status,
+    { importedShare = false, manual = false } = {},
+  ) {
+    const normalizedPackId = String(packId || "").trim();
+    const pack = managePacksById.get(normalizedPackId);
+    const packName = String(pack?.name || normalizedPackId);
+    const modelLabel = [
+      String(status?.embedding_model || "").trim(),
+      Number(status?.embedding_configured_dimension || 0)
+        ? `${Number(status.embedding_configured_dimension)} 维`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const alreadyReady = Boolean(status?.index_ready);
+    const confirmed = await showConfirm({
+      title: importedShare
+        ? "分享包需要重建向量"
+        : alreadyReady && manual
+          ? "重新建立当前包向量？"
+          : "当前表情包需要重建向量",
+      description:
+        `「${packName}」${
+          importedShare
+            ? "来自无向量分享版，需要在本机补建向量。"
+            : alreadyReady && manual
+              ? "已有可用向量，重建后会替换当前本机索引。"
+              : "尚未按当前向量模型建立可用的本机索引。"
+        }` +
+        `本次只会调用向量模型${modelLabel ? `（${modelLabel}）` : ""}，` +
+        "不会重新调用视觉模型，也不会覆盖现有语义描述。是否继续？",
+      confirmLabel: "立即重建向量",
+    });
+    if (!confirmed) {
+      if (!manual) {
+        showToast(
+          "语义描述已保留，可稍后点击首页的重建按钮。",
+          "warning",
+          "稍后重建",
+        );
+      }
+      return false;
+    }
+    return performVectorRebuild(normalizedPackId, status);
+  }
+
+  async function maybeOfferVectorRebuild(packId, guidance = null) {
+    const normalizedPackId = String(packId || "").trim();
+    if (!normalizedPackId || !packSupportsVectorStatus(normalizedPackId)) {
+      return false;
+    }
+    const status =
+      latestManagePackVectorStatusId === normalizedPackId
+        ? latestManagePackVectorStatus
+        : await refreshManagePackVectorStatus(normalizedPackId);
+    if (!status) {
+      return false;
+    }
+    const rebuildRequired = Boolean(
+      status.semantic_enabled &&
+        status.embedding_provider_ready &&
+        status.semantic_caption_complete &&
+        status.dimension_rebuild_required &&
+        !["running", "paused"].includes(String(status.task_status || "")),
+    );
+    if (!rebuildRequired) {
+      return false;
+    }
+    return confirmAndRebuildVector(normalizedPackId, status, {
+      importedShare: String(guidance?.export_mode || "") === "share",
+    });
+  }
+
+  function resetPackImportPreview({ keepResult = false } = {}) {
+    pendingPackImportToken = "";
+    if (packImportFile) packImportFile.value = "";
+    if (packImportFileLabel) packImportFileLabel.textContent = "选择或拖入 zip 压缩包";
+    packImportDropzone?.classList.remove("hidden");
+    packImportPreview?.classList.add("hidden");
+    packImportWarning?.classList.add("hidden");
+    if (packImportSetDefault) packImportSetDefault.checked = false;
+    if (packImportOverwrite) packImportOverwrite.checked = false;
+    if (packImportOverwriteManual) packImportOverwriteManual.checked = false;
+    if (!keepResult) setPackTransferResult(packImportResult, "", "");
+  }
+
+  function renderPackImportInspection(data) {
+    const formatLabels = {
+      v2: data?.export_mode === "backup" ? "新版带向量备份" : "新版分享包",
+      v1: "兼容版资源包",
+      legacy: "旧版无语义包 · 将自动转换",
+    };
+    if (packImportPreviewName) {
+      packImportPreviewName.textContent = `${data?.name || data?.pack_id || "待导入表情包"} (${data?.pack_id || "未知 ID"})`;
+    }
+    if (packImportPreviewFormat) {
+      packImportPreviewFormat.textContent =
+        formatLabels[data?.detected_format] || "已识别的表情包";
+    }
+    if (packImportImageCount) {
+      packImportImageCount.textContent = Number(data?.image_count || 0);
+    }
+    if (packImportCategoryCount) {
+      packImportCategoryCount.textContent = Number(data?.category_count || 0);
+    }
+    if (packImportSemanticCount) {
+      packImportSemanticCount.textContent = data?.semantic_metadata
+        ? `${Number(data?.semantic_done || 0)} 条`
+        : "无";
+    }
+    if (packImportVectorState) {
+      packImportVectorState.textContent = data?.vectors_present
+        ? "包含，将校验"
+        : "不包含";
+    }
+    const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+    if (packImportWarning) {
+      packImportWarning.textContent = warnings.join(" ");
+      packImportWarning.classList.toggle("hidden", warnings.length === 0);
+    }
+    packImportDropzone?.classList.add("hidden");
+    packImportPreview?.classList.remove("hidden");
+  }
+
+  async function stagePackImport(file) {
+    if (!file) {
+      return;
+    }
+    if (!String(file.name || "").toLowerCase().endsWith(".zip")) {
+      showToast("请选择 zip 格式的表情包。", "warning", "格式不支持");
+      return;
+    }
+    pendingPackImportToken = "";
+    if (packImportFileLabel) packImportFileLabel.textContent = `正在检查 ${file.name}…`;
+    packImportDropzone?.classList.add("checking");
+    setPackTransferResult(packImportResult, "正在检查压缩包结构和兼容性…", "");
+    try {
+      const data = await window.AstrBotPluginPage.upload(
+        "packs/import/stage",
+        file,
+      );
+      pendingPackImportToken = String(data?.import_token || "").trim();
+      if (!pendingPackImportToken) {
+        throw new Error("服务器没有返回导入凭证");
+      }
+      renderPackImportInspection(data);
+      setPackTransferResult(packImportResult, "检查完成，请确认导入选项。", "success");
+    } catch (error) {
+      resetPackImportPreview({ keepResult: true });
+      setPackTransferResult(
+        packImportResult,
+        error?.message || String(error),
+        "error",
+      );
+      showToast(error?.message || String(error), "error", "压缩包检查失败");
+    } finally {
+      packImportDropzone?.classList.remove("checking");
+    }
+  }
+
+  async function confirmPackImport() {
+    if (!pendingPackImportToken) {
+      showToast("请先选择并检查压缩包。", "warning", "无法导入");
+      return;
+    }
+    if (packImportOverwrite?.checked) {
+      const confirmed = await showConfirm({
+        title: "确认覆盖同名表情包？",
+        description: packImportOverwriteManual?.checked
+          ? "原表情包、向量和本机人工语义都会被替换。建议先导出自用备份。"
+          : "原表情包及其向量会被替换，但本机人工描述、标签和图片文字会保留。",
+        confirmLabel: "确认覆盖并导入",
+        confirmClassName: "danger",
+      });
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    setButtonBusy(packImportConfirmBtn, "正在导入…");
+    setPackTransferResult(packImportResult, "正在安装表情包，请不要关闭页面。", "");
+    try {
+      const data = await apiPost("packs/import/apply", {
+        import_token: pendingPackImportToken,
+        overwrite: Boolean(packImportOverwrite?.checked),
+        overwrite_manual_semantics: Boolean(
+          packImportOverwrite?.checked && packImportOverwriteManual?.checked,
+        ),
+        set_as_default: Boolean(packImportSetDefault?.checked),
+      });
+      const importedPackId = String(data?.pack_id || "").trim();
+      const vectorHint = data?.vectors_restored
+        ? "，向量已恢复"
+        : data?.vector_warning
+          ? `；${data.vector_warning}`
+          : "";
+      resetPackImportPreview({ keepResult: true });
+      setPackTransferResult(
+        packImportResult,
+        `已导入 ${data?.name || importedPackId}${vectorHint}`,
+        "success",
+      );
+      await loadManagePackSwitcher(importedPackId);
+      await refreshUi({ emojis: true, syncStatus: true });
+      await refreshPackExportCapability(importedPackId);
+      showToast(`表情包 ${importedPackId} 已导入。`, "success", "导入成功");
+      await maybeOfferVectorRebuild(importedPackId, data);
+    } catch (error) {
+      setPackTransferResult(
+        packImportResult,
+        error?.message || String(error),
+        "error",
+      );
+      showToast(error?.message || String(error), "error", "导入失败");
+    } finally {
+      restoreButton(packImportConfirmBtn);
+    }
+  }
+
   function updateManagePackSemanticAppearance(packId) {
     const normalizedPackId = String(packId || "").trim();
     const pack = managePacksById.get(normalizedPackId);
@@ -423,7 +1078,7 @@ async function initApp() {
     const semanticTotal = Number(pack.semantic_caption_total || 0);
     const failedCount = Number(pack.semantic_caption_failed || 0);
     if (status === "complete") {
-      packSemanticStatusText.textContent = `已完成语义化 · 覆盖 ${imageCount} 张图片`;
+      packSemanticStatusText.textContent = `语义已完成 · ${imageCount} 张`;
       packSemanticStatus.title =
         semanticTotal && semanticTotal !== imageCount
           ? `${imageCount} 张图片中有重复内容，共复用 ${semanticTotal} 条语义描述。`
@@ -433,10 +1088,10 @@ async function initApp() {
     if (status === "partial") {
       const failureHint = failedCount > 0 ? `，${failedCount} 条失败` : "";
       packSemanticStatusText.textContent = pack.semantic_files_changed
-        ? `部分语义化 · 有新增或替换图片待处理（已有 ${completedCount} 条）`
+        ? `语义待更新 · 已有 ${completedCount} 条`
         : semanticTotal
-          ? `部分语义化 · 已完成 ${completedCount}/${semanticTotal} 条${failureHint}`
-          : "部分语义化 · 尚未完成";
+          ? `部分语义 · ${completedCount}/${semanticTotal}${failureHint}`
+          : "部分语义 · 尚未完成";
       packSemanticStatus.title = pack.semantic_files_changed
         ? "图包新增了图片，或原图片内容已被替换，需要继续语义化。"
         : "当前图包仍有图片的语义描述未完成。";
@@ -465,6 +1120,10 @@ async function initApp() {
         }
       });
       updateManagePackSemanticAppearance(activeManagePackId);
+      await Promise.all([
+        refreshPackExportCapability(activeManagePackId),
+        refreshManagePackVectorStatus(activeManagePackId),
+      ]);
       return packs;
     } catch (error) {
       console.warn("刷新图包语义状态失败:", error);
@@ -540,6 +1199,8 @@ async function initApp() {
         managePackSelect.disabled = true;
         activeManagePackId = "";
         updateManagePackSemanticAppearance("");
+        hideManagePackVectorStatus();
+        await refreshPackExportCapability("");
         if (switchManagePackBtn) {
           switchManagePackBtn.disabled = true;
         }
@@ -591,6 +1252,10 @@ async function initApp() {
       activeManagePackId = selectedPackId;
       updateManagePackSemanticAppearance(selectedPackId);
       syncManagedPackQuery(selectedPackId);
+      await Promise.all([
+        refreshPackExportCapability(selectedPackId),
+        refreshManagePackVectorStatus(selectedPackId),
+      ]);
 
       await maybeShowFirstUseCatalogGuide(packs);
       return packs;
@@ -619,11 +1284,17 @@ async function initApp() {
     try {
       syncManagedPackQuery(targetPackId);
       await refreshUi({ emojis: true });
+      await refreshPackExportCapability(targetPackId);
       showToast(`已切换管理视图到 ${targetPackId}。`, "success", "切换成功");
+      await maybeOfferVectorRebuild(targetPackId);
     } catch (error) {
       activeManagePackId = previousActivePackId;
       updateManagePackSemanticAppearance(previousActivePackId);
       syncManagedPackQuery(previousActivePackId);
+      await Promise.all([
+        refreshPackExportCapability(previousActivePackId),
+        refreshManagePackVectorStatus(previousActivePackId),
+      ]);
       showToast(error?.message || String(error), "error", "切换失败");
     } finally {
       restoreButton(switchManagePackBtn);
@@ -5314,6 +5985,52 @@ async function initApp() {
     closeBatchContextMenu();
   });
 
+  exportModeInputs.forEach((input) => {
+    input.addEventListener("change", updateExportModeAppearance);
+  });
+  exportPackDownloadBtn?.addEventListener("click", () => {
+    void downloadCurrentPack();
+  });
+  packImportFile?.addEventListener("change", (event) => {
+    const file = event.target?.files?.[0];
+    void stagePackImport(file);
+  });
+  ["dragenter", "dragover"].forEach((eventName) => {
+    packImportDropzone?.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      packImportDropzone.classList.add("dragover");
+    });
+  });
+  ["dragleave", "drop"].forEach((eventName) => {
+    packImportDropzone?.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      packImportDropzone.classList.remove("dragover");
+    });
+  });
+  packImportDropzone?.addEventListener("drop", (event) => {
+    const file = event.dataTransfer?.files?.[0];
+    void stagePackImport(file);
+  });
+  packImportResetBtn?.addEventListener("click", () => {
+    resetPackImportPreview();
+  });
+  packImportConfirmBtn?.addEventListener("click", () => {
+    void confirmPackImport();
+  });
+  rebuildPackVectorsBtn?.addEventListener("click", () => {
+    const packId = String(activeManagePackId || "").trim();
+    const status =
+      latestManagePackVectorStatusId === packId
+        ? latestManagePackVectorStatus
+        : null;
+    if (!status) {
+      void refreshManagePackVectorStatus(packId);
+      return;
+    }
+    void confirmAndRebuildVector(packId, status, { manual: true });
+  });
+  updateExportModeAppearance();
+
   await loadManagePackSwitcher();
   await fetchEmojis();
   semanticReviewStats?.addEventListener("click", (event) => {
@@ -5352,6 +6069,7 @@ async function initApp() {
   imagePreviewRestoreAutoBtn?.addEventListener("click", () => {
     void restoreCurrentImageAutoSemantic();
   });
+  await maybeOfferVectorRebuild(activeManagePackId);
   switchManagePackBtn?.addEventListener("click", () => {
     void switchManagePack();
   });

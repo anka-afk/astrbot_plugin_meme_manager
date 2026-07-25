@@ -1,16 +1,20 @@
 import asyncio
 import base64
 import binascii
+import inspect
 import io
 import json
 import mimetypes
 import re
+import secrets
 import time
+import zipfile
 from pathlib import Path
 from typing import Any
 
 from PIL import Image as PILImage
 from quart import jsonify, make_response, request, send_file
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from astrbot.api import logger
 
@@ -33,9 +37,11 @@ from ..backend.pack_storage import (
     fetch_and_cache_community_index,
     find_cached_pack_entry,
     get_pack_detail,
+    get_pack_export_capabilities,
     get_selection_rules,
     import_pack_archive,
     import_runtime_backup,
+    inspect_pack_archive,
     install_first_official_pack_from_index,
     install_pack_from_github_source,
     list_installed_packs,
@@ -67,6 +73,9 @@ MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_ORIGINAL_IMAGE_BYTES = 32 * 1024 * 1024
 PREVIEW_IMAGE_MAX_DIMENSION = 512
 IMG_HOST_STATUS_CACHE_TTL_SECONDS = 15
+PACK_IMPORT_SESSION_TTL_SECONDS = 60 * 60
+MAX_PACK_ARCHIVE_BYTES = 1024 * 1024 * 1024
+MAX_PACK_UPLOAD_REQUEST_BYTES = MAX_PACK_ARCHIVE_BYTES + 1024 * 1024
 
 
 class WebAPIMixin:
@@ -273,10 +282,34 @@ class WebAPIMixin:
             "导出表情包压缩文件",
         )
         self._register_webui_api(
+            "packs/export/status",
+            self._api_pack_export_status,
+            ["GET"],
+            "获取表情包可导出能力",
+        )
+        self._register_webui_api(
+            "packs/export/download",
+            self._api_download_pack,
+            ["GET"],
+            "导出并下载表情包压缩文件",
+        )
+        self._register_webui_api(
             "packs/import",
             self._api_import_pack,
             ["POST"],
             "导入表情包压缩文件",
+        )
+        self._register_webui_api(
+            "packs/import/stage",
+            self._api_stage_pack_import,
+            ["POST"],
+            "上传并预检表情包压缩文件",
+        )
+        self._register_webui_api(
+            "packs/import/apply",
+            self._api_apply_pack_import,
+            ["POST"],
+            "确认导入已预检的表情包",
         )
         self._register_webui_api(
             "packs/uninstall",
@@ -440,6 +473,193 @@ class WebAPIMixin:
         manager = getattr(self, "semantic_task_manager", None)
         if manager is not None:
             manager.assert_pack_mutation_allowed(pack_id, operation)
+
+    def _semantic_rebuild_guidance(self, pack_id: str) -> dict:
+        """返回切换或导入资源包后是否需要补建本机向量。"""
+        guidance = {
+            "semantic_rebuild_required": False,
+            "semantic_rebuild_pack_id": str(pack_id or "").strip(),
+        }
+        if not guidance["semantic_rebuild_pack_id"] or not bool(
+            getattr(self, "semantic_enabled", False)
+        ):
+            return guidance
+        manager = getattr(self, "semantic_task_manager", None)
+        if manager is None:
+            return guidance
+        try:
+            status = manager.status(guidance["semantic_rebuild_pack_id"])
+        except Exception as exc:
+            logger.warning(
+                "读取资源包向量重建提示失败: %s | pack_id=%s",
+                exc,
+                guidance["semantic_rebuild_pack_id"],
+            )
+            return guidance
+        task_status = str(status.get("task_status") or "")
+        guidance.update(
+            {
+                "semantic_rebuild_required": bool(
+                    status.get("dimension_rebuild_required")
+                    and status.get("semantic_caption_complete")
+                    and task_status not in {"running", "paused"}
+                ),
+                "semantic_task_status": task_status,
+                "semantic_caption_complete": bool(
+                    status.get("semantic_caption_complete")
+                ),
+                "semantic_index_ready": bool(status.get("index_ready")),
+                "semantic_embedding_provider_id": str(
+                    status.get("embedding_provider_id") or ""
+                ),
+                "semantic_embedding_model": str(status.get("embedding_model") or ""),
+                "semantic_embedding_dimension": int(
+                    status.get("embedding_configured_dimension", 0) or 0
+                ),
+            }
+        )
+        return guidance
+
+    def _pack_import_embedding_signature(self) -> dict:
+        """Return the active local embedding signature for safe backup restore."""
+        try:
+            provider = self._resolve_embedding_provider()
+            embedding = EmbeddingAdapter(
+                provider, str(getattr(self, "semantic_embedding_provider_id", "") or "")
+            )
+        except Exception:
+            return {
+                "embedding_provider_id": "",
+                "embedding_model": "",
+                "embedding_dimension": 0,
+            }
+        if not embedding.ready:
+            return {
+                "embedding_provider_id": "",
+                "embedding_model": "",
+                "embedding_dimension": 0,
+            }
+        return {
+            "embedding_provider_id": embedding.provider_id,
+            "embedding_model": embedding.model_name,
+            "embedding_dimension": embedding.dimension,
+        }
+
+    async def _run_guarded_pack_file_operation(
+        self,
+        pack_id: str,
+        operation: str,
+        function,
+        *args,
+        **kwargs,
+    ):
+        """在整个文件快照期间阻止同一表情包启动语义任务。"""
+        manager = getattr(self, "semantic_task_manager", None)
+        locked = False
+        if manager is not None and pack_id:
+            manager.begin_external_pack_operation(pack_id, operation)
+            locked = True
+        kwargs["operation_guard"] = None if locked else self._semantic_operation_guard
+        worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # 浏览器断开或请求超时时，to_thread 中的磁盘操作不会自动停止。
+            # 必须等它真正收尾后再释放外部操作锁，否则语义任务可能与仍在
+            # 运行的导出/覆盖线程同时改动同一个表情包。
+            try:
+                await asyncio.shield(worker)
+            except Exception:
+                pass
+            raise
+        finally:
+            if locked:
+                manager.end_external_pack_operation(pack_id)
+
+    async def _run_guarded_runtime_file_operation(
+        self,
+        operation: str,
+        function,
+        *args,
+        **kwargs,
+    ):
+        """Hold every installed pack lock for one runtime-wide file operation."""
+        manager = getattr(self, "semantic_task_manager", None)
+        pack_ids = (
+            sorted(path.name for path in PACKS_DIR.iterdir() if path.is_dir())
+            if PACKS_DIR.is_dir()
+            else []
+        )
+        locked_pack_ids = []
+        if manager is not None:
+            try:
+                for pack_id in pack_ids:
+                    manager.begin_external_pack_operation(pack_id, operation)
+                    locked_pack_ids.append(pack_id)
+            except Exception:
+                for pack_id in reversed(locked_pack_ids):
+                    manager.end_external_pack_operation(pack_id)
+                raise
+
+        kwargs["operation_guard"] = (
+            None if manager is not None else self._semantic_operation_guard
+        )
+        worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(worker)
+            except Exception:
+                pass
+            raise
+        finally:
+            for pack_id in reversed(locked_pack_ids):
+                manager.end_external_pack_operation(pack_id)
+
+    @staticmethod
+    def _prepare_archive_upload_request() -> None:
+        """覆盖 Quart 兼容层默认的 16 MB 请求上限。"""
+        try:
+            request.max_content_length = MAX_PACK_UPLOAD_REQUEST_BYTES
+        except (AttributeError, RuntimeError):
+            # 新版 AstrBot 使用 Starlette 上传对象，不需要在这里调整限制。
+            pass
+
+    @staticmethod
+    async def _save_uploaded_file(uploaded_file, destination: Path) -> None:
+        """同时兼容 Quart 的异步 save 与旧版同步 save。"""
+        save_method = uploaded_file.save
+        if inspect.iscoroutinefunction(save_method):
+            await save_method(str(destination))
+            return
+        result = await asyncio.to_thread(save_method, str(destination))
+        if inspect.isawaitable(result):
+            await result
+
+    @staticmethod
+    def _pack_import_session_paths(token: str) -> tuple[Path, Path]:
+        normalized = str(token or "").strip().lower()
+        if len(normalized) != 32 or any(
+            character not in "0123456789abcdef" for character in normalized
+        ):
+            raise ValueError("导入凭证无效，请重新选择压缩包")
+        session_dir = TEMP_DIR / "pack_import_sessions"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        return session_dir / f"{normalized}.zip", session_dir / f"{normalized}.json"
+
+    @staticmethod
+    def _cleanup_pack_import_sessions() -> None:
+        session_dir = TEMP_DIR / "pack_import_sessions"
+        if not session_dir.is_dir():
+            return
+        expire_before = time.time() - PACK_IMPORT_SESSION_TTL_SECONDS
+        for path in session_dir.iterdir():
+            try:
+                if path.is_file() and path.stat().st_mtime < expire_before:
+                    path.unlink()
+            except OSError:
+                continue
 
     def _guard_default_pack_file_operation(self, operation: str):
         pack_id = str(MEMES_DIR.parent.name or "").strip()
@@ -2001,21 +2221,9 @@ class WebAPIMixin:
             pack_id = str((data or {}).get("pack_id") or "").strip()
             if not pack_id:
                 return jsonify({"message": "pack_id 不能为空"}), 400
-            previous_pack_id = str(
-                get_selection_rules().get("default_pack_id") or ""
-            ).strip()
             result = set_default_pack(pack_id)
             self._reload_personas()
-            if (
-                bool(getattr(self, "semantic_enabled", False))
-                and previous_pack_id != pack_id
-            ):
-                status = self.semantic_task_manager.status(pack_id)
-                result["semantic_rebuild_required"] = bool(
-                    status.get("dimension_rebuild_required")
-                    and status.get("semantic_caption_complete")
-                )
-                result["semantic_rebuild_pack_id"] = pack_id
+            result.update(self._semantic_rebuild_guidance(pack_id))
             return jsonify({"message": "默认表情包设置成功", **result}), 200
         except FileNotFoundError as e:
             return jsonify({"message": str(e)}), 404
@@ -2031,6 +2239,7 @@ class WebAPIMixin:
             payload = data or {}
             pack_id = str(payload.get("pack_id") or "").strip()
             output_dir = payload.get("output_dir")
+            export_mode = str(payload.get("export_mode") or "share").strip().lower()
             include_value = payload.get(
                 "include_semantic", payload.get("semantic", True)
             )
@@ -2040,11 +2249,14 @@ class WebAPIMixin:
                 "no",
                 "off",
             }
-            result = export_pack_archive(
+            result = await self._run_guarded_pack_file_operation(
+                pack_id,
+                "导出资源包",
+                export_pack_archive,
                 pack_id,
                 output_dir=output_dir,
                 include_semantic=include_semantic,
-                operation_guard=self._semantic_operation_guard,
+                export_mode=export_mode,
             )
             return jsonify({"message": "导出成功", **result}), 200
         except FileNotFoundError as e:
@@ -2057,9 +2269,56 @@ class WebAPIMixin:
             logger.error(f"导出表情包失败: {e}", exc_info=True)
             return jsonify({"message": f"导出表情包失败: {str(e)}"}), 500
 
+    async def _api_pack_export_status(self):
+        try:
+            pack_id = str(request.args.get("pack_id") or "").strip()
+            result = await asyncio.to_thread(get_pack_export_capabilities, pack_id)
+            return jsonify(result), 200
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("读取表情包导出能力失败: %s", exc, exc_info=True)
+            return jsonify({"message": "读取表情包导出能力失败"}), 500
+
+    async def _api_download_pack(self):
+        try:
+            pack_id = str(request.args.get("pack_id") or "").strip()
+            export_mode = str(request.args.get("mode") or "share").strip().lower()
+            result = await self._run_guarded_pack_file_operation(
+                pack_id,
+                "导出资源包",
+                export_pack_archive,
+                pack_id,
+                export_mode=export_mode,
+            )
+            return await send_file(
+                result["archive_path"],
+                mimetype="application/zip",
+                as_attachment=True,
+                attachment_filename=result["archive_filename"],
+            )
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("下载表情包失败: %s", exc, exc_info=True)
+            return jsonify({"message": "下载表情包失败"}), 500
+
     async def _api_import_pack(self):
         temp_zip_path = None
         try:
+            self._prepare_archive_upload_request()
+            content_length = request.content_length
+            if (
+                content_length is not None
+                and content_length > MAX_PACK_UPLOAD_REQUEST_BYTES
+            ):
+                return jsonify({"message": "压缩包超过 1 GB，无法通过 WebUI 导入"}), 413
             form = await request.form
             overwrite = str(form.get("overwrite", "false")).lower() in {
                 "1",
@@ -2073,6 +2332,10 @@ class WebAPIMixin:
                 "yes",
                 "on",
             }
+            overwrite_manual_semantics = str(
+                form.get("overwrite_manual_semantics", "false")
+            ).lower() in {"1", "true", "yes", "on"}
+            import_signature = self._pack_import_embedding_signature()
 
             files = await request.files
             if not files or "file" not in files:
@@ -2090,20 +2353,45 @@ class WebAPIMixin:
             temp_dir.mkdir(parents=True, exist_ok=True)
             safe_name = f"import_{int(time.time() * 1000)}.zip"
             temp_zip_path = (temp_dir / safe_name).resolve()
-            archive_file.save(str(temp_zip_path))
+            await self._save_uploaded_file(archive_file, temp_zip_path)
 
-            result = import_pack_archive(
-                temp_zip_path,
-                overwrite=overwrite,
-                set_as_default=set_as_default,
-                operation_guard=self._semantic_operation_guard,
-            )
+            suggested_pack_id = Path(filename).stem
+            if overwrite:
+                inspection = await asyncio.to_thread(
+                    inspect_pack_archive,
+                    temp_zip_path,
+                    suggested_pack_id=suggested_pack_id,
+                )
+                result = await self._run_guarded_pack_file_operation(
+                    str(inspection.get("pack_id") or ""),
+                    "覆盖安装资源包",
+                    import_pack_archive,
+                    temp_zip_path,
+                    overwrite=True,
+                    set_as_default=set_as_default,
+                    suggested_pack_id=suggested_pack_id,
+                    preserve_existing_manual=not overwrite_manual_semantics,
+                    **import_signature,
+                )
+            else:
+                result = await self._run_guarded_runtime_file_operation(
+                    "安装资源包",
+                    import_pack_archive,
+                    temp_zip_path,
+                    overwrite=False,
+                    set_as_default=set_as_default,
+                    suggested_pack_id=suggested_pack_id,
+                    preserve_existing_manual=not overwrite_manual_semantics,
+                    **import_signature,
+                )
             self._reload_personas()
             return jsonify({"message": "导入成功", **result}), 200
         except FileExistsError as e:
             return jsonify({"message": str(e)}), 409
         except RuntimeError as e:
             return jsonify({"message": str(e)}), 409
+        except RequestEntityTooLarge:
+            return jsonify({"message": "压缩包超过 1 GB，无法通过 WebUI 导入"}), 413
         except (FileNotFoundError, ValueError) as e:
             return jsonify({"message": str(e)}), 400
         except Exception as e:
@@ -2116,14 +2404,151 @@ class WebAPIMixin:
                 except Exception:
                     pass
 
+    async def _api_stage_pack_import(self):
+        archive_path = None
+        metadata_path = None
+        try:
+            self._prepare_archive_upload_request()
+            self._cleanup_pack_import_sessions()
+            content_length = request.content_length
+            if (
+                content_length is not None
+                and content_length > MAX_PACK_UPLOAD_REQUEST_BYTES
+            ):
+                return jsonify({"message": "压缩包超过 1 GB，无法通过 WebUI 导入"}), 413
+            files = await request.files
+            if not files or "file" not in files:
+                return jsonify({"message": "缺少上传文件字段 file"}), 400
+            archive_file = files["file"]
+            filename = str(getattr(archive_file, "filename", "") or "").strip()
+            if not filename or not filename.lower().endswith(".zip"):
+                return jsonify({"message": "请选择 zip 格式的表情包"}), 400
+
+            token = secrets.token_hex(16)
+            archive_path, metadata_path = self._pack_import_session_paths(token)
+            await self._save_uploaded_file(archive_file, archive_path)
+            if archive_path.stat().st_size > MAX_PACK_ARCHIVE_BYTES:
+                raise ValueError("压缩包超过 1 GB，无法通过 WebUI 导入")
+
+            suggested_pack_id = Path(filename).stem
+            inspection = await asyncio.to_thread(
+                inspect_pack_archive,
+                archive_path,
+                suggested_pack_id=suggested_pack_id,
+            )
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "filename": filename,
+                        "suggested_pack_id": suggested_pack_id,
+                        "pack_id": str(inspection.get("pack_id") or ""),
+                        "created_at": time.time(),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            return jsonify(
+                {
+                    "message": "压缩包检查完成，请确认后导入",
+                    "import_token": token,
+                    **inspection,
+                }
+            ), 200
+        except (FileNotFoundError, ValueError, zipfile.BadZipFile) as exc:
+            for path in (archive_path, metadata_path):
+                if path and path.exists():
+                    path.unlink()
+            return jsonify({"message": str(exc)}), 400
+        except RequestEntityTooLarge:
+            for path in (archive_path, metadata_path):
+                if path and path.exists():
+                    path.unlink()
+            return jsonify({"message": "压缩包超过 1 GB，无法通过 WebUI 导入"}), 413
+        except Exception as exc:
+            for path in (archive_path, metadata_path):
+                if path and path.exists():
+                    path.unlink()
+            logger.error("预检导入压缩包失败: %s", exc, exc_info=True)
+            return jsonify({"message": "预检导入压缩包失败"}), 500
+
+    async def _api_apply_pack_import(self):
+        try:
+            self._cleanup_pack_import_sessions()
+            data = await request.get_json() or {}
+            token = str(data.get("import_token") or "").strip()
+            archive_path, metadata_path = self._pack_import_session_paths(token)
+            if not archive_path.is_file() or not metadata_path.is_file():
+                raise ValueError("导入凭证已过期，请重新选择压缩包")
+            session_data = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if not isinstance(session_data, dict):
+                raise ValueError("导入凭证损坏，请重新选择压缩包")
+
+            overwrite = str(data.get("overwrite", "false")).lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            set_as_default = str(data.get("set_as_default", "false")).lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            overwrite_manual_semantics = str(
+                data.get("overwrite_manual_semantics", "false")
+            ).lower() in {"1", "true", "yes", "on"}
+            import_kwargs = {
+                "overwrite": overwrite,
+                "set_as_default": set_as_default,
+                "suggested_pack_id": str(session_data.get("suggested_pack_id") or ""),
+                "preserve_existing_manual": not overwrite_manual_semantics,
+                **self._pack_import_embedding_signature(),
+            }
+            if overwrite:
+                result = await self._run_guarded_pack_file_operation(
+                    str(session_data.get("pack_id") or ""),
+                    "覆盖安装资源包",
+                    import_pack_archive,
+                    archive_path,
+                    **import_kwargs,
+                )
+            else:
+                result = await self._run_guarded_runtime_file_operation(
+                    "安装资源包",
+                    import_pack_archive,
+                    archive_path,
+                    **import_kwargs,
+                )
+            archive_path.unlink(missing_ok=True)
+            metadata_path.unlink(missing_ok=True)
+            self._reload_personas()
+            result.update(
+                self._semantic_rebuild_guidance(str(result.get("pack_id") or ""))
+            )
+            return jsonify({"message": "表情包导入成功", **result}), 200
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except FileExistsError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("确认导入表情包失败: %s", exc, exc_info=True)
+            return jsonify({"message": "确认导入表情包失败"}), 500
+
     async def _api_uninstall_pack(self):
         try:
             data = await request.get_json()
             pack_id = str((data or {}).get("pack_id") or "").strip()
             if not pack_id:
                 return jsonify({"message": "pack_id 不能为空"}), 400
-            result = uninstall_pack(
-                pack_id, operation_guard=self._semantic_operation_guard
+            result = await self._run_guarded_pack_file_operation(
+                pack_id,
+                "卸载资源包",
+                uninstall_pack,
+                pack_id,
             )
             self._reload_personas()
             return jsonify({"message": "卸载成功", **result}), 200
@@ -2207,11 +2632,12 @@ class WebAPIMixin:
                 if not isinstance(source, dict):
                     return jsonify({"message": "缓存条目缺少 source 信息"}), 400
 
-            result = install_pack_from_github_source(
+            result = await self._run_guarded_runtime_file_operation(
+                "安装社区资源包",
+                install_pack_from_github_source,
                 source=source,
                 overwrite=overwrite,
                 set_as_default=set_as_default,
-                operation_guard=self._semantic_operation_guard,
             )
             self._reload_personas()
             return jsonify({"message": "社区表情包安装成功", **result}), 200
@@ -2239,11 +2665,12 @@ class WebAPIMixin:
             overwrite = bool(payload.get("overwrite", False))
             set_as_default = bool(payload.get("set_as_default", True))
 
-            result = install_first_official_pack_from_index(
+            result = await self._run_guarded_runtime_file_operation(
+                "安装官方资源包",
+                install_first_official_pack_from_index,
                 index_url=COMMUNITY_INDEX_URL,
                 overwrite=overwrite,
                 set_as_default=set_as_default,
-                operation_guard=self._semantic_operation_guard,
             )
             self._reload_personas()
             return jsonify({"message": "官方表情包安装成功", **result}), 200
@@ -2307,9 +2734,10 @@ class WebAPIMixin:
         try:
             data = await request.get_json()
             output_dir = (data or {}).get("output_dir")
-            result = export_runtime_backup(
+            result = await self._run_guarded_runtime_file_operation(
+                "导出全量备份",
+                export_runtime_backup,
                 output_dir=output_dir,
-                operation_guard=self._semantic_operation_guard,
             )
             return jsonify({"message": "全量备份导出成功", **result}), 200
         except RuntimeError as e:
@@ -2375,6 +2803,7 @@ class WebAPIMixin:
     async def _api_import_runtime_backup(self):
         temp_zip_path = None
         try:
+            self._prepare_archive_upload_request()
             overwrite_param = request.args.get("overwrite")
             form = await request.form
             json_payload = await request.get_json(silent=True)
@@ -2406,7 +2835,7 @@ class WebAPIMixin:
                     return jsonify({"message": "无效的备份文件"}), 400
                 if not str(archive_file.filename).lower().endswith(".zip"):
                     return jsonify({"message": "仅支持 zip 备份文件"}), 400
-                archive_file.save(str(temp_zip_path))
+                await self._save_uploaded_file(archive_file, temp_zip_path)
             elif isinstance(json_payload, dict):
                 file_name = str(json_payload.get("file_name") or "").strip()
                 file_b64 = str(json_payload.get("file_b64") or "").strip()
@@ -2425,15 +2854,18 @@ class WebAPIMixin:
                     400,
                 )
 
-            result = import_runtime_backup(
+            result = await self._run_guarded_runtime_file_operation(
+                "恢复全量备份",
+                import_runtime_backup,
                 temp_zip_path,
                 overwrite=overwrite,
-                operation_guard=self._semantic_operation_guard,
             )
             self._reload_personas()
             return jsonify({"message": "全量备份导入成功", **result}), 200
         except RuntimeError as e:
             return jsonify({"message": str(e)}), 409
+        except RequestEntityTooLarge:
+            return jsonify({"message": "备份文件超过 1 GB，无法通过 WebUI 导入"}), 413
         except (FileNotFoundError, ValueError) as e:
             return jsonify({"message": str(e)}), 400
         except Exception as e:

@@ -20,6 +20,7 @@ from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.core.message.components import Image, Plain
 from astrbot.core.message.message_event_result import MessageChain, ResultContentType
 
+from ..backend.models import IMAGE_EXTENSIONS
 from ..backend.semantic_models import (
     REVIEW_CATEGORY,
     compact_semantic_query,
@@ -138,7 +139,7 @@ class EventHandlerMixin:
             memes = [
                 f
                 for f in os.listdir(emotion_path)
-                if f.endswith((".jpg", ".png", ".gif"))
+                if f.lower().endswith(IMAGE_EXTENSIONS)
             ]
             if not memes:
                 continue
@@ -960,7 +961,7 @@ class EventHandlerMixin:
                         memes = [
                             f
                             for f in os.listdir(emotion_path)
-                            if f.endswith((".jpg", ".png", ".gif"))
+                            if f.lower().endswith(IMAGE_EXTENSIONS)
                         ]
 
                         if not memes:
@@ -1264,7 +1265,7 @@ class EventHandlerMixin:
                 memes = [
                     f
                     for f in os.listdir(emotion_path)
-                    if f.endswith((".jpg", ".png", ".gif"))
+                    if f.lower().endswith(IMAGE_EXTENSIONS)
                 ]
                 if not memes:
                     continue

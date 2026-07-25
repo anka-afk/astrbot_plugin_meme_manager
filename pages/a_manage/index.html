@@ -81,26 +81,28 @@
             支持批量选择、拖拽移动、图床同步和移动端管理。
           </p>
           <div class="manage-pack-switch-row">
-            <button
-              id="console-toggle-btn"
-              class="panel-toggle"
-              type="button"
-              aria-expanded="true"
-              aria-controls="app-sidebar-panel"
-              aria-label="切换控制台"
-            >
-              <i class="fas fa-sliders icon"></i>控制台
-            </button>
-            <button
-              id="directory-toggle-btn"
-              class="panel-toggle"
-              type="button"
-              aria-expanded="true"
-              aria-controls="app-directory-panel"
-              aria-label="切换目录"
-            >
-              <i class="fas fa-folder-open icon"></i>目录
-            </button>
+            <div class="panel-toggle-group" role="group" aria-label="页面视图">
+              <button
+                id="console-toggle-btn"
+                class="panel-toggle"
+                type="button"
+                aria-expanded="true"
+                aria-controls="app-sidebar-panel"
+                aria-label="切换控制台"
+              >
+                <i class="fas fa-sliders icon"></i>控制台
+              </button>
+              <button
+                id="directory-toggle-btn"
+                class="panel-toggle"
+                type="button"
+                aria-expanded="true"
+                aria-controls="app-directory-panel"
+                aria-label="切换目录"
+              >
+                <i class="fas fa-folder-open icon"></i>目录
+              </button>
+            </div>
             <label for="manage-pack-select">管理表情包</label>
             <select
               id="manage-pack-select"
@@ -158,8 +160,134 @@
         <div class="left-panel-header">
           <div>
             <p class="left-panel-eyebrow">控制台</p>
-            <h2>同步控制</h2>
+            <h2>管理控制台</h2>
           </div>
+        </div>
+
+        <section class="pack-transfer-panel" aria-labelledby="pack-transfer-title">
+          <div class="pack-transfer-heading">
+            <span class="pack-transfer-heading-icon">
+              <i class="fas fa-box-open"></i>
+            </span>
+            <div>
+              <h3 id="pack-transfer-title">表情包迁移</h3>
+              <p>导入、分享与自用备份</p>
+            </div>
+          </div>
+          <span id="transfer-current-pack" class="transfer-current-pack"
+            >正在读取当前表情包…</span
+          >
+
+          <details class="pack-transfer-section" open>
+            <summary>
+              <span class="pack-transfer-summary-icon share-icon">
+                <i class="fas fa-file-export"></i>
+              </span>
+              <span>
+                <strong>导出当前表情包</strong>
+                <small>分享或迁回自己的环境</small>
+              </span>
+              <i class="fas fa-chevron-down pack-transfer-chevron"></i>
+            </summary>
+            <div class="pack-transfer-section-body">
+              <div class="export-mode-list" role="radiogroup" aria-label="导出类型">
+                <label class="export-mode-option selected" for="export-mode-share">
+                  <input
+                    id="export-mode-share"
+                    name="export-mode"
+                    type="radio"
+                    value="share"
+                    checked
+                  />
+                  <span>
+                    <strong>分享版</strong>
+                    <small>不带向量，可上传资源广场</small>
+                  </span>
+                  <em>推荐</em>
+                </label>
+                <label class="export-mode-option" for="export-mode-backup">
+                  <input
+                    id="export-mode-backup"
+                    name="export-mode"
+                    type="radio"
+                    value="backup"
+                  />
+                  <span>
+                    <strong>自用备份</strong>
+                    <small id="vector-backup-hint">正在检查向量状态…</small>
+                  </span>
+                </label>
+              </div>
+              <button id="export-pack-download-btn" type="button">
+                <i class="fas fa-download icon"></i>下载分享版
+              </button>
+              <p id="export-pack-result" class="pack-transfer-result" aria-live="polite"></p>
+            </div>
+          </details>
+
+          <details class="pack-transfer-section">
+            <summary>
+              <span class="pack-transfer-summary-icon import-icon">
+                <i class="fas fa-file-import"></i>
+              </span>
+              <span>
+                <strong>从压缩包导入</strong>
+                <small>兼容新版与旧版表情包</small>
+              </span>
+              <i class="fas fa-chevron-down pack-transfer-chevron"></i>
+            </summary>
+            <div class="pack-transfer-section-body">
+              <label id="pack-import-dropzone" class="pack-import-dropzone" for="pack-import-file">
+                <input id="pack-import-file" type="file" accept=".zip,application/zip" />
+                <i class="fas fa-cloud-arrow-up"></i>
+                <span>
+                  <strong id="pack-import-file-label">选择或拖入 zip 文件</strong>
+                  <small>先检查，不会立即覆盖</small>
+                </span>
+              </label>
+
+              <div id="pack-import-preview" class="pack-import-preview hidden" aria-live="polite">
+                <div class="pack-import-preview-header">
+                  <div>
+                    <strong id="pack-import-preview-name">待导入表情包</strong>
+                    <span id="pack-import-preview-format">正在识别格式</span>
+                  </div>
+                  <button id="pack-import-reset-btn" type="button" class="secondary compact">
+                    重选
+                  </button>
+                </div>
+                <dl class="pack-import-preview-stats">
+                  <div><dt>图片</dt><dd id="pack-import-image-count">0</dd></div>
+                  <div><dt>分类</dt><dd id="pack-import-category-count">0</dd></div>
+                  <div><dt>语义</dt><dd id="pack-import-semantic-count">无</dd></div>
+                  <div><dt>向量</dt><dd id="pack-import-vector-state">不包含</dd></div>
+                </dl>
+                <p id="pack-import-warning" class="pack-import-warning hidden"></p>
+                <div class="pack-import-options">
+                  <label>
+                    <input id="pack-import-set-default" type="checkbox" />
+                    导入后设为默认表情包
+                  </label>
+                  <label>
+                    <input id="pack-import-overwrite" type="checkbox" />
+                    同名时覆盖现有表情包
+                  </label>
+                  <label>
+                    <input id="pack-import-overwrite-manual" type="checkbox" />
+                    同时覆盖本机人工描述、标签和图片文字
+                  </label>
+                </div>
+                <button id="pack-import-confirm-btn" type="button">
+                  <i class="fas fa-circle-check icon"></i>确认导入
+                </button>
+              </div>
+              <p id="pack-import-result" class="pack-transfer-result" aria-live="polite"></p>
+            </div>
+          </details>
+        </section>
+
+        <div class="console-section-heading">
+          <span><i class="fas fa-arrows-rotate"></i>同步管理</span>
         </div>
         <div class="sync-buttons">
           <button id="check-sync-btn">
@@ -256,19 +384,40 @@
               <h2>批量管理</h2>
               <p id="selection-summary">未开启批量选择</p>
             </div>
-            <div class="selection-toolbar-actions">
-              <button id="batch-move-btn" class="secondary" disabled>
-                <i class="fas fa-right-left icon"></i>移动已选
-              </button>
-              <button id="toggle-selection-mode-btn" class="secondary">
-                <i class="fas fa-list-check icon"></i>开启批量选择
-              </button>
-              <button id="batch-delete-btn" class="danger" disabled>
-                <i class="fas fa-trash-can icon"></i>删除已选
-              </button>
-              <button id="clear-all-btn" class="danger">
-                <i class="fas fa-radiation icon"></i>清空全部表情包
-              </button>
+            <div class="selection-toolbar-controls">
+              <div class="pack-index-toolbar" aria-label="当前表情包向量状态">
+                <span
+                  id="pack-vector-status"
+                  class="pack-vector-status hidden"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <i class="fas fa-cubes-stacked"></i>
+                  <span id="pack-vector-status-text">正在读取向量维度…</span>
+                </span>
+                <button
+                  id="rebuild-pack-vectors-btn"
+                  type="button"
+                  class="secondary vector-rebuild-btn hidden"
+                  disabled
+                >
+                  <i class="fas fa-arrows-rotate icon"></i>按当前维度重建
+                </button>
+              </div>
+              <div class="selection-toolbar-actions">
+                <button id="batch-move-btn" class="secondary" disabled>
+                  <i class="fas fa-right-left icon"></i>移动已选
+                </button>
+                <button id="toggle-selection-mode-btn" class="secondary">
+                  <i class="fas fa-list-check icon"></i>开启批量选择
+                </button>
+                <button id="batch-delete-btn" class="danger" disabled>
+                  <i class="fas fa-trash-can icon"></i>删除已选
+                </button>
+                <button id="clear-all-btn" class="danger">
+                  <i class="fas fa-radiation icon"></i>清空全部表情包
+                </button>
+              </div>
             </div>
           </div>
         </div>
