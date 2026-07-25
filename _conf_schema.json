@@ -295,7 +295,7 @@
             "description": "移除无效备用标记",
             "type": "bool",
             "default": true,
-            "hint": "开启后会移除无法识别的 () 或 [] 标记内容"
+            "hint": "会移除无法识别的 () 或 [] 标记内容；可能影响依赖此类标记的其他插件（例如好感度）（出现标签丢失时建议先关闭）"
           },
           "enable_repeated_detection": {
             "description": "启用重复表情检测",
