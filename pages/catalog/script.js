@@ -179,6 +179,56 @@ async function initCatalogPage() {
     return packId.startsWith("official-") || tags.includes("official");
   }
 
+  function readPackFormat(pack) {
+    // 现有索引可直接使用 semantic/v2 标签；同时兼容未来的显式能力字段。
+    const tags = new Set(
+      (Array.isArray(pack?.tags) ? pack.tags : []).map((tag) =>
+        String(tag || "")
+          .trim()
+          .toLowerCase(),
+      ),
+    );
+    const features =
+      pack?.features && typeof pack.features === "object"
+        ? pack.features
+        : {};
+    const protocol =
+      pack?.protocol && typeof pack.protocol === "object"
+        ? pack.protocol
+        : {};
+    const formatVersion = Number(
+      pack?.format_version || protocol?.format_version || 0,
+    );
+    const hasSemanticMetadata = Boolean(
+      features.semantic_metadata ||
+        pack?.semantic_metadata ||
+        tags.has("semantic") ||
+        tags.has("semantic-v2") ||
+        tags.has("语义包"),
+    );
+    const isNewFormat = Boolean(
+      hasSemanticMetadata ||
+        formatVersion >= 2 ||
+        tags.has("v2") ||
+        tags.has("new-format"),
+    );
+
+    if (isNewFormat) {
+      return {
+        kind: "semantic",
+        badge: hasSemanticMetadata ? "新版语义包" : "新版包",
+        note: hasSemanticMetadata
+          ? "包含可复用语义描述；不会分发本机向量，安装后可按当前向量模型重建。"
+          : "采用新版包结构，兼容语义描述与本机向量重建流程。",
+      };
+    }
+    return {
+      kind: "classic",
+      badge: "传统包",
+      note: "使用传统分类描述，无需配置向量模型，安装后继续使用分类匹配。",
+    };
+  }
+
   function normalizeGithubSubpath(subpath) {
     return String(subpath || "")
       .trim()
@@ -271,8 +321,11 @@ async function initCatalogPage() {
   }
 
   function createPackCard(pack, { forceOfficial = false } = {}) {
+    const format = readPackFormat(pack);
     const card = document.createElement("article");
-    card.className = `pack-card${forceOfficial ? " official" : ""}`;
+    card.className = `pack-card ${format.kind}-pack${
+      forceOfficial ? " official" : ""
+    }`;
 
     const isInstalled = installedPackIds.has(String(pack.id || "").trim());
     const tags = Array.isArray(pack.tags) ? pack.tags : [];
@@ -308,6 +361,18 @@ async function initCatalogPage() {
     const tagRow = document.createElement("div");
     tagRow.className = "tag-row";
 
+    const formatTag = document.createElement("span");
+    formatTag.className = `tag format-tag ${format.kind}`;
+    const formatTagIcon = document.createElement("i");
+    formatTagIcon.className =
+      format.kind === "semantic"
+        ? "fas fa-wand-magic-sparkles"
+        : "fas fa-box-archive";
+    const formatTagText = document.createElement("span");
+    formatTagText.textContent = format.badge;
+    formatTag.append(formatTagIcon, formatTagText);
+    tagRow.appendChild(formatTag);
+
     const verifyTag = document.createElement("span");
     verifyTag.className = `tag ${pack.verified ? "verified" : "unverified"}`;
     verifyTag.textContent = pack.verified ? "已验证" : "未验证";
@@ -338,6 +403,17 @@ async function initCatalogPage() {
     desc.className = "pack-desc";
     desc.textContent = pack.description || "暂无描述";
 
+    const formatNote = document.createElement("p");
+    formatNote.className = `pack-format-note ${format.kind}`;
+    const formatNoteIcon = document.createElement("i");
+    formatNoteIcon.className =
+      format.kind === "semantic"
+        ? "fas fa-cubes-stacked"
+        : "fas fa-layer-group";
+    const formatNoteText = document.createElement("span");
+    formatNoteText.textContent = format.note;
+    formatNote.append(formatNoteIcon, formatNoteText);
+
     const meta = document.createElement("div");
     meta.className = "pack-meta";
     meta.innerHTML = `
@@ -350,6 +426,7 @@ async function initCatalogPage() {
     card.appendChild(titleRow);
     card.appendChild(tagRow);
     card.appendChild(desc);
+    card.appendChild(formatNote);
     card.appendChild(meta);
     return card;
   }
