@@ -406,9 +406,6 @@ async def send_in_two_steps(context, event, chain: MessageChain):
 ### v4.1
 
 - 🔀 新增语义向量检索表情包功能。
-- 🔀 合并 PR [#107](https://github.com/anka-afk/astrbot_plugin_meme_manager/pull/107)：新增分类感知语义检索、审核复审与旧版分类回退兼容。
-- 📦 合并 PR [#108](https://github.com/anka-afk/astrbot_plugin_meme_manager/pull/108)：增加图包导入导出、全量备份与兼容恢复，支持失败回滚与覆盖保护。
-- 🏷️ 合并 PR [#109](https://github.com/anka-afk/astrbot_plugin_meme_manager/pull/109)：资源广场区分语义包与传统包，安装前可直观看到图包类型与说明。
 - 🧠 情感模型注入增强：支持配置注入上下文轮数（追加在提示词末尾）与可选注入当前人格设定，提升语义选图稳定性与缓存友好性。
 - 🌐 社区安装下载链路支持 GitHub 加速配置：新增可编辑加速链接，默认启用；加速不可用时自动回退原生 GitHub 链接。
 - 🎨 页面资源加载优化：图标资源改为本地化加载方案，减少外链波动对 WebUI 可用性的影响。
