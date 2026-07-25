@@ -146,10 +146,98 @@
       }
     }
   },
+  "semantic": {
+    "description": "新版语义检索与图包语义化",
+    "type": "object",
+    "hint": "开启后默认使用 Tool 检索；若同时开启“情感辅助模型”，则由辅助模型接管。未达到 100% 语义化的图包会自动回退旧版分类模式",
+    "items": {
+      "enabled": {
+        "description": "启用新版语义包检索",
+        "type": "bool",
+        "default": false,
+        "hint": "默认向回复模型提供 search_memes Tool；开启情感辅助模型后改由该模型选图。不完整图包不会进入语义检索"
+      },
+      "top_k": {
+        "description": "运行时：每次返回候选数",
+        "type": "int",
+        "default": 5,
+        "hint": "只把少量候选交给回复模型或情感辅助模型"
+      },
+      "min_score": {
+        "description": "运行时：最低相似度",
+        "type": "float",
+        "default": 0.25,
+        "hint": "低于此值的结果不会返回"
+      },
+      "vision_provider_id": {
+        "description": "语义化：视觉模型 Provider ID",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider",
+        "hint": "一键完整语义化需要选择支持图片输入的聊天模型；留空时不能生成图片描述"
+      },
+      "embedding_provider_id": {
+        "description": "语义化：Embedding 向量模型 Provider",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider_embedding",
+        "hint": "可留空自动选择第一个可用的 Embedding 模型；实际选择的 Provider ID 会保存到本机 provider_selection.json"
+      }
+    }
+  },
   "generation": {
     "description": "表情生成与发送",
     "type": "object",
     "items": {
+      "emotion": {
+        "description": "情感辅助与旧版分类回退",
+        "type": "object",
+        "items": {
+          "llm": {
+            "description": "情感模型辅助（开启后接管 Tool）",
+            "type": "object",
+            "hint": "语义图包完整时由该模型从新版语义候选中选图；图包不完整时自动改用旧版粗略分类标签",
+            "items": {
+              "enabled": {
+                "description": "启用情感辅助模型",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后不再向回复模型提供 search_memes Tool，而是调用这里配置的模型完成选图"
+              },
+              "provider_id": {
+                "description": "情感辅助模型 Provider ID（留空使用回复模型）",
+                "type": "string",
+                "default": "",
+                "hint": "无需单独配置：留空时会自动复用本轮当前对话的回复模型；填写后才使用指定模型。此模型同时负责新版语义候选选择和旧版分类标签选择",
+                "_special": "select_provider"
+              }
+            }
+          },
+          "max_per_message": {
+            "description": "每次回复最多使用表情数量",
+            "type": "int",
+            "default": 2,
+            "hint": "每次回复最多使用表情数量"
+          },
+          "probability": {
+            "description": "表情出现概率",
+            "type": "int",
+            "default": 50,
+            "hint": "语义 Tool 模式下，每轮按此概率决定是否注入并要求回复模型调用 search_memes，范围为 1-100",
+            "slider": {
+              "min": 1,
+              "max": 100,
+              "step": 5
+            }
+          },
+          "strict_max_per_message": {
+            "description": "严格限制表情数量",
+            "type": "bool",
+            "default": true,
+            "hint": "开启后将严格裁剪超出数量的表情"
+          }
+        }
+      },
       "prompt": {
         "description": "提示词模板",
         "type": "object",
@@ -178,54 +266,6 @@
             "editor_language": "markdown",
             "default": "个表情\n   • 专业咨询：≤1个\n2. 强制校验规则：\n   a) 存在性检查：仅使用当前列表存在的标签\n   b) 冲突检测：当涉及医疗/法律/暴力话题时禁用所有表情\n   c) 语义一致性：表情含义需与上下文情绪方向一致\n3. 智能降级策略：\n   1) 首选：同类别表情或相近表情\n   2) 备选：放弃使用表情\n4. 自检流程：\n   提取关键词 → 匹配标签 → 语境审查 → 最终输出",
             "hint": "请输入提示词尾_2"
-          }
-        }
-      },
-      "emotion": {
-        "description": "表情选择策略",
-        "type": "object",
-        "items": {
-          "max_per_message": {
-            "description": "每次回复最多使用表情数量",
-            "type": "int",
-            "default": 2,
-            "hint": "每次回复最多使用表情数量"
-          },
-          "probability": {
-            "description": "表情出现概率",
-            "type": "int",
-            "default": 50,
-            "hint": "每次发送表情出现的概率，范围为 1-100",
-            "slider": {
-              "min": 1,
-              "max": 100,
-              "step": 5
-            }
-          },
-          "strict_max_per_message": {
-            "description": "严格限制表情数量",
-            "type": "bool",
-            "default": true,
-            "hint": "开启后将严格裁剪超出数量的表情"
-          },
-          "llm": {
-            "description": "情感模型辅助",
-            "type": "object",
-            "items": {
-              "enabled": {
-                "description": "启用情感模型判断",
-                "type": "bool",
-                "default": false,
-                "hint": "开启后将调用指定模型判断表情标签"
-              },
-              "provider_id": {
-                "description": "情感模型 Provider ID",
-                "type": "string",
-                "default": "",
-                "hint": "留空则使用当前对话模型",
-                "_special": "select_provider"
-              }
-            }
           }
         }
       },

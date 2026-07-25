@@ -9,6 +9,7 @@ from ..config import (
     REGISTRY_PATH,
     SELECTION_RULES_PATH,
 )
+from .semantic_models import runtime_category_mapping
 
 
 def _load_json(path: Path, default):
@@ -129,11 +130,7 @@ def load_pack_category_mapping(pack_id: str) -> dict[str, str]:
     mapping = _load_json(paths["metadata_path"], {})
 
     if isinstance(mapping, dict) and mapping:
-        return {
-            str(category): str(description)
-            for category, description in mapping.items()
-            if str(category).strip()
-        }
+        return runtime_category_mapping(mapping)
 
     manifest = _load_json(paths["manifest_path"], {})
     categories = manifest.get("categories", {}) if isinstance(manifest, dict) else {}
@@ -148,10 +145,10 @@ def load_pack_category_mapping(pack_id: str) -> dict[str, str]:
                 description = str(metadata)
             resolved[str(category)] = description
         if resolved:
-            return resolved
+            return runtime_category_mapping(resolved)
 
     if pack_id == DEFAULT_PACK_ID:
-        return DEFAULT_CATEGORY_DESCRIPTIONS.copy()
+        return runtime_category_mapping(DEFAULT_CATEGORY_DESCRIPTIONS)
 
     return {}
 

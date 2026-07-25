@@ -234,6 +234,22 @@ input[type="file"] {
   background: rgba(255, 255, 255, 0.95);
 }
 
+select {
+  color: var(--ink);
+  color-scheme: light;
+}
+
+select option {
+  color: var(--ink);
+  background: #fff;
+}
+
+select:disabled {
+  color: var(--muted);
+  -webkit-text-fill-color: var(--muted);
+  opacity: 1;
+}
+
 input[type="text"]:focus,
 select:focus,
 input[type="file"]:focus {

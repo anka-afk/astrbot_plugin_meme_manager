@@ -44,6 +44,26 @@ def dict_to_string(dictionary):
     return "\n".join(lines)
 
 
+def normalize_probability(value: Any) -> int:
+    """将概率配置规范到 0-100 的整数范围。"""
+    try:
+        probability = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(100, probability))
+
+
+def probability_hit(value: Any, roll: int | None = None) -> bool:
+    """按百分比概率判定本轮是否命中，可传入点数便于测试。"""
+    probability = normalize_probability(value)
+    if probability <= 0:
+        return False
+    if probability >= 100:
+        return True
+    actual_roll = random.randint(1, 100) if roll is None else int(roll)
+    return actual_roll <= probability
+
+
 def generate_secret_key(length=8):
     """生成随机秘钥"""
     characters = string.ascii_letters + string.digits

@@ -106,6 +106,15 @@
               id="manage-pack-select"
               aria-label="选择管理的表情包"
             ></select>
+            <span
+              id="pack-semantic-status"
+              class="pack-semantic-status semantic-none"
+              role="status"
+              aria-live="polite"
+            >
+              <i class="fas fa-wand-magic-sparkles"></i>
+              <span id="pack-semantic-status-text">正在读取语义状态…</span>
+            </span>
             <button id="switch-manage-pack-btn" type="button" class="secondary">
               切换
             </button>
@@ -116,6 +125,12 @@
         </div>
       </div>
       <div class="nav-actions">
+        <a
+          class="nav-link"
+          href="../semantic/index.html"
+          data-nav-target="../semantic/index.html"
+          ><i class="fas fa-wand-magic-sparkles icon"></i>语义化</a
+        >
         <a
           class="nav-link"
           href="../catalog/index.html"
@@ -257,6 +272,26 @@
             </div>
           </div>
         </div>
+        <section
+          id="semantic-review-toolbar"
+          class="semantic-review-toolbar hidden"
+          aria-label="分类审核筛选"
+        >
+          <div class="semantic-review-toolbar-copy">
+            <p class="eyebrow">Category Review</p>
+            <h2>分类审核</h2>
+            <p>固定标签沿用原始分类键；可筛出需要复核、已确认和尚未检查的图片。</p>
+          </div>
+          <div id="semantic-review-stats" class="semantic-review-stats" role="group">
+            <button type="button" data-review-filter="all" class="active">全部 <span>0</span></button>
+            <button type="button" data-review-filter="auto_match">自动符合 <span>0</span></button>
+            <button type="button" data-review-filter="needs_review">建议复核 <span>0</span></button>
+            <button type="button" data-review-filter="reclassified">自动重分类 <span>0</span></button>
+            <button type="button" data-review-filter="manual_confirmed">已人工确认 <span>0</span></button>
+            <button type="button" data-review-filter="manual_rejected">人工判定不符 <span>0</span></button>
+            <button type="button" data-review-filter="unchecked">尚未检查 <span>0</span></button>
+          </div>
+        </section>
         <div id="emoji-categories"></div>
         <button id="add-category-btn">
           <i class="fas fa-plus-circle icon"></i>添加分类
@@ -479,6 +514,154 @@
             <i class="fas fa-up-right-and-down-left-from-center icon"></i>原图
           </button>
         </div>
+        <aside
+          id="image-preview-semantic"
+          class="image-preview-semantic semantic-loading"
+          aria-live="polite"
+        >
+          <div class="image-preview-semantic-header">
+            <div>
+              <p class="image-preview-semantic-eyebrow">Semantic Detail</p>
+              <h2>图片语义</h2>
+            </div>
+            <span
+              id="image-preview-semantic-state"
+              class="image-preview-semantic-state"
+              >读取中</span
+            >
+          </div>
+          <p
+            id="image-preview-semantic-filename"
+            class="image-preview-semantic-filename"
+          ></p>
+          <div class="image-preview-semantic-badges" aria-label="语义状态">
+            <span id="image-preview-source-state" class="image-preview-status-badge"
+              >自动生成</span
+            >
+            <span id="image-preview-vector-state" class="image-preview-status-badge"
+              >向量等待更新</span
+            >
+          </div>
+          <p
+            id="image-preview-duplicate-notice"
+            class="image-preview-duplicate-notice hidden"
+          ></p>
+          <div
+            id="image-preview-category-review"
+            class="image-preview-category-review"
+          >
+            <span id="image-preview-category-tag" class="image-preview-category-tag"></span>
+            <span id="image-preview-category-review-state" class="image-preview-category-review-state"></span>
+            <p id="image-preview-category-review-reason" class="image-preview-category-review-reason hidden"></p>
+            <p id="image-preview-reclassification" class="image-preview-reclassification hidden"></p>
+            <div id="image-preview-review-actions" class="image-preview-review-actions hidden">
+              <button id="image-preview-category-confirm-btn" type="button" class="secondary hidden">
+                确认当前分类正确
+              </button>
+              <button id="image-preview-review-edit-btn" type="button" class="hidden">
+                修改语义或分类
+              </button>
+            </div>
+          </div>
+          <div class="image-preview-semantic-section image-preview-read-view">
+            <p class="image-preview-semantic-label">图片含义</p>
+            <p
+              id="image-preview-semantic-caption"
+              class="image-preview-semantic-caption"
+            >
+              正在读取这张图片的语义信息…
+            </p>
+          </div>
+          <div
+            id="image-preview-semantic-tags-wrap"
+            class="image-preview-semantic-section image-preview-read-view hidden"
+          >
+            <p class="image-preview-semantic-label">语义标签</p>
+            <div id="image-preview-semantic-tags" class="image-preview-semantic-tags"></div>
+          </div>
+          <div
+            id="image-preview-visible-text-wrap"
+            class="image-preview-semantic-section image-preview-read-view hidden"
+          >
+            <p class="image-preview-semantic-label">图片内文字</p>
+            <p
+              id="image-preview-visible-text"
+              class="image-preview-visible-text"
+            ></p>
+          </div>
+          <p
+            id="image-preview-semantic-index"
+            class="image-preview-semantic-index"
+          ></p>
+          <div id="image-preview-semantic-actions" class="image-preview-semantic-actions">
+            <button id="image-preview-edit-btn" type="button">
+              修改图片语义
+            </button>
+            <button id="image-preview-restore-auto-btn" type="button" class="secondary hidden">
+              恢复自动生成
+            </button>
+          </div>
+          <form id="image-preview-edit-form" class="image-preview-edit-form hidden">
+            <div class="image-preview-review-rewrite">
+              <div class="image-preview-edit-field">
+                <label for="image-preview-review-instruction">人工复审意见</label>
+                <textarea
+                  id="image-preview-review-instruction"
+                  rows="3"
+                  maxlength="2000"
+                  placeholder="例如：这不是生气，而是看到离谱内容后无语；请重新识别图片文字，并改写含义和标签。"
+                ></textarea>
+              </div>
+              <button id="image-preview-review-rewrite-btn" type="button" class="secondary">
+                让视觉模型按意见重写
+              </button>
+              <p id="image-preview-review-rewrite-status" class="image-preview-review-rewrite-status">
+                模型会重写语义并自动选择分类；只生成候选，不会直接保存或移动。
+              </p>
+            </div>
+            <div class="image-preview-edit-field">
+              <label>固定分类标签（只读）</label>
+              <div id="image-preview-fixed-tags" class="image-preview-fixed-tags"></div>
+            </div>
+            <div class="image-preview-edit-field">
+              <label for="image-preview-caption-input">图片含义描述</label>
+              <textarea id="image-preview-caption-input" rows="4" maxlength="4000" required></textarea>
+            </div>
+            <div class="image-preview-edit-field">
+              <label for="image-preview-tags-input">普通语义标签</label>
+              <input id="image-preview-tags-input" type="text" placeholder="用中文逗号、英文逗号或换行分隔" />
+            </div>
+            <div class="image-preview-edit-field">
+              <label for="image-preview-visible-text-input">图片中可见文字</label>
+              <textarea id="image-preview-visible-text-input" rows="3" maxlength="4000"></textarea>
+            </div>
+            <div class="image-preview-edit-field">
+              <label for="image-preview-category-decision">当前分类人工判断</label>
+              <select id="image-preview-category-decision">
+                <option value="keep">保持现有判断</option>
+                <option value="match">确认当前分类正确</option>
+                <option value="mismatch">确认当前分类不正确</option>
+              </select>
+            </div>
+            <div class="image-preview-edit-field">
+              <label for="image-preview-target-category">保存时移动到其他分类（可选）</label>
+              <select id="image-preview-target-category">
+                <option value="">保持当前分类</option>
+              </select>
+              <small>
+                视觉模型重写后会自动填入建议分类，你只需检查。选择新分类后，请点击“保存、移动并更新该图向量”；其他同内容图片不变。
+              </small>
+            </div>
+            <p id="image-preview-edit-scope" class="image-preview-edit-scope">
+              只修改当前路径的图片。
+            </p>
+            <div class="image-preview-edit-actions">
+              <button id="image-preview-edit-cancel-btn" type="button" class="secondary">取消</button>
+              <button id="image-preview-save-btn" type="submit" class="secondary">仅保存</button>
+              <button id="image-preview-save-vector-btn" type="button">保存并更新该图向量</button>
+            </div>
+          </form>
+        </aside>
       </div>
     </div>
 

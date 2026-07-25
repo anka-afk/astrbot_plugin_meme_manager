@@ -1,4 +1,5 @@
-import asyncio
+import io
+import json
 import os
 import random
 import re
@@ -6,22 +7,35 @@ import ssl
 import tempfile
 import time
 import traceback
-import io
-import json
 from typing import Any
 
 import aiohttp
 from PIL import Image as PILImage
+
 from astrbot.api import logger
 from astrbot.api.all import *
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.event.filter import EventMessageType
 from astrbot.api.message_components import *
 from astrbot.api.provider import LLMResponse, ProviderRequest
-from astrbot.core.message.components import Plain, Image
+from astrbot.core.message.components import Image, Plain
 from astrbot.core.message.message_event_result import MessageChain, ResultContentType
 
-from ..config import MEMES_DIR
+from ..backend.semantic_models import (
+    REVIEW_CATEGORY,
+    compact_semantic_query,
+    extract_and_clean_semantic_meme_references,
+    extract_visible_semantic_reply,
+    parse_semantic_query_result,
+    runtime_category_mapping,
+)
+from ..backend.semantic_query import (
+    candidate_records,
+    remember_candidates,
+    search_memes,
+    validate_selected_id,
+)
+from ..backend.semantic_storage import invalidate_semantic_metadata
+from ..config import MEMES_DIR, PLUGIN_DATA_DIR
 
 
 class EventHandlerMixin:
@@ -114,7 +128,7 @@ class EventHandlerMixin:
         temp_files: list[str] = []
 
         for emotion in emotions:
-            if not emotion:
+            if not emotion or emotion == REVIEW_CATEGORY:
                 continue
 
             emotion_path = os.path.join(memes_root, emotion)
@@ -149,10 +163,13 @@ class EventHandlerMixin:
     ) -> dict:
         """对外兼容接口：清理消息中的表情标记并准备待发送表情图片。"""
         pack_context = self._resolve_runtime_pack_context(event=event)
-        runtime_category_mapping = (
-            pack_context.get("category_mapping") or self.category_mapping
+        context_mapping = pack_context.get("category_mapping")
+        active_category_mapping = (
+            runtime_category_mapping(context_mapping)
+            if isinstance(context_mapping, dict)
+            else runtime_category_mapping(self.category_mapping)
         )
-        valid_emoticons = set(runtime_category_mapping.keys())
+        valid_emoticons = set(active_category_mapping.keys())
 
         raw_components = self._normalize_outgoing_message_components(message)
         cleaned_components = []
@@ -255,6 +272,14 @@ class EventHandlerMixin:
             yield event.plain_result("请发送图片文件来进行上传哦。")
             return
         category = upload_state["category"]
+        pack_id = str(MEMES_DIR.parent.name or "").strip()
+        try:
+            self.semantic_task_manager.begin_external_pack_operation(
+                pack_id, "接收并保存表情图片"
+            )
+        except RuntimeError as exc:
+            yield event.plain_result(f"⚠️ {exc}")
+            return
         save_dir = os.path.join(MEMES_DIR, category)
         try:
             os.makedirs(save_dir, exist_ok=True)
@@ -309,13 +334,186 @@ class EventHandlerMixin:
                 )
             yield event.chain_result(result_msg)
             await self.reload_emotions()
+            if saved_files:
+                invalidate_semantic_metadata(MEMES_DIR.parent)
         except Exception as e:
             yield event.plain_result(f"保存失败了：{str(e)}")
+        finally:
+            self.semantic_task_manager.end_external_pack_operation(pack_id)
 
     async def _inject_meme_prompt_impl(
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
         self._apply_request_prompt(req, event)
+        if (
+            self.emotion_llm_enabled
+            and not str(self.emotion_llm_provider_id or "").strip()
+            and str(event.get_extra("meme_manager_semantic_mode") or "") == "llm"
+        ):
+            # 在回复请求发出前记录本轮实际选用的回复 Provider。
+            # 后续情感选图直接复用，避免把“留空”解释成没有可用模型。
+            await self._resolve_emotion_llm_provider_id(event)
+
+    async def _resolve_emotion_llm_provider_id(self, event: AstrMessageEvent) -> str:
+        """返回情感辅助模型；配置留空时复用本轮回复模型。"""
+        configured_id = str(self.emotion_llm_provider_id or "").strip()
+        if configured_id:
+            return configured_id
+
+        cached_id = str(event.get_extra("meme_manager_reply_provider_id") or "").strip()
+        if cached_id:
+            return cached_id
+
+        try:
+            provider_id = str(
+                await self.context.get_current_chat_provider_id(
+                    umo=event.unified_msg_origin
+                )
+                or ""
+            ).strip()
+        except Exception as exc:
+            logger.warning(
+                "[meme_manager] 情感模型未配置，且无法取得当前回复模型: %s",
+                exc,
+            )
+            return ""
+
+        if not provider_id:
+            logger.warning("[meme_manager] 情感模型未配置，当前回复模型也不可用")
+            return ""
+
+        event.set_extra("meme_manager_reply_provider_id", provider_id)
+        logger.info(
+            "[meme_manager] 情感模型未单独配置，本轮复用回复模型: %s",
+            provider_id,
+        )
+        return provider_id
+
+    async def _resp_semantic_llm_impl(
+        self, event: AstrMessageEvent, response: LLMResponse, text: str
+    ):
+        """Select one semantic candidate with the emotion-assistant model.
+
+        Args:
+            event: Current AstrBot message event.
+            response: Reply model response that will be cleaned in place.
+            text: Reply text used as the semantic query and selection context.
+        """
+        visible_text = extract_visible_semantic_reply(text)
+        query = await self._build_emotion_semantic_query(event, visible_text)
+        pack_context = self._resolve_runtime_pack_context(event=event)
+        pack_id = str(pack_context.get("pack_id") or "")
+        verified_pack_id = str(
+            event.get_extra("meme_manager_semantic_verified_pack_id") or ""
+        )
+        selected_id = ""
+        try:
+            result = await search_memes(
+                pack_context["pack_dir"],
+                PLUGIN_DATA_DIR,
+                pack_id,
+                query,
+                self._resolve_embedding_provider(pack_id),
+                top_k=self.semantic_top_k,
+                min_score=self.semantic_min_score,
+                _verified_complete=pack_id == verified_pack_id,
+            )
+            candidates = result.get("candidates") or []
+            records = candidate_records(pack_context["pack_dir"], candidates)
+            remember_candidates(event, records)
+            event.set_extra("meme_manager_semantic_query", query)
+            if candidates:
+                provider_id = await self._resolve_emotion_llm_provider_id(event)
+                if provider_id:
+                    visible_candidates = [
+                        {
+                            "id": item.get("id"),
+                            "caption": item.get("caption", ""),
+                            "tags": item.get("tags") or [],
+                        }
+                        for item in candidates
+                    ]
+                    prompt = (
+                        "你是表情图片选择助手。请根据机器人准备发送的回复，从候选中最多选择一张最合适的图片；"
+                        "不适合使用表情时必须留空。只能返回候选里真实存在的ID。\n"
+                        "只输出JSON，格式为："
+                        '{"meme_id":"meme:候选ID"}；不使用则返回'
+                        '{"meme_id":""}。\n'
+                        f"机器人可见回复：{visible_text}\n"
+                        "候选图片："
+                        + json.dumps(visible_candidates, ensure_ascii=False)
+                    )
+                    llm_resp = await self.context.llm_generate(
+                        chat_provider_id=provider_id, prompt=prompt
+                    )
+                    raw_text = str(
+                        getattr(llm_resp, "completion_text", "") or ""
+                    ).strip()
+                    data = None
+                    try:
+                        data = json.loads(raw_text)
+                    except (TypeError, ValueError):
+                        match = re.search(r"\{[\s\S]*\}", raw_text)
+                        if match:
+                            try:
+                                data = json.loads(match.group(0))
+                            except (TypeError, ValueError):
+                                data = None
+                    if not isinstance(data, dict):
+                        data = {}
+                    requested_id = str(
+                        data.get("meme_id") or data.get("id") or ""
+                    ).strip()
+                    valid_ids = {str(item.get("id") or "") for item in candidates}
+                    if requested_id in valid_ids:
+                        selected_id = requested_id
+        except Exception as exc:
+            logger.error(
+                "[meme_manager] Emotion-assisted semantic search failed: %s",
+                exc,
+                exc_info=True,
+            )
+
+        marked_text = text + (f"\n&&{selected_id}&&" if selected_id else "")
+        return await self._resp_semantic_impl(event, response, marked_text)
+
+    async def _build_emotion_semantic_query(
+        self, event: AstrMessageEvent, visible_text: str
+    ) -> str:
+        """让情感模型先把可见回复压缩为短语义检索词。"""
+        fallback = compact_semantic_query(visible_text)
+        if not visible_text:
+            return fallback
+
+        provider_id = await self._resolve_emotion_llm_provider_id(event)
+        if not provider_id:
+            logger.warning("[meme_manager] 无可用情感模型，使用截短后的可见回复检索")
+            return fallback
+
+        prompt = (
+            "你是表情包语义检索词生成器。根据机器人准备发送的可见回复，"
+            "提炼3到5个简短关键词或短语，总长度不超过30个汉字。"
+            "重点描述聊天用途、情绪、语气、氛围或典型动作；不要复述具体事实，"
+            "不要写分析过程，也不必严格区分画面人物主体。\n"
+            '只输出JSON：{"query":"关键词1 关键词2 关键词3"}。\n'
+            f"机器人可见回复：{visible_text}"
+        )
+        try:
+            llm_resp = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=prompt,
+            )
+            raw_text = str(getattr(llm_resp, "completion_text", "") or "").strip()
+            query = parse_semantic_query_result(raw_text, fallback)
+        except Exception as exc:
+            logger.warning(
+                "[meme_manager] 生成短检索词失败，使用截短后的可见回复: %s",
+                exc,
+            )
+            query = fallback
+
+        logger.info(f"[meme_manager] 情感模型语义检索词（{len(query)}字）: {query}")
+        return query
 
     async def _resp_impl(self, event: AstrMessageEvent, response: LLMResponse):
         """处理 LLM 响应，识别表情"""
@@ -324,14 +522,36 @@ class EventHandlerMixin:
             return
 
         text = response.completion_text
+        # Semantic packs use one exclusive route: reply-model Tool calls or
+        # emotion-assistant candidate selection. Neither uses legacy guessing.
+        semantic_mode = (
+            str(event.get_extra("meme_manager_semantic_mode") or "")
+            if self._semantic_mode_active(event)
+            else ""
+        )
+        if bool(event.get_extra("meme_manager_semantic_response_processed")):
+            logger.info(
+                "[meme_manager] Response already processed; ignoring duplicate hook"
+            )
+            return
+        # Claim the response before any async work so duplicate hooks cannot
+        # overwrite either semantic selections or legacy category matches.
+        event.set_extra("meme_manager_semantic_response_processed", True)
+        if semantic_mode == "llm":
+            return await self._resp_semantic_llm_impl(event, response, text)
+        if semantic_mode == "tool":
+            return await self._resp_semantic_impl(event, response, text)
 
         pack_context = self._resolve_runtime_pack_context(event=event)
-        runtime_category_mapping = (
-            pack_context.get("category_mapping") or self.category_mapping
+        context_mapping = pack_context.get("category_mapping")
+        active_category_mapping = (
+            runtime_category_mapping(context_mapping)
+            if isinstance(context_mapping, dict)
+            else runtime_category_mapping(self.category_mapping)
         )
 
         found_emotions: list[str] = []
-        valid_emoticons = set(runtime_category_mapping.keys())
+        valid_emoticons = set(active_category_mapping.keys())
 
         clean_text = text
 
@@ -504,11 +724,7 @@ class EventHandlerMixin:
 
         if self.emotion_llm_enabled:
             try:
-                provider_id = self.emotion_llm_provider_id
-                if not provider_id:
-                    provider_id = await self.context.get_current_chat_provider_id(
-                        umo=event.unified_msg_origin
-                    )
+                provider_id = await self._resolve_emotion_llm_provider_id(event)
                 if provider_id:
                     valid_list = sorted(valid_emoticons)
                     prompt = (
@@ -527,12 +743,12 @@ class EventHandlerMixin:
                         data = None
                         try:
                             data = json.loads(raw_text)
-                        except Exception:
+                        except (TypeError, ValueError):
                             match = re.search(r"\{[\s\S]*\}", raw_text)
                             if match:
                                 try:
                                     data = json.loads(match.group(0))
-                                except Exception:
+                                except (TypeError, ValueError):
                                     data = None
                         if isinstance(data, dict):
                             emotions = data.get("emotions")
@@ -580,6 +796,57 @@ class EventHandlerMixin:
                 logger.debug("[meme_manager] webchat 流式文本已替换为干净版本")
             except Exception as e:
                 logger.error(f"[meme_manager] webchat 流式文本替换失败: {e}")
+
+    async def _resp_semantic_impl(
+        self, event: AstrMessageEvent, response: LLMResponse, text: str
+    ):
+        """清理语义图片标记并记录本轮经过候选校验的精确 ID。"""
+        pack_context = self._resolve_runtime_pack_context(event=event)
+        selected_ids: list[str] = []
+
+        clean_text, referenced_ids = extract_and_clean_semantic_meme_references(
+            text or ""
+        )
+        for value in referenced_ids:
+            if validate_selected_id(event, value, pack_context.get("pack_dir")):
+                if value not in selected_ids:
+                    selected_ids.append(value)
+            else:
+                logger.warning("忽略不在本轮候选中的语义图片 ID: %s", value)
+        if (
+            not selected_ids
+            and str(event.get_extra("meme_manager_semantic_mode") or "") == "tool"
+        ):
+            default_id = str(
+                event.get_extra("meme_manager_semantic_default_id") or ""
+            ).strip()
+            if default_id and validate_selected_id(
+                event, default_id, pack_context.get("pack_dir")
+            ):
+                selected_ids.append(default_id)
+                logger.info(
+                    "[meme_manager] 回复模型未显式选图，自动使用语义检索首候选: %s",
+                    default_id,
+                )
+        if selected_ids:
+            logger.info("[meme_manager] 本轮最终语义表情: %s", selected_ids[0])
+        else:
+            logger.warning("[meme_manager] 本轮语义检索没有可发送的有效候选")
+        # 不让模型写出的畸形标记泄漏到用户消息中。
+        clean_text = re.sub(r"&&\s*meme:[^&]+&&", "", clean_text, flags=re.IGNORECASE)
+        event.set_extra("meme_manager_semantic_selected_ids", selected_ids)
+        event.set_extra("found_emotions", None)
+        response.completion_text = clean_text.strip()
+        result = event.get_result()
+        if (
+            event.get_platform_name() == "webchat"
+            and result is not None
+            and result.result_content_type == ResultContentType.STREAMING_RESULT
+        ):
+            try:
+                await event.send(MessageChain([Plain(response.completion_text)]))
+            except Exception as exc:
+                logger.error("webchat 语义文本替换失败: %s", exc)
 
     async def _on_decorating_result_impl(self, event: AstrMessageEvent):
         """在消息发送前清理文本中的表情标签，并添加表情图片"""
@@ -641,9 +908,36 @@ class EventHandlerMixin:
                         else:
                             cleaned_components.append(component)
 
-            # 第二步：添加表情图片（如果有找到的表情）
+            # 第二步：语义模式按候选 ID 精确取图，不走概率、分类目录和 random.choice。
+            semantic_selected_ids = (
+                event.get_extra("meme_manager_semantic_selected_ids") or []
+            )
+            if semantic_selected_ids and self._semantic_mode_active(event):
+                memes_root = self._get_runtime_memes_dir_for_event(event)
+                pack_context = self._resolve_runtime_pack_context(event=event)
+                semantic_images = []
+                semantic_temp_files = []
+                for selected_id in semantic_selected_ids[:1]:
+                    image_path = validate_selected_id(
+                        event, selected_id, pack_context.get("pack_dir")
+                    )
+                    if image_path is None:
+                        continue
+                    try:
+                        final_path = self._convert_to_gif(str(image_path))
+                        if final_path != str(image_path):
+                            semantic_temp_files.append(final_path)
+                        semantic_images.append(Image.fromFileSystem(final_path))
+                    except Exception as exc:
+                        logger.error("构建语义表情图片失败: %s", exc)
+                if semantic_temp_files:
+                    event.set_extra("meme_manager_temp_files", semantic_temp_files)
+                if semantic_images:
+                    # 语义模式不再随机丢弃模型已经选择的候选。
+                    event.set_extra("meme_manager_pending_images", semantic_images)
+            # 第三步：旧模式添加表情图片（如果有找到的表情）
             found_emotions = event.get_extra("found_emotions") or []
-            if found_emotions:
+            if found_emotions and not semantic_selected_ids:
                 memes_root = self._get_runtime_memes_dir_for_event(event)
                 # 检查概率（注意：概率判断是"小于等于"才发送）
                 random_value = random.randint(1, 100)
@@ -654,7 +948,7 @@ class EventHandlerMixin:
                     emotion_images = []
                     temp_files = []  # 记录临时文件路径
                     for emotion in found_emotions:
-                        if not emotion:
+                        if not emotion or emotion == REVIEW_CATEGORY:
                             continue
 
                         emotion_path = os.path.join(memes_root, emotion)
@@ -722,6 +1016,7 @@ class EventHandlerMixin:
 
             # 清空当前事件已处理的表情列表
             event.set_extra("found_emotions", None)
+            event.set_extra("meme_manager_semantic_selected_ids", None)
 
             # 第三步：更新消息链
             if cleaned_components:
@@ -922,6 +1217,31 @@ class EventHandlerMixin:
 
     async def _send_memes_streaming(self, event: AstrMessageEvent):
         """流式传输兼容模式：在流式消息发送完成后，主动发送表情图片作为独立消息。"""
+        semantic_selected_ids = (
+            event.get_extra("meme_manager_semantic_selected_ids") or []
+        )
+        if semantic_selected_ids and self._semantic_mode_active(event):
+            pack_context = self._resolve_runtime_pack_context(event=event)
+            try:
+                for selected_id in semantic_selected_ids[:1]:
+                    image_path = validate_selected_id(
+                        event, selected_id, pack_context.get("pack_dir")
+                    )
+                    if image_path is None:
+                        continue
+                    final_path = self._convert_to_gif(str(image_path))
+                    try:
+                        await self._send_meme_image(
+                            event, Image.fromFileSystem(final_path)
+                        )
+                    finally:
+                        if final_path != str(image_path) and os.path.exists(final_path):
+                            os.remove(final_path)
+            except Exception as exc:
+                logger.error("流式语义表情发送失败: %s", exc, exc_info=True)
+            finally:
+                event.set_extra("meme_manager_semantic_selected_ids", None)
+            return
         found_emotions = event.get_extra("found_emotions") or []
         if not found_emotions:
             return
@@ -934,7 +1254,7 @@ class EventHandlerMixin:
                 return
 
             for emotion in found_emotions:
-                if not emotion:
+                if not emotion or emotion == REVIEW_CATEGORY:
                     continue
 
                 emotion_path = os.path.join(memes_root, emotion)

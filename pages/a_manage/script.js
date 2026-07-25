@@ -62,7 +62,9 @@ async function initApp() {
 
   async function apiGet(endpoint, params = {}) {
     const mergedParams = { ...params };
-    const managedPackId = String(managePackSelect?.value || "").trim();
+    const managedPackId = String(
+      activeManagePackId || managePackSelect?.value || "",
+    ).trim();
     if (
       managedPackId &&
       [
@@ -70,6 +72,8 @@ async function initApp() {
         "emotions",
         "meme_image",
         "meme_image_data",
+        "meme_image_semantic",
+        "semantic/reviews",
         "img_host/sync/status",
         "img_host/sync/task_status",
       ].includes(endpoint)
@@ -81,7 +85,9 @@ async function initApp() {
 
   async function apiPost(endpoint, body = {}) {
     const mergedBody = { ...body };
-    const selectedPackId = String(managePackSelect?.value || "").trim();
+    const selectedPackId = String(
+      activeManagePackId || managePackSelect?.value || "",
+    ).trim();
     if (
       selectedPackId &&
       defaultManagePackId &&
@@ -95,6 +101,9 @@ async function initApp() {
     if (selectedPackId && endpoint.startsWith("img_host/sync/")) {
       mergedBody.managed_pack_id = selectedPackId;
     }
+    if (selectedPackId && endpoint.startsWith("semantic/")) {
+      mergedBody.pack_id = selectedPackId;
+    }
     return await window.AstrBotPluginPage.apiPost(endpoint, mergedBody);
   }
 
@@ -103,6 +112,11 @@ async function initApp() {
     items: new Map(),
   };
   let latestEmojiData = {};
+  let latestTagDescriptions = {};
+  let semanticReviewByPath = new Map();
+  let semanticReviewStatistics = {};
+  let semanticReviewAvailable = false;
+  let activeSemanticReviewFilter = "all";
   let dangerConfirmResolver = null;
   let dangerConfirmStage = "ack";
   let dangerConfirmTimer = null;
@@ -145,6 +159,117 @@ async function initApp() {
   );
   const imagePreviewCloseBtn = document.getElementById(
     "image-preview-close-btn",
+  );
+  const imagePreviewSemantic = document.getElementById(
+    "image-preview-semantic",
+  );
+  const imagePreviewSemanticState = document.getElementById(
+    "image-preview-semantic-state",
+  );
+  const imagePreviewSemanticFilename = document.getElementById(
+    "image-preview-semantic-filename",
+  );
+  const imagePreviewSemanticCaption = document.getElementById(
+    "image-preview-semantic-caption",
+  );
+  const imagePreviewSemanticTagsWrap = document.getElementById(
+    "image-preview-semantic-tags-wrap",
+  );
+  const imagePreviewSemanticTags = document.getElementById(
+    "image-preview-semantic-tags",
+  );
+  const imagePreviewVisibleTextWrap = document.getElementById(
+    "image-preview-visible-text-wrap",
+  );
+  const imagePreviewVisibleText = document.getElementById(
+    "image-preview-visible-text",
+  );
+  const imagePreviewSemanticIndex = document.getElementById(
+    "image-preview-semantic-index",
+  );
+  const imagePreviewCategoryTag = document.getElementById(
+    "image-preview-category-tag",
+  );
+  const imagePreviewCategoryReview = document.getElementById(
+    "image-preview-category-review",
+  );
+  const imagePreviewCategoryReviewState = document.getElementById(
+    "image-preview-category-review-state",
+  );
+  const imagePreviewCategoryReviewReason = document.getElementById(
+    "image-preview-category-review-reason",
+  );
+  const imagePreviewReclassification = document.getElementById(
+    "image-preview-reclassification",
+  );
+  const imagePreviewCategoryConfirmBtn = document.getElementById(
+    "image-preview-category-confirm-btn",
+  );
+  const imagePreviewReviewActions = document.getElementById(
+    "image-preview-review-actions",
+  );
+  const imagePreviewReviewEditBtn = document.getElementById(
+    "image-preview-review-edit-btn",
+  );
+  const imagePreviewSourceState = document.getElementById(
+    "image-preview-source-state",
+  );
+  const imagePreviewVectorState = document.getElementById(
+    "image-preview-vector-state",
+  );
+  const imagePreviewDuplicateNotice = document.getElementById(
+    "image-preview-duplicate-notice",
+  );
+  const imagePreviewSemanticActions = document.getElementById(
+    "image-preview-semantic-actions",
+  );
+  const imagePreviewEditBtn = document.getElementById("image-preview-edit-btn");
+  const imagePreviewRestoreAutoBtn = document.getElementById(
+    "image-preview-restore-auto-btn",
+  );
+  const imagePreviewEditForm = document.getElementById(
+    "image-preview-edit-form",
+  );
+  const imagePreviewFixedTags = document.getElementById(
+    "image-preview-fixed-tags",
+  );
+  const imagePreviewReviewInstruction = document.getElementById(
+    "image-preview-review-instruction",
+  );
+  const imagePreviewReviewRewriteBtn = document.getElementById(
+    "image-preview-review-rewrite-btn",
+  );
+  const imagePreviewReviewRewriteStatus = document.getElementById(
+    "image-preview-review-rewrite-status",
+  );
+  const imagePreviewTargetCategory = document.getElementById(
+    "image-preview-target-category",
+  );
+  const imagePreviewCaptionInput = document.getElementById(
+    "image-preview-caption-input",
+  );
+  const imagePreviewTagsInput = document.getElementById(
+    "image-preview-tags-input",
+  );
+  const imagePreviewVisibleTextInput = document.getElementById(
+    "image-preview-visible-text-input",
+  );
+  const imagePreviewCategoryDecision = document.getElementById(
+    "image-preview-category-decision",
+  );
+  const imagePreviewEditScope = document.getElementById(
+    "image-preview-edit-scope",
+  );
+  const imagePreviewEditCancelBtn = document.getElementById(
+    "image-preview-edit-cancel-btn",
+  );
+  const imagePreviewSaveBtn = document.getElementById("image-preview-save-btn");
+  const imagePreviewSaveVectorBtn = document.getElementById(
+    "image-preview-save-vector-btn",
+  );
+  const semanticReviewStats = document.getElementById("semantic-review-stats");
+  const semanticReviewToolbar = document.getElementById(
+    "semantic-review-toolbar",
   );
   const moveTargetModalRoot = document.getElementById("move-target-modal");
   const moveTargetModalTitle = document.getElementById(
@@ -203,9 +328,15 @@ async function initApp() {
     "img-host-sync-progress-text",
   );
   const managePackSelect = document.getElementById("manage-pack-select");
+  const packSemanticStatus = document.getElementById("pack-semantic-status");
+  const packSemanticStatusText = document.getElementById(
+    "pack-semantic-status-text",
+  );
   const switchManagePackBtn = document.getElementById("switch-manage-pack-btn");
   const deleteManagePackBtn = document.getElementById("delete-manage-pack-btn");
   let defaultManagePackId = "";
+  let activeManagePackId = "";
+  let managePacksById = new Map();
   let confirmResolver = null;
   const MOBILE_LAYOUT_MEDIA = "(max-width: 960px)";
   const DRAG_HUD_OFFSET_X = 18;
@@ -255,7 +386,90 @@ async function initApp() {
     const name = String(pack?.name || pack?.id || "未命名");
     const id = String(pack?.id || "").trim();
     const imageCount = Number(pack?.image_count || 0);
-    return `${name} (${id}) · ${imageCount} 张`;
+    const semanticStatus = String(pack?.semantic_status || "none");
+    const semanticLabel =
+      semanticStatus === "complete"
+        ? "已语义化"
+        : semanticStatus === "partial"
+          ? "部分语义化"
+          : "未语义化";
+    return `${name} (${id}) · ${imageCount} 张 · ${semanticLabel}`;
+  }
+
+  function updateManagePackSemanticAppearance(packId) {
+    const normalizedPackId = String(packId || "").trim();
+    const pack = managePacksById.get(normalizedPackId);
+    const content = document.getElementById("content");
+    const knownStatuses = ["none", "partial", "complete"];
+    const status = knownStatuses.includes(String(pack?.semantic_status || ""))
+      ? String(pack.semantic_status)
+      : "none";
+
+    knownStatuses.forEach((item) => {
+      packSemanticStatus?.classList.toggle(`semantic-${item}`, item === status);
+      content?.classList.toggle(`pack-semantic-${item}`, item === status);
+    });
+
+    if (!pack || !packSemanticStatusText) {
+      applySemanticReviewData({ available: false });
+      if (packSemanticStatusText) {
+        packSemanticStatusText.textContent = "未语义化";
+      }
+      return;
+    }
+
+    const imageCount = Number(pack.image_count || 0);
+    const completedCount = Number(pack.semantic_caption_done || 0);
+    const semanticTotal = Number(pack.semantic_caption_total || 0);
+    const failedCount = Number(pack.semantic_caption_failed || 0);
+    if (status === "complete") {
+      packSemanticStatusText.textContent = `已完成语义化 · 覆盖 ${imageCount} 张图片`;
+      packSemanticStatus.title =
+        semanticTotal && semanticTotal !== imageCount
+          ? `${imageCount} 张图片中有重复内容，共复用 ${semanticTotal} 条语义描述。`
+          : `当前图包的 ${imageCount} 张图片均已有语义描述。`;
+      return;
+    }
+    if (status === "partial") {
+      const failureHint = failedCount > 0 ? `，${failedCount} 条失败` : "";
+      packSemanticStatusText.textContent = pack.semantic_files_changed
+        ? `部分语义化 · 有新增或替换图片待处理（已有 ${completedCount} 条）`
+        : semanticTotal
+          ? `部分语义化 · 已完成 ${completedCount}/${semanticTotal} 条${failureHint}`
+          : "部分语义化 · 尚未完成";
+      packSemanticStatus.title = pack.semantic_files_changed
+        ? "图包新增了图片，或原图片内容已被替换，需要继续语义化。"
+        : "当前图包仍有图片的语义描述未完成。";
+      return;
+    }
+    packSemanticStatusText.textContent =
+      imageCount > 0 ? "未语义化" : "空图包 · 暂无语义";
+    packSemanticStatus.title =
+      imageCount > 0
+        ? "当前图包还没有可用的图片语义描述。"
+        : "空图包无需语义化。";
+    applySemanticReviewData({ available: false });
+  }
+
+  async function refreshManagePackSummaries() {
+    try {
+      const response = await apiGet("packs");
+      const packs = Array.isArray(response?.packs) ? response.packs : [];
+      managePacksById = new Map(
+        packs.map((pack) => [String(pack?.id || "").trim(), pack]),
+      );
+      Array.from(managePackSelect?.options || []).forEach((option) => {
+        const pack = managePacksById.get(String(option.value || "").trim());
+        if (pack) {
+          option.textContent = formatPackOptionLabel(pack);
+        }
+      });
+      updateManagePackSemanticAppearance(activeManagePackId);
+      return packs;
+    } catch (error) {
+      console.warn("刷新图包语义状态失败:", error);
+      return [];
+    }
   }
 
   function syncManagedPackQuery(managedPackId) {
@@ -313,6 +527,9 @@ async function initApp() {
     try {
       const response = await apiGet("packs");
       const packs = Array.isArray(response?.packs) ? response.packs : [];
+      managePacksById = new Map(
+        packs.map((pack) => [String(pack?.id || "").trim(), pack]),
+      );
       managePackSelect.innerHTML = "";
 
       if (!packs.length) {
@@ -321,6 +538,8 @@ async function initApp() {
         option.textContent = "暂无可用表情包";
         managePackSelect.appendChild(option);
         managePackSelect.disabled = true;
+        activeManagePackId = "";
+        updateManagePackSemanticAppearance("");
         if (switchManagePackBtn) {
           switchManagePackBtn.disabled = true;
         }
@@ -369,6 +588,8 @@ async function initApp() {
         selectedPackId = managedPackIdFromUrl;
       }
       managePackSelect.value = selectedPackId;
+      activeManagePackId = selectedPackId;
+      updateManagePackSemanticAppearance(selectedPackId);
       syncManagedPackQuery(selectedPackId);
 
       await maybeShowFirstUseCatalogGuide(packs);
@@ -390,11 +611,19 @@ async function initApp() {
     }
 
     setButtonBusy(switchManagePackBtn, "切换中...");
+    closeImagePreview();
+    const previousActivePackId = activeManagePackId;
+    activeManagePackId = targetPackId;
+    applySemanticReviewData({ available: false });
+    updateManagePackSemanticAppearance(targetPackId);
     try {
       syncManagedPackQuery(targetPackId);
       await refreshUi({ emojis: true });
       showToast(`已切换管理视图到 ${targetPackId}。`, "success", "切换成功");
     } catch (error) {
+      activeManagePackId = previousActivePackId;
+      updateManagePackSemanticAppearance(previousActivePackId);
+      syncManagedPackQuery(previousActivePackId);
       showToast(error?.message || String(error), "error", "切换失败");
     } finally {
       restoreButton(switchManagePackBtn);
@@ -406,7 +635,9 @@ async function initApp() {
       return;
     }
 
-    const targetPackId = String(managePackSelect.value || "").trim();
+    const targetPackId = String(
+      activeManagePackId || managePackSelect.value || "",
+    ).trim();
     if (!targetPackId) {
       showToast("请先选择要删除的表情包。", "warning", "删除失败");
       return;
@@ -473,16 +704,74 @@ async function initApp() {
     }
   }
 
-  // 获取表情包数据和描述
+  function semanticReviewKey(category, filename) {
+    return `${String(category || "")}\u0000${String(filename || "")}`;
+  }
+
+  function semanticReviewLabel(status) {
+    return (
+      {
+        auto_match: "自动符合",
+        needs_review: "建议人工复核",
+        manual_confirmed: "已人工确认",
+        manual_rejected: "人工确认分类不符",
+        unchecked: "尚未检查",
+      }[String(status || "")] || "尚未检查"
+    );
+  }
+
+  function updateSemanticReviewToolbar() {
+    if (!semanticReviewStats) return;
+    semanticReviewStats.querySelectorAll("button[data-review-filter]").forEach((button) => {
+      const filter = String(button.dataset.reviewFilter || "all");
+      const count =
+        filter === "all"
+          ? Number(semanticReviewStatistics.total || 0)
+          : Number(semanticReviewStatistics[filter] || 0);
+      const value = button.querySelector("span");
+      if (value) value.textContent = String(count);
+      button.classList.toggle("active", filter === activeSemanticReviewFilter);
+    });
+  }
+
+  function applySemanticReviewData(payload) {
+    semanticReviewAvailable = Boolean(payload?.available);
+    const items =
+      semanticReviewAvailable && Array.isArray(payload?.items)
+        ? payload.items
+        : [];
+    semanticReviewByPath = new Map(
+      items.map((item) => [
+        semanticReviewKey(item?.category, item?.filename),
+        item,
+      ]),
+    );
+    semanticReviewStatistics = semanticReviewAvailable
+      ? payload?.statistics || {}
+      : {};
+    if (!semanticReviewAvailable) {
+      activeSemanticReviewFilter = "all";
+    }
+    semanticReviewToolbar?.classList.toggle("hidden", !semanticReviewAvailable);
+    updateSemanticReviewToolbar();
+  }
+
+  // 获取表情包数据、描述和分类审核状态
   async function fetchEmojis() {
     try {
-      const [emojiResponse, tagDescriptions] = await Promise.all([
+      const [emojiResponse, tagDescriptions, reviewResult] = await Promise.all([
         apiGet("emoji"),
         apiGet("emotions"),
+        apiGet("semantic/reviews").catch((error) => {
+          console.warn("读取分类审核状态失败:", error);
+          return { items: [], statistics: {} };
+        }),
       ]);
       clearDragMode();
       closeBatchContextMenu();
       latestEmojiData = emojiResponse;
+      latestTagDescriptions = tagDescriptions;
+      applySemanticReviewData(reviewResult);
       pruneSelectionState();
       displayCategories(emojiResponse, tagDescriptions);
       updateSidebar(emojiResponse, tagDescriptions);
@@ -646,6 +935,650 @@ async function initApp() {
     return data.data_url;
   }
 
+  async function loadImageSemantic(category, emoji) {
+    const data = await apiGet("meme_image_semantic", {
+      category,
+      filename: emoji,
+    });
+    return data?.semantic || { status: "none" };
+  }
+
+  function renderImageSemantic(semantic, { loading = false, error = "" } = {}) {
+    if (!imagePreviewSemantic) {
+      return;
+    }
+    const statuses = ["loading", "complete", "partial", "failed", "none"];
+    const rawStatus = loading
+      ? "loading"
+      : error
+        ? "failed"
+        : String(semantic?.status || "none");
+    const status = rawStatus === "pending" ? "partial" : rawStatus;
+    const normalizedStatus = statuses.includes(status) ? status : "none";
+    if (imagePreviewState && !loading && !error) {
+      imagePreviewState.semantic = semantic || { status: "none" };
+    }
+    statuses.forEach((item) => {
+      imagePreviewSemantic.classList.toggle(
+        `semantic-${item}`,
+        item === normalizedStatus,
+      );
+    });
+
+    if (imagePreviewSemanticFilename) {
+      imagePreviewSemanticFilename.textContent = imagePreviewState?.emoji || "";
+    }
+    const reviewStatus = String(
+      semantic?.category_review_status || "unchecked",
+    );
+    const canEdit = !loading && !error && Boolean(semantic?.can_edit_semantic);
+    const needsHumanReview = ["needs_review", "manual_rejected"].includes(
+      reviewStatus,
+    );
+    const showCategoryReview =
+      loading || (!error && normalizedStatus !== "none");
+    imagePreviewCategoryReview?.classList.toggle(
+      "hidden",
+      !showCategoryReview,
+    );
+    if (imagePreviewCategoryTag) {
+      imagePreviewCategoryTag.textContent = loading
+        ? "读取固定标签…"
+        : String(
+            semantic?.category_tag ||
+              `category:${imagePreviewState?.category || ""}`,
+          );
+    }
+    if (imagePreviewCategoryReviewState) {
+      imagePreviewCategoryReviewState.textContent = loading
+        ? "读取审核状态…"
+        : semanticReviewLabel(reviewStatus);
+    }
+    const reviewReason = String(semantic?.category_review_reason || "").trim();
+    if (imagePreviewCategoryReviewReason) {
+      imagePreviewCategoryReviewReason.textContent = reviewReason;
+      imagePreviewCategoryReviewReason.classList.toggle(
+        "hidden",
+        loading || !reviewReason,
+      );
+    }
+    const reclassificationStatus = String(
+      semantic?.reclassification_status || "",
+    );
+    if (imagePreviewReclassification) {
+      const fromCategory = String(
+        semantic?.reclassified_from_category || "",
+      );
+      const toCategory = String(semantic?.reclassified_to_category || "");
+      const reclassificationReason = String(
+        semantic?.reclassification_reason || "",
+      ).trim();
+      imagePreviewReclassification.textContent = reclassificationStatus
+        ? `自动重分类：${fromCategory || "原分类"} → ${toCategory || "当前分类"}${
+            reclassificationReason ? `；${reclassificationReason}` : ""
+          }`
+        : "";
+      imagePreviewReclassification.classList.toggle(
+        "hidden",
+        loading || !reclassificationStatus,
+      );
+    }
+    imagePreviewCategoryConfirmBtn?.classList.toggle(
+      "hidden",
+      !canEdit || !semantic?.can_confirm_category,
+    );
+    imagePreviewReviewEditBtn?.classList.toggle(
+      "hidden",
+      !canEdit || !needsHumanReview,
+    );
+    const showReviewActions = Boolean(
+      canEdit &&
+        (semantic?.can_confirm_category || needsHumanReview),
+    );
+    imagePreviewReviewActions?.classList.toggle("hidden", !showReviewActions);
+    const manualModified = Boolean(semantic?.manual_modified);
+    if (imagePreviewSourceState) {
+      imagePreviewSourceState.textContent = manualModified
+        ? "人工修改"
+        : "自动生成";
+      imagePreviewSourceState.classList.toggle("status-manual", manualModified);
+    }
+    const embeddingStatus = String(semantic?.embedding_status || "pending");
+    if (imagePreviewVectorState) {
+      const vectorLabels = {
+        done: "向量更新完成",
+        failed: "向量更新失败",
+        running: "向量更新中",
+        pending: manualModified
+          ? "语义已保存，向量待更新"
+          : "向量等待更新",
+        cleared: "向量等待更新",
+      };
+      imagePreviewVectorState.textContent = loading
+        ? "读取向量状态…"
+        : vectorLabels[embeddingStatus] || "向量等待更新";
+      imagePreviewVectorState.classList.remove(
+        "status-done",
+        "status-failed",
+        "status-pending",
+      );
+      imagePreviewVectorState.classList.add(
+        embeddingStatus === "done"
+          ? "status-done"
+          : embeddingStatus === "failed"
+            ? "status-failed"
+            : "status-pending",
+      );
+    }
+    const duplicatePaths = Array.isArray(semantic?.same_content_paths)
+      ? semantic.same_content_paths
+      : [];
+    if (imagePreviewDuplicateNotice) {
+      imagePreviewDuplicateNotice.textContent = duplicatePaths.length
+        ? `检测到另外 ${duplicatePaths.length} 张内容相同的图片。本次只修改当前路径，不会改动：${duplicatePaths.join("、")}`
+        : "";
+      imagePreviewDuplicateNotice.classList.toggle(
+        "hidden",
+        loading || duplicatePaths.length === 0,
+      );
+    }
+    const showBottomActions = Boolean(
+      canEdit && (!needsHumanReview || semantic?.can_restore_auto),
+    );
+    imagePreviewSemanticActions?.classList.toggle(
+      "hidden",
+      !showBottomActions,
+    );
+    imagePreviewEditBtn?.classList.toggle(
+      "hidden",
+      !canEdit || needsHumanReview,
+    );
+    imagePreviewRestoreAutoBtn?.classList.toggle(
+      "hidden",
+      !canEdit || !semantic?.can_restore_auto,
+    );
+    if (loading) {
+      imagePreviewSemanticState.textContent = "读取中";
+      imagePreviewSemanticCaption.textContent = "正在读取这张图片的语义信息…";
+    } else if (error) {
+      imagePreviewSemanticState.textContent = "读取失败";
+      imagePreviewSemanticCaption.textContent = error;
+    } else if (normalizedStatus === "complete") {
+      imagePreviewSemanticState.textContent = "已语义化";
+      imagePreviewSemanticCaption.textContent =
+        String(semantic?.caption || "").trim() || "已有语义记录。";
+    } else if (normalizedStatus === "failed") {
+      imagePreviewSemanticState.textContent = "语义化失败";
+      imagePreviewSemanticCaption.textContent =
+        String(semantic?.error || "").trim() ||
+        "这张图片上次语义化失败，可以前往语义化页面重试。";
+    } else if (normalizedStatus === "partial") {
+      imagePreviewSemanticState.textContent = "等待完成";
+      imagePreviewSemanticCaption.textContent =
+        "这张图片已进入语义化流程，但描述尚未完成。";
+    } else {
+      imagePreviewSemanticState.textContent = "未语义化";
+      imagePreviewSemanticCaption.textContent =
+        "这张图片还没有语义描述，可以前往语义化页面继续处理。";
+    }
+
+    const tags = Array.isArray(semantic?.tags) ? semantic.tags : [];
+    if (imagePreviewSemanticTags) {
+      imagePreviewSemanticTags.replaceChildren();
+      tags.forEach((tag) => {
+        const chip = document.createElement("span");
+        chip.textContent = String(tag);
+        imagePreviewSemanticTags.appendChild(chip);
+      });
+    }
+    imagePreviewSemanticTagsWrap?.classList.toggle(
+      "hidden",
+      loading || tags.length === 0,
+    );
+
+    const visibleText = String(semantic?.visible_text || "").trim();
+    if (imagePreviewVisibleText) {
+      imagePreviewVisibleText.textContent = visibleText;
+    }
+    imagePreviewVisibleTextWrap?.classList.toggle(
+      "hidden",
+      loading || !visibleText,
+    );
+
+    if (imagePreviewSemanticIndex) {
+      imagePreviewSemanticIndex.textContent =
+        normalizedStatus === "complete"
+          ? embeddingStatus === "done"
+            ? "语义向量已建立，可用于搜索。"
+            : embeddingStatus === "failed"
+              ? `语义已保存，但向量更新失败${semantic?.embedding_error ? `：${semantic.embedding_error}` : "。"}`
+              : "语义已保存，向量等待更新。"
+          : "";
+    }
+  }
+
+  function setImageSemanticEditing(editing) {
+    if (!imagePreviewSemantic || !imagePreviewEditForm) return;
+    imagePreviewSemantic.classList.toggle("editing", editing);
+    imagePreviewEditForm.classList.toggle("hidden", !editing);
+    if (!editing) return;
+    const semantic = imagePreviewState?.semantic || {};
+    if (imagePreviewCaptionInput) {
+      imagePreviewCaptionInput.value = String(semantic.caption || "");
+    }
+    if (imagePreviewTagsInput) {
+      const tags = Array.isArray(semantic.editable_tags)
+        ? semantic.editable_tags
+        : [];
+      imagePreviewTagsInput.value = tags.join("，");
+    }
+    if (imagePreviewVisibleTextInput) {
+      imagePreviewVisibleTextInput.value = String(semantic.visible_text || "");
+    }
+    if (imagePreviewCategoryDecision) {
+      imagePreviewCategoryDecision.value =
+        semantic.category_review_status === "manual_confirmed"
+          ? "match"
+          : semantic.category_review_status === "manual_rejected"
+            ? "mismatch"
+            : semantic.status === "none"
+              ? "match"
+              : "keep";
+    }
+    if (imagePreviewFixedTags) {
+      imagePreviewFixedTags.replaceChildren();
+      const fixedTags = Array.isArray(semantic.fixed_category_tags)
+        ? semantic.fixed_category_tags
+        : [];
+      fixedTags.forEach((tag) => {
+        const chip = document.createElement("span");
+        chip.textContent = String(tag);
+        imagePreviewFixedTags.appendChild(chip);
+      });
+    }
+    if (imagePreviewReviewInstruction) {
+      imagePreviewReviewInstruction.value = "";
+    }
+    if (imagePreviewReviewRewriteStatus) {
+      imagePreviewReviewRewriteStatus.textContent =
+        "模型会重写语义并自动选择分类；只生成候选，不会直接保存或移动。";
+      imagePreviewReviewRewriteStatus.classList.remove("has-proposal");
+    }
+    if (imagePreviewTargetCategory) {
+      imagePreviewTargetCategory.replaceChildren();
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "保持当前分类";
+      imagePreviewTargetCategory.appendChild(placeholder);
+      const currentCategory = String(imagePreviewState?.category || "");
+      const categories = Array.from(
+        new Set([
+          ...Object.keys(latestEmojiData || {}),
+          ...Object.keys(latestTagDescriptions || {}),
+        ]),
+      )
+        .filter((category) => category && category !== currentCategory)
+        .sort((left, right) => left.localeCompare(right, "zh-CN"));
+      categories.forEach((category) => {
+        const option = document.createElement("option");
+        option.value = category;
+        option.textContent = category;
+        imagePreviewTargetCategory.appendChild(option);
+      });
+      updateImageSemanticMoveChoice();
+    }
+    const duplicateCount = Number(semantic.same_content_count || 0);
+    if (imagePreviewEditScope) {
+      imagePreviewEditScope.textContent = duplicateCount
+        ? `只修改当前路径。检测到另外 ${duplicateCount} 张同内容图片，它们不会被一并修改。`
+        : "只修改当前图片路径和当前分类，不会批量共享修改。";
+    }
+    window.setTimeout(() => imagePreviewCaptionInput?.focus(), 0);
+  }
+
+  function parseManualSemanticTags(value) {
+    return Array.from(
+      new Set(
+        String(value || "")
+          .split(/[，,\n]+/)
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+      ),
+    );
+  }
+
+  function imageSemanticSnapshotPayload() {
+    const state = imagePreviewState;
+    const semantic = state?.semantic || {};
+    if (
+      !state ||
+      String(activeManagePackId || "") !== String(state.packId || "")
+    ) {
+      throw new Error("当前图包已经切换，请重新打开图片后再编辑。");
+    }
+    if (!semantic.content_sha256 || !semantic.entry_id) {
+      throw new Error("图片编辑快照无效，请重新打开图片后再操作。");
+    }
+    return {
+      expected_pack_id: state.packId,
+      category: state.category,
+      filename: state.emoji,
+      expected_content_sha256: String(semantic.content_sha256),
+      expected_entry_id: String(semantic.entry_id),
+    };
+  }
+
+  function imageSemanticEditPayload() {
+    const caption = String(imagePreviewCaptionInput?.value || "").trim();
+    if (!caption) {
+      throw new Error("图片含义不能为空。");
+    }
+    return {
+      ...imageSemanticSnapshotPayload(),
+      caption,
+      tags: parseManualSemanticTags(imagePreviewTagsInput?.value),
+      visible_text: String(imagePreviewVisibleTextInput?.value || "").trim(),
+      category_decision: String(imagePreviewCategoryDecision?.value || "keep"),
+      target_category: String(imagePreviewTargetCategory?.value || "").trim(),
+    };
+  }
+
+  function updateImageSemanticMoveChoice() {
+    const targetCategory = String(
+      imagePreviewTargetCategory?.value || "",
+    ).trim();
+    const saving = imagePreviewEditForm?.dataset.saving === "true";
+    if (imagePreviewSaveBtn && !saving) {
+      imagePreviewSaveBtn.disabled = Boolean(targetCategory);
+      imagePreviewSaveBtn.title = targetCategory
+        ? "选择新分类后，需要同时更新该图向量"
+        : "只保存语义，向量等待后续更新";
+    }
+    if (imagePreviewSaveVectorBtn && !saving) {
+      imagePreviewSaveVectorBtn.disabled = false;
+      imagePreviewSaveVectorBtn.textContent = targetCategory
+        ? "保存、移动并更新该图向量"
+        : "保存并更新该图向量";
+    }
+  }
+
+  function setImageSemanticSaving(
+    saving,
+    activeButton = null,
+    busyLabel = "保存中...",
+  ) {
+    if (imagePreviewEditForm) {
+      imagePreviewEditForm.dataset.saving = saving ? "true" : "false";
+    }
+    [
+      imagePreviewEditCancelBtn,
+      imagePreviewSaveBtn,
+      imagePreviewSaveVectorBtn,
+      imagePreviewEditBtn,
+      imagePreviewReviewEditBtn,
+      imagePreviewRestoreAutoBtn,
+      imagePreviewCategoryConfirmBtn,
+      imagePreviewReviewRewriteBtn,
+    ].forEach((button) => {
+      if (button) button.disabled = saving;
+    });
+    [
+      imagePreviewCaptionInput,
+      imagePreviewTagsInput,
+      imagePreviewVisibleTextInput,
+      imagePreviewCategoryDecision,
+      imagePreviewReviewInstruction,
+      imagePreviewTargetCategory,
+    ].forEach((field) => {
+      if (field) field.disabled = saving;
+    });
+    if (saving && activeButton) {
+      setButtonBusy(activeButton, busyLabel);
+    } else if (!saving && activeButton) {
+      restoreButton(activeButton);
+    }
+    if (!saving) {
+      updateImageSemanticMoveChoice();
+    }
+  }
+
+  async function requestImageSemanticRevision() {
+    const previewState = imagePreviewState;
+    const reviewInstruction = String(
+      imagePreviewReviewInstruction?.value || "",
+    ).trim();
+    if (!reviewInstruction) {
+      showToast(
+        "请先写明哪里判断错了，以及希望模型怎样修改。",
+        "warning",
+        "缺少复审意见",
+      );
+      imagePreviewReviewInstruction?.focus();
+      return;
+    }
+    try {
+      const payload = {
+        ...imageSemanticSnapshotPayload(),
+        review_instruction: reviewInstruction,
+      };
+      setImageSemanticSaving(
+        true,
+        imagePreviewReviewRewriteBtn,
+        "视觉模型分析中...",
+      );
+      const result = await apiPost("semantic/propose_image_revision", payload);
+      if (imagePreviewState !== previewState) return;
+      const proposal = result?.proposal || {};
+      if (imagePreviewCaptionInput) {
+        imagePreviewCaptionInput.value = String(proposal.caption || "");
+      }
+      if (imagePreviewTagsInput) {
+        imagePreviewTagsInput.value = Array.isArray(proposal.tags)
+          ? proposal.tags.join("，")
+          : "";
+      }
+      if (imagePreviewVisibleTextInput) {
+        imagePreviewVisibleTextInput.value = String(
+          proposal.visible_text || "",
+        );
+      }
+      const categoryFit = String(proposal.category_fit || "uncertain");
+      const classificationAction = String(
+        proposal.classification_action || "manual_required",
+      );
+      if (imagePreviewCategoryDecision) {
+        if (
+          classificationAction === "keep_current" &&
+          categoryFit === "match"
+        ) {
+          imagePreviewCategoryDecision.value = "match";
+        } else if (
+          ["return_original", "move_to_other"].includes(
+            classificationAction,
+          ) || categoryFit === "conflict"
+        ) {
+          imagePreviewCategoryDecision.value = "mismatch";
+        } else {
+          imagePreviewCategoryDecision.value = "keep";
+        }
+      }
+      const currentCategory = String(
+        proposal.current_category || previewState?.category || "",
+      ).trim();
+      const originalCategory = String(
+        proposal.original_category || "",
+      ).trim();
+      const selectedCategory = String(
+        proposal.selected_category || "",
+      ).trim();
+      let targetOptionAvailable = true;
+      if (imagePreviewTargetCategory) {
+        const selectableTarget =
+          selectedCategory && selectedCategory !== currentCategory
+            ? selectedCategory
+            : "";
+        const hasTargetOption = Array.from(
+          imagePreviewTargetCategory.options,
+        ).some((option) => option.value === selectableTarget);
+        targetOptionAvailable = !selectableTarget || hasTargetOption;
+        imagePreviewTargetCategory.value = hasTargetOption
+          ? selectableTarget
+          : "";
+        updateImageSemanticMoveChoice();
+      }
+      if (imagePreviewReviewRewriteStatus) {
+        const reviewReason = String(
+          proposal.category_review_reason || "",
+        ).trim();
+        let categoryChoiceText = "分类建议：模型未能确定，请手动选择。";
+        if (!targetOptionAvailable) {
+          categoryChoiceText = `模型建议改到“${selectedCategory}”，但当前分类列表已变化，请刷新页面后重新检查。`;
+        } else if (classificationAction === "keep_current") {
+          categoryChoiceText = `分类建议：保持当前分类“${currentCategory}”。`;
+        } else if (classificationAction === "return_original") {
+          categoryChoiceText = `分类建议：回到原分类“${originalCategory || selectedCategory}”。`;
+        } else if (classificationAction === "move_to_other") {
+          categoryChoiceText = `分类建议：改到“${selectedCategory}”。`;
+        }
+        imagePreviewReviewRewriteStatus.textContent = [
+          "视觉模型候选已填入，尚未保存。",
+          categoryChoiceText,
+          reviewReason ? `分类判断：${reviewReason}` : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        imagePreviewReviewRewriteStatus.classList.add("has-proposal");
+      }
+      showToast(
+        result?.message || "视觉模型候选已填入，请检查后再保存。",
+        "success",
+        "候选已生成",
+        4800,
+      );
+    } catch (error) {
+      showToast(error?.message || String(error), "error", "重写失败", 4800);
+    } finally {
+      setImageSemanticSaving(false, imagePreviewReviewRewriteBtn);
+    }
+  }
+
+  async function saveCurrentImageSemantic({ updateVector = false } = {}) {
+    const activeButton = updateVector
+      ? imagePreviewSaveVectorBtn
+      : imagePreviewSaveBtn;
+    const previewState = imagePreviewState;
+    try {
+      const payload = imageSemanticEditPayload();
+      if (payload.target_category && !updateVector) {
+        throw new Error(
+          "选择新分类后，请点击“保存、移动并更新该图向量”。",
+        );
+      }
+      setImageSemanticSaving(
+        true,
+        activeButton,
+        payload.target_category ? "保存、移动并更新中..." : "保存中...",
+      );
+      const endpoint = updateVector
+        ? "semantic/save_image_and_vector"
+        : "semantic/save_image";
+      const result = await apiPost(endpoint, payload);
+      if (imagePreviewState === previewState) {
+        if (result?.moved) {
+          previewState.category = String(
+            result?.category || result?.target_category || previewState.category,
+          );
+          previewState.emoji = String(result?.filename || previewState.emoji);
+          if (imagePreviewImg) {
+            imagePreviewImg.alt = `表情包预览：${previewState.emoji}`;
+          }
+        }
+        renderImageSemantic(result?.semantic || {});
+        setImageSemanticEditing(false);
+      }
+      await fetchEmojis();
+      const vectorStatus = String(result?.vector_update?.status || "pending");
+      const toastType =
+        updateVector && vectorStatus !== "done" ? "warning" : "success";
+      showToast(
+        result?.message || "人工语义已保存，向量等待更新。",
+        toastType,
+        result?.moved
+          ? "保存、移动与向量更新"
+          : updateVector
+            ? "保存与向量更新"
+            : "保存成功",
+      );
+    } catch (error) {
+      showToast(error?.message || String(error), "error", "保存失败");
+    } finally {
+      setImageSemanticSaving(false, activeButton);
+    }
+  }
+
+  async function restoreCurrentImageAutoSemantic() {
+    const state = imagePreviewState;
+    const semantic = state?.semantic || {};
+    if (!state || !semantic.can_restore_auto) return;
+    const confirmed = await showConfirm({
+      title: "确认恢复自动生成",
+      description:
+        "这会放弃当前图片的人工描述、普通标签和可见文字。其他同内容图片不会受影响。确认继续吗？",
+      confirmLabel: "放弃人工修改",
+      confirmClassName: "danger",
+    });
+    if (!confirmed) return;
+    try {
+      if (String(activeManagePackId || "") !== String(state.packId || "")) {
+        throw new Error("当前图包已经切换，请重新打开图片后再操作。");
+      }
+      setImageSemanticSaving(true, imagePreviewRestoreAutoBtn);
+      const result = await apiPost("semantic/restore_image_auto", {
+        expected_pack_id: state.packId,
+        category: state.category,
+        filename: state.emoji,
+        expected_content_sha256: String(semantic.content_sha256 || ""),
+        expected_entry_id: String(semantic.entry_id || ""),
+      });
+      if (imagePreviewState === state) {
+        renderImageSemantic(result?.semantic || {});
+        setImageSemanticEditing(false);
+      }
+      await fetchEmojis();
+      showToast(result?.message || "已恢复自动生成状态。", "success");
+    } catch (error) {
+      showToast(error?.message || String(error), "error", "恢复失败");
+    } finally {
+      setImageSemanticSaving(false, imagePreviewRestoreAutoBtn);
+    }
+  }
+
+  async function confirmCurrentImageCategory() {
+    if (!imagePreviewState || !imagePreviewCategoryConfirmBtn) return;
+    const previewState = imagePreviewState;
+    setButtonBusy(imagePreviewCategoryConfirmBtn, "保存中...");
+    try {
+      const result = await apiPost("semantic/confirm_category", {
+        expected_pack_id: previewState.packId,
+        category: previewState.category,
+        filename: previewState.emoji,
+        expected_content_sha256: String(
+          previewState.semantic?.content_sha256 || "",
+        ),
+        expected_entry_id: String(previewState.semantic?.entry_id || ""),
+      });
+      if (imagePreviewState === previewState) {
+        renderImageSemantic(result?.semantic || {});
+      }
+      await fetchEmojis();
+      showToast("已保存人工确认；图片或分类变化后会自动失效。", "success");
+    } catch (error) {
+      showToast(error?.message || String(error), "error", "确认失败");
+    } finally {
+      restoreButton(imagePreviewCategoryConfirmBtn);
+    }
+  }
+
   function setImagePreviewBusy(isBusy) {
     if (imagePreviewLoading) {
       imagePreviewLoading.classList.toggle("hidden", !isBusy);
@@ -656,6 +1589,7 @@ async function initApp() {
   }
 
   function closeImagePreview() {
+    setImageSemanticEditing(false);
     imagePreviewState = null;
     if (imagePreviewModalRoot) {
       imagePreviewModalRoot.classList.add("hidden");
@@ -664,6 +1598,7 @@ async function initApp() {
     if (imagePreviewImg) {
       imagePreviewImg.removeAttribute("src");
     }
+    renderImageSemantic(null, { loading: true });
     setImagePreviewBusy(false);
   }
 
@@ -672,10 +1607,17 @@ async function initApp() {
       return;
     }
 
-    imagePreviewState = { category, emoji };
+    const previewState = {
+      category,
+      emoji,
+      packId: String(activeManagePackId || managePackSelect?.value || ""),
+      semantic: null,
+    };
+    imagePreviewState = previewState;
     imagePreviewModalRoot.classList.remove("hidden");
     imagePreviewModalRoot.setAttribute("aria-hidden", "false");
     imagePreviewImg.alt = `表情包预览：${emoji}`;
+    renderImageSemantic(null, { loading: true });
     if (previewDataUrl) {
       imagePreviewImg.src = previewDataUrl;
     } else {
@@ -683,22 +1625,34 @@ async function initApp() {
     }
 
     setImagePreviewBusy(!previewDataUrl);
-    try {
-      if (!previewDataUrl) {
-        imagePreviewImg.src = await loadPreviewImage(
-          category,
-          emoji,
-          "preview",
-        );
-      }
-    } catch (error) {
+    const previewRequest = previewDataUrl
+      ? Promise.resolve(previewDataUrl)
+      : loadPreviewImage(category, emoji, "preview");
+    const semanticRequest = loadImageSemantic(category, emoji);
+    const [previewResult, semanticResult] = await Promise.allSettled([
+      previewRequest,
+      semanticRequest,
+    ]);
+    if (imagePreviewState !== previewState) {
+      return;
+    }
+    if (previewResult.status === "rejected") {
+      const error = previewResult.reason;
       console.error("打开大图预览失败:", error);
       closeImagePreview();
       showToast("图片预览加载失败，请稍后重试。", "error", "加载失败");
       return;
-    } finally {
-      setImagePreviewBusy(false);
     }
+    imagePreviewImg.src = previewResult.value;
+    if (semanticResult.status === "fulfilled") {
+      renderImageSemantic(semanticResult.value);
+    } else {
+      console.error("读取图片语义失败:", semanticResult.reason);
+      renderImageSemantic(null, {
+        error: "语义信息暂时读取失败，请稍后重新打开图片。",
+      });
+    }
+    setImagePreviewBusy(false);
 
     imagePreviewCloseBtn?.focus();
   }
@@ -708,18 +1662,24 @@ async function initApp() {
       return;
     }
 
+    const previewState = imagePreviewState;
     setImagePreviewBusy(true);
     try {
-      imagePreviewImg.src = await loadPreviewImage(
-        imagePreviewState.category,
-        imagePreviewState.emoji,
+      const originalDataUrl = await loadPreviewImage(
+        previewState.category,
+        previewState.emoji,
         "original",
       );
+      if (imagePreviewState === previewState) {
+        imagePreviewImg.src = originalDataUrl;
+      }
     } catch (error) {
       console.error("加载原图失败:", error);
       showToast("原图加载失败，可能文件过大或已不存在。", "error", "加载失败");
     } finally {
-      setImagePreviewBusy(false);
+      if (imagePreviewState === previewState) {
+        setImagePreviewBusy(false);
+      }
     }
   }
 
@@ -840,7 +1800,7 @@ async function initApp() {
     imgHostStatus = false,
   } = {}) {
     if (emojis) {
-      await fetchEmojis();
+      await Promise.all([fetchEmojis(), refreshManagePackSummaries()]);
     }
     if (syncStatus) {
       await checkSyncStatus(false);
@@ -2638,7 +3598,10 @@ async function initApp() {
 
       const syncParams = {};
       const currentManagedPackId = String(
-        managePackSelect?.value || managedPackIdFromUrl || "",
+        activeManagePackId ||
+          managePackSelect?.value ||
+          managedPackIdFromUrl ||
+          "",
       ).trim();
       if (currentManagedPackId) {
         syncParams.managed_pack_id = currentManagedPackId;
@@ -2676,7 +3639,29 @@ async function initApp() {
     const container = document.getElementById("emoji-categories");
     container.innerHTML = "";
 
-    const categoryEntries = Object.entries(emojiData || {});
+    const categoryEntries = Object.entries(emojiData || {})
+      .map(([category, emojis]) => {
+        const source = Array.isArray(emojis) ? emojis : [];
+        if (activeSemanticReviewFilter === "all") {
+          return [category, source];
+        }
+        return [
+          category,
+          source.filter((emoji) => {
+            const review = semanticReviewByPath.get(
+              semanticReviewKey(category, emoji),
+            );
+            if (activeSemanticReviewFilter === "reclassified") {
+              return Boolean(review?.reclassification_status);
+            }
+            return (
+              String(review?.category_review_status || "unchecked") ===
+              activeSemanticReviewFilter
+            );
+          }),
+        ];
+      })
+      .filter(([, emojis]) => activeSemanticReviewFilter === "all" || emojis.length);
     const totalEmojiCount = categoryEntries.reduce((total, [, emojis]) => {
       return total + (Array.isArray(emojis) ? emojis.length : 0);
     }, 0);
@@ -2684,7 +3669,9 @@ async function initApp() {
     if (!categoryEntries.length || totalEmojiCount === 0) {
       const hint = document.createElement("div");
       hint.className = "empty-pack-hint";
-      hint.innerHTML = `
+      hint.innerHTML =
+        activeSemanticReviewFilter === "all"
+          ? `
         <p class="empty-pack-hint-title">当前还没有表情包内容</p>
         <p class="empty-pack-hint-meta">你可以先新建分类上传表情，或前往资源广场下载官方包；也可直接一键安装官方包。</p>
         <div class="empty-pack-hint-actions">
@@ -2692,10 +3679,12 @@ async function initApp() {
           <button id="empty-hint-create-category" type="button">新建分类</button>
           <a id="empty-hint-open-catalog" href="#">前往资源广场下载</a>
         </div>
-      `;
+      `
+          : `<p class="empty-pack-hint-title">当前筛选条件下没有图片</p>
+             <p class="empty-pack-hint-meta">请选择其他分类审核状态，或切回“全部”。</p>`;
       container.appendChild(hint);
 
-      if (!emptyPackGuideShown) {
+      if (activeSemanticReviewFilter === "all" && !emptyPackGuideShown) {
         showToast(
           "当前是空表情包，建议前往资源广场下载官方包。",
           "info",
@@ -2823,6 +3812,48 @@ async function initApp() {
           emojiItem.dataset.loading = "false";
           emojiItem.tabIndex = 0;
 
+          const review = semanticReviewByPath.get(
+            semanticReviewKey(category, emoji),
+          );
+          if (semanticReviewAvailable && review) {
+            const reviewStatus = String(
+              review.category_review_status || "unchecked",
+            );
+            const reclassificationStatus = String(
+              review.reclassification_status || "",
+            );
+            emojiItem.classList.add(`review-${reviewStatus}`);
+            if (reclassificationStatus) {
+              emojiItem.classList.add("review-reclassified");
+            }
+            emojiItem.dataset.categoryReviewStatus = reviewStatus;
+
+            const semanticBadge = document.createElement("span");
+            semanticBadge.className = "emoji-item-semantic-badge";
+            const fixedCategoryTag = String(
+              review.category_tag || `category:${category}`,
+            );
+            semanticBadge.textContent = `${fixedCategoryTag} · ${
+              reclassificationStatus ? "自动重分类 · " : ""
+            }${semanticReviewLabel(reviewStatus)}`;
+            const reviewReason = String(
+              review.category_review_reason || "",
+            ).trim();
+            semanticBadge.title =
+              reclassificationStatus
+                ? `${semanticBadge.textContent}；${String(
+                    review.reclassified_from_category || "原分类",
+                  )} → ${String(
+                    review.reclassified_to_category || category,
+                  )}；原因：${String(
+                    review.reclassification_reason || reviewReason,
+                  )}`
+                : reviewStatus === "needs_review" && reviewReason
+                  ? `${semanticBadge.textContent}；原因：${reviewReason}`
+                  : semanticBadge.textContent;
+            emojiItem.appendChild(semanticBadge);
+          }
+
           const selectionIndicator = document.createElement("button");
           selectionIndicator.type = "button";
           selectionIndicator.className = "selection-indicator";
@@ -2845,11 +3876,13 @@ async function initApp() {
         });
       }
 
-      const { uploadBlock, fileInput } = createUploadDropzone(category);
+      if (activeSemanticReviewFilter === "all") {
+        const { uploadBlock, fileInput } = createUploadDropzone(category);
 
-      // 将文件输入框和上传块添加到表情包网格中
-      emojiGrid.appendChild(uploadBlock);
-      emojiGrid.appendChild(fileInput);
+        // 筛选状态下不显示上传入口，避免把新图片误认为筛选结果。
+        emojiGrid.appendChild(uploadBlock);
+        emojiGrid.appendChild(fileInput);
+      }
 
       categoryDiv.appendChild(emojiGrid);
       attachCategoryDropTarget(categoryDiv, category);
@@ -4283,6 +5316,42 @@ async function initApp() {
 
   await loadManagePackSwitcher();
   await fetchEmojis();
+  semanticReviewStats?.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-review-filter]");
+    if (!button) return;
+    activeSemanticReviewFilter = String(button.dataset.reviewFilter || "all");
+    updateSemanticReviewToolbar();
+    displayCategories(latestEmojiData, latestTagDescriptions);
+    updateSidebar(latestEmojiData, latestTagDescriptions);
+  });
+  imagePreviewCategoryConfirmBtn?.addEventListener("click", () => {
+    void confirmCurrentImageCategory();
+  });
+  imagePreviewEditBtn?.addEventListener("click", () => {
+    setImageSemanticEditing(true);
+  });
+  imagePreviewReviewEditBtn?.addEventListener("click", () => {
+    setImageSemanticEditing(true);
+  });
+  imagePreviewEditCancelBtn?.addEventListener("click", () => {
+    setImageSemanticEditing(false);
+  });
+  imagePreviewEditForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void saveCurrentImageSemantic({ updateVector: false });
+  });
+  imagePreviewSaveVectorBtn?.addEventListener("click", () => {
+    void saveCurrentImageSemantic({ updateVector: true });
+  });
+  imagePreviewReviewRewriteBtn?.addEventListener("click", () => {
+    void requestImageSemanticRevision();
+  });
+  imagePreviewTargetCategory?.addEventListener("change", () => {
+    updateImageSemanticMoveChoice();
+  });
+  imagePreviewRestoreAutoBtn?.addEventListener("click", () => {
+    void restoreCurrentImageAutoSemantic();
+  });
   switchManagePackBtn?.addEventListener("click", () => {
     void switchManagePack();
   });
