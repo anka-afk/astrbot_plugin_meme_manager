@@ -42,6 +42,171 @@ from ..config import MEMES_DIR, PLUGIN_DATA_DIR
 class EventHandlerMixin:
     """处理图片上传、LLM 响应解析、消息装饰等事件"""
 
+    @staticmethod
+    def _stringify_emotion_context_text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, list):
+            parts = [
+                EventHandlerMixin._stringify_emotion_context_text(item)
+                for item in value
+            ]
+            return " ".join(part for part in parts if part).strip()
+        if isinstance(value, dict):
+            for key in ("text", "content", "message", "body", "value"):
+                text = EventHandlerMixin._stringify_emotion_context_text(value.get(key))
+                if text:
+                    return text
+            try:
+                return json.dumps(value, ensure_ascii=False)
+            except Exception:
+                return ""
+        return str(value).strip()
+
+    @staticmethod
+    def _extract_emotion_context_role(item: Any) -> str:
+        if isinstance(item, dict):
+            role = str(item.get("role") or item.get("sender") or item.get("type") or "")
+            return role.strip().lower()
+        role = str(
+            getattr(item, "role", "")
+            or getattr(item, "sender", "")
+            or getattr(item, "type", "")
+            or ""
+        )
+        return role.strip().lower()
+
+    @classmethod
+    def _extract_emotion_context_content(cls, item: Any) -> str:
+        if isinstance(item, dict):
+            for key in ("content", "text", "message", "body"):
+                text = cls._stringify_emotion_context_text(item.get(key))
+                if text:
+                    return text
+            return ""
+        for attr in ("content", "text", "message", "body"):
+            text = cls._stringify_emotion_context_text(getattr(item, attr, None))
+            if text:
+                return text
+        return ""
+
+    def _collect_emotion_context_lines_from_request(
+        self, req: ProviderRequest
+    ) -> list[str]:
+        turns = int(getattr(self, "emotion_llm_context_turns", 0) or 0)
+        if turns <= 0:
+            return []
+
+        message_items: list[Any] = []
+        containers = [req, getattr(req, "conversation", None)]
+        candidate_attrs = (
+            "messages",
+            "history",
+            "chat_history",
+            "recent_messages",
+            "conversation_history",
+        )
+        for owner in containers:
+            if owner is None:
+                continue
+            for attr in candidate_attrs:
+                value = getattr(owner, attr, None)
+                if isinstance(value, (list, tuple)) and value:
+                    message_items = list(value)
+                    break
+            if message_items:
+                break
+
+        if not message_items:
+            return []
+
+        parsed_items: list[tuple[str, str]] = []
+        for item in message_items:
+            role = self._extract_emotion_context_role(item)
+            if role in {"system", "tool", "function"}:
+                continue
+            content = self._extract_emotion_context_content(item)
+            if not content:
+                continue
+            content = re.sub(r"\s+", " ", content).strip()
+            if not content:
+                continue
+            parsed_items.append((role, content[:300]))
+
+        if not parsed_items:
+            return []
+
+        max_messages = max(1, min(turns * 2, 20))
+        tail_items = parsed_items[-max_messages:]
+
+        role_map = {
+            "user": "用户",
+            "assistant": "助手",
+            "bot": "助手",
+            "ai": "助手",
+        }
+        return [
+            f"{role_map.get(role, '消息')}: {content}" for role, content in tail_items
+        ]
+
+    def _resolve_emotion_persona_prompt(self, event: AstrMessageEvent) -> str:
+        if not bool(getattr(self, "emotion_llm_inject_persona", False)):
+            return ""
+
+        persona_id = str(self._resolve_persona_id(event=event) or "").strip()
+        if not persona_id:
+            return ""
+
+        personas = getattr(self.context.provider_manager, "personas", []) or []
+        for index, persona in enumerate(personas):
+            if not isinstance(persona, dict):
+                continue
+            persona_key = str(self._get_persona_key(persona, index) or "").strip()
+            current_ids = {
+                str(persona.get("id") or "").strip(),
+                str(persona.get("name") or "").strip(),
+                persona_key,
+            }
+            if persona_id not in current_ids:
+                continue
+            base_prompt = str(self.persona_base_prompts.get(persona_key) or "").strip()
+            if not base_prompt:
+                base_prompt = self._strip_meme_prompt(str(persona.get("prompt") or ""))
+            base_prompt = re.sub(r"\s+", " ", base_prompt).strip()
+            if not base_prompt:
+                return ""
+            return f"当前人格设定（仅供选图参考）：{base_prompt[:800]}"
+        return ""
+
+    def _build_emotion_llm_injection_suffix(self, event: AstrMessageEvent) -> str:
+        sections: list[str] = []
+
+        persona_prompt = self._resolve_emotion_persona_prompt(event)
+        if persona_prompt:
+            sections.append(persona_prompt)
+
+        lines: list[str] = []
+        if hasattr(event, "get_extra"):
+            cached_lines = event.get_extra("meme_manager_emotion_context_lines")
+            if isinstance(cached_lines, list):
+                lines = [str(item).strip() for item in cached_lines if str(item).strip()]
+
+        if lines:
+            turns = int(getattr(self, "emotion_llm_context_turns", 0) or 0)
+            sections.append(
+                f"最近对话上下文（最近{turns}轮，按时间从旧到新）：\n"
+                + "\n".join(lines)
+            )
+
+        if not sections:
+            return ""
+        # 上下文与人格信息固定追加在提示词末尾，降低同类请求的 prompt 抖动。
+        return "\n\n" + "\n\n".join(sections)
+
     def _normalize_outgoing_message_components(self, message: Any) -> list:
         """将外部传入消息统一为组件列表。"""
         if isinstance(message, MessageChain):
@@ -348,6 +513,15 @@ class EventHandlerMixin:
         self._apply_request_prompt(req, event)
         if (
             self.emotion_llm_enabled
+            and str(event.get_extra("meme_manager_semantic_mode") or "") == "llm"
+            and hasattr(event, "set_extra")
+        ):
+            event.set_extra(
+                "meme_manager_emotion_context_lines",
+                self._collect_emotion_context_lines_from_request(req),
+            )
+        if (
+            self.emotion_llm_enabled
             and not str(self.emotion_llm_provider_id or "").strip()
             and str(event.get_extra("meme_manager_semantic_mode") or "") == "llm"
         ):
@@ -443,6 +617,7 @@ class EventHandlerMixin:
                         f"机器人可见回复：{visible_text}\n"
                         "候选图片："
                         + json.dumps(visible_candidates, ensure_ascii=False)
+                        + self._build_emotion_llm_injection_suffix(event)
                     )
                     llm_resp = await self.context.llm_generate(
                         chat_provider_id=provider_id, prompt=prompt
@@ -498,6 +673,7 @@ class EventHandlerMixin:
             "不要写分析过程，也不必严格区分画面人物主体。\n"
             '只输出JSON：{"query":"关键词1 关键词2 关键词3"}。\n'
             f"机器人可见回复：{visible_text}"
+            + self._build_emotion_llm_injection_suffix(event)
         )
         try:
             llm_resp = await self.context.llm_generate(

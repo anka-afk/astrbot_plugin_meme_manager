@@ -207,6 +207,23 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             default="",
             legacy_keys=("emotion_llm_provider_id",),
         )
+        emotion_llm_context_turns = self._read_config_value(
+            ("generation", "emotion", "llm", "context_turns"),
+            default=0,
+            legacy_keys=("emotion_llm_context_turns",),
+        )
+        try:
+            emotion_llm_context_turns = int(emotion_llm_context_turns)
+        except (TypeError, ValueError):
+            emotion_llm_context_turns = 0
+        self.emotion_llm_context_turns = max(0, min(20, emotion_llm_context_turns))
+        self.emotion_llm_inject_persona = bool(
+            self._read_config_value(
+                ("generation", "emotion", "llm", "inject_persona"),
+                default=False,
+                legacy_keys=("emotion_llm_inject_persona",),
+            )
+        )
         self.enable_mixed_message = self._read_config_value(
             ("generation", "message", "enable_mixed"),
             default=False,

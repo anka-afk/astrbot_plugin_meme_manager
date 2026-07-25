@@ -222,6 +222,23 @@
                 "default": "",
                 "hint": "无需单独配置：留空时会自动复用本轮当前对话的回复模型；填写后才使用指定模型。此模型同时负责新版语义候选选择和旧版分类标签选择",
                 "_special": "select_provider"
+              },
+              "context_turns": {
+                "description": "注入给情感模型的上下文轮数",
+                "type": "int",
+                "default": 0,
+                "hint": "0 表示不注入上下文；大于 0 时会把最近 N 轮对话追加到提示词末尾（用于提高缓存命中与语境一致性）",
+                "slider": {
+                  "min": 0,
+                  "max": 10,
+                  "step": 1
+                }
+              },
+              "inject_persona": {
+                "description": "向情感模型注入当前人格提示词",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后会把当前人格设定作为参考追加到提示词末尾，仅用于选图参考"
               }
             }
           },
