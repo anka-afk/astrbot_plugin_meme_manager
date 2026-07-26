@@ -104,6 +104,7 @@ class EventHandlerMixin:
         message_items: list[Any] = []
         containers = [req, getattr(req, "conversation", None)]
         candidate_attrs = (
+            "contexts",
             "messages",
             "history",
             "chat_history",
@@ -115,6 +116,11 @@ class EventHandlerMixin:
                 continue
             for attr in candidate_attrs:
                 value = getattr(owner, attr, None)
+                if isinstance(value, str) and value.strip():
+                    try:
+                        value = json.loads(value)
+                    except (TypeError, ValueError):
+                        value = None
                 if isinstance(value, (list, tuple)) and value:
                     message_items = list(value)
                     break
@@ -193,7 +199,9 @@ class EventHandlerMixin:
         if hasattr(event, "get_extra"):
             cached_lines = event.get_extra("meme_manager_emotion_context_lines")
             if isinstance(cached_lines, list):
-                lines = [str(item).strip() for item in cached_lines if str(item).strip()]
+                lines = [
+                    str(item).strip() for item in cached_lines if str(item).strip()
+                ]
 
         if lines:
             turns = int(getattr(self, "emotion_llm_context_turns", 0) or 0)
@@ -206,6 +214,107 @@ class EventHandlerMixin:
             return ""
         # 上下文与人格信息固定追加在提示词末尾，降低同类请求的 prompt 抖动。
         return "\n\n" + "\n\n".join(sections)
+
+    @staticmethod
+    def _parse_emotion_llm_selection(
+        raw_text: str, valid_emoticons: set[str]
+    ) -> list[str]:
+        """解析情感模型输出，并只保留当前图包中的真实标签。"""
+        text = str(raw_text or "").strip()
+        if not text or not valid_emoticons:
+            return []
+
+        data: Any = None
+        try:
+            data = json.loads(text)
+        except (TypeError, ValueError):
+            match = re.search(r"(?:\{[\s\S]*\}|\[[\s\S]*\])", text)
+            if match:
+                try:
+                    data = json.loads(match.group(0))
+                except (TypeError, ValueError):
+                    data = None
+
+        values: Any = []
+        if isinstance(data, dict):
+            for key in ("emotions", "emotion", "tags", "tag"):
+                if key in data:
+                    values = data.get(key)
+                    break
+        elif isinstance(data, list):
+            values = data
+
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, list):
+            return []
+
+        exact = {str(tag): str(tag) for tag in valid_emoticons}
+        folded = {tag.casefold(): tag for tag in exact}
+        selected: list[str] = []
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            candidate = value.strip().strip("`").strip()
+            if candidate.startswith("&&") and candidate.endswith("&&"):
+                candidate = candidate[2:-2].strip()
+            resolved = exact.get(candidate) or folded.get(candidate.casefold())
+            if resolved and resolved not in selected:
+                selected.append(resolved)
+        return selected
+
+    def _filter_emotion_selection(self, emotions: list[str]) -> list[str]:
+        """去重标签，并仅在严格数量开关开启时执行裁剪。"""
+        try:
+            limit = max(0, int(self.max_emotions_per_message))
+        except (TypeError, ValueError):
+            limit = 2
+        strict_limit = bool(getattr(self, "strict_max_emotions_per_message", True))
+
+        seen: set[str] = set()
+        filtered: list[str] = []
+        for emotion in emotions:
+            if not isinstance(emotion, str) or not emotion or emotion in seen:
+                continue
+            if strict_limit and len(filtered) >= limit:
+                break
+            seen.add(emotion)
+            filtered.append(emotion)
+        return filtered
+
+    def _resolve_emotion_llm_model(self, event: AstrMessageEvent) -> str | None:
+        """独立情感模型使用自身默认模型；回退回复模型时保留本轮模型覆盖。"""
+        if str(self.emotion_llm_provider_id or "").strip():
+            return None
+
+        cached_model = str(event.get_extra("meme_manager_reply_model") or "").strip()
+        if cached_model:
+            return cached_model
+
+        provider_request = event.get_extra("provider_request")
+        request_model = str(getattr(provider_request, "model", "") or "").strip()
+        selected_model = str(event.get_extra("selected_model") or "").strip()
+        model = request_model or selected_model
+        if model:
+            event.set_extra("meme_manager_reply_model", model)
+        return model or None
+
+    async def _emotion_llm_generate(
+        self, event: AstrMessageEvent, prompt: str
+    ) -> LLMResponse | None:
+        """使用独立情感模型，留空时精确复用本轮回复 Provider 与模型。"""
+        provider_id = await self._resolve_emotion_llm_provider_id(event)
+        if not provider_id:
+            return None
+
+        kwargs: dict[str, Any] = {
+            "chat_provider_id": provider_id,
+            "prompt": prompt,
+        }
+        model = self._resolve_emotion_llm_model(event)
+        if model:
+            kwargs["model"] = model
+        return await self.context.llm_generate(**kwargs)
 
     def _normalize_outgoing_message_components(self, message: Any) -> list:
         """将外部传入消息统一为组件列表。"""
@@ -353,16 +462,8 @@ class EventHandlerMixin:
             else:
                 cleaned_components.append(component)
 
-        # 去重并应用数量限制
-        seen = set()
-        filtered_emotions: list[str] = []
-        for emotion in found_emotions:
-            if emotion in seen:
-                continue
-            seen.add(emotion)
-            filtered_emotions.append(emotion)
-            if len(filtered_emotions) >= self.max_emotions_per_message:
-                break
+        # 去重；严格数量限制由兼容配置决定。
+        filtered_emotions = self._filter_emotion_selection(found_emotions)
 
         emotion_images, temp_files = self._build_emotion_images_for_event(
             event,
@@ -511,26 +612,25 @@ class EventHandlerMixin:
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
         self._apply_request_prompt(req, event)
-        if (
-            self.emotion_llm_enabled
-            and str(event.get_extra("meme_manager_semantic_mode") or "") == "llm"
-            and hasattr(event, "set_extra")
-        ):
+        if not self.emotion_llm_enabled:
+            return
+
+        if hasattr(event, "set_extra"):
             event.set_extra(
                 "meme_manager_emotion_context_lines",
                 self._collect_emotion_context_lines_from_request(req),
             )
-        if (
-            self.emotion_llm_enabled
-            and not str(self.emotion_llm_provider_id or "").strip()
-            and str(event.get_extra("meme_manager_semantic_mode") or "") == "llm"
-        ):
-            # 在回复请求发出前记录本轮实际选用的回复 Provider。
-            # 后续情感选图直接复用，避免把“留空”解释成没有可用模型。
+            reply_model = str(getattr(req, "model", "") or "").strip()
+            if reply_model:
+                event.set_extra("meme_manager_reply_model", reply_model)
+
+        if not str(self.emotion_llm_provider_id or "").strip():
+            # AstrBot 的本轮 Provider/模型覆盖只存在于事件和 ProviderRequest 中。
+            # 必须在回复请求发出前缓存，不能仅查询会话默认 Provider。
             await self._resolve_emotion_llm_provider_id(event)
 
     async def _resolve_emotion_llm_provider_id(self, event: AstrMessageEvent) -> str:
-        """返回情感辅助模型；配置留空时复用本轮回复模型。"""
+        """返回情感辅助模型；配置留空时复用本轮真实回复 Provider。"""
         configured_id = str(self.emotion_llm_provider_id or "").strip()
         if configured_id:
             return configured_id
@@ -538,6 +638,21 @@ class EventHandlerMixin:
         cached_id = str(event.get_extra("meme_manager_reply_provider_id") or "").strip()
         if cached_id:
             return cached_id
+
+        selected_id = str(event.get_extra("selected_provider") or "").strip()
+        if selected_id:
+            get_provider = getattr(self.context, "get_provider_by_id", None)
+            if not callable(get_provider) or get_provider(selected_id) is not None:
+                event.set_extra("meme_manager_reply_provider_id", selected_id)
+                logger.info(
+                    "[meme_manager] 情感模型未单独配置，本轮复用事件指定回复模型: %s",
+                    selected_id,
+                )
+                return selected_id
+            logger.warning(
+                "[meme_manager] 事件指定的回复模型不存在，回退会话模型: %s",
+                selected_id,
+            )
 
         try:
             provider_id = str(
@@ -559,7 +674,7 @@ class EventHandlerMixin:
 
         event.set_extra("meme_manager_reply_provider_id", provider_id)
         logger.info(
-            "[meme_manager] 情感模型未单独配置，本轮复用回复模型: %s",
+            "[meme_manager] 情感模型未单独配置，本轮复用会话回复模型: %s",
             provider_id,
         )
         return provider_id
@@ -598,51 +713,43 @@ class EventHandlerMixin:
             remember_candidates(event, records)
             event.set_extra("meme_manager_semantic_query", query)
             if candidates:
-                provider_id = await self._resolve_emotion_llm_provider_id(event)
-                if provider_id:
-                    visible_candidates = [
-                        {
-                            "id": item.get("id"),
-                            "caption": item.get("caption", ""),
-                            "tags": item.get("tags") or [],
-                        }
-                        for item in candidates
-                    ]
-                    prompt = (
-                        "你是表情图片选择助手。请根据机器人准备发送的回复，从候选中最多选择一张最合适的图片；"
-                        "不适合使用表情时必须留空。只能返回候选里真实存在的ID。\n"
-                        "只输出JSON，格式为："
-                        '{"meme_id":"meme:候选ID"}；不使用则返回'
-                        '{"meme_id":""}。\n'
-                        f"机器人可见回复：{visible_text}\n"
-                        "候选图片："
-                        + json.dumps(visible_candidates, ensure_ascii=False)
-                        + self._build_emotion_llm_injection_suffix(event)
-                    )
-                    llm_resp = await self.context.llm_generate(
-                        chat_provider_id=provider_id, prompt=prompt
-                    )
-                    raw_text = str(
-                        getattr(llm_resp, "completion_text", "") or ""
-                    ).strip()
-                    data = None
-                    try:
-                        data = json.loads(raw_text)
-                    except (TypeError, ValueError):
-                        match = re.search(r"\{[\s\S]*\}", raw_text)
-                        if match:
-                            try:
-                                data = json.loads(match.group(0))
-                            except (TypeError, ValueError):
-                                data = None
-                    if not isinstance(data, dict):
-                        data = {}
-                    requested_id = str(
-                        data.get("meme_id") or data.get("id") or ""
-                    ).strip()
-                    valid_ids = {str(item.get("id") or "") for item in candidates}
-                    if requested_id in valid_ids:
-                        selected_id = requested_id
+                visible_candidates = [
+                    {
+                        "id": item.get("id"),
+                        "caption": item.get("caption", ""),
+                        "tags": item.get("tags") or [],
+                    }
+                    for item in candidates
+                ]
+                prompt = (
+                    "你是表情图片选择助手。请根据机器人准备发送的回复，从候选中最多选择一张最合适的图片；"
+                    "不适合使用表情时必须留空。只能返回候选里真实存在的ID。\n"
+                    "只输出JSON，格式为："
+                    '{"meme_id":"meme:候选ID"}；不使用则返回'
+                    '{"meme_id":""}。\n'
+                    f"机器人可见回复：{visible_text}\n"
+                    "候选图片："
+                    + json.dumps(visible_candidates, ensure_ascii=False)
+                    + self._build_emotion_llm_injection_suffix(event)
+                )
+                llm_resp = await self._emotion_llm_generate(event, prompt)
+                raw_text = str(getattr(llm_resp, "completion_text", "") or "").strip()
+                data = None
+                try:
+                    data = json.loads(raw_text)
+                except (TypeError, ValueError):
+                    match = re.search(r"\{[\s\S]*\}", raw_text)
+                    if match:
+                        try:
+                            data = json.loads(match.group(0))
+                        except (TypeError, ValueError):
+                            data = None
+                if not isinstance(data, dict):
+                    data = {}
+                requested_id = str(data.get("meme_id") or data.get("id") or "").strip()
+                valid_ids = {str(item.get("id") or "") for item in candidates}
+                if requested_id in valid_ids:
+                    selected_id = requested_id
         except Exception as exc:
             logger.error(
                 "[meme_manager] Emotion-assisted semantic search failed: %s",
@@ -676,10 +783,7 @@ class EventHandlerMixin:
             + self._build_emotion_llm_injection_suffix(event)
         )
         try:
-            llm_resp = await self.context.llm_generate(
-                chat_provider_id=provider_id,
-                prompt=prompt,
-            )
+            llm_resp = await self._emotion_llm_generate(event, prompt)
             raw_text = str(getattr(llm_resp, "completion_text", "") or "").strip()
             query = parse_semantic_query_result(raw_text, fallback)
         except Exception as exc:
@@ -901,55 +1005,45 @@ class EventHandlerMixin:
 
         if self.emotion_llm_enabled:
             try:
-                provider_id = await self._resolve_emotion_llm_provider_id(event)
-                if provider_id:
-                    valid_list = sorted(valid_emoticons)
-                    prompt = (
-                        "你是表情标签选择器，只能从给定标签中选择。\n"
-                        "请基于文本语义判断需要的表情，返回JSON格式："
-                        '{"emotions":["tag1","tag2"]}。\n'
-                        "只输出JSON，不要解释。\n"
-                        f"可用标签: {', '.join(valid_list)}\n"
-                        f"文本: {clean_text}"
+                category_catalog = [
+                    {
+                        "tag": tag,
+                        "description": str(active_category_mapping.get(tag) or ""),
+                    }
+                    for tag in sorted(valid_emoticons)
+                ]
+                prompt = (
+                    "你是表情标签选择器，只能从给定标签中选择。\n"
+                    f"根据机器人准备发送的可见回复选择0到{self.max_emotions_per_message}个最贴切标签。"
+                    "不适合使用表情时返回空列表。\n"
+                    '只输出JSON，格式为：{"emotions":["tag1","tag2"]}。不要解释。\n'
+                    "可用标签及使用场景："
+                    + json.dumps(category_catalog, ensure_ascii=False)
+                    + f"\n机器人可见回复：{clean_text}"
+                    + self._build_emotion_llm_injection_suffix(event)
+                )
+                llm_resp = await self._emotion_llm_generate(event, prompt)
+                raw_text = str(getattr(llm_resp, "completion_text", "") or "").strip()
+                logger.debug(
+                    "[meme_manager] 情感标签模型原始输出: %s",
+                    raw_text[:500],
+                )
+                selected_emotions = self._parse_emotion_llm_selection(
+                    raw_text, valid_emoticons
+                )
+                if selected_emotions:
+                    found_emotions.extend(selected_emotions)
+                    logger.info(
+                        "[meme_manager] 情感模型选择标签: %s",
+                        selected_emotions,
                     )
-                    llm_resp = await self.context.llm_generate(
-                        chat_provider_id=provider_id, prompt=prompt
-                    )
-                    if llm_resp and llm_resp.completion_text:
-                        raw_text = llm_resp.completion_text.strip()
-                        data = None
-                        try:
-                            data = json.loads(raw_text)
-                        except (TypeError, ValueError):
-                            match = re.search(r"\{[\s\S]*\}", raw_text)
-                            if match:
-                                try:
-                                    data = json.loads(match.group(0))
-                                except (TypeError, ValueError):
-                                    data = None
-                        if isinstance(data, dict):
-                            emotions = data.get("emotions")
-                            if isinstance(emotions, list):
-                                for emo in emotions:
-                                    if isinstance(emo, str) and emo in valid_emoticons:
-                                        found_emotions.append(emo)
-                            elif (
-                                isinstance(emotions, str)
-                                and emotions in valid_emoticons
-                            ):
-                                found_emotions.append(emotions)
+                else:
+                    logger.info("[meme_manager] 情感模型未选择有效标签")
             except Exception as e:
                 logger.error(f"[meme_manager] 情感模型调用失败: {e}")
 
-        # 去重并应用数量限制
-        seen = set()
-        filtered_emotions = []
-        for emo in found_emotions:
-            if emo not in seen:
-                seen.add(emo)
-                filtered_emotions.append(emo)
-            if len(filtered_emotions) >= self.max_emotions_per_message:
-                break
+        # 去重；严格数量限制由兼容配置决定。
+        filtered_emotions = self._filter_emotion_selection(found_emotions)
 
         event.set_extra("found_emotions", filtered_emotions)
         logger.info(f"[meme_manager] 去重后的最终表情列表: {filtered_emotions}")
