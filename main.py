@@ -848,6 +848,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             event.set_extra("meme_manager_semantic_default_id", "")
             event.set_extra("meme_manager_semantic_response_processed", False)
             event.set_extra("meme_manager_reply_provider_id", "")
+            event.set_extra("meme_manager_reply_model", "")
         if semantic_mode == "tool":
             req.system_prompt = (
                 self._strip_meme_prompt(req.system_prompt)
