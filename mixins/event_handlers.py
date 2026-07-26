@@ -263,6 +263,25 @@ class EventHandlerMixin:
                 selected.append(resolved)
         return selected
 
+    def _filter_emotion_selection(self, emotions: list[str]) -> list[str]:
+        """去重标签，并仅在严格数量开关开启时执行裁剪。"""
+        try:
+            limit = max(0, int(self.max_emotions_per_message))
+        except (TypeError, ValueError):
+            limit = 2
+        strict_limit = bool(getattr(self, "strict_max_emotions_per_message", True))
+
+        seen: set[str] = set()
+        filtered: list[str] = []
+        for emotion in emotions:
+            if not isinstance(emotion, str) or not emotion or emotion in seen:
+                continue
+            if strict_limit and len(filtered) >= limit:
+                break
+            seen.add(emotion)
+            filtered.append(emotion)
+        return filtered
+
     def _resolve_emotion_llm_model(self, event: AstrMessageEvent) -> str | None:
         """独立情感模型使用自身默认模型；回退回复模型时保留本轮模型覆盖。"""
         if str(self.emotion_llm_provider_id or "").strip():
@@ -443,16 +462,8 @@ class EventHandlerMixin:
             else:
                 cleaned_components.append(component)
 
-        # 去重并应用数量限制
-        seen = set()
-        filtered_emotions: list[str] = []
-        for emotion in found_emotions:
-            if emotion in seen:
-                continue
-            seen.add(emotion)
-            filtered_emotions.append(emotion)
-            if len(filtered_emotions) >= self.max_emotions_per_message:
-                break
+        # 去重；严格数量限制由兼容配置决定。
+        filtered_emotions = self._filter_emotion_selection(found_emotions)
 
         emotion_images, temp_files = self._build_emotion_images_for_event(
             event,
@@ -1004,7 +1015,7 @@ class EventHandlerMixin:
                 prompt = (
                     "你是表情标签选择器，只能从给定标签中选择。\n"
                     f"根据机器人准备发送的可见回复选择0到{self.max_emotions_per_message}个最贴切标签。"
-                    "若存在合适标签，优先选择；只有全部明显不匹配时才返回空列表。\n"
+                    "不适合使用表情时返回空列表。\n"
                     '只输出JSON，格式为：{"emotions":["tag1","tag2"]}。不要解释。\n'
                     "可用标签及使用场景："
                     + json.dumps(category_catalog, ensure_ascii=False)
@@ -1031,15 +1042,8 @@ class EventHandlerMixin:
             except Exception as e:
                 logger.error(f"[meme_manager] 情感模型调用失败: {e}")
 
-        # 去重并应用数量限制
-        seen = set()
-        filtered_emotions = []
-        for emo in found_emotions:
-            if emo not in seen:
-                seen.add(emo)
-                filtered_emotions.append(emo)
-            if len(filtered_emotions) >= self.max_emotions_per_message:
-                break
+        # 去重；严格数量限制由兼容配置决定。
+        filtered_emotions = self._filter_emotion_selection(found_emotions)
 
         event.set_extra("found_emotions", filtered_emotions)
         logger.info(f"[meme_manager] 去重后的最终表情列表: {filtered_emotions}")
