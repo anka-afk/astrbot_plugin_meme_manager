@@ -2582,12 +2582,22 @@ async function initApp() {
   }
 
   function toggleConsolePanel() {
-    setConsoleVisible(!isConsoleVisible());
+    const visible = !isConsoleVisible();
+    if (visible && isCompactViewport()) {
+      // 移动端抽屉互斥：打开控制台时先收起目录
+      setDirectoryVisible(false);
+    }
+    setConsoleVisible(visible);
     updatePanelToggleState();
   }
 
   function toggleDirectoryPanel() {
-    setDirectoryVisible(!isDirectoryVisible());
+    const visible = !isDirectoryVisible();
+    if (visible && isCompactViewport()) {
+      // 移动端抽屉互斥：打开目录时先收起控制台
+      setConsoleVisible(false);
+    }
+    setDirectoryVisible(visible);
     updatePanelToggleState();
   }
 
@@ -5232,6 +5242,26 @@ async function initApp() {
 
   if (sidebarBackdrop) {
     sidebarBackdrop.addEventListener("click", () => {
+      closeAllPanels();
+      updatePanelToggleState();
+    });
+  }
+
+  document.querySelectorAll(".panel-close-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      closeAllPanels();
+      updatePanelToggleState();
+    });
+  });
+
+  const sidebarListElement = document.getElementById("sidebar-list");
+  if (sidebarListElement) {
+    sidebarListElement.addEventListener("click", (event) => {
+      const link = event.target.closest("a");
+      if (!link || !isCompactViewport()) {
+        return;
+      }
+      // 移动端：选中目录项后自动收起抽屉，让正文露出来
       closeAllPanels();
       updatePanelToggleState();
     });

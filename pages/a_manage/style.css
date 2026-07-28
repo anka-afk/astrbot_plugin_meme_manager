@@ -2091,6 +2091,23 @@ body.app-page {
   color: #0f766e;
 }
 
+.directory-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+#sidebar .directory-panel-header h2 {
+  margin-bottom: 0;
+}
+
+/* 抽屉关闭按钮：桌面端隐藏，仅在移动端抽屉模式下显示 */
+.panel-close-btn {
+  display: none;
+}
+
 body.panel-console-hidden .container {
   grid-template-columns: 0 minmax(180px, var(--directory-width)) minmax(0, 1fr);
 }
@@ -2452,6 +2469,15 @@ body.drag-session-active {
   overscroll-behavior: none;
 }
 
+@keyframes sidebar-backdrop-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 @media (max-width: 960px) {
   body.app-page {
     padding: 12px;
@@ -2469,24 +2495,32 @@ body.drag-session-active {
     grid-template-columns: 1fr;
   }
 
-  .left-panel {
+  /* 移动端抽屉：两个面板统一为左侧全高浮层，自身滚动，不再挤压正文 */
+  .left-panel,
+  .directory-panel {
     position: fixed;
-    inset: 12px auto auto 12px;
+    top: 0;
+    bottom: 0;
+    left: 0;
     z-index: 9997;
-    width: min(88vw, 340px);
-    max-height: calc(58svh - 18px);
-    transform: translateX(calc(-100% - 24px));
-    transition: transform 0.22s ease;
+    width: min(86vw, 340px);
+    max-height: none;
+    border-radius: 0 24px 24px 0;
+    padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(calc(-100% - 32px));
+    visibility: hidden;
+    transition:
+      transform 0.26s cubic-bezier(0.32, 0.72, 0, 1),
+      visibility 0s linear 0.26s;
+  }
+
+  .left-panel {
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   .directory-panel {
-    position: fixed;
-    inset: auto auto 12px 12px;
-    z-index: 9997;
-    width: min(88vw, 340px);
-    max-height: calc(42svh - 18px);
-    transform: translateX(calc(-100% - 24px));
-    transition: transform 0.22s ease;
+    overflow: hidden;
   }
 
   body.panel-console-open,
@@ -2498,6 +2532,53 @@ body.drag-session-active {
   body.panel-directory-open .directory-panel {
     transform: translateX(0);
     opacity: 1;
+    visibility: visible;
+    box-shadow: 24px 0 60px rgba(15, 23, 42, 0.16);
+    transition:
+      transform 0.26s cubic-bezier(0.32, 0.72, 0, 1),
+      box-shadow 0.26s ease;
+  }
+
+  .panel-close-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    margin-left: auto;
+    padding: 0;
+    gap: 0;
+    border: 1px solid rgba(214, 229, 225, 0.94);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.92);
+    color: var(--ui-muted);
+    font-size: 15px;
+    cursor: pointer;
+    transition:
+      background 0.18s ease,
+      color 0.18s ease,
+      transform 0.12s ease;
+  }
+
+  .panel-close-btn i {
+    margin: 0;
+  }
+
+  .panel-close-btn:hover {
+    background: var(--ui-brand-soft, #e7f5ef);
+    color: var(--ui-brand-strong, #176d51);
+    filter: none;
+    transform: none;
+    box-shadow: none;
+  }
+
+  .panel-close-btn:active {
+    transform: scale(0.92);
+  }
+
+  .sidebar-backdrop:not(.hidden) {
+    animation: sidebar-backdrop-fade 0.22s ease;
   }
 
   #content {
@@ -2957,7 +3038,7 @@ button.danger,
   color: #1f2937;
 }
 
-/* Mobile sidebar behavior: keep control panel right below the sidebar trigger */
+/* 移动端页头与操作区排版（面板抽屉规则见上方 960px 断点块） */
 @media (max-width: 960px) {
   .page-header {
     display: block;
@@ -2981,40 +3062,8 @@ button.danger,
     gap: 12px;
   }
 
-  .left-panel,
-  .directory-panel {
-    position: static;
-    inset: auto;
-    width: 100%;
-    max-height: none;
-    transform: none;
-    transition: none;
-    box-shadow: var(--ui-shadow-sm);
-  }
-
-  .left-panel {
-    display: none;
-    margin-top: 0;
-  }
-
-  .directory-panel {
-    display: none;
-  }
-
   .category-actions {
     flex-wrap: wrap;
-  }
-
-  body.panel-console-open .left-panel {
-    display: flex;
-  }
-
-  body.panel-directory-open .directory-panel {
-    display: flex;
-  }
-
-  .sidebar-backdrop {
-    display: none;
   }
 }
 
@@ -4289,5 +4338,21 @@ button.compact {
   .left-panel .pack-transfer-panel {
     width: 100%;
     padding: 12px;
+  }
+}
+
+/* 减弱动效偏好：关闭抽屉滑动与遮罩淡入（置于文件末尾以保证级联胜出） */
+@media (prefers-reduced-motion: reduce) {
+  .left-panel,
+  .directory-panel,
+  .sidebar-backdrop,
+  body.panel-console-open .left-panel,
+  body.panel-directory-open .directory-panel {
+    transition: none;
+    animation: none;
+  }
+
+  .sidebar-backdrop:not(.hidden) {
+    animation: none;
   }
 }
