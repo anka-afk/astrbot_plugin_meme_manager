@@ -1545,6 +1545,7 @@ button:disabled {
   background: rgba(15, 23, 42, 0.45);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
+  overscroll-behavior: contain;
 }
 
 .image-preview-modal {
@@ -3225,12 +3226,22 @@ button.danger,
   max-height: 86svh;
 }
 
+/* 模态弹窗期间锁定页面滚动，防止背景滚动穿透（iOS 需 fixed body 方案） */
+body.page-scroll-locked {
+  position: fixed;
+  left: 0;
+  right: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
 .image-preview-semantic {
   flex: 0 0 min(420px, 38vw);
   width: min(420px, 38vw);
   max-height: 88svh;
   padding: 20px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid rgba(148, 163, 184, 0.25);
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.97);
