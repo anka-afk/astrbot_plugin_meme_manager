@@ -301,12 +301,14 @@ button:disabled {
 }
 .metric-group-content {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  /* auto-fit 轨道数跟随容器宽度，被长内容撑宽后溢出会自我维持，改 auto-fill 并封死轨道宽度 */
+  grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr));
   gap: 10px;
   padding: 0 10px 10px;
 }
 .metric {
   min-height: 78px;
+  min-width: 0;
   padding: 13px;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -317,6 +319,7 @@ button:disabled {
   margin-bottom: 7px;
   color: var(--muted);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 .metric strong {
   display: block;
@@ -365,6 +368,7 @@ button:disabled {
   background: #ede9fe;
   color: #5b21b6;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 .record-preview-button {
   width: 92px;
@@ -517,6 +521,12 @@ button:disabled {
   }
   .layout {
     padding: 8px 14px 24px;
+  }
+  /* 兑底：任务状态/记录面板内任何超宽内容只允许面板内横向滚动，不撑出页面滚动条 */
+  .status-panel,
+  .records-panel {
+    max-width: 100%;
+    overflow-x: auto;
   }
   .panel-header {
     flex-direction: column;
