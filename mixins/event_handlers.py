@@ -36,6 +36,10 @@ from ..backend.semantic_query import (
     validate_selected_id,
 )
 from ..backend.semantic_storage import invalidate_semantic_metadata
+from ..backend.text_safety import (
+    find_unprotected_word_spans,
+    strip_internal_image_ref_lines,
+)
 from ..config import MEMES_DIR, PLUGIN_DATA_DIR
 
 
@@ -325,6 +329,12 @@ class EventHandlerMixin:
         if isinstance(message, str):
             return [Plain(message)]
         raise TypeError("message 必须是 str、list 或 MessageChain")
+
+    def _clean_outgoing_plain_text(self, text: str) -> str:
+        cleaned = strip_internal_image_ref_lines(text or "")
+        if self.content_cleanup_rule:
+            cleaned = re.sub(self.content_cleanup_rule, "", cleaned)
+        return cleaned
 
     def _extract_marked_emotions_from_text(
         self,
@@ -803,6 +813,11 @@ class EventHandlerMixin:
             return
 
         text = response.completion_text
+        cleaned_text = strip_internal_image_ref_lines(text)
+        if cleaned_text != text:
+            response.completion_text = cleaned_text
+            text = cleaned_text
+            logger.debug("[meme_manager] Removed internal image references from reply")
         # Semantic packs use one exclusive route: reply-model Tool calls or
         # emotion-assistant candidate selection. Neither uses legacy guessing.
         semantic_mode = (
@@ -979,27 +994,28 @@ class EventHandlerMixin:
         ):
             # 查找所有可能的表情词
             for emotion in valid_emoticons:
-                # 使用单词边界确保不是其他单词的一部分
-                pattern = r"\b(" + re.escape(emotion) + r")\b"
-                for match in re.finditer(pattern, clean_text):
-                    word = match.group(1)
-                    position = match.start()
+                scan_text = clean_text
+                accepted_spans = []
+                for start, end in find_unprotected_word_spans(scan_text, emotion):
+                    word = scan_text[start:end]
+                    position = start
 
                     # 跳过thinking标签内的内容
-                    if self._is_position_in_thinking_tags(clean_text, position):
+                    if self._is_position_in_thinking_tags(scan_text, position):
                         continue
 
                     # 判断是否可能是表情而非英文单词
                     if self._is_likely_emotion(
-                        word, clean_text, position, valid_emoticons
+                        word, scan_text, position, valid_emoticons
                     ):
                         # 添加到表情列表
                         found_emotions.append(word)
                         loose_emotions.append(word)
-                        # 替换文本中的表情词
-                        clean_text = (
-                            clean_text[:position] + clean_text[position + len(word) :]
-                        )
+                        accepted_spans.append((start, end))
+
+                # 逆序删除，避免同一词多次命中时索引漂移。
+                for start, end in reversed(accepted_spans):
+                    clean_text = clean_text[:start] + clean_text[end:]
 
         logger.debug(f"[meme_manager] 松散匹配阶段找到的表情: {loose_emotions}")
 
@@ -1127,12 +1143,6 @@ class EventHandlerMixin:
         if not result:
             return
 
-        # 流式传输兼容处理
-        if result.result_content_type == ResultContentType.STREAMING_FINISH:
-            if self.streaming_compatibility or event.get_platform_name() == "webchat":
-                await self._send_memes_streaming(event)
-            return
-
         try:
             # 第一步：获取并清理原始消息链中的文本
             original_chain = result.chain
@@ -1142,11 +1152,7 @@ class EventHandlerMixin:
                 # 处理不同类型的消息链
                 if isinstance(original_chain, str):
                     # 字符串类型：清理后转为 Plain 组件
-                    cleaned = (
-                        re.sub(self.content_cleanup_rule, "", original_chain)
-                        if self.content_cleanup_rule
-                        else original_chain
-                    )
+                    cleaned = self._clean_outgoing_plain_text(original_chain)
                     if cleaned.strip():
                         cleaned_components.append(Plain(cleaned.strip()))
 
@@ -1154,11 +1160,7 @@ class EventHandlerMixin:
                     # MessageChain 类型：遍历清理 Plain 组件
                     for component in original_chain.chain:
                         if isinstance(component, Plain):
-                            cleaned = (
-                                re.sub(self.content_cleanup_rule, "", component.text)
-                                if self.content_cleanup_rule
-                                else component.text
-                            )
+                            cleaned = self._clean_outgoing_plain_text(component.text)
                             if cleaned.strip():
                                 cleaned_components.append(Plain(cleaned.strip()))
                         else:
@@ -1169,15 +1171,19 @@ class EventHandlerMixin:
                     # 列表类型：遍历清理 Plain 组件
                     for component in original_chain:
                         if isinstance(component, Plain):
-                            cleaned = (
-                                re.sub(self.content_cleanup_rule, "", component.text)
-                                if self.content_cleanup_rule
-                                else component.text
-                            )
+                            cleaned = self._clean_outgoing_plain_text(component.text)
                             if cleaned.strip():
                                 cleaned_components.append(Plain(cleaned.strip()))
                         else:
                             cleaned_components.append(component)
+
+            # 流式结果同样需要最后一道 Plain 文本清理。
+            if result.result_content_type == ResultContentType.STREAMING_FINISH:
+                if isinstance(original_chain, (str, MessageChain, list)):
+                    result.chain = cleaned_components
+                if self.streaming_compatibility or event.get_platform_name() == "webchat":
+                    await self._send_memes_streaming(event)
+                return
 
             # 第二步：语义模式按候选 ID 精确取图，不走概率、分类目录和 random.choice。
             semantic_selected_ids = (
@@ -1290,30 +1296,9 @@ class EventHandlerMixin:
             event.set_extra("meme_manager_semantic_selected_ids", None)
 
             # 第三步：更新消息链
-            if cleaned_components:
-                # 直接使用组件列表，不要包装在 MessageChain 中
+            if isinstance(original_chain, (str, MessageChain, list)):
+                # 始终写回安全处理后的组件列表，空列表也不能回退到原始脏文本。
                 result.chain = cleaned_components
-            elif original_chain:
-                # 如果原本有内容但清理后为空，也要更新（避免发送带标签的空消息）
-                # 进行最后的防御性清理
-                if isinstance(original_chain, str):
-                    final_cleaned = re.sub(
-                        r"&&+", "", original_chain
-                    )  # 清除残留的&&符号
-                    if final_cleaned.strip():
-                        result.chain = [Plain(final_cleaned.strip())]
-                elif isinstance(original_chain, MessageChain):
-                    # 对 MessageChain 中的每个 Plain 组件进行最后清理
-                    final_components = []
-                    for component in original_chain.chain:
-                        if isinstance(component, Plain):
-                            final_cleaned = re.sub(r"&&+", "", component.text)
-                            if final_cleaned.strip():
-                                final_components.append(Plain(final_cleaned.strip()))
-                        else:
-                            final_components.append(component)
-                    if final_components:
-                        result.chain = final_components
 
             logger.debug("[meme_manager] on_decorating_result 处理完成")
 
