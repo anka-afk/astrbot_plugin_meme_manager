@@ -599,32 +599,13 @@ button:disabled {
 
 .log-item.error {
   border-left-color: var(--danger);
-  background: #fff3f1;
-}
-
-@media (max-width: 960px) {
-  .format-guide {
-    grid-template-columns: 1fr;
-  }
-
-  .triple-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .page-header {
-    flex-direction: column;
-  }
-}
-
-.log-item.error {
-  border-left-color: var(--danger);
   background: #fff5f4;
 }
 
+/* 移动端布局：合并原 960/980 两个重复断点块，清除重复规则 */
 @media (max-width: 980px) {
-  .manual-source,
-  .catalog-list {
-    grid-column: span 12;
+  .format-guide {
+    grid-template-columns: 1fr;
   }
 
   .triple-grid {

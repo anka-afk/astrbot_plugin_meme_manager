@@ -531,6 +531,10 @@ button:disabled {
   .concurrency-field {
     width: 100%;
   }
+}
+
+/* record 四列展开约需 814px 视口，提前折叠避免 iPad 竖屏（768px）横向溢出 */
+@media (max-width: 820px) {
   .record {
     grid-template-columns: 1fr;
     gap: 8px;
