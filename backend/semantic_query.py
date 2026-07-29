@@ -27,21 +27,20 @@ async def search_memes(
     min_score: float = 0.25,
     _verified_complete: bool = False,
 ) -> dict[str, Any]:
-    """Search a fully semanticized meme pack.
+    """检索已完全语义化的表情包。
 
     Args:
-        pack_dir: Root directory of the selected meme pack.
-        plugin_data_dir: Plugin data directory containing semantic indexes.
-        pack_id: Selected meme pack identifier.
-        query: Semantic query text.
-        embedding_provider: Embedding provider used by the pack index.
-        top_k: Maximum number of candidates to return.
-        min_score: Minimum cosine similarity for returned candidates.
-        _verified_complete: Internal request-scoped proof that the same pack was
-            already checked before prompt injection.
+        pack_dir: 所选表情包的根目录。
+        plugin_data_dir: 包含语义索引的插件数据目录。
+        pack_id: 所选表情包的标识符。
+        query: 语义查询文本。
+        embedding_provider: 表情包索引使用的嵌入模型提供商。
+        top_k: 最多返回的候选数量。
+        min_score: 返回候选所需的最低余弦相似度。
+        _verified_complete: 请求范围内的内部凭据，证明提示词注入前已检查同一表情包。
 
     Returns:
-        Search result with validated public candidate identifiers.
+        包含已校验公开候选标识符的检索结果。
     """
     if not str(query or "").strip():
         return {"ok": True, "candidates": [], "reason": "查询词不能为空"}

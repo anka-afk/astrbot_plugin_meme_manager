@@ -108,13 +108,13 @@ def ensure_category_tag(tags: Any, category: str) -> list[str]:
 
 
 def runtime_category_mapping(mapping: Any) -> dict[str, str]:
-    """Remove non-chat review buckets from a runtime category mapping.
+    """从运行时分类映射中移除不用于聊天的审核桶。
 
     Args:
-        mapping: Category-to-description mapping loaded from a pack.
+        mapping: 从表情包加载的“分类到描述”映射。
 
     Returns:
-        A normalized mapping that cannot expose ``needs_review`` to chat mode.
+        不会向聊天模式暴露 ``needs_review`` 的规范化映射。
     """
     if not isinstance(mapping, dict):
         return {}

@@ -89,8 +89,7 @@ def _http_get_with_optional_acceleration(
             if accelerated_response.status_code == 200:
                 return accelerated_response
             last_error = ValueError(
-                "加速地址请求失败，状态码: "
-                f"{accelerated_response.status_code}"
+                f"加速地址请求失败，状态码: {accelerated_response.status_code}"
             )
         except Exception as exc:
             last_error = exc
@@ -129,11 +128,11 @@ def _save_json(path: Path, data: dict) -> None:
 
 
 def _restore_file_snapshot(path: Path, content: bytes | None) -> None:
-    """Restore one transaction control file from an exact byte snapshot.
+    """根据精确字节快照恢复单个事务控制文件。
 
     Args:
-        path: Runtime control file to restore.
-        content: Original bytes, or ``None`` if the file did not exist.
+        path: 要恢复的运行时控制文件。
+        content: 原始字节；文件原本不存在时为 ``None``。
     """
     if content is None:
         path.unlink(missing_ok=True)
@@ -166,13 +165,13 @@ def _safe_nonnegative_int(value) -> int | None:
 
 
 def _index_bundle_details(index_root: Path) -> tuple[dict, Path | None]:
-    """Resolve the manifest-selected FAISS file from old or snapshot bundles.
+    """从旧版或快照包中解析清单指定的 FAISS 文件。
 
     Args:
-        index_root: Extracted semantic index directory.
+        index_root: 解压后的语义索引目录。
 
     Returns:
-        The parsed manifest and its safe existing FAISS file, if any.
+        解析后的清单，以及清单中安全且实际存在的 FAISS 文件（如有）。
     """
     manifest = _load_json(index_root / "index_manifest.json", {})
     if not isinstance(manifest, dict):
@@ -1048,8 +1047,8 @@ def import_pack_archive(
         if target_existed and not overwrite:
             raise FileExistsError(f"表情包 {pack_id} 已存在，请重新检查后再导入")
 
-        # Capture every rollback source before the first runtime mutation. A failed
-        # snapshot must leave the installed pack and index exactly where they were.
+        # 在首次修改运行时文件前捕获全部回滚来源。快照失败时，必须让已安装
+        # 表情包和索引严格保持原位。
         registry_snapshot = (
             REGISTRY_PATH.read_bytes() if REGISTRY_PATH.is_file() else None
         )
@@ -1737,7 +1736,7 @@ def import_runtime_backup(
     overwrite: bool = False,
     operation_guard: PackOperationGuard | None = None,
 ) -> dict:
-    """Validate and restore a runtime backup as one rollback-safe transaction."""
+    """以支持安全回滚的单个事务校验并恢复运行时备份。"""
     if not backup_zip_path.is_file():
         raise FileNotFoundError("备份压缩包不存在")
 
@@ -1830,8 +1829,7 @@ def import_runtime_backup(
         if overwrite:
             merged_entries = list(backup_entries)
         else:
-            # Existing packs are not replaced, so their local registry settings
-            # must also win over entries carried by the backup.
+            # 不覆盖已有表情包时，其本地注册表设置也必须优先于备份中的条目。
             current_entry_ids = {
                 str(item.get("id") or "").strip() for item in current_entries
             }

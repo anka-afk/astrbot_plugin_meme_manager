@@ -62,13 +62,13 @@ async def _run_blocking(function: Any, *args: Any, **kwargs: Any) -> Any:
 
 
 def _manifest_int(value: Any) -> int | None:
-    """Parse a non-negative integer from an untrusted index manifest field.
+    """从不可信的索引清单字段中解析非负整数。
 
     Args:
-        value: Raw JSON field value.
+        value: 原始 JSON 字段值。
 
     Returns:
-        The parsed integer, or ``None`` when the field is invalid.
+        解析后的整数；字段无效时返回 ``None``。
     """
     if isinstance(value, bool):
         return None

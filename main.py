@@ -10,6 +10,7 @@ from astrbot.api.message_components import *
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star
 
+from .backend.auto_collect import AutoCollectManager
 from .backend.category_manager import CategoryManager
 from .backend.semantic_index import EmbeddingAdapter, index_is_ready
 from .backend.semantic_models import runtime_category_mapping
@@ -163,6 +164,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         # 上传与待发送状态
         self.upload_states = {}
         self.pending_images = {}
+        auto_collect_config = self._read_path(("auto_collect",), {})
+        self.auto_collect_manager = AutoCollectManager(
+            self,
+            auto_collect_config if isinstance(auto_collect_config, dict) else {},
+        )
 
         # 配置项
         self.prompt_head = self._read_config_value(
@@ -278,6 +284,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
     @filter.on_astrbot_loaded()
     async def _schedule_semantic_initial_rebuild(self):
         """等 AstrBot 核心和所有 Provider 加载完成后再安排首次静默重建。"""
+        await self.auto_collect_manager.start()
         if not self.semantic_enabled:
             return
         task = self._semantic_initial_rebuild_task
@@ -311,8 +318,12 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
 
     @filter.event_message_type(EventMessageType.ALL)
     async def handle_upload_image(self, event: AstrMessageEvent):
+        user_key = f"{event.session_id}_{event.get_sender_id()}"
+        manual_upload_pending = user_key in self.upload_states
         async for result in self._handle_upload_image_impl(event):
             yield result
+        if not manual_upload_pending:
+            await self.auto_collect_manager.submit(event)
 
     @filter.on_waiting_llm_request(priority=99999)
     async def mark_llm_request_origin(self, event: AstrMessageEvent):
@@ -584,16 +595,15 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         *,
         require_tool: bool = False,
     ) -> bool:
-        """Return whether the selected runtime pack can use semantic search.
+        """判断当前选择的运行时表情包能否使用语义检索。
 
         Args:
-            event: Current AstrBot message event.
-            req: Current provider request, when checking request-time tools.
-            require_tool: Whether the reply model and request must expose the
-                semantic search tool.
+            event: 当前 AstrBot 消息事件。
+            req: 检查请求阶段工具时的当前模型请求。
+            require_tool: 是否要求回复模型和请求公开语义检索工具。
 
         Returns:
-            True when the pack is complete and its matching index is ready.
+            表情包语义数据完整且对应索引就绪时返回 True。
         """
         if not self.semantic_enabled:
             return False
@@ -658,13 +668,13 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             remove_tool("search_memes")
 
     def _semantic_mode_active(self, event: AstrMessageEvent | None) -> bool:
-        """Return whether the event still targets its verified semantic pack.
+        """判断事件是否仍指向已验证的语义表情包。
 
         Args:
-            event: Current AstrBot message event.
+            event: 当前 AstrBot 消息事件。
 
         Returns:
-            True when request-time verification and the runtime pack match.
+            请求阶段验证结果与运行时表情包匹配时返回 True。
         """
         if event is None or not hasattr(event, "get_extra"):
             return False
@@ -952,6 +962,8 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             return dumps_result({"ok": False, "reason": "语义查询失败"})
 
     async def terminate(self):
+        if getattr(self, "auto_collect_manager", None):
+            await self.auto_collect_manager.close()
         initial_task = getattr(self, "_semantic_initial_rebuild_task", None)
         if initial_task and not initial_task.done():
             initial_task.cancel()

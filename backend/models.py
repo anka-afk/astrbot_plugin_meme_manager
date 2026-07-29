@@ -20,7 +20,7 @@ def _get_memes_root() -> Path:
 
 
 class DuplicateEmojiError(ValueError):
-    """Raised when an uploaded emoji already exists in the target category."""
+    """上传的表情已存在于目标分类时抛出。"""
 
     def __init__(self, existing_filename: str):
         self.existing_filename = existing_filename

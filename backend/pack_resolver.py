@@ -42,7 +42,7 @@ def _pack_exists(pack_id: str) -> bool:
 def resolve_pack_id(
     session_id: str | None = None, persona_id: str | None = None
 ) -> str:
-    """Resolve pack id by ordered selection rules and fallback strategy."""
+    """按照有序选择规则和回退策略解析表情包 ID。"""
     selection_data = _load_json(SELECTION_RULES_PATH, {})
     registry_data = _load_json(REGISTRY_PATH, {})
     rules = selection_data.get("rules", []) if isinstance(selection_data, dict) else []

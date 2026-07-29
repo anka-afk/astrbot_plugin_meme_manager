@@ -222,8 +222,6 @@ async function initCatalogPage() {
     }
     return {
       kind: "classic",
-      badge: "传统包",
-      note: "使用传统分类描述，无需配置向量模型，安装后继续使用分类匹配。",
     };
   }
 
@@ -359,17 +357,16 @@ async function initCatalogPage() {
     const tagRow = document.createElement("div");
     tagRow.className = "tag-row";
 
-    const formatTag = document.createElement("span");
-    formatTag.className = `tag format-tag ${format.kind}`;
-    const formatTagIcon = document.createElement("i");
-    formatTagIcon.className =
-      format.kind === "semantic"
-        ? "fas fa-wand-magic-sparkles"
-        : "fas fa-box-archive";
-    const formatTagText = document.createElement("span");
-    formatTagText.textContent = format.badge;
-    formatTag.append(formatTagIcon, formatTagText);
-    tagRow.appendChild(formatTag);
+    if (format.kind === "semantic") {
+      const formatTag = document.createElement("span");
+      formatTag.className = "tag format-tag semantic";
+      const formatTagIcon = document.createElement("i");
+      formatTagIcon.className = "fas fa-wand-magic-sparkles";
+      const formatTagText = document.createElement("span");
+      formatTagText.textContent = format.badge;
+      formatTag.append(formatTagIcon, formatTagText);
+      tagRow.appendChild(formatTag);
+    }
 
     const verifyTag = document.createElement("span");
     verifyTag.className = `tag ${pack.verified ? "verified" : "unverified"}`;
@@ -401,16 +398,16 @@ async function initCatalogPage() {
     desc.className = "pack-desc";
     desc.textContent = pack.description || "暂无描述";
 
-    const formatNote = document.createElement("p");
-    formatNote.className = `pack-format-note ${format.kind}`;
-    const formatNoteIcon = document.createElement("i");
-    formatNoteIcon.className =
-      format.kind === "semantic"
-        ? "fas fa-cubes-stacked"
-        : "fas fa-layer-group";
-    const formatNoteText = document.createElement("span");
-    formatNoteText.textContent = format.note;
-    formatNote.append(formatNoteIcon, formatNoteText);
+    let formatNote = null;
+    if (format.kind === "semantic") {
+      formatNote = document.createElement("p");
+      formatNote.className = "pack-format-note semantic";
+      const formatNoteIcon = document.createElement("i");
+      formatNoteIcon.className = "fas fa-cubes-stacked";
+      const formatNoteText = document.createElement("span");
+      formatNoteText.textContent = format.note;
+      formatNote.append(formatNoteIcon, formatNoteText);
+    }
 
     const meta = document.createElement("div");
     meta.className = "pack-meta";
@@ -426,7 +423,9 @@ async function initCatalogPage() {
     card.appendChild(titleRow);
     card.appendChild(tagRow);
     card.appendChild(desc);
-    card.appendChild(formatNote);
+    if (formatNote) {
+      card.appendChild(formatNote);
+    }
     card.appendChild(meta);
     return card;
   }

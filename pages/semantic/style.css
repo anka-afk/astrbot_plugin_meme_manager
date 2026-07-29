@@ -126,6 +126,39 @@ h1 {
   padding: 18px;
   backdrop-filter: blur(8px);
 }
+.hidden {
+  display: none !important;
+}
+.auto-inbox-panel {
+  border-color: rgba(245, 158, 11, 0.38);
+  background: linear-gradient(135deg, #fffdf6, #ffffff);
+}
+.auto-inbox-panel h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.auto-inbox-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+  gap: 9px;
+  margin-top: 14px;
+}
+.auto-inbox-item {
+  display: grid;
+  gap: 5px;
+  padding: 11px 12px;
+  border: 1px solid rgba(245, 158, 11, 0.24);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.86);
+}
+.auto-inbox-item span,
+.auto-inbox-item time {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 .panel-header {
   display: flex;
   gap: 16px;

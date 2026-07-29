@@ -107,6 +107,25 @@
         ></p>
       </section>
 
+      <section id="auto-inbox-panel" class="panel auto-inbox-panel hidden">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Auto Collection Inbox</p>
+            <h2>
+              <i class="fas fa-inbox icon"></i>自动收集待语义化桶
+              <span class="badge" id="auto-inbox-count">0</span>
+            </h2>
+            <p class="panel-hint">
+              自动识别的图片暂存在独立待整理桶，不会立即改变当前语义包。确认后将按建议分类合入当前包，并启动现有语义化任务。
+            </p>
+          </div>
+          <button type="button" id="auto-inbox-semanticize">
+            <i class="fas fa-wand-magic-sparkles icon"></i>合入并语义化
+          </button>
+        </div>
+        <div id="auto-inbox-items" class="auto-inbox-items"></div>
+      </section>
+
       <section class="panel status-panel">
         <div class="panel-header">
           <h2><i class="fas fa-chart-line icon"></i>任务状态</h2>

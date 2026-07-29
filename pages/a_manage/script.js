@@ -395,6 +395,7 @@ async function initApp() {
   let latestManagePackVectorStatus = null;
   let latestManagePackVectorStatusId = "";
   let confirmResolver = null;
+  let confirmRestoreFocusElement = null;
   const MOBILE_LAYOUT_MEDIA = "(max-width: 960px)";
   const DRAG_HUD_OFFSET_X = 18;
   const DRAG_HUD_OFFSET_Y = 88;
@@ -2387,6 +2388,22 @@ async function initApp() {
 
   function closeConfirm(result) {
     if (confirmModalRoot) {
+      const restoreTarget = confirmRestoreFocusElement;
+      confirmRestoreFocusElement = null;
+      if (
+        restoreTarget instanceof HTMLElement &&
+        restoreTarget.isConnected &&
+        !restoreTarget.hasAttribute("disabled")
+      ) {
+        restoreTarget.focus();
+      }
+      if (
+        confirmModalRoot.contains(document.activeElement) &&
+        document.activeElement instanceof HTMLElement
+      ) {
+        document.activeElement.blur();
+      }
+      confirmModalRoot.inert = true;
       confirmModalRoot.classList.add("hidden");
       confirmModalRoot.setAttribute("aria-hidden", "true");
     }
@@ -2424,9 +2441,21 @@ async function initApp() {
       "danger",
       confirmClassName.includes("danger"),
     );
+    const activeElement = document.activeElement;
+    confirmRestoreFocusElement =
+      activeElement instanceof HTMLElement &&
+      !confirmModalRoot.contains(activeElement)
+        ? activeElement
+        : null;
     lockPageScroll();
+    confirmModalRoot.inert = false;
     confirmModalRoot.classList.remove("hidden");
     confirmModalRoot.setAttribute("aria-hidden", "false");
+    window.requestAnimationFrame(() => {
+      if (!confirmModalRoot.classList.contains("hidden")) {
+        (confirmModalCancelBtn || confirmModalConfirmBtn).focus();
+      }
+    });
 
     return new Promise((resolve) => {
       confirmResolver = resolve;

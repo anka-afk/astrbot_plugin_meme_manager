@@ -112,10 +112,10 @@ PORTABLE_IMAGE_FIELDS = frozenset(
 
 
 class SemanticMetadataCompatibilityError(ValueError):
-    """Raised when semantic metadata must remain read-only.
+    """语义元数据必须保持只读时抛出。
 
     Args:
-        message: User-facing compatibility or corruption explanation.
+        message: 面向用户的兼容性或数据损坏说明。
     """
 
 
@@ -124,14 +124,14 @@ def metadata_path(pack_dir: Path | str) -> Path:
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    """Write JSON through a same-directory temporary file.
+    """通过同目录临时文件写入 JSON。
 
     Args:
-        path: Destination JSON path.
-        payload: JSON object to persist.
+        path: 目标 JSON 路径。
+        payload: 要持久化的 JSON 对象。
 
     Raises:
-        OSError: If the temporary file cannot be written or replaced.
+        OSError: 无法写入临时文件或替换目标文件。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(
@@ -149,17 +149,17 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _create_legacy_backup(path: Path, content: bytes) -> Path:
-    """Create the stable one-time backup used before the first v2 write.
+    """创建首次写入 v2 数据前使用的稳定一次性备份。
 
     Args:
-        path: Existing legacy semantic metadata path.
-        content: Exact source bytes read before migration.
+        path: 现有旧版语义元数据路径。
+        content: 迁移前读取的精确源字节。
 
     Returns:
-        The stable backup path. An existing backup is never overwritten.
+        稳定备份路径；已有备份永远不会被覆盖。
 
     Raises:
-        OSError: If a new backup cannot be written safely.
+        OSError: 无法安全写入新备份。
     """
     backup_path = path.with_name(LEGACY_METADATA_BACKUP_NAME)
     try:
@@ -276,14 +276,13 @@ def _is_sha256(value: Any) -> bool:
 
 
 def _source_schema_version(data: dict[str, Any]) -> str:
-    """Return the normalized semantic schema version.
+    """返回规范化后的语义架构版本。
 
     Args:
-        data: Parsed semantic metadata object.
+        data: 已解析的语义元数据对象。
 
     Returns:
-        ``missing`` for legacy files without a version, otherwise the normalized
-        version string.
+        没有版本号的旧文件返回 ``missing``，否则返回规范化后的版本字符串。
     """
     raw_version = data.get("schema_version")
     if "schema_version" not in data or raw_version is None or raw_version == "":
@@ -292,15 +291,15 @@ def _source_schema_version(data: dict[str, Any]) -> str:
 
 
 def _validate_metadata_records(data: dict[str, Any], source_label: str) -> None:
-    """Reject field shapes that would otherwise be silently discarded.
+    """拒绝原本会被静默丢弃的不合法字段结构。
 
     Args:
-        data: Parsed semantic metadata object.
-        source_label: Human-readable source used in the error message.
+        data: 已解析的语义元数据对象。
+        source_label: 错误消息中使用的易读来源名称。
 
     Raises:
-        SemanticMetadataCompatibilityError: If a supported schema has unsafe
-            field types or invalid record hashes.
+        SemanticMetadataCompatibilityError: 受支持的架构包含不安全字段类型或
+            无效记录哈希。
     """
     images = data.get("images", {})
     if "pack_id" in data and not isinstance(data.get("pack_id"), (str, type(None))):
@@ -361,15 +360,15 @@ def _metadata_fault(
     *,
     source_schema_version: str = "",
 ) -> dict[str, Any]:
-    """Build a read-only status object without mutating the source file.
+    """在不修改源文件的情况下构建只读状态对象。
 
     Args:
-        pack_dir: Root directory of the meme pack.
-        message: User-facing failure explanation.
-        source_schema_version: Unsupported or malformed source version.
+        pack_dir: 表情包根目录。
+        message: 面向用户的失败说明。
+        source_schema_version: 不受支持或格式错误的源版本。
 
     Returns:
-        A metadata-shaped read-only fault object for status pages.
+        供状态页面使用、结构与元数据一致的只读错误对象。
     """
     return {
         "schema_version": SCHEMA_VERSION,
@@ -386,14 +385,14 @@ def _metadata_fault(
 def _legacy_reusable_record(
     source: dict[str, Any], *, preserve_manual: bool
 ) -> dict[str, Any]:
-    """Convert one v1 record without adding disk-derived category fields.
+    """转换一条 v1 记录，但不添加从磁盘推导的分类字段。
 
     Args:
-        source: One validated v1 image record.
-        preserve_manual: Whether this is the exact original relative path.
+        source: 一条已校验的 v1 图片记录。
+        preserve_manual: 当前路径是否为完全一致的原始相对路径。
 
     Returns:
-        A v2-compatible content record awaiting category review and embedding.
+        等待分类审核和嵌入处理的 v2 兼容内容记录。
     """
     source = dict(source)
     manual = bool(
@@ -482,21 +481,20 @@ def migrate_legacy_metadata(
     category_descriptions: dict[str, str],
     pack_id: str,
 ) -> dict[str, Any]:
-    """Purely migrate known v1 or versionless metadata to path-scoped v2 data.
+    """以纯函数方式将已知 v1 或无版本元数据迁移为路径范围的 v2 数据。
 
     Args:
-        data: Parsed v1 semantic metadata.
-        scanned_images: Current disk image scan for the target pack.
-        category_descriptions: Current category descriptions from the target pack.
-        pack_id: Target meme pack identifier.
+        data: 已解析的 v1 语义元数据。
+        scanned_images: 目标表情包当前的磁盘图片扫描结果。
+        category_descriptions: 目标表情包当前的分类描述。
+        pack_id: 目标表情包标识符。
 
     Returns:
-        In-memory v2 metadata. The caller decides when to persist it under a
-        pack lock.
+        内存中的 v2 元数据；调用方决定何时在表情包锁保护下持久化。
 
     Raises:
-        SemanticMetadataCompatibilityError: If the source is not a supported
-            legacy schema or contains unsafe field types.
+        SemanticMetadataCompatibilityError: 来源不是受支持的旧版架构，或包含
+            不安全的字段类型。
     """
     if not isinstance(data, dict):
         raise SemanticMetadataCompatibilityError("旧语义文件根节点不是对象")
@@ -738,17 +736,15 @@ def semantic_metadata_is_complete(
     *,
     require_embeddings: bool = False,
 ) -> bool:
-    """Return whether every current image has complete semantic metadata.
+    """判断当前每张图片是否都有完整的语义元数据。
 
     Args:
-        pack_dir: Root directory of the meme pack.
-        data: Previously loaded metadata, if available.
-        require_embeddings: Whether every image must also have a completed
-            local embedding.
+        pack_dir: 表情包根目录。
+        data: 之前已加载的元数据（如有）。
+        require_embeddings: 是否还要求每张图片都已完成本地嵌入。
 
     Returns:
-        True only when disk contents, the scan snapshot, and completed records
-        match exactly.
+        仅当磁盘内容、扫描快照和已完成记录完全匹配时返回 True。
     """
     root = Path(pack_dir).resolve()
     memes_root = root / "memes"
@@ -1538,16 +1534,16 @@ def _is_safe_category_key(category: str) -> bool:
 
 
 def _ensure_pack_category(pack_dir: Path, category: str, description: str) -> None:
-    """Create a safe pack category and synchronize its metadata.
+    """创建安全的表情包分类并同步其元数据。
 
     Args:
-        pack_dir: Meme pack root directory.
-        category: Exact category key to create.
-        description: Human-readable category description.
+        pack_dir: 表情包根目录。
+        category: 要创建的准确分类键。
+        description: 易读的分类描述。
 
     Raises:
-        ValueError: If the category key is unsafe.
-        OSError: If the directory or metadata files cannot be written.
+        ValueError: 分类键不安全。
+        OSError: 无法写入目录或元数据文件。
     """
     if not _is_safe_category_key(category):
         raise ValueError("自动复核分类名称无效")
@@ -1585,18 +1581,18 @@ def _ensure_pack_category(pack_dir: Path, category: str, description: str) -> No
 def apply_conflict_reclassifications(
     pack_dir: Path | str, data: dict[str, Any]
 ) -> dict[str, Any]:
-    """Move explicit category conflicts and persist their audit records.
+    """移动明确的分类冲突项并持久化其审计记录。
 
     Args:
-        pack_dir: Meme pack root directory.
-        data: Current schema-v2 semantic metadata.
+        pack_dir: 表情包根目录。
+        data: 当前 v2 架构的语义元数据。
 
     Returns:
-        Counts for moved, existing-target, review-target, and skipped items.
+        已移动、移入已有分类、移入审核分类和已跳过项目的数量。
 
     Raises:
-        OSError: If a file move or metadata write fails.
-        ValueError: If a generated target path escapes the meme pack.
+        OSError: 文件移动或元数据写入失败。
+        ValueError: 生成的目标路径超出表情包目录。
     """
     root = Path(pack_dir).resolve()
     memes_root = (root / "memes").resolve()
@@ -1814,15 +1810,15 @@ def reset_local_embedding_state(
     """移除本机向量状态，并在提供图包目录时迁移旧语义数据。
 
     Args:
-        data: Parsed semantic metadata.
-        pack_dir: Target pack directory required for v1 or versionless data.
+        data: 已解析的语义元数据。
+        pack_dir: v1 或无版本数据迁移所需的目标表情包目录。
 
     Returns:
-        Portable current-schema metadata with local vector state cleared.
+        已清除本地向量状态、可移植的当前架构元数据。
 
     Raises:
-        SemanticMetadataCompatibilityError: If legacy data has no target pack
-            context, has unsafe fields, or uses an unsupported future version.
+        SemanticMetadataCompatibilityError: 旧版数据缺少目标表情包上下文、
+            包含不安全字段，或使用不受支持的未来版本。
     """
     if not isinstance(data, dict):
         raise SemanticMetadataCompatibilityError("语义元数据根节点不是对象")

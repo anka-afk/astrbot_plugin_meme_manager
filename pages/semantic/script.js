@@ -23,6 +23,12 @@ async function initSemanticPage() {
   const imagePreviewClose = document.querySelector("#image-preview-close");
   const imagePreviewImg = document.querySelector("#image-preview-img");
   const imagePreviewLoading = document.querySelector("#image-preview-loading");
+  const autoInboxPanel = document.querySelector("#auto-inbox-panel");
+  const autoInboxCount = document.querySelector("#auto-inbox-count");
+  const autoInboxItems = document.querySelector("#auto-inbox-items");
+  const autoInboxSemanticize = document.querySelector(
+    "#auto-inbox-semanticize",
+  );
   const buttons = Array.from(document.querySelectorAll("button[data-action]"));
   let requestRunning = false;
   let embeddingReady = false;
@@ -46,6 +52,7 @@ async function initSemanticPage() {
   const previewRequests = new Map();
   let activePreviewKey = "";
   let activePreviewRequests = 0;
+  let pendingAutoInboxCount = 0;
   const previewQueue = [];
 
   function setDialog(
@@ -202,6 +209,12 @@ async function initSemanticPage() {
     concurrencyHint.textContent = queueIsActive
       ? `当前队列固定为 ${latestStatus?.concurrency || concurrencyInput.value || 1} 并发；如需调整，请先清空队列后重新开始。`
       : "同时提交给视觉模型的图片上限，建议按模型限流设置。";
+    autoInboxSemanticize.disabled =
+      requestRunning ||
+      pendingAutoInboxCount <= 0 ||
+      !embeddingReady ||
+      !visionReady ||
+      latestStatus?.can_start === false;
   }
 
   function setBusy(value) {
@@ -265,6 +278,7 @@ async function initSemanticPage() {
     embeddingReady = Boolean(data.embedding_provider_ready);
     visionReady = Boolean(data.vision_provider_ready);
     captionComplete = Boolean(data.semantic_caption_complete);
+    renderAutoInbox(data.auto_collect_inbox);
     if (data.concurrency && !concurrencyDirty)
       concurrencyInput.value = String(data.concurrency);
     elapsedSeconds = Number(data.elapsed_seconds || 0);
@@ -433,6 +447,45 @@ async function initSemanticPage() {
     }
     updateTaskTimer();
     updateButtonState();
+  }
+
+  function renderAutoInbox(data) {
+    const visible = Boolean(data?.visible);
+    pendingAutoInboxCount = Math.max(0, Number(data?.count || 0));
+    autoInboxPanel.classList.toggle("hidden", !visible);
+    autoInboxCount.textContent = String(pendingAutoInboxCount);
+    autoInboxItems.replaceChildren();
+    if (!visible) return;
+    const items = Array.isArray(data?.items) ? data.items : [];
+    if (!items.length) {
+      const empty = document.createElement("p");
+      empty.className = "panel-hint";
+      empty.textContent = "当前语义包没有等待整理的自动收集图片。";
+      autoInboxItems.append(empty);
+      return;
+    }
+    items.slice(0, 8).forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "auto-inbox-item";
+      const category = document.createElement("strong");
+      category.textContent = item.suggested_category || "needs_review";
+      const source = document.createElement("span");
+      const sourceLabel = item.source_kind === "group" ? "群聊" : "个人";
+      source.textContent = `${sourceLabel} ${item.source_id || "未知来源"}`;
+      const receivedAt = document.createElement("time");
+      const date = new Date(item.received_at || "");
+      receivedAt.textContent = Number.isNaN(date.getTime())
+        ? ""
+        : date.toLocaleString();
+      row.append(category, source, receivedAt);
+      autoInboxItems.append(row);
+    });
+    if (pendingAutoInboxCount > 8) {
+      const more = document.createElement("p");
+      more.className = "panel-hint";
+      more.textContent = `另有 ${pendingAutoInboxCount - 8} 张等待处理。`;
+      autoInboxItems.append(more);
+    }
   }
 
   function imageLocation(item) {
@@ -811,6 +864,48 @@ async function initSemanticPage() {
     }
   }
 
+  async function importAutoInboxAndStart(apiPost, apiGet) {
+    if (!packSelect.value || requestRunning || pendingAutoInboxCount <= 0) return;
+    const confirmed = await showDialog(
+      "确认合入并语义化",
+      `将 ${pendingAutoInboxCount} 张自动收集图片按建议分类合入当前资源包，并立即启动完整语义化。是否继续？`,
+      { confirmText: "合入并语义化" },
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    showNotice("正在合入自动收集待整理桶……");
+    try {
+      const imported = await apiPost("semantic/auto-inbox/import", {
+        pack_id: packSelect.value,
+      });
+      if (Number(imported?.imported || 0) > 0) {
+        const started = await apiPost("semantic/start", {
+          pack_id: packSelect.value,
+          mode: "full",
+          force: false,
+          concurrency: Math.max(
+            1,
+            Math.min(16, Number(concurrencyInput.value) || 1),
+          ),
+        });
+        showToast(started?.message || imported?.message || "语义化任务已启动");
+        showNotice(started?.message || "图片已合入，语义化任务已启动");
+      } else {
+        showToast(imported?.message || "没有需要合入的新图片");
+        showNotice(imported?.message || "没有需要合入的新图片");
+      }
+    } catch (error) {
+      await reportError("合入待整理桶失败", error);
+    } finally {
+      setBusy(false);
+      try {
+        await loadStatus(apiGet);
+      } catch (error) {
+        await reportError("读取状态失败", error);
+      }
+    }
+  }
+
   dialogCancel.addEventListener("click", () => closeDialog(false));
   dialogConfirm.addEventListener("click", () => closeDialog(true));
   dialogMask.addEventListener("click", (event) => {
@@ -846,6 +941,9 @@ async function initSemanticPage() {
     button.addEventListener("click", () =>
       runAction(apiPost, button.dataset.action),
     ),
+  );
+  autoInboxSemanticize.addEventListener("click", () =>
+    importAutoInboxAndStart(apiPost, apiGet),
   );
   recordsPrev.addEventListener("click", async () => {
     if (recordsCurrentPage <= 1 || requestRunning) return;

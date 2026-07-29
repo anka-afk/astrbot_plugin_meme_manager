@@ -2734,7 +2734,7 @@ body.drag-session-active {
   }
 }
 
-/* Unified WebUI Theme (2026 refresh) */
+/* 统一 WebUI 主题（2026 年更新） */
 :root {
   --ui-brand: #1d8a66;
   --ui-brand-strong: #176d51;
@@ -2927,7 +2927,7 @@ button.danger,
   }
 }
 
-/* Nav / sidebar alignment polish */
+/* 导航栏与侧边栏对齐优化 */
 .page-header {
   display: flex;
   justify-content: space-between;
@@ -2966,7 +2966,7 @@ button.danger,
   min-height: 40px;
 }
 
-/* Button consistency polish */
+/* 按钮一致性优化 */
 .sync-status button,
 .sync-buttons button {
   width: 100%;

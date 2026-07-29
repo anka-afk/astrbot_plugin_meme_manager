@@ -1,4 +1,4 @@
-"""Pure text-safety helpers for response cleanup and emotion matching."""
+"""用于响应清理和情绪匹配的纯文本安全工具。"""
 
 from __future__ import annotations
 
@@ -98,11 +98,11 @@ def _is_plugin_owned_file_image_reference(line_body: str) -> bool:
 
 
 def strip_internal_image_ref_lines(text: str) -> str:
-    """Remove standalone machine-generated image-reference lines.
+    """移除机器生成的独立图片引用行。
 
-    A numbered marker may use any supported image reference. An unmarked line
-    is removed only when it is a local ``file:`` image URI under this plugin's
-    ``plugin_data/meme_manager`` directory. Markdown code remains untouched.
+    带编号标记的行可以使用任意受支持的图片引用。没有标记的行仅在引用
+    本插件 ``plugin_data/meme_manager`` 目录下的本地 ``file:`` 图片 URI 时
+    才会被移除。Markdown 代码保持不变。
     """
 
     if not text:
@@ -215,7 +215,7 @@ def _protected_reference_spans(text: str) -> list[tuple[int, int]]:
 
 
 def find_unprotected_word_spans(text: str, word: str) -> list[tuple[int, int]]:
-    """Find whole-word matches safe for legacy loose emotion matching."""
+    """查找可安全用于旧版宽松情绪匹配的完整单词位置。"""
 
     if not text or not word:
         return []

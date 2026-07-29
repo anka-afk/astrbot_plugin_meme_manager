@@ -264,7 +264,7 @@ class WebAPIMixin:
             "显式放弃单张图片人工语义",
         )
 
-        # Phase 3: pack-aware API
+        # 第三阶段：支持表情包上下文的 API
         self._register_webui_api(
             "packs",
             self._api_list_packs,
@@ -387,6 +387,12 @@ class WebAPIMixin:
         )
         self._register_webui_api(
             "semantic/start", self._api_semantic_start, ["POST"], "开始语义化任务"
+        )
+        self._register_webui_api(
+            "semantic/auto-inbox/import",
+            self._api_semantic_import_auto_inbox,
+            ["POST"],
+            "将自动收集待整理桶合入语义包",
         )
         self._register_webui_api(
             "semantic/pause", self._api_semantic_pause, ["POST"], "暂停语义化任务"
@@ -529,7 +535,7 @@ class WebAPIMixin:
         return guidance
 
     def _pack_import_embedding_signature(self) -> dict:
-        """Return the active local embedding signature for safe backup restore."""
+        """返回当前本地嵌入模型签名，用于安全恢复备份。"""
         try:
             provider = self._resolve_embedding_provider()
             embedding = EmbeddingAdapter(
@@ -591,7 +597,7 @@ class WebAPIMixin:
         *args,
         **kwargs,
     ):
-        """Hold every installed pack lock for one runtime-wide file operation."""
+        """在运行时全局文件操作期间持有所有已安装表情包的锁。"""
         manager = getattr(self, "semantic_task_manager", None)
         pack_ids = (
             sorted(path.name for path in PACKS_DIR.iterdir() if path.is_dir())
@@ -2104,6 +2110,12 @@ class WebAPIMixin:
             result["semantic_config_ready"] = bool(
                 not result["semantic_enabled"] or result.get("embedding_provider_ready")
             )
+            manager = getattr(self, "auto_collect_manager", None)
+            result["auto_collect_inbox"] = (
+                await manager.pending_status(pack_id)
+                if manager is not None
+                else {"visible": False, "count": 0, "items": []}
+            )
             return jsonify(result), 200
         except FileNotFoundError as exc:
             return jsonify({"message": str(exc)}), 404
@@ -2182,6 +2194,51 @@ class WebAPIMixin:
         except Exception as exc:
             logger.error("启动语义任务失败: %s", exc, exc_info=True)
             return jsonify({"message": "启动语义任务失败"}), 500
+
+    async def _api_semantic_import_auto_inbox(self):
+        """导入当前表情包对应的自动收集待整理图片。
+
+        Returns:
+            包含导入计数的 Quart JSON 响应。
+        """
+        try:
+            data = await request.get_json() or {}
+            pack_id = await self._semantic_request_pack_id(data)
+            manager = getattr(self, "auto_collect_manager", None)
+            if manager is None:
+                raise RuntimeError("自动收集管理器不可用")
+            result = await manager.import_pending(pack_id)
+            return jsonify(
+                {
+                    "message": (
+                        f"已合入 {result['imported']} 张待整理图片"
+                        + (
+                            f"，跳过 {result['duplicates']} 张重复图片"
+                            if result["duplicates"]
+                            else ""
+                        )
+                        + (
+                            f"，{result['failed']} 张处理失败"
+                            if result["failed"]
+                            else ""
+                        )
+                    ),
+                    **result,
+                }
+            ), 200
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error(
+                "[meme_manager] 导入自动收集待整理桶失败：%s",
+                exc,
+                exc_info=True,
+            )
+            return jsonify({"message": "合入自动收集待整理桶失败"}), 500
 
     async def _api_semantic_pause(self):
         return await self._api_semantic_task_action("pause")

@@ -770,12 +770,12 @@ class EventHandlerMixin:
     async def _resp_semantic_llm_impl(
         self, event: AstrMessageEvent, response: LLMResponse, text: str
     ):
-        """Select one semantic candidate with the emotion-assistant model.
+        """使用情感辅助模型选择一个语义候选。
 
         Args:
-            event: Current AstrBot message event.
-            response: Reply model response that will be cleaned in place.
-            text: Reply text used as the semantic query and selection context.
+            event: 当前 AstrBot 消息事件。
+            response: 将被原地清理的回复模型响应。
+            text: 用作语义查询和选择上下文的回复文本。
         """
         visible_text = extract_visible_semantic_reply(text)
         query = await self._build_emotion_semantic_query(event, visible_text)
@@ -897,21 +897,19 @@ class EventHandlerMixin:
         if cleaned_text != text:
             response.completion_text = cleaned_text
             text = cleaned_text
-            logger.debug("[meme_manager] Removed internal image references from reply")
-        # Semantic packs use one exclusive route: reply-model Tool calls or
-        # emotion-assistant candidate selection. Neither uses legacy guessing.
+            logger.debug("[meme_manager] 已从回复中移除内部图片引用")
+        # 语义表情包仅使用一种互斥路径：回复模型工具调用或情感辅助候选选择。
+        # 两条路径都不会使用旧版猜测逻辑。
         semantic_mode = (
             str(event.get_extra("meme_manager_semantic_mode") or "")
             if self._semantic_mode_active(event)
             else ""
         )
         if bool(event.get_extra("meme_manager_semantic_response_processed")):
-            logger.info(
-                "[meme_manager] Response already processed; ignoring duplicate hook"
-            )
+            logger.info("[meme_manager] 回复已处理，忽略重复钩子")
             return
-        # Claim the response before any async work so duplicate hooks cannot
-        # overwrite either semantic selections or legacy category matches.
+        # 在任何异步工作前占用本次响应，防止重复钩子覆盖语义选择结果或
+        # 旧版分类匹配结果。
         event.set_extra("meme_manager_semantic_response_processed", True)
         if semantic_mode == "llm":
             return await self._resp_semantic_llm_impl(event, response, text)
@@ -1577,7 +1575,7 @@ class EventHandlerMixin:
                     background = PILImage.new("RGB", img.size, (255, 255, 255))
                     if img.mode == "P":
                         img = img.convert("RGBA")
-                    background.paste(img, mask=img.split()[3])  # 3 is the alpha channel
+                    background.paste(img, mask=img.split()[3])  # 第 3 个索引是透明通道
                     img = background
                 else:
                     img = img.convert("RGB")

@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def is_safe_category_name(category: str) -> bool:
-    """Return whether category stays within one memes directory segment."""
+    """判断分类名称是否严格位于表情目录的单个路径段内。"""
     if not category or category != category.strip():
         return False
     if category in {".", ".."}:
@@ -110,7 +110,7 @@ class CategoryManager:
         return load_json(metadata_path, {})
 
     def reload_descriptions(self) -> dict[str, str]:
-        """Reload category descriptions from disk."""
+        """从磁盘重新加载分类描述。"""
         self.descriptions = self._load_descriptions()
         return self.descriptions
 
@@ -154,7 +154,7 @@ class CategoryManager:
                 return False
             self.reload_descriptions()
             old_description = str(self.descriptions.get(category) or "")
-            self.descriptions[category] = description  # 更新内存中的 descriptions
+            self.descriptions[category] = description  # 更新内存中的描述映射
             saved = save_json(self.descriptions, self._paths()["metadata_path"])
             if saved:
                 self._sync_manifest()
@@ -246,7 +246,7 @@ class CategoryManager:
             return False
 
     def remove_from_config(self, category: str) -> bool:
-        """Remove a category from the description config only (keep directory on disk)."""
+        """仅从描述配置中移除分类，并保留磁盘上的分类目录。"""
         try:
             category = str(category or "").strip()
             if not is_safe_category_name(category):

@@ -272,20 +272,28 @@ def build_caption_prompt(
 
 
 def prepare_visual_inputs(path: Path | str) -> tuple[list[str], list[str]]:
-    """返回视觉模型输入；按文件真实格式识别 GIF 并生成最多五张临时 PNG。"""
+    """为静态图片和动图准备视觉模型输入。
+
+    Args:
+        path: 原始图片路径。
+
+    Returns:
+        视觉输入路径，以及调用方必须清理的临时帧路径。
+
+    Raises:
+        ValueError: 已确认图片为动图，但无法读取其帧。
+    """
     source = Path(path).resolve()
     temp_paths: list[str] = []
-    confirmed_gif = False
+    confirmed_animated = False
     try:
         from PIL import Image
 
         with Image.open(source) as image:
-            # 资源包里可能存在扩展名为 jpg/png、实际内容却是 GIF 的文件。
-            # 只看后缀会把整段动图直接交给模型，部分中转站会因此返回 500。
-            if str(image.format or "").upper() != "GIF":
-                return [str(source)], []
-            confirmed_gif = True
             frame_count = max(1, int(getattr(image, "n_frames", 1) or 1))
+            if frame_count <= 1:
+                return [str(source)], []
+            confirmed_animated = True
             sample_count = min(frame_count, MAX_GIF_FRAMES)
             if sample_count <= 1:
                 frame_indexes = [0]
@@ -311,11 +319,11 @@ def prepare_visual_inputs(path: Path | str) -> tuple[list[str], list[str]]:
     except Exception as exc:
         for temp_path in temp_paths:
             Path(temp_path).unlink(missing_ok=True)
-        # 保持旧行为：无法由 Pillow 识别的普通图片仍交给模型处理。
-        # 明确使用 .gif 后缀或已经确认是 GIF 的文件则应报告预处理错误。
-        if not confirmed_gif and source.suffix.lower() != ".gif":
+        # 对未知静态格式保留旧版回退逻辑；已知动图格式处理失败时应明确报错，
+        # 避免将损坏的输入静默发送给视觉模型。
+        if not confirmed_animated and source.suffix.lower() not in {".gif", ".webp"}:
             return [str(source)], []
-        raise ValueError(f"GIF 多帧处理失败：{exc}") from exc
+        raise ValueError(f"动图多帧处理失败：{exc}") from exc
 
 
 def prepare_visual_input(path: Path | str) -> tuple[str, str | None]:

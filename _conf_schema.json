@@ -197,6 +197,81 @@
       }
     }
   },
+  "auto_collect": {
+    "description": "自动收集表情包",
+    "type": "object",
+    "hint": "收到图片后在后台调用视觉模型判断是否为表情包并分类。语义检索开启时，图片会先进入独立的待语义化桶，不会立即改变正在使用的语义包",
+    "items": {
+      "enabled": {
+        "description": "启用自动收集",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。开启后仅处理符合来源范围、冷却和抽样条件的图片"
+      },
+      "vision_provider_id": {
+        "description": "自动收集视觉模型 Provider ID",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider",
+        "hint": "必须选择支持图片输入的聊天模型；未选择或模型明确不支持 image 模态时不会启动自动收集"
+      },
+      "scope": {
+        "description": "允许收集的群聊或个人 ID",
+        "type": "list",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "hint": "留空表示全部来源。可填写原始 ID，也可用 group:群ID 或 user:用户ID 明确区分群聊和私聊"
+      },
+      "target_pack_id": {
+        "description": "目标表情包 ID",
+        "type": "string",
+        "default": "",
+        "hint": "留空时使用当前会话按 session/persona/default 规则选中的表情包；填写后固定以该包的分类进行识别。语义检索开启时仍先进入待语义化桶"
+      },
+      "sampling_probability": {
+        "description": "图片识别抽样概率（%）",
+        "type": "int",
+        "default": 100,
+        "hint": "默认识别每条符合条件的图片消息；调低可减少视觉模型调用",
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 1
+        }
+      },
+      "cooldown_seconds": {
+        "description": "同一来源最短识别间隔（秒）",
+        "type": "int",
+        "default": 20,
+        "hint": "同一个群聊或私聊在该间隔内只提交一次识图",
+        "slider": {
+          "min": 0,
+          "max": 600,
+          "step": 5
+        }
+      },
+      "daily_recognition_limit": {
+        "description": "每日视觉识别上限",
+        "type": "int",
+        "default": 100,
+        "hint": "达到上限后当天不再调用自动收集视觉模型；0 表示不限制"
+      },
+      "min_meme_confidence": {
+        "description": "最低表情包置信度",
+        "type": "float",
+        "default": 0.85,
+        "hint": "模型判断低于该置信度时不会收录"
+      },
+      "min_category_confidence": {
+        "description": "最低分类置信度",
+        "type": "float",
+        "default": 0.65,
+        "hint": "确认是表情包但分类置信度不足时进入 needs_review，等待人工整理"
+      }
+    }
+  },
   "generation": {
     "description": "表情生成与发送",
     "type": "object",
