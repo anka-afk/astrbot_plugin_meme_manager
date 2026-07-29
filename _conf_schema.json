@@ -201,6 +201,20 @@
     "description": "表情生成与发送",
     "type": "object",
     "items": {
+      "trigger": {
+        "description": "触发范围",
+        "type": "object",
+        "hint": "控制表情附加作用于哪些机器人发言",
+        "items": {
+          "scope": {
+            "description": "表情附加触发范围",
+            "type": "string",
+            "default": "only_chat_llm",
+            "options": ["only_chat_llm", "chat_and_plugin_llm"],
+            "hint": "only_chat_llm=仅对普通聊天 LLM 回复附加（默认）；chat_and_plugin_llm=同时对插件通过 event.request_llm 触发的 LLM 回复附加。第三方 Agent、指令和固定文本不触发"
+          }
+        }
+      },
       "emotion": {
         "description": "情感辅助与旧版分类回退",
         "type": "object",

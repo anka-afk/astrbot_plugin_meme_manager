@@ -41,10 +41,67 @@ from ..backend.text_safety import (
     strip_internal_image_ref_lines,
 )
 from ..config import MEMES_DIR, PLUGIN_DATA_DIR
+from ..utils import probability_hit
+
+
+TRIGGER_SCOPE_CHAT_ONLY = "only_chat_llm"
+TRIGGER_SCOPE_CHAT_AND_PLUGIN = "chat_and_plugin_llm"
+LLM_REQUEST_ORIGIN_EXTRA_KEY = "meme_manager_llm_request_origin"
+LLM_REQUEST_ORIGIN_CHAT = "chat"
+LLM_REQUEST_ORIGIN_PLUGIN = "plugin"
+
+
+def normalize_trigger_scope(value: Any) -> str:
+    """将当前及旧版触发范围归一化为两档 LLM 来源范围。"""
+    scope = str(value or TRIGGER_SCOPE_CHAT_ONLY).strip().lower()
+    if scope in {"all_llm", "all_messages"}:
+        return TRIGGER_SCOPE_CHAT_AND_PLUGIN
+    if scope == TRIGGER_SCOPE_CHAT_AND_PLUGIN:
+        return scope
+    return TRIGGER_SCOPE_CHAT_ONLY
 
 
 class EventHandlerMixin:
     """处理图片上传、LLM 响应解析、消息装饰等事件"""
+
+    async def _mark_llm_request_origin_impl(self, event: AstrMessageEvent) -> None:
+        """在 AstrBot 构建默认请求前记录本轮 LLM 请求来源。"""
+        origin = (
+            LLM_REQUEST_ORIGIN_PLUGIN
+            if event.get_extra("provider_request") is not None
+            else LLM_REQUEST_ORIGIN_CHAT
+        )
+        event.set_extra(LLM_REQUEST_ORIGIN_EXTRA_KEY, origin)
+
+    def _scope_allows_llm_origin(self, event: AstrMessageEvent) -> bool:
+        """判断当前配置是否允许处理该来源的 LLM 请求。"""
+        scope = normalize_trigger_scope(getattr(self, "trigger_scope", None))
+        origin = event.get_extra(LLM_REQUEST_ORIGIN_EXTRA_KEY)
+        if origin == LLM_REQUEST_ORIGIN_CHAT:
+            return True
+        return (
+            scope == TRIGGER_SCOPE_CHAT_AND_PLUGIN
+            and origin == LLM_REQUEST_ORIGIN_PLUGIN
+        )
+
+    def _should_attach_for_result(
+        self,
+        event: AstrMessageEvent,
+        result: Any,
+    ) -> bool:
+        """仅允许配置范围内的内部聊天或插件 LLM 结果附加表情。"""
+        if result is None:
+            return False
+        if not self._scope_allows_llm_origin(event):
+            return False
+        content_type = getattr(result, "result_content_type", None)
+        content_type_name = str(getattr(content_type, "name", content_type) or "")
+        if content_type_name == "STREAMING_FINISH":
+            return True
+        checker = getattr(result, "is_llm_result", None)
+        if callable(checker):
+            return bool(checker())
+        return content_type_name == "LLM_RESULT"
 
     @staticmethod
     def _stringify_emotion_context_text(value: Any) -> str:
@@ -621,6 +678,12 @@ class EventHandlerMixin:
     async def _inject_meme_prompt_impl(
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
+        if not self._scope_allows_llm_origin(event):
+            self._remove_semantic_tool(req)
+            req.system_prompt = self._strip_meme_prompt(req.system_prompt)
+            event.set_extra("meme_manager_semantic_active", False)
+            event.set_extra("meme_manager_semantic_mode", "")
+            return
         self._apply_request_prompt(req, event)
         if not self.emotion_llm_enabled:
             return
@@ -809,6 +872,8 @@ class EventHandlerMixin:
     async def _resp_impl(self, event: AstrMessageEvent, response: LLMResponse):
         """处理 LLM 响应，识别表情"""
 
+        if not self._scope_allows_llm_origin(event):
+            return
         if not response or not response.completion_text:
             return
 
@@ -1019,7 +1084,11 @@ class EventHandlerMixin:
 
         logger.debug(f"[meme_manager] 松散匹配阶段找到的表情: {loose_emotions}")
 
-        if self.emotion_llm_enabled:
+        # 概率预检：旧版路径只掷一次骰，结果存入 extra 供发送阶段复用，
+        # 避免“调用情感模型”与“发送表情”各自掷骰导致概率叠加（p²）。
+        legacy_probability_hit = probability_hit(self.emotions_probability)
+        event.set_extra("meme_manager_legacy_probability_hit", legacy_probability_hit)
+        if self.emotion_llm_enabled and legacy_probability_hit:
             try:
                 category_catalog = [
                     {
@@ -1186,10 +1255,17 @@ class EventHandlerMixin:
                 return
 
             # 第二步：语义模式按候选 ID 精确取图，不走概率、分类目录和 random.choice。
+            # 触发范围门控：仅在配置允许的消息类型上附加表情图片；
+            # 文本标记清理（第一步）不受此门控影响，始终执行。
+            scope_allows_attach = self._should_attach_for_result(event, result)
             semantic_selected_ids = (
                 event.get_extra("meme_manager_semantic_selected_ids") or []
             )
-            if semantic_selected_ids and self._semantic_mode_active(event):
+            if (
+                scope_allows_attach
+                and semantic_selected_ids
+                and self._semantic_mode_active(event)
+            ):
                 memes_root = self._get_runtime_memes_dir_for_event(event)
                 pack_context = self._resolve_runtime_pack_context(event=event)
                 semantic_images = []
@@ -1210,17 +1286,40 @@ class EventHandlerMixin:
                 if semantic_temp_files:
                     event.set_extra("meme_manager_temp_files", semantic_temp_files)
                 if semantic_images:
-                    # 语义模式不再随机丢弃模型已经选择的候选。
-                    event.set_extra("meme_manager_pending_images", semantic_images)
+                    # 语义模式不再随机丢弃模型已经选择的候选；
+                    # 发送方式（合并/分离）按 mixed_message 概率决定，与旧版路径一致。
+                    use_mixed_message = False
+                    if self.enable_mixed_message:
+                        use_mixed_message = (
+                            random.randint(1, 100) <= self.mixed_message_probability
+                        )
+                    if use_mixed_message and self.send_image_as_base64:
+                        normalized_images = []
+                        for image in semantic_images:
+                            normalized_images.append(
+                                await self._ensure_image_send_format(image)
+                            )
+                        semantic_images = normalized_images
+                    if use_mixed_message:
+                        cleaned_components = self._merge_components_with_images(
+                            cleaned_components, semantic_images
+                        )
+                    else:
+                        event.set_extra(
+                            "meme_manager_pending_images", semantic_images
+                        )
             # 第三步：旧模式添加表情图片（如果有找到的表情）
             found_emotions = event.get_extra("found_emotions") or []
-            if found_emotions and not semantic_selected_ids:
+            if scope_allows_attach and found_emotions and not semantic_selected_ids:
                 memes_root = self._get_runtime_memes_dir_for_event(event)
-                # 检查概率（注意：概率判断是"小于等于"才发送）
-                random_value = random.randint(1, 100)
-                threshold = self.emotions_probability
-
-                if random_value <= threshold:
+                # 概率判定复用 _resp_impl 阶段的预检结果（避免二次掷骰）；
+                # extra 缺失（异常路径）时回退本地掷骰，保持旧行为。
+                legacy_probability_hit = event.get_extra(
+                    "meme_manager_legacy_probability_hit"
+                )
+                if legacy_probability_hit is None:
+                    legacy_probability_hit = probability_hit(self.emotions_probability)
+                if legacy_probability_hit:
                     # 创建表情图片列表
                     emotion_images = []
                     temp_files = []  # 记录临时文件路径
@@ -1473,6 +1572,11 @@ class EventHandlerMixin:
 
     async def _send_memes_streaming(self, event: AstrMessageEvent):
         """流式传输兼容模式：在流式消息发送完成后，主动发送表情图片作为独立消息。"""
+        # 流式结果仍须通过请求来源门控，与非流式主路径保持一致。
+        if not self._should_attach_for_result(event, event.get_result()):
+            event.set_extra("meme_manager_semantic_selected_ids", None)
+            event.set_extra("found_emotions", None)
+            return
         semantic_selected_ids = (
             event.get_extra("meme_manager_semantic_selected_ids") or []
         )
@@ -1505,8 +1609,13 @@ class EventHandlerMixin:
         memes_root = self._get_runtime_memes_dir_for_event(event)
 
         try:
-            random_value = random.randint(1, 100)
-            if random_value > self.emotions_probability:
+            # 概率判定复用 _resp_impl 阶段的预检结果；extra 缺失时回退本地掷骰。
+            legacy_probability_hit = event.get_extra(
+                "meme_manager_legacy_probability_hit"
+            )
+            if legacy_probability_hit is None:
+                legacy_probability_hit = probability_hit(self.emotions_probability)
+            if not legacy_probability_hit:
                 return
 
             for emotion in found_emotions:

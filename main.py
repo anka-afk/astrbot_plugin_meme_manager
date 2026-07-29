@@ -30,9 +30,9 @@ from .config import (
 from .image_host.img_sync import ImageSync
 from .init import init_plugin
 from .mixins.commands import CommandMixin
-from .mixins.event_handlers import EventHandlerMixin
+from .mixins.event_handlers import EventHandlerMixin, normalize_trigger_scope
 from .mixins.web_api import WebAPIMixin
-from .utils import dict_to_string, load_json, normalize_probability, probability_hit
+from .utils import dict_to_string, load_json
 
 MEME_PROMPT_MARKER_START = "<!-- meme_manager_prompt:start -->"
 MEME_PROMPT_MARKER_END = "<!-- meme_manager_prompt:end -->"
@@ -259,6 +259,13 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             default="&&[a-zA-Z]*&&",
             legacy_keys=("content_cleanup_rule",),
         )
+        # 表情附加触发范围：仅普通聊天 / 普通聊天及插件触发的 LLM
+        self.trigger_scope = normalize_trigger_scope(
+            self._read_config_value(
+                ("generation", "trigger", "scope"),
+                default="only_chat_llm",
+            )
+        )
 
         # 构建表情包提示词
         self.sys_prompt_add = ""
@@ -308,6 +315,10 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
     async def handle_upload_image(self, event: AstrMessageEvent):
         async for result in self._handle_upload_image_impl(event):
             yield result
+
+    @filter.on_waiting_llm_request(priority=99999)
+    async def mark_llm_request_origin(self, event: AstrMessageEvent):
+        return await self._mark_llm_request_origin_impl(event)
 
     @filter.on_llm_request(priority=99999)
     async def inject_meme_prompt(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -810,7 +821,6 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
     ) -> None:
         semantic_mode = ""
         semantic_tool_ready = False
-        semantic_probability_hit = None
         if self.emotion_llm_enabled:
             if self._semantic_pack_ready(event=event, req=req):
                 semantic_mode = "llm"
@@ -819,22 +829,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 event=event, req=req, require_tool=True
             )
             if semantic_tool_ready:
-                semantic_probability_hit = probability_hit(self.emotions_probability)
-                if semantic_probability_hit:
-                    semantic_mode = "tool"
-                logger.info(
-                    "[meme_manager] 语义表情触发判定: 概率=%s%%, 结果=%s",
-                    normalize_probability(self.emotions_probability),
-                    "命中" if semantic_probability_hit else "跳过",
-                )
+                semantic_mode = "tool"
         semantic_active = bool(semantic_mode)
         if event is not None and hasattr(event, "set_extra"):
             event.set_extra("meme_manager_semantic_active", semantic_active)
             event.set_extra("meme_manager_semantic_mode", semantic_mode)
-            event.set_extra(
-                "meme_manager_semantic_probability_hit",
-                semantic_probability_hit,
-            )
             event.set_extra(
                 "meme_manager_semantic_verified_pack_id",
                 str(event.get_extra("meme_manager_runtime_pack_id") or "")
@@ -856,11 +855,6 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             )
             return
         self._remove_semantic_tool(req)
-        if semantic_tool_ready:
-            # 本轮概率未命中：既不暴露工具，也不回退到旧版标签提示，
-            # 避免绕过本轮概率判定后仍然产生表情。
-            req.system_prompt = self._strip_meme_prompt(req.system_prompt)
-            return
         if semantic_mode == "llm" or self.emotion_llm_enabled:
             req.system_prompt = self._strip_meme_prompt(req.system_prompt)
             return
