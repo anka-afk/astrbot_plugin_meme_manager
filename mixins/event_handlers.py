@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import os
@@ -452,7 +453,7 @@ class EventHandlerMixin:
         clean_text = re.sub(r"&&+", "", clean_text)
         return clean_text, found_emotions
 
-    def _build_emotion_images_for_event(
+    async def _build_emotion_images_for_event(
         self,
         event: AstrMessageEvent,
         emotions: list[str],
@@ -489,7 +490,9 @@ class EventHandlerMixin:
             meme_file = os.path.join(emotion_path, meme)
 
             try:
-                final_meme_file = self._convert_to_gif(meme_file)
+                final_meme_file = await asyncio.to_thread(
+                    self._convert_to_gif, meme_file
+                )
                 if final_meme_file != meme_file:
                     temp_files.append(final_meme_file)
                 emotion_images.append(Image.fromFileSystem(final_meme_file))
@@ -532,7 +535,7 @@ class EventHandlerMixin:
         # 去重；严格数量限制由兼容配置决定。
         filtered_emotions = self._filter_emotion_selection(found_emotions)
 
-        emotion_images, temp_files = self._build_emotion_images_for_event(
+        emotion_images, temp_files = await self._build_emotion_images_for_event(
             event,
             filtered_emotions,
         )
@@ -1292,7 +1295,9 @@ class EventHandlerMixin:
                     if image_path is None:
                         continue
                     try:
-                        final_path = self._convert_to_gif(str(image_path))
+                        final_path = await asyncio.to_thread(
+                            self._convert_to_gif, str(image_path)
+                        )
                         if final_path != str(image_path):
                             semantic_temp_files.append(final_path)
                         semantic_images.append(Image.fromFileSystem(final_path))
@@ -1360,7 +1365,9 @@ class EventHandlerMixin:
 
                         try:
                             # 转换静态图为 GIF（如果配置开启）
-                            final_meme_file = self._convert_to_gif(meme_file)
+                            final_meme_file = await asyncio.to_thread(
+                                self._convert_to_gif, meme_file
+                            )
                             if final_meme_file != meme_file:
                                 temp_files.append(final_meme_file)
                             emotion_images.append(Image.fromFileSystem(final_meme_file))
@@ -1602,7 +1609,9 @@ class EventHandlerMixin:
                     )
                     if image_path is None:
                         continue
-                    final_path = self._convert_to_gif(str(image_path))
+                    final_path = await asyncio.to_thread(
+                        self._convert_to_gif, str(image_path)
+                    )
                     try:
                         await self._send_meme_image(
                             event, Image.fromFileSystem(final_path)
@@ -1649,7 +1658,9 @@ class EventHandlerMixin:
 
                 meme = random.choice(memes)
                 meme_file = os.path.join(emotion_path, meme)
-                final_meme_file = self._convert_to_gif(meme_file)
+                final_meme_file = await asyncio.to_thread(
+                    self._convert_to_gif, meme_file
+                )
 
                 try:
                     await self._send_meme_image(

@@ -531,7 +531,32 @@ class SemanticTaskManager:
             raise TypeError("mutation 必须可调用")
         async with self._lock(pack_id):
             self.assert_pack_mutation_allowed(pack_id, operation)
-            return await asyncio.to_thread(mutation)
+            return await self._run_blocking(mutation)
+
+    @staticmethod
+    async def _run_blocking(function: Any, *args: Any, **kwargs: Any) -> Any:
+        """运行同步工作，并在协程取消前等待工作线程安全收尾。
+
+        Args:
+            function: 要在工作线程中执行的同步可调用对象。
+            *args: 传递给可调用对象的位置参数。
+            **kwargs: 传递给可调用对象的关键字参数。
+
+        Returns:
+            同步可调用对象的返回值。
+
+        Raises:
+            asyncio.CancelledError: 调用协程被取消且工作线程已经收尾。
+        """
+        worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(worker)
+            except Exception:
+                pass
+            raise
 
     async def _cancel_index_task(self, pack_id: str) -> None:
         index_task = self._index_tasks.get(pack_id)
@@ -1985,25 +2010,29 @@ class SemanticTaskManager:
     async def _run(self, pack_id: str, *, mode: str, force: bool) -> None:
         pack_dir = self._pack_dir(pack_id)
         try:
-            metadata = load_metadata(pack_dir)
+            metadata = await self._run_blocking(load_metadata, pack_dir)
             vision_provider = str(
                 self.config.get("vision_provider_id")
                 or self.config.get("visual_provider_id")
                 or ""
             )
             embedding = self._embedding_adapter(pack_id)
-            descriptions = load_category_descriptions(pack_dir)
-            memes_root = pack_dir / "memes"
-            available_categories = (
-                {
-                    path.name: str(descriptions.get(path.name) or "")
-                    for path in memes_root.iterdir()
-                    if path.is_dir() and path.name != REVIEW_CATEGORY
-                }
-                if memes_root.is_dir()
-                else {}
+            descriptions = await self._run_blocking(
+                load_category_descriptions, pack_dir
             )
-            state = self._load_state(pack_id)
+            memes_root = pack_dir / "memes"
+            available_categories = await self._run_blocking(
+                lambda: (
+                    {
+                        path.name: str(descriptions.get(path.name) or "")
+                        for path in memes_root.iterdir()
+                        if path.is_dir() and path.name != REVIEW_CATEGORY
+                    }
+                    if memes_root.is_dir()
+                    else {}
+                )
+            )
+            state = await self._run_blocking(self._load_state, pack_id)
             try:
                 concurrency = max(1, min(16, int(state.get("concurrency") or 1)))
             except (TypeError, ValueError):
@@ -2049,18 +2078,20 @@ class SemanticTaskManager:
                     await asyncio.gather(*caption_tasks, return_exceptions=True)
                     raise
             pause_event = self._pause_events.setdefault(pack_id, asyncio.Event())
-            while self._load_state(pack_id).get("task_status") == "paused":
+            while (await self._run_blocking(self._load_state, pack_id)).get(
+                "task_status"
+            ) == "paused":
                 await pause_event.wait()
-            reclassification_result = apply_conflict_reclassifications(
-                pack_dir, metadata
+            reclassification_result = await self._run_blocking(
+                apply_conflict_reclassifications, pack_dir, metadata
             )
             if reclassification_result.get("moved"):
-                state = self._load_state(pack_id)
+                state = await self._run_blocking(self._load_state, pack_id)
                 state["reclassified_items"] = int(
                     state.get("reclassified_items", 0) or 0
                 ) + int(reclassification_result["moved"])
                 state["updated_at"] = utc_now()
-                self._save_state(pack_id, state)
+                await self._run_blocking(self._save_state, pack_id, state)
             has_caption = any(
                 isinstance(item, dict)
                 and item.get("caption_status") == "done"
@@ -2087,8 +2118,9 @@ class SemanticTaskManager:
                 )
             elif embedding.ready and has_caption and all_captions_done:
                 # build_index 会从旧 FAISS 复用未变化向量，只补充新增或变化的图片。
-                index_state = self._load_state(pack_id)
-                self._save_state(
+                index_state = await self._run_blocking(self._load_state, pack_id)
+                await self._run_blocking(
+                    self._save_state,
                     pack_id,
                     {
                         **index_state,
@@ -2115,8 +2147,8 @@ class SemanticTaskManager:
                         continue
                     item["embedding_status"] = "failed"
                     item["error"] = "未配置 AstrBot 核心向量模型"
-                save_metadata(pack_dir, metadata)
-            latest = load_metadata(pack_dir)
+                await self._run_blocking(save_metadata, pack_dir, metadata)
+            latest = await self._run_blocking(load_metadata, pack_dir)
             if mode != "caption_only":
                 failed = any(
                     isinstance(item, dict)
@@ -2127,7 +2159,7 @@ class SemanticTaskManager:
                     )
                     for item in latest.get("images", {}).values()
                 )
-            final_state = self._load_state(pack_id)
+            final_state = await self._run_blocking(self._load_state, pack_id)
             final_state.update(
                 {
                     "task_status": "completed_with_errors" if failed else "completed",
@@ -2139,11 +2171,11 @@ class SemanticTaskManager:
                     "updated_at": utc_now(),
                 }
             )
-            self._save_state(pack_id, final_state)
+            await self._run_blocking(self._save_state, pack_id, final_state)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            failed_state = self._load_state(pack_id)
+            failed_state = await self._run_blocking(self._load_state, pack_id)
             failed_state.update(
                 {
                     "task_status": "failed",
@@ -2156,4 +2188,4 @@ class SemanticTaskManager:
                     "updated_at": utc_now(),
                 }
             )
-            self._save_state(pack_id, failed_state)
+            await self._run_blocking(self._save_state, pack_id, failed_state)

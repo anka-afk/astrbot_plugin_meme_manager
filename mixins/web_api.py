@@ -1736,12 +1736,18 @@ class WebAPIMixin:
         )
         if size == "preview" and mime_type != "image/gif":
             try:
-                data_url, mime_type = self._build_preview_data_url(file_path)
+                data_url, mime_type = await asyncio.to_thread(
+                    self._build_preview_data_url, file_path
+                )
             except Exception as exc:
                 logger.warning(f"生成预览缩略图失败，回退原图数据: {exc}")
-                data_url = self._build_file_data_url(file_path, mime_type)
+                data_url = await asyncio.to_thread(
+                    self._build_file_data_url, file_path, mime_type
+                )
         else:
-            data_url = self._build_file_data_url(file_path, mime_type)
+            data_url = await asyncio.to_thread(
+                self._build_file_data_url, file_path, mime_type
+            )
 
         return jsonify(
             {
@@ -2636,7 +2642,8 @@ class WebAPIMixin:
     async def _api_fetch_community_index(self):
         try:
             index_url = COMMUNITY_INDEX_URL
-            cache_data = fetch_and_cache_community_index(
+            cache_data = await asyncio.to_thread(
+                fetch_and_cache_community_index,
                 index_url,
                 github_accelerator_url=self._get_github_accelerator_url(),
             )

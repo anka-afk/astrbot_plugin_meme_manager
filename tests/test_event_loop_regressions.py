@@ -36,6 +36,33 @@ class EventLoopBlockingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(loop_progressed)
         self.assertNotEqual(mutation_thread, event_loop_thread)
 
+    async def test_cancelled_pack_mutation_keeps_lock_until_thread_finishes(self):
+        manager = object.__new__(SemanticTaskManager)
+        lock = asyncio.Lock()
+        manager._lock = lambda _pack_id: lock
+        manager.assert_pack_mutation_allowed = lambda _pack_id, _operation: None
+        started = threading.Event()
+        release = threading.Event()
+
+        def mutation():
+            started.set()
+            release.wait(timeout=1)
+
+        task = asyncio.create_task(
+            manager.run_locked_pack_mutation("pack-a", "测试取消", mutation)
+        )
+        await asyncio.to_thread(started.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0)
+
+        self.assertTrue(lock.locked())
+        self.assertFalse(task.done())
+
+        release.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertFalse(lock.locked())
+
     async def test_sync_status_check_runs_outside_event_loop_thread(self):
         client = object.__new__(ImageSync)
         client.sync_process = None

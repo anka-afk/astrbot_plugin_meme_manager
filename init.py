@@ -1,6 +1,6 @@
+import json
 import logging
 import os
-import json
 
 from .config import (
     ACTIVE_PACK_MANIFEST_PATH,

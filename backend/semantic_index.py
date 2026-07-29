@@ -36,6 +36,31 @@ _QUERY_VECTOR_CACHE: OrderedDict[tuple[str, str], tuple[float, ...]] = OrderedDi
 _FAISS_INDEX_CACHE: OrderedDict[str, tuple[tuple[int, int], Any]] = OrderedDict()
 
 
+async def _run_blocking(function: Any, *args: Any, **kwargs: Any) -> Any:
+    """运行同步工作，并在取消前等待工作线程安全收尾。
+
+    Args:
+        function: 要在工作线程中执行的同步可调用对象。
+        *args: 传递给可调用对象的位置参数。
+        **kwargs: 传递给可调用对象的关键字参数。
+
+    Returns:
+        同步可调用对象的返回值。
+
+    Raises:
+        asyncio.CancelledError: 调用协程被取消且工作线程已经收尾。
+    """
+    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.shield(worker)
+        except Exception:
+            pass
+        raise
+
+
 def _manifest_int(value: Any) -> int | None:
     """Parse a non-negative integer from an untrusted index manifest field.
 
@@ -436,8 +461,8 @@ async def build_index(
     """
     if not embedding.ready:
         raise RuntimeError("未配置 AstrBot 核心向量模型")
-    faiss, np = _import_faiss_modules()
-    metadata = load_metadata(pack_dir)
+    faiss, np = await _run_blocking(_import_faiss_modules)
+    metadata = await _run_blocking(load_metadata, pack_dir)
     candidates: list[tuple[str, dict[str, Any]]] = []
     for digest, value in metadata.get("images", {}).items():
         if (
@@ -455,7 +480,7 @@ async def build_index(
     if not candidates:
         raise RuntimeError("没有已完成的语义描述，无法建立索引")
 
-    old_manifest = load_index_manifest(plugin_data_dir, pack_id)
+    old_manifest = await _run_blocking(load_index_manifest, plugin_data_dir, pack_id)
     same_provider = bool(
         old_manifest.get("index_format") == INDEX_FORMAT
         and str(old_manifest.get("metadata_schema_version") or "") == SCHEMA_VERSION
@@ -464,16 +489,16 @@ async def build_index(
         and _manifest_int(old_manifest.get("embedding_dimension", 0))
         == embedding.dimension
     )
-    old_index = (
-        _read_faiss_index(plugin_data_dir, pack_id, old_manifest)
-        if same_provider and not force
-        else None
-    )
-    vectors = (
-        _reconstruct_reusable_vectors(old_index, old_manifest, candidates)
-        if old_index is not None
-        else {}
-    )
+    old_index = None
+    if same_provider and not force:
+        old_index = await _run_blocking(
+            _read_faiss_index, plugin_data_dir, pack_id, old_manifest
+        )
+    vectors = {}
+    if old_index is not None:
+        vectors = await _run_blocking(
+            _reconstruct_reusable_vectors, old_index, old_manifest, candidates
+        )
 
     pending = [(digest, item) for digest, item in candidates if digest not in vectors]
     target_ids = {str(value) for value in (target_entry_ids or set()) if str(value)}
@@ -497,7 +522,7 @@ async def build_index(
             item["embedding_status"] = "done"
             item["error"] = None
     if pending:
-        save_metadata(pack_dir, metadata)
+        await _run_blocking(save_metadata, pack_dir, metadata)
 
     if pending:
         try:
@@ -517,7 +542,7 @@ async def build_index(
                 item["error"] = None
                 item["updated_at"] = utc_now()
             metadata["requires_local_index_rebuild"] = True
-            save_metadata(pack_dir, metadata)
+            await _run_blocking(save_metadata, pack_dir, metadata)
             raise
         except Exception:
             for digest, item in pending:
@@ -539,7 +564,7 @@ async def build_index(
     ]
     if target_entry_ids is not None and failed_pending:
         metadata["requires_local_index_rebuild"] = True
-        save_metadata(pack_dir, metadata)
+        await _run_blocking(save_metadata, pack_dir, metadata)
         raise RuntimeError("当前图片向量更新失败，旧索引已保持不变")
     if target_entry_ids is not None:
         changed_targets = []
@@ -558,48 +583,57 @@ async def build_index(
                 changed_targets.append(digest)
         if changed_targets:
             metadata["requires_local_index_rebuild"] = True
-            save_metadata(pack_dir, metadata)
+            await _run_blocking(save_metadata, pack_dir, metadata)
             raise RuntimeError("向量生成期间图片已被删除、移动或替换，旧索引已保持不变")
 
-    successful = [
-        (digest, item)
-        for digest, item in sorted(candidates)
-        if digest in vectors and item.get("embedding_status") == "done"
-    ]
-    base_index = faiss.IndexFlatIP(embedding.dimension)
-    index = faiss.IndexIDMap2(base_index)
-    manifest_items: dict[str, dict[str, Any]] = {}
-    if successful:
-        matrix = np.asarray(
-            [vectors[digest] for digest, _ in successful], dtype="float32"
-        )
-        faiss.normalize_L2(matrix)
-        ids = np.arange(1, len(successful) + 1, dtype="int64")
-        index.add_with_ids(matrix, ids)
-        for faiss_id, (digest, item) in zip(ids.tolist(), successful):
-            manifest_items[digest] = {
-                "faiss_id": faiss_id,
-                "text_hash": str(item.get("text_hash") or ""),
-            }
+    def persist_index() -> dict[str, Any]:
+        """构建并持久化 FAISS 索引及关联元数据。
 
-    index_filename = _write_faiss_index(plugin_data_dir, pack_id, index)
-    manifest = {
-        "pack_id": pack_id,
-        "metadata_schema_version": SCHEMA_VERSION,
-        "index_format": INDEX_FORMAT,
-        "index_file": index_filename,
-        "embedding_provider_id": embedding.provider_id,
-        "embedding_model": embedding.model_name,
-        "embedding_dimension": embedding.dimension,
-        "distance": "cosine",
-        "item_count": len(successful),
-        "items": manifest_items,
-        "built_at": utc_now(),
-    }
-    _write_manifest(plugin_data_dir, pack_id, manifest)
-    metadata["requires_local_index_rebuild"] = bool(failed_pending)
-    save_metadata(pack_dir, metadata)
-    _cleanup_old_index_snapshots(plugin_data_dir, pack_id, index_filename)
+        Returns:
+            已写入磁盘的索引清单。
+        """
+        successful = [
+            (digest, item)
+            for digest, item in sorted(candidates)
+            if digest in vectors and item.get("embedding_status") == "done"
+        ]
+        base_index = faiss.IndexFlatIP(embedding.dimension)
+        index = faiss.IndexIDMap2(base_index)
+        manifest_items: dict[str, dict[str, Any]] = {}
+        if successful:
+            matrix = np.asarray(
+                [vectors[digest] for digest, _ in successful], dtype="float32"
+            )
+            faiss.normalize_L2(matrix)
+            ids = np.arange(1, len(successful) + 1, dtype="int64")
+            index.add_with_ids(matrix, ids)
+            for faiss_id, (digest, item) in zip(ids.tolist(), successful):
+                manifest_items[digest] = {
+                    "faiss_id": faiss_id,
+                    "text_hash": str(item.get("text_hash") or ""),
+                }
+
+        index_filename = _write_faiss_index(plugin_data_dir, pack_id, index)
+        manifest = {
+            "pack_id": pack_id,
+            "metadata_schema_version": SCHEMA_VERSION,
+            "index_format": INDEX_FORMAT,
+            "index_file": index_filename,
+            "embedding_provider_id": embedding.provider_id,
+            "embedding_model": embedding.model_name,
+            "embedding_dimension": embedding.dimension,
+            "distance": "cosine",
+            "item_count": len(successful),
+            "items": manifest_items,
+            "built_at": utc_now(),
+        }
+        _write_manifest(plugin_data_dir, pack_id, manifest)
+        metadata["requires_local_index_rebuild"] = bool(failed_pending)
+        save_metadata(pack_dir, metadata)
+        _cleanup_old_index_snapshots(plugin_data_dir, pack_id, index_filename)
+        return manifest
+
+    manifest = await _run_blocking(persist_index)
     return {
         **manifest,
         "requested_embedding_count": len(pending),
