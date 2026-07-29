@@ -334,13 +334,13 @@
           "max_per_message": {
             "description": "每次回复最多使用表情数量",
             "type": "int",
-            "default": 2,
+            "default": 1,
             "hint": "每次回复最多使用表情数量"
           },
           "probability": {
             "description": "表情出现概率",
             "type": "int",
-            "default": 50,
+            "default": 25,
             "hint": "语义 Tool 模式下，每轮按此概率决定是否注入并要求回复模型调用 search_memes，范围为 1-100",
             "slider": {
               "min": 1,
