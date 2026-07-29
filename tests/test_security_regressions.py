@@ -24,6 +24,9 @@ models = importlib.import_module("astrbot_plugin_meme_manager.backend.models")
 category_manager_module = importlib.import_module(
     "astrbot_plugin_meme_manager.backend.category_manager"
 )
+pack_storage = importlib.import_module(
+    "astrbot_plugin_meme_manager.backend.pack_storage"
+)
 
 
 class CategoryPathSafetyTests(unittest.TestCase):
@@ -98,6 +101,59 @@ class DomXssRegressionTests(unittest.TestCase):
         self.assertNotIn("errors.map((item) => `<li>${item}</li>`)", source)
         self.assertIn("option.textContent", source)
         self.assertIn("targetInputElement.value", source)
+
+
+class ArchiveDownloadProgressTests(unittest.TestCase):
+    def test_github_archive_streams_chunks_and_reports_progress(self):
+        class DownloadResponse:
+            status_code = 200
+            headers = {"content-length": "6"}
+            closed = False
+
+            def iter_content(self, chunk_size):
+                self.chunk_size = chunk_size
+                yield b"abc"
+                yield b"def"
+
+            def close(self):
+                self.closed = True
+
+        response = DownloadResponse()
+        progress = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target_path = Path(temp_dir) / "archive.zip"
+            with patch.object(
+                pack_storage,
+                "_http_get_with_optional_acceleration",
+                return_value=response,
+            ) as http_get:
+                pack_storage._download_github_archive(
+                    "owner/repo",
+                    "main",
+                    target_path,
+                    progress_callback=lambda phase, downloaded, total: progress.append(
+                        (phase, downloaded, total)
+                    ),
+                )
+
+            self.assertEqual(target_path.read_bytes(), b"abcdef")
+
+        http_get.assert_called_once_with(
+            "https://github.com/owner/repo/archive/main.zip",
+            timeout=30,
+            github_accelerator_url="",
+            stream=True,
+        )
+        self.assertEqual(
+            progress,
+            [
+                ("downloading", 0, 6),
+                ("downloading", 3, 6),
+                ("downloading", 6, 6),
+            ],
+        )
+        self.assertEqual(response.chunk_size, 1024 * 1024)
+        self.assertTrue(response.closed)
 
 
 class RuntimePackSwitchTests(unittest.TestCase):

@@ -9,13 +9,12 @@
   --muted: #5d6f74;
   --line: #d6e5e1;
   --panel: rgba(255, 255, 255, 0.96);
-  --bg:
-    radial-gradient(circle at 8% 12%, rgba(29, 138, 102, 0.2), transparent 34%),
-    radial-gradient(
-      circle at 92% 10%,
-      rgba(31, 111, 176, 0.2),
-      transparent 30%
+  --bg: radial-gradient(
+      circle at 8% 12%,
+      rgba(29, 138, 102, 0.2),
+      transparent 34%
     ),
+    radial-gradient(circle at 92% 10%, rgba(31, 111, 176, 0.2), transparent 30%),
     linear-gradient(130deg, #f4faf7 0%, #ecf6f9 50%, #f8fcff 100%);
   --shadow-sm: 0 12px 24px rgba(20, 56, 59, 0.08);
   --shadow-md: 0 20px 46px rgba(20, 56, 59, 0.12);
@@ -29,9 +28,8 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font-family:
-    "Noto Sans SC", "Segoe UI Variable", "PingFang SC", "Microsoft YaHei",
-    sans-serif;
+  font-family: "Noto Sans SC", "Segoe UI Variable", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
   color: var(--ink);
   background: var(--bg);
 }
@@ -301,6 +299,65 @@ button:disabled {
   gap: 8px;
 }
 
+.progress-dialog-card {
+  width: min(520px, 100%);
+}
+
+.progress-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 16px 0 9px;
+  color: #33483e;
+  font-size: 14px;
+}
+
+.progress-summary strong {
+  color: var(--brand-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-track {
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e4eeea;
+  box-shadow: inset 0 1px 2px rgba(20, 56, 59, 0.12);
+}
+
+.progress-bar {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--brand), #38aa82);
+  box-shadow: 0 0 12px rgba(29, 138, 102, 0.28);
+  transition: width 0.25s ease;
+}
+
+.progress-track.indeterminate .progress-bar {
+  width: 32% !important;
+  animation: progress-indeterminate 1.2s ease-in-out infinite;
+}
+
+.progress-bytes {
+  min-height: 18px;
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes progress-indeterminate {
+  from {
+    transform: translateX(-110%);
+  }
+
+  to {
+    transform: translateX(330%);
+  }
+}
+
 .triple-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -364,8 +421,7 @@ button:disabled {
   border-radius: 10px;
   overflow: hidden;
   border: 1px solid rgba(214, 229, 225, 0.9);
-  background:
-    radial-gradient(
+  background: radial-gradient(
       circle at 14% 20%,
       rgba(29, 138, 102, 0.18),
       transparent 38%

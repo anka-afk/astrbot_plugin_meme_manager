@@ -99,6 +99,8 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         self.img_sync_provider_type = None
         self._img_sync_pack_id = ""
         self._last_img_host_sync_task_status = None
+        self._community_install_jobs = {}
+        self._community_install_tasks = set()
         image_host_type = self._get_image_host_type()
         webdav_config = self._get_webdav_config()
         if image_host_type == "stardots" and self._has_required_config(
@@ -964,6 +966,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
     async def terminate(self):
         if getattr(self, "auto_collect_manager", None):
             await self.auto_collect_manager.close()
+        install_tasks = list(getattr(self, "_community_install_tasks", set()))
+        for task in install_tasks:
+            task.cancel()
+        if install_tasks:
+            await asyncio.gather(*install_tasks, return_exceptions=True)
         initial_task = getattr(self, "_semantic_initial_rebuild_task", None)
         if initial_task and not initial_task.done():
             initial_task.cancel()

@@ -48,6 +48,7 @@ from .semantic_storage import (
 )
 
 PackOperationGuard = Callable[[str, str], None]
+InstallProgressCallback = Callable[[str, int, int | None], None]
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 MAX_ARCHIVE_FILE_COUNT = 20_000
 MAX_ARCHIVE_COMPRESSED_BYTES = 1024 * 1024 * 1024
@@ -79,23 +80,41 @@ def _http_get_with_optional_acceleration(
     raw_url: str,
     timeout: int,
     github_accelerator_url: str = "",
+    stream: bool = False,
 ) -> requests.Response:
+    """请求 GitHub 资源，并在加速地址失败时回退原始地址。
+
+    Args:
+        raw_url: 原始资源地址。
+        timeout: 请求超时秒数。
+        github_accelerator_url: 可选的 GitHub 加速地址。
+        stream: 是否以流式响应返回，用于分块下载大文件。
+
+    Returns:
+        成功建立连接的 HTTP 响应。
+
+    Raises:
+        ValueError: 加速地址和原始地址均无法访问时抛出。
+    """
     request_url = _build_accelerated_url(raw_url, github_accelerator_url)
     last_error = None
 
     if request_url and request_url != raw_url:
         try:
-            accelerated_response = requests.get(request_url, timeout=timeout)
+            accelerated_response = requests.get(
+                request_url, timeout=timeout, stream=stream
+            )
             if accelerated_response.status_code == 200:
                 return accelerated_response
             last_error = ValueError(
                 f"加速地址请求失败，状态码: {accelerated_response.status_code}"
             )
+            accelerated_response.close()
         except Exception as exc:
             last_error = exc
 
     try:
-        native_response = requests.get(raw_url, timeout=timeout)
+        native_response = requests.get(raw_url, timeout=timeout, stream=stream)
         return native_response
     except Exception as exc:
         if last_error is not None:
@@ -1403,17 +1422,50 @@ def _download_github_archive(
     ref: str,
     target_zip_path: Path,
     github_accelerator_url: str = "",
+    progress_callback: InstallProgressCallback | None = None,
 ) -> None:
+    """分块下载 GitHub 仓库压缩包并报告真实字节进度。
+
+    Args:
+        repo: GitHub 仓库名，格式为 ``owner/repo``。
+        ref: 要下载的分支、标签或提交。
+        target_zip_path: 压缩包写入路径。
+        github_accelerator_url: 可选的 GitHub 加速地址。
+        progress_callback: 下载阶段、已下载字节和总字节的回调。
+
+    Raises:
+        ValueError: 下载失败或压缩包超过安全大小限制时抛出。
+    """
     archive_url = f"https://github.com/{repo}/archive/{ref}.zip"
     response = _http_get_with_optional_acceleration(
         archive_url,
         timeout=30,
         github_accelerator_url=github_accelerator_url,
+        stream=True,
     )
-    if response.status_code != 200:
-        raise ValueError(f"下载 GitHub 压缩包失败，状态码: {response.status_code}")
-    target_zip_path.parent.mkdir(parents=True, exist_ok=True)
-    target_zip_path.write_bytes(response.content)
+    try:
+        if response.status_code != 200:
+            raise ValueError(f"下载 GitHub 压缩包失败，状态码: {response.status_code}")
+        total_bytes = _safe_nonnegative_int(response.headers.get("content-length"))
+        if total_bytes is not None and total_bytes > MAX_ARCHIVE_COMPRESSED_BYTES:
+            raise ValueError("GitHub 压缩包超过 1 GB 安全限制")
+
+        target_zip_path.parent.mkdir(parents=True, exist_ok=True)
+        downloaded_bytes = 0
+        if progress_callback:
+            progress_callback("downloading", downloaded_bytes, total_bytes)
+        with target_zip_path.open("wb") as file_obj:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                downloaded_bytes += len(chunk)
+                if downloaded_bytes > MAX_ARCHIVE_COMPRESSED_BYTES:
+                    raise ValueError("GitHub 压缩包超过 1 GB 安全限制")
+                file_obj.write(chunk)
+                if progress_callback:
+                    progress_callback("downloading", downloaded_bytes, total_bytes)
+    finally:
+        response.close()
 
 
 def fetch_and_cache_community_index(
@@ -1482,11 +1534,32 @@ def install_pack_from_github_source(
     set_as_default: bool = False,
     operation_guard: PackOperationGuard | None = None,
     github_accelerator_url: str = "",
+    progress_callback: InstallProgressCallback | None = None,
 ) -> dict:
+    """从 GitHub 来源下载并安装表情包。
+
+    Args:
+        source: 已声明仓库、引用和子目录的 GitHub 来源描述。
+        overwrite: 是否覆盖同 ID 的已安装表情包。
+        set_as_default: 是否在安装后将表情包设为默认。
+        operation_guard: 写入资源包前调用的并发操作保护器。
+        github_accelerator_url: 可选的 GitHub 加速地址。
+        progress_callback: 安装阶段、已下载字节和总字节的回调。
+
+    Returns:
+        已安装表情包的信息。
+
+    Raises:
+        FileExistsError: 目标表情包已存在且未允许覆盖时抛出。
+        FileNotFoundError: 来源中的表情包目录不存在时抛出。
+        ValueError: 来源、压缩包或表情包结构无效时抛出。
+    """
     github_source = validate_source_descriptor(source)
     repo = github_source["repo"]
     ref = github_source["ref"]
     subpath = github_source["subpath"]
+    if progress_callback:
+        progress_callback("connecting", 0, None)
 
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
@@ -1499,8 +1572,11 @@ def install_pack_from_github_source(
             ref,
             remote_zip,
             github_accelerator_url=github_accelerator_url,
+            progress_callback=progress_callback,
         )
 
+        if progress_callback:
+            progress_callback("extracting", 0, None)
         extract_dir = tmp_root / "extract"
         extract_dir.mkdir(parents=True, exist_ok=True)
         # 远程仓库可能包含与 pack 无关的脚本文件；这里只做路径安全校验。
@@ -1523,6 +1599,8 @@ def install_pack_from_github_source(
             raise FileNotFoundError("source.subpath 对应目录不存在")
         validate_pack_directory(source_pack_dir, context="GitHub 包目录")
 
+        if progress_callback:
+            progress_callback("preparing", 0, None)
         local_zip = tmp_root / "pack.zip"
         with zipfile.ZipFile(local_zip, "w", zipfile.ZIP_DEFLATED) as zip_file:
             for file_path in source_pack_dir.rglob("*"):
@@ -1531,6 +1609,8 @@ def install_pack_from_github_source(
                 arc_name = file_path.relative_to(source_pack_dir).as_posix()
                 zip_file.write(file_path, arcname=arc_name)
 
+        if progress_callback:
+            progress_callback("installing", 0, None)
         result = import_pack_archive(
             local_zip,
             overwrite=overwrite,

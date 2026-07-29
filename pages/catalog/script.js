@@ -74,6 +74,25 @@ async function initCatalogPage() {
   const installDialogConfirm = document.getElementById(
     "install-dialog-confirm",
   );
+  const installProgressDialog = document.getElementById(
+    "install-progress-dialog",
+  );
+  const installProgressPackName = document.getElementById(
+    "install-progress-pack-name",
+  );
+  const installProgressPhase = document.getElementById(
+    "install-progress-phase",
+  );
+  const installProgressPercent = document.getElementById(
+    "install-progress-percent",
+  );
+  const installProgressTrack = document.getElementById(
+    "install-progress-track",
+  );
+  const installProgressBar = document.getElementById("install-progress-bar");
+  const installProgressBytes = document.getElementById(
+    "install-progress-bytes",
+  );
   const officialGrid = document.getElementById("official-grid");
   const communityGrid = document.getElementById("community-grid");
   const officialPackCount = document.getElementById("official-pack-count");
@@ -98,7 +117,9 @@ async function initCatalogPage() {
     const item = document.createElement("div");
     item.className = `log-item${isError ? " error" : ""}`;
     const now = new Date();
-    item.textContent = `[${now.toLocaleTimeString("zh-CN", { hour12: false })}] ${message}`;
+    item.textContent = `[${now.toLocaleTimeString("zh-CN", {
+      hour12: false,
+    })}] ${message}`;
     logList.prepend(item);
   }
 
@@ -130,6 +151,68 @@ async function initCatalogPage() {
     pendingInstallAction = null;
     installDialog.classList.add("hidden");
     installDialog.setAttribute("aria-hidden", "true");
+  }
+
+  async function installWithProgress(payload, packName) {
+    installProgressPackName.textContent = `目标: ${packName || "未命名"}`;
+    installProgressPhase.textContent = "正在准备安装任务";
+    installProgressPercent.textContent = "0%";
+    installProgressBar.style.width = "0%";
+    installProgressTrack.classList.add("indeterminate");
+    installProgressTrack.setAttribute("aria-valuenow", "0");
+    installProgressBytes.textContent = "等待下载开始…";
+    installProgressDialog.classList.remove("hidden");
+    installProgressDialog.setAttribute("aria-hidden", "false");
+    try {
+      const startResponse = await apiPost("community/install/start", payload);
+      const jobId = String(startResponse?.job_id || "").trim();
+      if (!jobId) {
+        throw new Error("安装任务未返回 job_id");
+      }
+
+      while (true) {
+        await new Promise((resolve) => window.setTimeout(resolve, 350));
+        const status = await apiGet("community/install/status", {
+          job_id: jobId,
+        });
+        const progress = Math.max(
+          0,
+          Math.min(100, Number(status?.progress || 0)),
+        );
+        const downloadedBytes = Number(status?.downloaded_bytes || 0);
+        const totalBytes = Number(status?.total_bytes || 0);
+        installProgressPhase.textContent = status?.message || "正在安装表情包";
+        installProgressPercent.textContent = `${Math.round(progress)}%`;
+        installProgressBar.style.width = `${progress}%`;
+        installProgressTrack.setAttribute(
+          "aria-valuenow",
+          String(Math.round(progress)),
+        );
+        installProgressTrack.classList.toggle(
+          "indeterminate",
+          status?.phase === "downloading" && !totalBytes,
+        );
+        if (status?.phase === "downloading") {
+          const downloadedMegabytes = (downloadedBytes / 1024 ** 2).toFixed(1);
+          const totalMegabytes = (totalBytes / 1024 ** 2).toFixed(1);
+          installProgressBytes.textContent = totalBytes
+            ? `${downloadedMegabytes} MB / ${totalMegabytes} MB`
+            : `已下载 ${downloadedMegabytes} MB`;
+        } else {
+          installProgressBytes.textContent = "下载完成后将自动解压并安装";
+        }
+        if (status?.status === "succeeded") {
+          await new Promise((resolve) => window.setTimeout(resolve, 400));
+          return status.result || {};
+        }
+        if (status?.status === "failed") {
+          throw new Error(status?.message || "安装失败");
+        }
+      }
+    } finally {
+      installProgressDialog.classList.add("hidden");
+      installProgressDialog.setAttribute("aria-hidden", "true");
+    }
   }
 
   async function confirmInstallDialog() {
@@ -199,16 +282,16 @@ async function initCatalogPage() {
     );
     const hasSemanticMetadata = Boolean(
       features.semantic_metadata ||
-      pack?.semantic_metadata ||
-      tags.has("semantic") ||
-      tags.has("semantic-v2") ||
-      tags.has("语义包"),
+        pack?.semantic_metadata ||
+        tags.has("semantic") ||
+        tags.has("semantic-v2") ||
+        tags.has("语义包"),
     );
     const isNewFormat = Boolean(
       hasSemanticMetadata ||
-      formatVersion >= 2 ||
-      tags.has("v2") ||
-      tags.has("new-format"),
+        formatVersion >= 2 ||
+        tags.has("v2") ||
+        tags.has("new-format"),
     );
 
     if (isNewFormat) {
@@ -416,7 +499,9 @@ async function initCatalogPage() {
     const licenseMeta = document.createElement("span");
     licenseMeta.textContent = `协议: ${pack.license || "未知"}`;
     const sourceMeta = document.createElement("span");
-    sourceMeta.textContent = `来源: ${pack.source?.repo || "-"}@${pack.source?.ref || "-"}`;
+    sourceMeta.textContent = `来源: ${pack.source?.repo || "-"}@${
+      pack.source?.ref || "-"
+    }`;
     meta.append(maintainerMeta, licenseMeta, sourceMeta);
 
     card.appendChild(createPackCover(pack));
@@ -524,7 +609,7 @@ async function initCatalogPage() {
         payload.source = source;
       }
 
-      const response = await apiPost("community/install", payload);
+      const response = await installWithProgress(payload, pack?.name || packId);
       addLog(`安装成功: ${response.pack_id} ${response.version || ""}`);
       await refreshInstalledSet();
       renderCatalog();
@@ -547,16 +632,19 @@ async function initCatalogPage() {
 
     setLoading(installSourceBtn, "安装中...");
     try {
-      const response = await apiPost("community/install", {
-        source: {
-          type: "github",
-          repo,
-          ref,
-          subpath,
+      const response = await installWithProgress(
+        {
+          source: {
+            type: "github",
+            repo,
+            ref,
+            subpath,
+          },
+          overwrite: Boolean(options.overwrite),
+          set_as_default: Boolean(options.setAsDefault),
         },
-        overwrite: Boolean(options.overwrite),
-        set_as_default: Boolean(options.setAsDefault),
-      });
+        `${repo}@${ref}`,
+      );
       addLog(`按来源安装成功: ${response.pack_id} ${response.version || ""}`);
       await refreshInstalledSet();
       renderCatalog();
