@@ -524,14 +524,15 @@ async function initSettingsPage() {
     return rules.findIndex((rule) => rule.scope === "default");
   }
 
-  function getPackOptions(selectedPackId = "") {
-    return installedPacks
-      .map((pack) => {
-        const selectedAttr =
-          String(pack.id) === String(selectedPackId) ? "selected" : "";
-        return `<option value="${pack.id}" ${selectedAttr}>${pack.name || pack.id} (${pack.id})</option>`;
-      })
-      .join("");
+  function appendPackOptions(select, selectedPackId = "") {
+    for (const pack of installedPacks) {
+      const packId = String(pack.id || "");
+      const option = document.createElement("option");
+      option.value = packId;
+      option.selected = packId === String(selectedPackId);
+      option.textContent = `${pack.name || packId} (${packId})`;
+      select.appendChild(option);
+    }
   }
 
   function getTargetSuggestions(scope) {
@@ -665,10 +666,16 @@ async function initSettingsPage() {
     }
 
     rulesValidation.classList.remove("hidden");
-    rulesValidation.innerHTML = `
-      <strong>规则存在问题，请先修复：</strong>
-      <ul>${errors.map((item) => `<li>${item}</li>`).join("")}</ul>
-    `;
+    rulesValidation.replaceChildren();
+    const heading = document.createElement("strong");
+    heading.textContent = "规则存在问题，请先修复：";
+    const errorList = document.createElement("ul");
+    for (const error of errors) {
+      const item = document.createElement("li");
+      item.textContent = error;
+      errorList.appendChild(item);
+    }
+    rulesValidation.append(heading, errorList);
     return false;
   }
 
@@ -687,7 +694,9 @@ async function initSettingsPage() {
       const titleRow = document.createElement("div");
       titleRow.className = "rule-title-row";
       const title = document.createElement("div");
-      title.innerHTML = `<strong>${isDefault ? "默认规则" : `规则 #${index + 1}`}</strong>`;
+      const titleText = document.createElement("strong");
+      titleText.textContent = isDefault ? "默认规则" : `规则 #${index + 1}`;
+      title.appendChild(titleText);
       titleRow.appendChild(title);
 
       if (!isDefault) {
@@ -725,20 +734,32 @@ async function initSettingsPage() {
             ? "从 session 建议中选择或手动填写"
             : "default 规则无需 target";
       const targetSuggestions = getTargetSuggestions(rule.scope);
-      targetField.innerHTML = `
-        <label>target</label>
-        <input data-role="target" type="text" value="${rule.target || ""}" ${isDefault ? "disabled" : ""} placeholder="${targetPlaceholder}" list="${targetListId}" />
-        <datalist id="${targetListId}">
-          ${targetSuggestions.map((item) => `<option value="${item}"></option>`).join("")}
-        </datalist>
-      `;
+      const targetLabel = document.createElement("label");
+      targetLabel.textContent = "target";
+      const targetInputElement = document.createElement("input");
+      targetInputElement.dataset.role = "target";
+      targetInputElement.type = "text";
+      targetInputElement.value = String(rule.target || "");
+      targetInputElement.disabled = isDefault;
+      targetInputElement.placeholder = targetPlaceholder;
+      targetInputElement.setAttribute("list", targetListId);
+      const targetList = document.createElement("datalist");
+      targetList.id = targetListId;
+      for (const suggestion of targetSuggestions) {
+        const option = document.createElement("option");
+        option.value = suggestion;
+        targetList.appendChild(option);
+      }
+      targetField.append(targetLabel, targetInputElement, targetList);
 
       const packField = document.createElement("div");
       packField.className = "field-row";
-      packField.innerHTML = `
-        <label>pack_id</label>
-        <select data-role="pack">${getPackOptions(rule.pack_id)}</select>
-      `;
+      const packLabel = document.createElement("label");
+      packLabel.textContent = "pack_id";
+      const packSelectElement = document.createElement("select");
+      packSelectElement.dataset.role = "pack";
+      appendPackOptions(packSelectElement, rule.pack_id);
+      packField.append(packLabel, packSelectElement);
 
       grid.appendChild(scopeField);
       grid.appendChild(targetField);

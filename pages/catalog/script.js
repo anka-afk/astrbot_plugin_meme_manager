@@ -414,11 +414,13 @@ async function initCatalogPage() {
 
     const meta = document.createElement("div");
     meta.className = "pack-meta";
-    meta.innerHTML = `
-      <span>维护者: ${pack.maintainer || "未知"}</span>
-      <span>协议: ${pack.license || "未知"}</span>
-      <span>来源: ${pack.source?.repo || "-"}@${pack.source?.ref || "-"}</span>
-    `;
+    const maintainerMeta = document.createElement("span");
+    maintainerMeta.textContent = `维护者: ${pack.maintainer || "未知"}`;
+    const licenseMeta = document.createElement("span");
+    licenseMeta.textContent = `协议: ${pack.license || "未知"}`;
+    const sourceMeta = document.createElement("span");
+    sourceMeta.textContent = `来源: ${pack.source?.repo || "-"}@${pack.source?.ref || "-"}`;
+    meta.append(maintainerMeta, licenseMeta, sourceMeta);
 
     card.appendChild(createPackCover(pack));
     card.appendChild(titleRow);

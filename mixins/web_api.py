@@ -18,6 +18,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 from astrbot.api import logger
 
+from ..backend.category_manager import is_safe_category_name
 from ..backend.models import (
     DuplicateEmojiError,
     add_emoji_to_category,
@@ -826,6 +827,8 @@ class WebAPIMixin:
         return jsonify({"message": "当前请求缺少 Bearer Token"}), 401
 
     async def _api_get_emoji_by_category(self, category):
+        if not is_safe_category_name(str(category or "")):
+            return jsonify({"message": "分类名称非法"}), 400
         view_context = self._resolve_webui_pack_view_context()
         if view_context:
             category_path = view_context["memes_dir"] / category
@@ -853,6 +856,8 @@ class WebAPIMixin:
 
     async def _api_add_emoji(self, category):
         try:
+            if not is_safe_category_name(str(category or "")):
+                return jsonify({"message": "分类名称非法"}), 400
             files = await request.files
             if not files or "file" not in files:
                 return jsonify({"message": "没有找到上传的图片文件"}), 400
@@ -904,6 +909,8 @@ class WebAPIMixin:
         data = await request.get_json()
         category = data.get("category")
         image_file = data.get("image_file")
+        if category and not is_safe_category_name(str(category)):
+            return jsonify({"message": "分类名称非法"}), 400
         if not category or not image_file:
             return jsonify({"message": "分类和文件名不能为空"}), 400
 
@@ -934,6 +941,8 @@ class WebAPIMixin:
         data = await request.get_json()
         category = data.get("category")
         image_files = data.get("image_files")
+        if category and not is_safe_category_name(str(category)):
+            return jsonify({"message": "分类名称非法"}), 400
         if not category or not isinstance(image_files, list) or not image_files:
             return jsonify({"message": "分类和文件名列表不能为空"}), 400
 
@@ -968,6 +977,15 @@ class WebAPIMixin:
         source_category = data.get("source_category")
         target_category = data.get("target_category")
         image_file = data.get("image_file")
+        if (
+            source_category
+            and target_category
+            and not all(
+                is_safe_category_name(str(value))
+                for value in (source_category, target_category)
+            )
+        ):
+            return jsonify({"message": "分类名称非法"}), 400
         if not source_category or not target_category or not image_file:
             return jsonify({"message": "源分类、目标分类和文件名不能为空"}), 400
         if source_category == target_category:
@@ -1008,6 +1026,15 @@ class WebAPIMixin:
         source_category = data.get("source_category")
         target_category = data.get("target_category")
         image_files = data.get("image_files")
+        if (
+            source_category
+            and target_category
+            and not all(
+                is_safe_category_name(str(value))
+                for value in (source_category, target_category)
+            )
+        ):
+            return jsonify({"message": "分类名称非法"}), 400
         if (
             not source_category
             or not target_category
@@ -1054,6 +1081,15 @@ class WebAPIMixin:
         source_category = data.get("source_category")
         target_category = data.get("target_category")
         image_files = data.get("image_files")
+        if (
+            source_category
+            and target_category
+            and not all(
+                is_safe_category_name(str(value))
+                for value in (source_category, target_category)
+            )
+        ):
+            return jsonify({"message": "分类名称非法"}), 400
         if (
             not source_category
             or not target_category
@@ -1150,6 +1186,8 @@ class WebAPIMixin:
     async def _api_clear_category(self):
         data = await request.get_json()
         category = data.get("category")
+        if category and not is_safe_category_name(str(category)):
+            return jsonify({"message": "分类名称非法"}), 400
         if not category:
             return jsonify({"message": "分类不能为空"}), 400
 

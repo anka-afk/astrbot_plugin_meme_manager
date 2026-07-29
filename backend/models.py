@@ -7,6 +7,7 @@ from pathlib import Path
 from werkzeug.utils import secure_filename
 
 from ..config import MEMES_DIR
+from .category_manager import is_safe_category_name
 
 logger = logging.getLogger(__name__)
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
@@ -25,7 +26,28 @@ def _is_supported_image(filename: str) -> bool:
 
 
 def _get_category_path(category: str) -> Path:
-    return Path(MEMES_DIR) / category
+    """解析分类目录，并禁止目录穿越。
+
+    Args:
+        category: 只能包含单个目录段的分类名称。
+
+    Returns:
+        位于当前表情目录内的分类绝对路径。
+
+    Raises:
+        ValueError: 分类名称非法或解析后的路径超出表情目录。
+    """
+    normalized = str(category or "").strip()
+    if not is_safe_category_name(normalized):
+        raise ValueError("分类名称非法")
+
+    memes_root = Path(MEMES_DIR).resolve()
+    category_path = (memes_root / normalized).resolve()
+    try:
+        category_path.relative_to(memes_root)
+    except ValueError as exc:
+        raise ValueError("分类路径超出表情目录") from exc
+    return category_path
 
 
 def _iter_category_image_paths(category_path: Path) -> list[Path]:
@@ -113,7 +135,7 @@ def add_emoji_to_category(category, image_file):
         raise ValueError("文件名为空")
 
     # 确保类别目录存在
-    category_path = Path(MEMES_DIR) / category
+    category_path = _get_category_path(category)
     category_path.mkdir(parents=True, exist_ok=True)
 
     # 保存文件
@@ -458,15 +480,17 @@ def clear_all_emojis() -> dict[str, object]:
 
 def update_emoji_in_category(category, old_image_file, new_image_file):
     """更新（替换）表情包文件"""
-    category_path = os.path.join(MEMES_DIR, category)
+    category_path = _get_category_path(category)
 
-    if not os.path.isdir(category_path):
+    if not category_path.is_dir():
         return False
-    old_image_path = os.path.join(category_path, old_image_file)
-    if os.path.exists(old_image_path):
-        os.remove(old_image_path)
-        filename = secure_filename(new_image_file.filename)
-        target_path = os.path.join(category_path, filename)
-        new_image_file.save(target_path)
+    old_image_name = Path(str(old_image_file or "")).name
+    old_image_path = category_path / old_image_name
+    if old_image_path.is_file() and _is_supported_image(old_image_name):
+        filename = secure_filename(str(new_image_file.filename or ""))
+        if not filename or not _is_supported_image(filename):
+            raise ValueError("表情文件名或扩展名非法")
+        old_image_path.unlink()
+        new_image_file.save(str(category_path / filename))
         return True
     return False
