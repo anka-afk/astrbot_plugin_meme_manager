@@ -1,7 +1,7 @@
 name: meme_manager
 display_name: 表情包管理器
-desc: anka - 表情包管理器 v4.12！提供 AstrBot WebUI 管理页面、资源广场与语义表情包页，支持官方/社区包安装、多表情包管理、情感模型辅助、不同会话/人格选包、云端同步与自动维护 prompt。欢迎大家创作自己的社区表情包集合！
+desc: anka - 表情包管理器 v4.13！提供 AstrBot WebUI 管理页面、资源广场与语义表情包页，支持官方/社区包安装、多表情包管理、情感模型辅助、不同会话/人格选包、云端同步与自动维护 prompt。欢迎大家创作自己的社区表情包集合！
 help: 功能：1. AI自动发送表情包 2. WebUI插件页面管理与资源广场 3. /表情管理 恢复默认表情包 4. /表情管理 查看图库 5. /表情管理 添加表情 [类别] 6. /表情管理 同步到云端 7. /表情管理 从云端同步 8. /表情管理 同步状态
-version: v4.12
+version: v4.13
 author: anka
 repo: https://github.com/anka-afk/astrbot_plugin_meme_manager
