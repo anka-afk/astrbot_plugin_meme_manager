@@ -43,7 +43,6 @@ from ..backend.text_safety import (
 from ..config import MEMES_DIR, PLUGIN_DATA_DIR
 from ..utils import probability_hit
 
-
 TRIGGER_SCOPE_CHAT_ONLY = "only_chat_llm"
 TRIGGER_SCOPE_CHAT_AND_PLUGIN = "chat_and_plugin_llm"
 LLM_REQUEST_ORIGIN_EXTRA_KEY = "meme_manager_llm_request_origin"
@@ -1250,7 +1249,10 @@ class EventHandlerMixin:
             if result.result_content_type == ResultContentType.STREAMING_FINISH:
                 if isinstance(original_chain, (str, MessageChain, list)):
                     result.chain = cleaned_components
-                if self.streaming_compatibility or event.get_platform_name() == "webchat":
+                if (
+                    self.streaming_compatibility
+                    or event.get_platform_name() == "webchat"
+                ):
                     await self._send_memes_streaming(event)
                 return
 
@@ -1305,9 +1307,7 @@ class EventHandlerMixin:
                             cleaned_components, semantic_images
                         )
                     else:
-                        event.set_extra(
-                            "meme_manager_pending_images", semantic_images
-                        )
+                        event.set_extra("meme_manager_pending_images", semantic_images)
             # 第三步：旧模式添加表情图片（如果有找到的表情）
             found_emotions = event.get_extra("found_emotions") or []
             if scope_allows_attach and found_emotions and not semantic_selected_ids:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from urllib.parse import unquote, urlsplit
 
-
 _IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 _IMAGE_REF_LINE_RE = re.compile(
     r"^ {0,3}\[image[ \t]+ref[ \t]+[1-9]\d*\]"

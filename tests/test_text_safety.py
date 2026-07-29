@@ -120,10 +120,7 @@ class StripInternalImageRefLinesTests(unittest.TestCase):
 
     def test_fence_with_info_is_not_treated_as_a_closing_fence(self):
         text = (
-            "```text\n"
-            "```not-a-close\n"
-            "[Image Ref 1] file:///AstrBot/data/a.jpg\n"
-            "```\n"
+            "```text\n```not-a-close\n[Image Ref 1] file:///AstrBot/data/a.jpg\n```\n"
         )
 
         self.assertEqual(strip_internal_image_ref_lines(text), text)
@@ -222,8 +219,7 @@ class FindUnprotectedWordSpansTests(unittest.TestCase):
 
     def test_handles_many_reference_tokens_without_exposing_matches(self):
         paths = [
-            f"file:///AstrBot/data/memes/confused/{index}.jpg"
-            for index in range(500)
+            f"file:///AstrBot/data/memes/confused/{index}.jpg" for index in range(500)
         ]
         text = " ".join(paths)
 
