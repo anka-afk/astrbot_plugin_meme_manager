@@ -819,7 +819,9 @@ class WebAPIMixin:
     async def _api_get_emojis(self):
         view_context = self._resolve_webui_pack_view_context()
         if view_context:
-            emoji_data = self._scan_pack_emojis(view_context["memes_dir"])
+            emoji_data = await asyncio.to_thread(
+                self._scan_pack_emojis, view_context["memes_dir"]
+            )
         else:
             emoji_data = await scan_emoji_folder()
         for category in emoji_data:
@@ -858,7 +860,7 @@ class WebAPIMixin:
                     }
                 ]
         else:
-            emojis = get_emoji_by_category(category)
+            emojis = await asyncio.to_thread(get_emoji_by_category, category)
         if emojis is None:
             return jsonify({"message": "分类未找到"}), 404
         return jsonify(emojis if isinstance(emojis, list) else []), 200
@@ -1166,9 +1168,13 @@ class WebAPIMixin:
         try:
             view_context = self._resolve_webui_pack_view_context()
             if view_context:
-                descriptions = self._load_pack_descriptions(view_context)
+                descriptions = await asyncio.to_thread(
+                    self._load_pack_descriptions, view_context
+                )
             else:
-                descriptions = self.category_manager.get_descriptions()
+                descriptions = await asyncio.to_thread(
+                    self.category_manager.get_descriptions
+                )
             return jsonify(descriptions)
         except Exception as e:
             logger.error(f"获取标签描述失败: {e}")
@@ -1304,8 +1310,8 @@ class WebAPIMixin:
 
     async def _api_sync_status(self):
         try:
-            missing_in_config, deleted_categories = (
-                self.category_manager.get_sync_status()
+            missing_in_config, deleted_categories = await asyncio.to_thread(
+                self.category_manager.get_sync_status
             )
             return jsonify(
                 {
@@ -1521,7 +1527,7 @@ class WebAPIMixin:
                     cached_payload["status_cache_ttl"] = cache_ttl
                     return jsonify(cached_payload)
 
-            status = sync_client.check_status()
+            status = await asyncio.to_thread(sync_client.check_status)
             status["upload_count"] = len(status.get("to_upload", []))
             status["download_count"] = len(status.get("to_download", []))
             status["remote_extra_count"] = len(status.get("to_delete_remote", []))

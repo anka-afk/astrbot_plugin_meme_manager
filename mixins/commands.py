@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import time
@@ -152,7 +153,8 @@ class CommandMixin:
             )
             return
         category = category.strip()
-        if category in self._get_manageable_categories():
+        available_categories = await asyncio.to_thread(self._get_manageable_categories)
+        if category in available_categories:
             yield event.plain_result(f"ℹ️ 分类「{category}」已存在，无需重复创建。")
             return
         description = self._extract_category_description_from_command(event, category)
@@ -167,7 +169,9 @@ class CommandMixin:
                 return
             except CategoryCreationCancelled:
                 return
-        if not self.category_manager.create_category(category, description):
+        if not await asyncio.to_thread(
+            self.category_manager.create_category, category, description
+        ):
             yield event.plain_result(f"❌ 创建分类「{category}」失败，请稍后重试。")
             return
         self._reload_personas()
@@ -181,7 +185,8 @@ class CommandMixin:
                 "📌 若要添加表情，请按照此格式操作：\n/表情管理 添加表情 [类别名称]\n（输入/查看图库 可获取类别列表）"
             )
             return
-        if category not in self.category_manager.get_descriptions():
+        descriptions = await asyncio.to_thread(self.category_manager.get_descriptions)
+        if category not in descriptions:
             yield event.plain_result(
                 f"您输入的表情包类别「{category}」是无效的哦。\n可以使用/查看表情包来查看可用的类别。"
             )
@@ -253,14 +258,14 @@ class CommandMixin:
             return
 
         category = category.strip()
-        available_categories = self._get_manageable_categories()
+        available_categories = await asyncio.to_thread(self._get_manageable_categories)
         if category not in available_categories:
             yield event.plain_result(
                 f"⚠️ 未找到类型「{category}」。\n可先使用 /表情管理 查看图库 查看当前类型。"
             )
             return
 
-        emoji_count = len(get_emoji_by_category(category))
+        emoji_count = len(await asyncio.to_thread(get_emoji_by_category, category))
         if emoji_count == 0:
             yield event.plain_result(f"📭 类型「{category}」当前没有可清空的表情包。")
             return
@@ -288,11 +293,15 @@ class CommandMixin:
     @meme_manager.command("清空全部")
     async def clear_all_emojis_command(self, event: AstrMessageEvent):
         """清空所有类型下的表情包，但保留类型和描述配置。"""
-        available_categories = sorted(self._get_manageable_categories())
-        category_counts = {
-            category: len(get_emoji_by_category(category))
-            for category in available_categories
-        }
+        available_categories = sorted(
+            await asyncio.to_thread(self._get_manageable_categories)
+        )
+        category_counts = await asyncio.to_thread(
+            lambda: {
+                category: len(get_emoji_by_category(category))
+                for category in available_categories
+            }
+        )
         total_count = sum(category_counts.values())
 
         if total_count == 0:
@@ -335,14 +344,14 @@ class CommandMixin:
             return
 
         category = category.strip()
-        available_categories = self._get_manageable_categories()
+        available_categories = await asyncio.to_thread(self._get_manageable_categories)
         if category not in available_categories:
             yield event.plain_result(
                 f"⚠️ 未找到类型「{category}」。\n可先使用 /表情管理 查看图库 查看当前类型。"
             )
             return
 
-        emoji_count = len(get_emoji_by_category(category))
+        emoji_count = len(await asyncio.to_thread(get_emoji_by_category, category))
         yield event.plain_result(
             f"⚠️ 即将删除类型「{category}」本身，并移除其描述配置"
             f"{f'，同时删除其中的 {emoji_count} 个表情包' if emoji_count > 0 else ''}。\n"
@@ -358,7 +367,7 @@ class CommandMixin:
             yield event.plain_result(f"⚠️ {exc}")
             return
 
-        if not self.category_manager.delete_category(category):
+        if not await asyncio.to_thread(self.category_manager.delete_category, category):
             yield event.plain_result(f"❌ 删除类型「{category}」失败，请稍后重试。")
             return
 
@@ -390,7 +399,7 @@ class CommandMixin:
                 storage_info = "未知存储类型"
 
             # 获取同步状态
-            status = sync_client.check_status()
+            status = await asyncio.to_thread(sync_client.check_status)
             to_upload = status.get("to_upload", [])
             to_download = status.get("to_download", [])
 
@@ -470,7 +479,9 @@ class CommandMixin:
                     # 显示所有文件类别的统计
                     try:
                         if hasattr(sync_client.provider, "get_image_list"):
-                            remote_images = sync_client.provider.get_image_list()
+                            remote_images = await asyncio.to_thread(
+                                sync_client.provider.get_image_list
+                            )
                             remote_stats = {}
                             for img in remote_images:
                                 cat = img.get("category", "未分类")
@@ -734,7 +745,9 @@ class CommandMixin:
                 result.append("☁️ 云端图库统计:")
 
                 try:
-                    remote_images = sync_client.provider.get_image_list()
+                    remote_images = await asyncio.to_thread(
+                        sync_client.provider.get_image_list
+                    )
                     remote_stats = {}
                     remote_total = len(remote_images)
 

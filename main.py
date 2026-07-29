@@ -884,7 +884,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
 
     async def reload_emotions(self):
         try:
-            self.category_manager.sync_with_filesystem()
+            await asyncio.to_thread(self.category_manager.sync_with_filesystem)
             self._reload_personas()
         except Exception as e:
             logger.error(f"重新加载表情配置失败: {str(e)}")

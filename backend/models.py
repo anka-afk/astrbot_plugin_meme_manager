@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 import os
@@ -97,19 +98,22 @@ def _build_available_file_path(category_path: Path, filename: str) -> Path:
 
 
 async def scan_emoji_folder():
-    """扫描表情包文件夹，返回所有类别及其表情包"""
-    emoji_data = {}
-    memes_root = _get_memes_root()
-    memes_root.mkdir(parents=True, exist_ok=True)
-    for category in os.listdir(memes_root):
-        category_path = _get_category_path(category)
-        if not category_path.is_dir():
-            continue
+    """扫描表情包目录，返回所有分类及其表情文件。"""
 
-        emoji_data[category] = [
-            path.name for path in _iter_category_image_paths(category_path)
-        ]
-    return emoji_data
+    def scan() -> dict[str, list[str]]:
+        emoji_data = {}
+        memes_root = _get_memes_root()
+        memes_root.mkdir(parents=True, exist_ok=True)
+        for category in os.listdir(memes_root):
+            category_path = _get_category_path(category)
+            if not category_path.is_dir():
+                continue
+            emoji_data[category] = [
+                path.name for path in _iter_category_image_paths(category_path)
+            ]
+        return emoji_data
+
+    return await asyncio.to_thread(scan)
 
 
 def get_emoji_by_category(category):

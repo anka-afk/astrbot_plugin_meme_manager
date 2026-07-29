@@ -113,7 +113,7 @@ class ImageSync:
             raise RuntimeError("已有同步任务正在运行，请等待完成后再试")
 
         # 检查是否需要同步
-        status = self.check_status()
+        status = await asyncio.to_thread(self.check_status)
         if task == "upload" and not status.get("to_upload"):
             logger.info("没有文件需要上传")
             return True

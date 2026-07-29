@@ -531,7 +531,7 @@ class SemanticTaskManager:
             raise TypeError("mutation 必须可调用")
         async with self._lock(pack_id):
             self.assert_pack_mutation_allowed(pack_id, operation)
-            return mutation()
+            return await asyncio.to_thread(mutation)
 
     async def _cancel_index_task(self, pack_id: str) -> None:
         index_task = self._index_tasks.get(pack_id)
