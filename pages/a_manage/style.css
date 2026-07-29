@@ -3662,7 +3662,7 @@ body.page-scroll-locked {
     width: min(94vw, 680px);
     height: min(92svh, 900px);
     display: grid;
-    grid-template-rows: minmax(240px, 1fr) auto;
+    grid-template-rows: minmax(240px, auto) auto;
     align-items: stretch;
     overflow-y: auto;
   }
@@ -3670,6 +3670,7 @@ body.page-scroll-locked {
   .image-preview-frame {
     min-width: 0;
     min-height: 240px;
+    max-height: none;
   }
 
   .image-preview-frame img {
