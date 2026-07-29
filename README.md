@@ -453,9 +453,8 @@ async def send_in_two_steps(context, event, chain: MessageChain):
 
 当前版本：v4.13
 
+- 🧠 新增自动收集表情包（BETA）功能。
 - 📊 资源广场安装新增真实下载进度弹窗，显示下载量、百分比及当前安装阶段。
-- ⏳ 下载源未提供文件总大小时，自动切换为不定进度动画。
-- 🛡️ 资源包改为分块下载，并加入压缩包大小安全限制。
 
 完整版本记录请查看 [CHANGELOG.md](./CHANGELOG.md)。
 
