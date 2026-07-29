@@ -62,7 +62,6 @@ from ..backend.semantic_storage import (
 )
 from ..config import (
     COMMUNITY_INDEX_URL,
-    MEMES_DIR,
     PACKS_DIR,
     PLUGIN_DATA_DIR,
     TEMP_DIR,
@@ -671,7 +670,7 @@ class WebAPIMixin:
                 continue
 
     def _guard_default_pack_file_operation(self, operation: str):
-        pack_id = str(MEMES_DIR.parent.name or "").strip()
+        pack_id = str(self._resolve_runtime_pack_context().get("pack_id") or "").strip()
         try:
             if pack_id:
                 self._semantic_operation_guard(pack_id, operation)
@@ -681,15 +680,25 @@ class WebAPIMixin:
 
     async def _run_default_pack_mutation(self, operation: str, mutation):
         """让分类/移动操作与同图包语义任务共享同一把锁。"""
-        pack_id = str(MEMES_DIR.parent.name or "").strip()
+        pack_id = str(self._resolve_runtime_pack_context().get("pack_id") or "").strip()
         manager = getattr(self, "semantic_task_manager", None)
         if manager is None or not pack_id:
             return mutation()
-        return await manager.run_locked_pack_mutation(pack_id, operation, mutation)
 
-    @staticmethod
-    def _invalidate_default_pack_semantics() -> None:
-        pack_dir = MEMES_DIR.resolve().parent
+        def guarded_mutation():
+            current_pack_id = str(
+                self._resolve_runtime_pack_context().get("pack_id") or ""
+            ).strip()
+            if current_pack_id != pack_id:
+                raise RuntimeError("默认资源包已切换，请重新执行当前操作")
+            return mutation()
+
+        return await manager.run_locked_pack_mutation(
+            pack_id, operation, guarded_mutation
+        )
+
+    def _invalidate_default_pack_semantics(self) -> None:
+        pack_dir = Path(self._resolve_runtime_pack_context()["pack_dir"]).resolve()
         if not (pack_dir / "semantic_metadata.json").is_file():
             return
         try:
@@ -1463,7 +1472,9 @@ class WebAPIMixin:
         self._last_img_host_sync_task_status = None
         changes_local_files = task in {"overwrite_from_remote", "download"}
         effective_pack_id = str(
-            pack_id or getattr(self, "_img_sync_pack_id", "") or MEMES_DIR.parent.name
+            pack_id
+            or getattr(self, "_img_sync_pack_id", "")
+            or self._resolve_runtime_pack_context().get("pack_id")
         ).strip()
         manager = getattr(self, "semantic_task_manager", None)
         if changes_local_files and manager is not None and effective_pack_id:
@@ -1664,12 +1675,16 @@ class WebAPIMixin:
         filename = request.args.get("filename", "")
         view_context = self._resolve_webui_pack_view_context()
         memes_root = (
-            view_context["memes_dir"].resolve() if view_context else MEMES_DIR.resolve()
+            view_context["memes_dir"].resolve()
+            if view_context
+            else Path(self._resolve_runtime_pack_context()["memes_dir"]).resolve()
         )
         file_path = (memes_root / category / filename).resolve()
-        if not str(file_path).startswith(str(memes_root)):
+        try:
+            file_path.relative_to(memes_root)
+        except ValueError:
             return jsonify({"status": "error", "message": "非法路径"}), 403
-        if not file_path.exists():
+        if not file_path.is_file():
             return jsonify({"status": "error", "message": "文件不存在"}), 404
         return await send_file(str(file_path))
 
@@ -1679,7 +1694,9 @@ class WebAPIMixin:
         size = request.args.get("size", "preview")
         view_context = self._resolve_webui_pack_view_context()
         memes_root = (
-            view_context["memes_dir"].resolve() if view_context else MEMES_DIR.resolve()
+            view_context["memes_dir"].resolve()
+            if view_context
+            else Path(self._resolve_runtime_pack_context()["memes_dir"]).resolve()
         )
         file_path = (memes_root / category / filename).resolve()
 
@@ -1739,7 +1756,9 @@ class WebAPIMixin:
             return jsonify({"message": "分类或文件名无效"}), 400
         view_context = self._resolve_webui_pack_view_context()
         memes_root = (
-            view_context["memes_dir"].resolve() if view_context else MEMES_DIR.resolve()
+            view_context["memes_dir"].resolve()
+            if view_context
+            else Path(self._resolve_runtime_pack_context()["memes_dir"]).resolve()
         )
         pack_dir = (
             view_context["pack_dir"].resolve()

@@ -7,6 +7,7 @@ import ssl
 import tempfile
 import time
 import traceback
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -40,7 +41,7 @@ from ..backend.text_safety import (
     find_unprotected_word_spans,
     strip_internal_image_ref_lines,
 )
-from ..config import MEMES_DIR, PLUGIN_DATA_DIR
+from ..config import PLUGIN_DATA_DIR
 from ..utils import probability_hit
 
 TRIGGER_SCOPE_CHAT_ONLY = "only_chat_llm"
@@ -605,7 +606,19 @@ class EventHandlerMixin:
             yield event.plain_result("请发送图片文件来进行上传哦。")
             return
         category = upload_state["category"]
-        pack_id = str(MEMES_DIR.parent.name or "").strip()
+        pack_id = str(upload_state.get("pack_id") or "").strip()
+        memes_dir = str(upload_state.get("memes_dir") or "").strip()
+        if not pack_id or not memes_dir:
+            pack_context = self._resolve_runtime_pack_context(event=event)
+            pack_id = str(pack_context.get("pack_id") or "").strip()
+            memes_dir = str(pack_context.get("memes_dir") or "").strip()
+        current_pack_id = str(
+            self._resolve_runtime_pack_context(event=event).get("pack_id") or ""
+        ).strip()
+        if current_pack_id != pack_id:
+            del self.upload_states[user_key]
+            yield event.plain_result("默认资源包已切换，请重新执行添加表情命令。")
+            return
         try:
             self.semantic_task_manager.begin_external_pack_operation(
                 pack_id, "接收并保存表情图片"
@@ -613,7 +626,7 @@ class EventHandlerMixin:
         except RuntimeError as exc:
             yield event.plain_result(f"⚠️ {exc}")
             return
-        save_dir = os.path.join(MEMES_DIR, category)
+        save_dir = os.path.join(memes_dir, category)
         try:
             os.makedirs(save_dir, exist_ok=True)
             saved_files = []
@@ -668,7 +681,7 @@ class EventHandlerMixin:
             yield event.chain_result(result_msg)
             await self.reload_emotions()
             if saved_files:
-                invalidate_semantic_metadata(MEMES_DIR.parent)
+                invalidate_semantic_metadata(Path(memes_dir).parent)
         except Exception as e:
             yield event.plain_result(f"保存失败了：{str(e)}")
         finally:

@@ -21,6 +21,9 @@ sys.modules.setdefault("astrbot.core", types.ModuleType("astrbot.core"))
 sys.modules.setdefault("astrbot.core.utils", types.ModuleType("astrbot.core.utils"))
 sys.modules.setdefault("astrbot.core.utils.astrbot_path", astrbot_path_module)
 models = importlib.import_module("astrbot_plugin_meme_manager.backend.models")
+category_manager_module = importlib.import_module(
+    "astrbot_plugin_meme_manager.backend.category_manager"
+)
 
 
 class CategoryPathSafetyTests(unittest.TestCase):
@@ -28,7 +31,9 @@ class CategoryPathSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             memes_root = Path(temp_dir) / "memes"
             memes_root.mkdir()
-            with patch.object(models, "MEMES_DIR", memes_root):
+            with patch.object(
+                models, "resolve_pack_context", return_value={"memes_dir": memes_root}
+            ):
                 category_path = models._get_category_path("happy")
 
             self.assertEqual(category_path, (memes_root / "happy").resolve())
@@ -47,7 +52,9 @@ class CategoryPathSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             memes_root = Path(temp_dir) / "memes"
             memes_root.mkdir()
-            with patch.object(models, "MEMES_DIR", memes_root):
+            with patch.object(
+                models, "resolve_pack_context", return_value={"memes_dir": memes_root}
+            ):
                 for category in unsafe_values:
                     with self.subTest(category=category):
                         with self.assertRaises(ValueError):
@@ -62,7 +69,9 @@ class CategoryPathSafetyTests(unittest.TestCase):
             root = Path(temp_dir)
             memes_root = root / "memes"
             memes_root.mkdir()
-            with patch.object(models, "MEMES_DIR", memes_root):
+            with patch.object(
+                models, "resolve_pack_context", return_value={"memes_dir": memes_root}
+            ):
                 with self.assertRaises(ValueError):
                     models.add_emoji_to_category("..", UploadedFile())
 
@@ -89,6 +98,81 @@ class DomXssRegressionTests(unittest.TestCase):
         self.assertNotIn("errors.map((item) => `<li>${item}</li>`)", source)
         self.assertIn("option.textContent", source)
         self.assertIn("targetInputElement.value", source)
+
+
+class RuntimePackSwitchTests(unittest.TestCase):
+    def test_category_manager_targets_new_default_pack_without_restart(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            packs_root = Path(temp_dir) / "packs"
+            contexts = {}
+            for pack_id in ("pack-a", "pack-b"):
+                pack_dir = packs_root / pack_id
+                memes_dir = pack_dir / "memes"
+                memes_dir.mkdir(parents=True)
+                metadata_path = pack_dir / "memes_data.json"
+                manifest_path = pack_dir / "manifest.json"
+                metadata_path.write_text("{}", encoding="utf-8")
+                manifest_path.write_text(
+                    '{"id":"' + pack_id + '","categories":{}}',
+                    encoding="utf-8",
+                )
+                contexts[pack_id] = {
+                    "pack_id": pack_id,
+                    "pack_dir": pack_dir,
+                    "memes_dir": memes_dir,
+                    "metadata_path": metadata_path,
+                    "manifest_path": manifest_path,
+                    "category_mapping": {},
+                }
+
+            active_pack = {"id": "pack-a"}
+
+            def resolve_context():
+                return contexts[active_pack["id"]]
+
+            with patch.object(
+                category_manager_module,
+                "resolve_pack_context",
+                side_effect=resolve_context,
+            ):
+                manager = category_manager_module.CategoryManager()
+                self.assertTrue(manager.create_category("before-switch", "鏃у寘鍒嗙被"))
+                active_pack["id"] = "pack-b"
+                self.assertTrue(manager.create_category("after-switch", "鏂板寘鍒嗙被"))
+
+            self.assertTrue(
+                (contexts["pack-a"]["memes_dir"] / "before-switch").is_dir()
+            )
+            self.assertFalse(
+                (contexts["pack-a"]["memes_dir"] / "after-switch").exists()
+            )
+            self.assertTrue((contexts["pack-b"]["memes_dir"] / "after-switch").is_dir())
+            self.assertFalse(
+                (contexts["pack-b"]["memes_dir"] / "before-switch").exists()
+            )
+
+    def test_model_operations_follow_runtime_default_pack(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pack_a_memes = Path(temp_dir) / "pack-a" / "memes"
+            pack_b_memes = Path(temp_dir) / "pack-b" / "memes"
+            (pack_a_memes / "happy").mkdir(parents=True)
+            (pack_b_memes / "happy").mkdir(parents=True)
+            active_memes = {"path": pack_a_memes}
+
+            with patch.object(
+                models,
+                "resolve_pack_context",
+                side_effect=lambda: {"memes_dir": active_memes["path"]},
+            ):
+                self.assertEqual(
+                    models._get_category_path("happy"),
+                    (pack_a_memes / "happy").resolve(),
+                )
+                active_memes["path"] = pack_b_memes
+                self.assertEqual(
+                    models._get_category_path("happy"),
+                    (pack_b_memes / "happy").resolve(),
+                )
 
 
 if __name__ == "__main__":

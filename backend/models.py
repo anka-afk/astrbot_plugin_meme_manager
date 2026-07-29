@@ -6,11 +6,16 @@ from pathlib import Path
 
 from werkzeug.utils import secure_filename
 
-from ..config import MEMES_DIR
 from .category_manager import is_safe_category_name
+from .pack_resolver import resolve_pack_context
 
 logger = logging.getLogger(__name__)
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+
+
+def _get_memes_root() -> Path:
+    """动态解析当前默认资源包的表情目录。"""
+    return Path(resolve_pack_context()["memes_dir"]).resolve()
 
 
 class DuplicateEmojiError(ValueError):
@@ -41,7 +46,7 @@ def _get_category_path(category: str) -> Path:
     if not is_safe_category_name(normalized):
         raise ValueError("分类名称非法")
 
-    memes_root = Path(MEMES_DIR).resolve()
+    memes_root = _get_memes_root()
     category_path = (memes_root / normalized).resolve()
     try:
         category_path.relative_to(memes_root)
@@ -94,9 +99,9 @@ def _build_available_file_path(category_path: Path, filename: str) -> Path:
 async def scan_emoji_folder():
     """扫描表情包文件夹，返回所有类别及其表情包"""
     emoji_data = {}
-    if not os.path.exists(MEMES_DIR):
-        os.makedirs(MEMES_DIR)
-    for category in os.listdir(MEMES_DIR):
+    memes_root = _get_memes_root()
+    memes_root.mkdir(parents=True, exist_ok=True)
+    for category in os.listdir(memes_root):
         category_path = _get_category_path(category)
         if not category_path.is_dir():
             continue
@@ -463,7 +468,7 @@ def clear_category_emojis(category: str) -> dict[str, object]:
 def clear_all_emojis() -> dict[str, object]:
     """清空所有类别中的表情包，但保留目录和配置。"""
     deleted_by_category = {}
-    memes_root = Path(MEMES_DIR)
+    memes_root = _get_memes_root()
     if not memes_root.exists():
         return {"deleted_by_category": deleted_by_category}
 
