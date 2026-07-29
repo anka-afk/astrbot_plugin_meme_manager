@@ -2271,6 +2271,7 @@ async function initApp() {
     }
     renderImageSemantic(null, { loading: true });
     setImagePreviewBusy(false);
+    unlockPageScroll();
   }
 
   async function openImagePreview(category, emoji, previewDataUrl = "") {
@@ -2285,6 +2286,7 @@ async function initApp() {
       semantic: null,
     };
     imagePreviewState = previewState;
+    lockPageScroll();
     imagePreviewModalRoot.classList.remove("hidden");
     imagePreviewModalRoot.setAttribute("aria-hidden", "false");
     imagePreviewImg.alt = `表情包预览：${emoji}`;
@@ -2397,6 +2399,7 @@ async function initApp() {
       confirmResolver = null;
       resolver(result);
     }
+    unlockPageScroll();
   }
 
   function showConfirm({
@@ -2421,6 +2424,7 @@ async function initApp() {
       "danger",
       confirmClassName.includes("danger"),
     );
+    lockPageScroll();
     confirmModalRoot.classList.remove("hidden");
     confirmModalRoot.setAttribute("aria-hidden", "false");
 
@@ -2483,6 +2487,33 @@ async function initApp() {
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // 模态弹窗共享滚动锁：计数式，支持弹窗叠加（预览上再弹确认框）
+  let scrollLockCount = 0;
+  let scrollLockSavedY = 0;
+
+  function lockPageScroll() {
+    scrollLockCount += 1;
+    if (scrollLockCount > 1) {
+      return;
+    }
+    scrollLockSavedY = window.scrollY || 0;
+    document.body.classList.add("page-scroll-locked");
+    document.body.style.top = `-${scrollLockSavedY}px`;
+  }
+
+  function unlockPageScroll() {
+    if (scrollLockCount === 0) {
+      return;
+    }
+    scrollLockCount -= 1;
+    if (scrollLockCount > 0) {
+      return;
+    }
+    document.body.classList.remove("page-scroll-locked");
+    document.body.style.top = "";
+    window.scrollTo(0, scrollLockSavedY);
   }
 
   function isCompactViewport() {
@@ -2582,12 +2613,22 @@ async function initApp() {
   }
 
   function toggleConsolePanel() {
-    setConsoleVisible(!isConsoleVisible());
+    const visible = !isConsoleVisible();
+    if (visible && isCompactViewport()) {
+      // 移动端抽屉互斥：打开控制台时先收起目录
+      setDirectoryVisible(false);
+    }
+    setConsoleVisible(visible);
     updatePanelToggleState();
   }
 
   function toggleDirectoryPanel() {
-    setDirectoryVisible(!isDirectoryVisible());
+    const visible = !isDirectoryVisible();
+    if (visible && isCompactViewport()) {
+      // 移动端抽屉互斥：打开目录时先收起控制台
+      setConsoleVisible(false);
+    }
+    setDirectoryVisible(visible);
     updatePanelToggleState();
   }
 
@@ -3866,6 +3907,7 @@ async function initApp() {
     if (moveTargetList) {
       moveTargetList.innerHTML = "";
     }
+    unlockPageScroll();
   }
 
   function openMoveTargetModal(
@@ -3921,6 +3963,7 @@ async function initApp() {
     }
 
     if (moveTargetModalRoot) {
+      lockPageScroll();
       moveTargetModalRoot.classList.remove("hidden");
       moveTargetModalRoot.setAttribute("aria-hidden", "false");
     }
@@ -4837,6 +4880,7 @@ async function initApp() {
       dangerConfirmResolver = null;
       resolver(result);
     }
+    unlockPageScroll();
   }
 
   function startDangerCountdown() {
@@ -4905,6 +4949,7 @@ async function initApp() {
       dangerModalConfirmBtn.textContent = "请先勾选上方选项";
       dangerModalConfirmBtn.disabled = true;
     }
+    lockPageScroll();
     dangerModalRoot.classList.remove("hidden");
     dangerModalRoot.setAttribute("aria-hidden", "false");
 
@@ -5232,6 +5277,26 @@ async function initApp() {
 
   if (sidebarBackdrop) {
     sidebarBackdrop.addEventListener("click", () => {
+      closeAllPanels();
+      updatePanelToggleState();
+    });
+  }
+
+  document.querySelectorAll(".panel-close-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      closeAllPanels();
+      updatePanelToggleState();
+    });
+  });
+
+  const sidebarListElement = document.getElementById("sidebar-list");
+  if (sidebarListElement) {
+    sidebarListElement.addEventListener("click", (event) => {
+      const link = event.target.closest("a");
+      if (!link || !isCompactViewport()) {
+        return;
+      }
+      // 移动端：选中目录项后自动收起抽屉，让正文露出来
       closeAllPanels();
       updatePanelToggleState();
     });
@@ -5888,6 +5953,7 @@ async function initApp() {
     if (categoryEditDescInput) {
       categoryEditDescInput.value = "";
     }
+    unlockPageScroll();
   }
 
   // 编辑类别
@@ -5914,6 +5980,7 @@ async function initApp() {
           : "";
     }
     if (categoryEditModalRoot) {
+      lockPageScroll();
       categoryEditModalRoot.classList.remove("hidden");
       categoryEditModalRoot.setAttribute("aria-hidden", "false");
     }

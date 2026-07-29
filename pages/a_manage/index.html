@@ -159,6 +159,14 @@
             <p class="left-panel-eyebrow">控制台</p>
             <h2>管理控制台</h2>
           </div>
+          <button
+            type="button"
+            class="panel-close-btn"
+            data-panel-close="console"
+            aria-label="收起控制台"
+          >
+            <i class="fas fa-xmark"></i>
+          </button>
         </div>
 
         <div class="console-section-heading">
@@ -247,7 +255,17 @@
 
       <aside class="directory-panel" id="app-directory-panel">
         <div id="sidebar">
-          <h2><i class="fas fa-folder-open icon"></i>目录</h2>
+          <div class="directory-panel-header">
+            <h2><i class="fas fa-folder-open icon"></i>目录</h2>
+            <button
+              type="button"
+              class="panel-close-btn"
+              data-panel-close="directory"
+              aria-label="收起目录"
+            >
+              <i class="fas fa-xmark"></i>
+            </button>
+          </div>
           <ul id="sidebar-list"></ul>
         </div>
       </aside>

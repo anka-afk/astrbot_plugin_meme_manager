@@ -547,6 +547,15 @@ button:disabled {
   margin-top: 2px;
 }
 
+/* 防止长文件名在窄屏撑破网格/弹性布局的中间列 */
+.pack-transfer-section summary span,
+.export-mode-option span,
+.pack-import-dropzone span,
+.pack-import-preview-header div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .pack-import-preview-stats {
   margin: 0;
   display: grid;
