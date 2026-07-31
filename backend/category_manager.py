@@ -65,7 +65,7 @@ class CategoryManager:
             "manifest_path": Path(context["manifest_path"]),
         }
 
-    def _sync_manifest(self) -> None:
+    def _sync_manifest(self) -> bool:
         """将当前分类描述同步到当前默认资源包清单。"""
         paths = self._paths()
         manifest = load_json(paths["manifest_path"], {})
@@ -81,7 +81,7 @@ class CategoryManager:
             category: {"description": description}
             for category, description in sorted(self.descriptions.items())
         }
-        save_json(manifest, paths["manifest_path"])
+        return save_json(manifest, paths["manifest_path"])
 
     def _ensure_data_file(self) -> None:
         """确保 memes_data.json 文件存在，不存在时基于当前包内容初始化。"""
@@ -178,16 +178,23 @@ class CategoryManager:
             if not is_safe_category_name(category):
                 return False
             self.reload_descriptions()
+            original_descriptions = self.descriptions.copy()
             old_description = str(self.descriptions.get(category) or "")
             self.descriptions[category] = description  # 更新内存中的描述映射
             saved = save_json(self.descriptions, self._paths()["metadata_path"])
-            if saved:
+            if not saved:
+                self.descriptions = original_descriptions
+                return False
+            if not self._sync_manifest():
+                self.descriptions = original_descriptions
+                save_json(self.descriptions, self._paths()["metadata_path"])
                 self._sync_manifest()
-                if " ".join(old_description.split()) != " ".join(
-                    str(description).split()
-                ):
-                    self._invalidate_semantic_if_present()
-            return saved
+                return False
+            if " ".join(old_description.split()) != " ".join(
+                str(description).split()
+            ):
+                self._invalidate_semantic_if_present()
+            return True
         except Exception as e:
             logger.error(f"更新类别描述失败: {e}")
             return False
@@ -200,8 +207,16 @@ class CategoryManager:
             if not is_safe_category_name(category):
                 return False
 
-            (self._paths()["memes_dir"] / category).mkdir(parents=True, exist_ok=True)
-            return self.update_description(category, description)
+            category_path = self._paths()["memes_dir"] / category
+            directory_existed = category_path.exists()
+            category_path.mkdir(parents=True, exist_ok=True)
+            created = self.update_description(category, description)
+            if not created and not directory_existed:
+                try:
+                    category_path.rmdir()
+                except OSError:
+                    logger.warning(f"创建分类回滚时无法移除目录: {category_path}")
+            return created
         except Exception as e:
             logger.error(f"创建类别失败: {e}")
             return False
@@ -226,6 +241,7 @@ class CategoryManager:
             if new_name != old_name and new_path.exists():
                 return False
 
+            original_descriptions = self.descriptions.copy()
             # 获取旧类别的描述
             description = self.descriptions[old_name]
 
@@ -234,14 +250,21 @@ class CategoryManager:
             self.descriptions[new_name] = description
 
             # 更新文件夹名称
-            if os.path.exists(old_path):
+            directory_renamed = new_name != old_name and old_path.exists()
+            if directory_renamed:
                 os.rename(old_path, new_path)
 
             saved = save_json(self.descriptions, self._paths()["metadata_path"])
-            if saved:
-                self._sync_manifest()
+            if saved and self._sync_manifest():
                 self._invalidate_semantic_if_present()
-            return saved
+                return True
+
+            if directory_renamed and new_path.exists() and not old_path.exists():
+                os.rename(new_path, old_path)
+            self.descriptions = original_descriptions
+            save_json(self.descriptions, self._paths()["metadata_path"])
+            self._sync_manifest()
+            return False
         except Exception as e:
             logger.error(f"重命名类别失败: {e}")
             return False
@@ -253,17 +276,32 @@ class CategoryManager:
             if not is_safe_category_name(category):
                 return False
             self.reload_descriptions()
+            original_descriptions = self.descriptions.copy()
             # 从配置中删除
             if category in self.descriptions:
                 del self.descriptions[category]
+                if not save_json(self.descriptions, self._paths()["metadata_path"]):
+                    self.descriptions = original_descriptions
+                    save_json(self.descriptions, self._paths()["metadata_path"])
+                    self._sync_manifest()
+                    return False
+            if not self._sync_manifest():
+                self.descriptions = original_descriptions
                 save_json(self.descriptions, self._paths()["metadata_path"])
+                self._sync_manifest()
+                return False
 
             # 删除文件夹
             category_path = self._paths()["memes_dir"] / category
             if os.path.exists(category_path):
-                shutil.rmtree(category_path)
+                try:
+                    shutil.rmtree(category_path)
+                except Exception:
+                    self.descriptions = original_descriptions
+                    save_json(self.descriptions, self._paths()["metadata_path"])
+                    self._sync_manifest()
+                    raise
 
-            self._sync_manifest()
             self._invalidate_semantic_if_present()
             return True
         except Exception as e:

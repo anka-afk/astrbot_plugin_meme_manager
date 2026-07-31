@@ -1,5 +1,6 @@
 import importlib
 import io
+import json
 import sys
 import tempfile
 import types
@@ -349,6 +350,109 @@ class RuntimePackSwitchTests(unittest.TestCase):
                 (contexts["pack-b"]["memes_dir"] / "before-switch").exists()
             )
 
+
+class CategoryTransactionTests(unittest.TestCase):
+    def test_create_rolls_back_new_directory_when_metadata_save_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._create_pack_context(Path(temp_dir), {"existing": "已有"})
+            with patch.object(
+                category_manager_module, "resolve_pack_context", return_value=context
+            ):
+                manager = category_manager_module.CategoryManager()
+                with patch.object(
+                    category_manager_module, "save_json", return_value=False
+                ):
+                    created = manager.create_category("new-category", "新分类")
+
+            self.assertFalse(created)
+            self.assertFalse((context["memes_dir"] / "new-category").exists())
+            self.assertEqual(manager.descriptions, {"existing": "已有"})
+
+    def test_rename_restores_directory_when_metadata_save_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._create_pack_context(Path(temp_dir), {"old": "旧分类"})
+            old_path = context["memes_dir"] / "old"
+            old_path.mkdir()
+            (old_path / "meme.png").write_bytes(b"image")
+            with patch.object(
+                category_manager_module, "resolve_pack_context", return_value=context
+            ):
+                manager = category_manager_module.CategoryManager()
+                with patch.object(
+                    category_manager_module, "save_json", return_value=False
+                ):
+                    renamed = manager.rename_category("old", "new")
+
+            self.assertFalse(renamed)
+            self.assertTrue((old_path / "meme.png").is_file())
+            self.assertFalse((context["memes_dir"] / "new").exists())
+            self.assertEqual(manager.descriptions, {"old": "旧分类"})
+
+    def test_delete_keeps_directory_when_metadata_save_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._create_pack_context(Path(temp_dir), {"keep": "保留"})
+            category_path = context["memes_dir"] / "keep"
+            category_path.mkdir()
+            (category_path / "meme.png").write_bytes(b"image")
+            with patch.object(
+                category_manager_module, "resolve_pack_context", return_value=context
+            ):
+                manager = category_manager_module.CategoryManager()
+                with patch.object(
+                    category_manager_module, "save_json", return_value=False
+                ):
+                    deleted = manager.delete_category("keep")
+
+            self.assertFalse(deleted)
+            self.assertTrue((category_path / "meme.png").is_file())
+            self.assertEqual(manager.descriptions, {"keep": "保留"})
+
+    @staticmethod
+    def _create_pack_context(root: Path, descriptions: dict[str, str]) -> dict:
+        """创建分类事务测试所需的最小资源包目录。
+
+        Args:
+            root: 测试资源包根目录。
+            descriptions: 初始分类描述。
+
+        Returns:
+            可供 ``resolve_pack_context`` 返回的资源包上下文。
+        """
+        pack_dir = root / "pack"
+        memes_dir = pack_dir / "memes"
+        memes_dir.mkdir(parents=True)
+        metadata_path = pack_dir / "memes_data.json"
+        manifest_path = pack_dir / "manifest.json"
+        metadata_path.write_text(
+            json.dumps(descriptions, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "id": "test-pack",
+                    "name": "测试资源包",
+                    "version": "1.0.0",
+                    "categories": {
+                        category: {"description": description}
+                        for category, description in descriptions.items()
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "pack_id": "test-pack",
+            "pack_dir": pack_dir,
+            "memes_dir": memes_dir,
+            "metadata_path": metadata_path,
+            "manifest_path": manifest_path,
+            "category_mapping": descriptions,
+        }
+
+
+class RuntimePackModelSwitchTests(unittest.TestCase):
     def test_model_operations_follow_runtime_default_pack(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             pack_a_memes = Path(temp_dir) / "pack-a" / "memes"
