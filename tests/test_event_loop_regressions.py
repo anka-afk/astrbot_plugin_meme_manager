@@ -109,5 +109,44 @@ class CommandMutationRegressionTests(unittest.TestCase):
         self.assertEqual(source.count("self._invalidate_default_pack_semantics()"), 2)
 
 
+class FullSyncSequenceTests(unittest.TestCase):
+    def test_sync_all_uses_one_sequential_worker_and_returns_success(self):
+        class FakeProcess:
+            exitcode = 0
+
+            def __init__(self):
+                self.joined = False
+
+            def join(self):
+                self.joined = True
+
+        client = object.__new__(ImageSync)
+        process = FakeProcess()
+        started_tasks = []
+
+        def start_sync_process(task):
+            started_tasks.append(task)
+            return process
+
+        client._start_sync_process = start_sync_process
+
+        self.assertTrue(client.sync_all())
+        self.assertEqual(started_tasks, ["sync_all"])
+        self.assertTrue(process.joined)
+
+    def test_sync_all_returns_failure_from_worker_exit_code(self):
+        class FakeProcess:
+            exitcode = 1
+
+            @staticmethod
+            def join():
+                return None
+
+        client = object.__new__(ImageSync)
+        client._start_sync_process = lambda task: FakeProcess()
+
+        self.assertFalse(client.sync_all())
+
+
 if __name__ == "__main__":
     unittest.main()

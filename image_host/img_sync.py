@@ -199,9 +199,9 @@ class ImageSync:
         Returns:
             同步是否成功
         """
-        upload_success = self.upload_to_remote()
-        download_success = self.download_to_local()
-        return upload_success and download_success
+        self.sync_process = self._start_sync_process("sync_all")
+        self.sync_process.join()
+        return self.sync_process.exitcode == 0
 
     def get_remote_files(self) -> list[dict[str, str]]:
         """
