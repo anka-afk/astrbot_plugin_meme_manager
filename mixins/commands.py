@@ -19,12 +19,6 @@ from ..config import COMMUNITY_INDEX_URL
 class CommandMixin:
     """表情包管理命令组及所有管理命令"""
 
-    def _assert_default_pack_mutation_allowed(self, operation: str) -> str:
-        pack_id = str(self._resolve_runtime_pack_context().get("pack_id") or "").strip()
-        if pack_id:
-            self.semantic_task_manager.assert_pack_mutation_allowed(pack_id, operation)
-        return pack_id
-
     @filter.command_group("表情管理")
     def meme_manager(self):
         """表情包管理命令组:
@@ -169,9 +163,15 @@ class CommandMixin:
                 return
             except CategoryCreationCancelled:
                 return
-        if not await asyncio.to_thread(
-            self.category_manager.create_category, category, description
-        ):
+        try:
+            created = await self._run_default_pack_mutation(
+                "创建表情分类",
+                lambda: self.category_manager.create_category(category, description),
+            )
+        except RuntimeError as exc:
+            yield event.plain_result(f"⚠️ {exc}")
+            return
+        if not created:
             yield event.plain_result(f"❌ 创建分类「{category}」失败，请稍后重试。")
             return
         self._reload_personas()
@@ -277,13 +277,17 @@ class CommandMixin:
         if not await self._wait_for_command_confirmation(event):
             return
 
+        def mutate():
+            clear_result = clear_category_emojis(category)
+            if clear_result.get("deleted_files"):
+                self._invalidate_default_pack_semantics()
+            return clear_result
+
         try:
-            self._assert_default_pack_mutation_allowed("清空表情分类")
+            result = await self._run_default_pack_mutation("清空表情分类", mutate)
         except RuntimeError as exc:
             yield event.plain_result(f"⚠️ {exc}")
             return
-
-        result = clear_category_emojis(category)
         deleted_count = len(result["deleted_files"])
         yield event.plain_result(
             f"✅ 已清空类型「{category}」，共删除 {deleted_count} 个表情包。"
@@ -319,13 +323,19 @@ class CommandMixin:
         if not await self._wait_for_command_confirmation(event):
             return
 
+        def mutate():
+            clear_result = clear_all_emojis()
+            if any(clear_result.get("deleted_by_category", {}).values()):
+                self._invalidate_default_pack_semantics()
+            return clear_result
+
         try:
-            self._assert_default_pack_mutation_allowed("清空全部表情图片")
+            result = await self._run_default_pack_mutation(
+                "清空全部表情图片", mutate
+            )
         except RuntimeError as exc:
             yield event.plain_result(f"⚠️ {exc}")
             return
-
-        result = clear_all_emojis()
         deleted_total = sum(result["deleted_by_category"].values())
         yield event.plain_result(
             f"✅ 已清空全部表情包，共删除 {deleted_total} 个文件，类型配置已保留。"
@@ -362,12 +372,14 @@ class CommandMixin:
             return
 
         try:
-            self._assert_default_pack_mutation_allowed("删除表情分类")
+            deleted = await self._run_default_pack_mutation(
+                "删除表情分类",
+                lambda: self.category_manager.delete_category(category),
+            )
         except RuntimeError as exc:
             yield event.plain_result(f"⚠️ {exc}")
             return
-
-        if not await asyncio.to_thread(self.category_manager.delete_category, category):
+        if not deleted:
             yield event.plain_result(f"❌ 删除类型「{category}」失败，请稍后重试。")
             return
 

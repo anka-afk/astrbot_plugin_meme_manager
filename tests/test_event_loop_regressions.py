@@ -2,6 +2,7 @@ import asyncio
 import threading
 import time
 import unittest
+from pathlib import Path
 
 from backend.semantic_task import SemanticTaskManager
 from image_host.img_sync import ImageSync
@@ -89,6 +90,23 @@ class EventLoopBlockingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result)
         self.assertTrue(loop_progressed)
         self.assertNotEqual(status_thread, event_loop_thread)
+
+
+class CommandMutationRegressionTests(unittest.TestCase):
+    def test_chat_commands_use_locked_pack_mutations(self):
+        source = (
+            Path(__file__).parents[1] / "mixins" / "commands.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("_assert_default_pack_mutation_allowed", source)
+        self.assertGreaterEqual(source.count("self._run_default_pack_mutation("), 4)
+
+    def test_clear_commands_invalidate_semantic_metadata(self):
+        source = (
+            Path(__file__).parents[1] / "mixins" / "commands.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(source.count("self._invalidate_default_pack_semantics()"), 2)
 
 
 if __name__ == "__main__":
