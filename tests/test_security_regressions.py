@@ -24,8 +24,14 @@ models = importlib.import_module("astrbot_plugin_meme_manager.backend.models")
 category_manager_module = importlib.import_module(
     "astrbot_plugin_meme_manager.backend.category_manager"
 )
+pack_protocol = importlib.import_module(
+    "astrbot_plugin_meme_manager.backend.pack_protocol"
+)
 pack_storage = importlib.import_module(
     "astrbot_plugin_meme_manager.backend.pack_storage"
+)
+semantic_models = importlib.import_module(
+    "astrbot_plugin_meme_manager.backend.semantic_models"
 )
 file_handler_module = importlib.import_module(
     "astrbot_plugin_meme_manager.image_host.core.file_handler"
@@ -131,6 +137,55 @@ class RemoteSyncPathSafetyTests(unittest.TestCase):
                 with self.subTest(filename=filename):
                     with self.assertRaises(ValueError):
                         handler.get_file_path("safe", filename)
+
+
+class PackManifestCategorySafetyTests(unittest.TestCase):
+    def test_rejects_manifest_categories_that_are_not_single_path_segments(self):
+        for category in (
+            "..",
+            ".",
+            "../private",
+            "..\\private",
+            "/absolute",
+            "nested/category",
+            "nested\\category",
+        ):
+            manifest = {
+                "id": "unsafe-pack",
+                "name": "不安全资源包",
+                "version": "1.0.0",
+                "categories": {category: {"description": "测试"}},
+            }
+            with self.subTest(category=category):
+                with self.assertRaises(ValueError):
+                    pack_protocol.validate_pack_manifest(manifest)
+
+    def test_runtime_mapping_filters_unsafe_legacy_categories(self):
+        mapping = semantic_models.runtime_category_mapping(
+            {
+                "happy": "开心",
+                "../../private": "私有目录",
+                "nested/category": "嵌套目录",
+                semantic_models.REVIEW_CATEGORY: "待审核",
+            }
+        )
+
+        self.assertEqual(mapping, {"happy": "开心"})
+
+    def test_resolved_category_directory_stays_inside_memes_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memes_root = Path(temp_dir) / "memes"
+            memes_root.mkdir()
+
+            safe_path = category_manager_module.resolve_safe_category_directory(
+                memes_root, "happy"
+            )
+            self.assertEqual(safe_path, (memes_root / "happy").resolve())
+
+            with self.assertRaises(ValueError):
+                category_manager_module.resolve_safe_category_directory(
+                    memes_root, "../private"
+                )
 
 
 class DomXssRegressionTests(unittest.TestCase):

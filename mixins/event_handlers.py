@@ -22,6 +22,7 @@ from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.core.message.components import Image, Plain
 from astrbot.core.message.message_event_result import MessageChain, ResultContentType
 
+from ..backend.category_manager import resolve_safe_category_directory
 from ..backend.models import IMAGE_EXTENSIONS
 from ..backend.semantic_models import (
     REVIEW_CATEGORY,
@@ -474,8 +475,11 @@ class EventHandlerMixin:
             if not emotion or emotion == REVIEW_CATEGORY:
                 continue
 
-            emotion_path = os.path.join(memes_root, emotion)
-            if not os.path.exists(emotion_path):
+            try:
+                emotion_path = resolve_safe_category_directory(memes_root, emotion)
+            except ValueError:
+                continue
+            if not emotion_path.is_dir():
                 continue
 
             memes = [
@@ -487,7 +491,7 @@ class EventHandlerMixin:
                 continue
 
             meme = random.choice(memes)
-            meme_file = os.path.join(emotion_path, meme)
+            meme_file = str(emotion_path / meme)
 
             try:
                 final_meme_file = await asyncio.to_thread(
@@ -1343,10 +1347,13 @@ class EventHandlerMixin:
                         if not emotion or emotion == REVIEW_CATEGORY:
                             continue
 
-                        emotion_path = os.path.join(memes_root, emotion)
-                        path_exists = os.path.exists(emotion_path)
-
-                        if not path_exists:
+                        try:
+                            emotion_path = resolve_safe_category_directory(
+                                memes_root, emotion
+                            )
+                        except ValueError:
+                            continue
+                        if not emotion_path.is_dir():
                             continue
 
                         memes = [
@@ -1359,7 +1366,7 @@ class EventHandlerMixin:
                             continue
 
                         meme = random.choice(memes)
-                        meme_file = os.path.join(emotion_path, meme)
+                        meme_file = str(emotion_path / meme)
 
                         try:
                             # 转换静态图为 GIF（如果配置开启）
@@ -1642,8 +1649,13 @@ class EventHandlerMixin:
                 if not emotion or emotion == REVIEW_CATEGORY:
                     continue
 
-                emotion_path = os.path.join(memes_root, emotion)
-                if not os.path.exists(emotion_path):
+                try:
+                    emotion_path = resolve_safe_category_directory(
+                        memes_root, emotion
+                    )
+                except ValueError:
+                    continue
+                if not emotion_path.is_dir():
                     continue
 
                 memes = [
@@ -1655,7 +1667,7 @@ class EventHandlerMixin:
                     continue
 
                 meme = random.choice(memes)
-                meme_file = os.path.join(emotion_path, meme)
+                meme_file = str(emotion_path / meme)
                 final_meme_file = await asyncio.to_thread(
                     self._convert_to_gif, meme_file
                 )

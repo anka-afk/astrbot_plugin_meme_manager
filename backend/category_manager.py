@@ -22,6 +22,31 @@ def is_safe_category_name(category: str) -> bool:
     )
 
 
+def resolve_safe_category_directory(memes_root: str | Path, category: str) -> Path:
+    """解析并校验表情分类目录不会逃逸资源包目录。
+
+    Args:
+        memes_root: 当前资源包的表情根目录。
+        category: 待解析的单段分类名称。
+
+    Returns:
+        位于表情根目录内的已解析分类路径。
+
+    Raises:
+        ValueError: 分类名称非法或解析后的路径逃逸根目录时抛出。
+    """
+    if not is_safe_category_name(category):
+        raise ValueError(f"非法分类名称: {category!r}")
+
+    resolved_root = Path(memes_root).resolve()
+    category_path = (resolved_root / category).resolve()
+    try:
+        category_path.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"分类目录逃逸表情根目录: {category!r}") from exc
+    return category_path
+
+
 class CategoryManager:
     def __init__(self):
         """初始化类别管理器"""

@@ -118,11 +118,20 @@ def runtime_category_mapping(mapping: Any) -> dict[str, str]:
     """
     if not isinstance(mapping, dict):
         return {}
-    return {
-        str(category).strip(): str(description)
-        for category, description in mapping.items()
-        if str(category).strip() and str(category).strip() != REVIEW_CATEGORY
-    }
+
+    normalized_mapping = {}
+    for category, description in mapping.items():
+        category_name = str(category).strip()
+        if (
+            not category_name
+            or category_name == REVIEW_CATEGORY
+            or category_name in {".", ".."}
+            or "/" in category_name
+            or "\\" in category_name
+        ):
+            continue
+        normalized_mapping[category_name] = str(description)
+    return normalized_mapping
 
 
 def category_review_is_complete(status: Any) -> bool:
