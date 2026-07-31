@@ -143,14 +143,25 @@ def add_emoji_to_category(category, image_file):
         logger.error("文件名为空")
         raise ValueError("文件名为空")
 
+    filename = Path(str(image_file.filename).replace("\\", "/")).name
+    original_suffix = Path(filename).suffix.lower()
+    if original_suffix not in IMAGE_EXTENSIONS:
+        raise ValueError("表情文件扩展名非法")
+
     # 确保类别目录存在
     category_path = _get_category_path(category)
     category_path.mkdir(parents=True, exist_ok=True)
 
     # 保存文件
-    filename = image_file.filename
-    # 生成安全的文件名
+
+    # 中文名称可能被 secure_filename 完全移除，因此需要单独保留合法扩展名。
     safe_filename = secure_filename(filename)
+    if Path(safe_filename).suffix.lower() != original_suffix:
+        safe_stem = secure_filename(Path(filename).stem)
+        if not safe_stem:
+            name_hash = hashlib.sha256(filename.encode("utf-8")).hexdigest()[:12]
+            safe_stem = f"image_{name_hash}"
+        safe_filename = f"{safe_stem}{original_suffix}"
 
     # 如果文件名被修改了，记录日志
     if safe_filename != filename:

@@ -89,6 +89,41 @@ class CategoryPathSafetyTests(unittest.TestCase):
 
             self.assertFalse((root / "payload.png").exists())
 
+    def test_chinese_upload_filename_keeps_a_supported_extension(self):
+        class UploadedFile:
+            filename = "表情包.png"
+            stream = io.BytesIO(b"image-content")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memes_root = Path(temp_dir) / "memes"
+            memes_root.mkdir()
+            with patch.object(
+                models, "resolve_pack_context", return_value={"memes_dir": memes_root}
+            ):
+                result = models.add_emoji_to_category("happy", UploadedFile())
+                listed_files = models.get_emoji_by_category("happy")
+
+            self.assertTrue(result["filename"].startswith("image_"))
+            self.assertTrue(result["filename"].endswith(".png"))
+            self.assertEqual(listed_files, [result["filename"]])
+            self.assertTrue(Path(result["path"]).is_file())
+
+    def test_upload_rejects_unsupported_extension_before_writing(self):
+        class UploadedFile:
+            filename = "表情包.txt"
+            stream = io.BytesIO(b"not-an-image")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memes_root = Path(temp_dir) / "memes"
+            memes_root.mkdir()
+            with patch.object(
+                models, "resolve_pack_context", return_value={"memes_dir": memes_root}
+            ):
+                with self.assertRaises(ValueError):
+                    models.add_emoji_to_category("happy", UploadedFile())
+
+            self.assertFalse((memes_root / "happy").exists())
+
 
 class RemoteSyncPathSafetyTests(unittest.TestCase):
     def test_safe_nested_remote_category_stays_inside_base_directory(self):
