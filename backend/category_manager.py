@@ -190,9 +190,7 @@ class CategoryManager:
                 save_json(self.descriptions, self._paths()["metadata_path"])
                 self._sync_manifest()
                 return False
-            if " ".join(old_description.split()) != " ".join(
-                str(description).split()
-            ):
+            if " ".join(old_description.split()) != " ".join(str(description).split()):
                 self._invalidate_semantic_if_present()
             return True
         except Exception as e:

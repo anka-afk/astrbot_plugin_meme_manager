@@ -330,9 +330,7 @@ class CommandMixin:
             return clear_result
 
         try:
-            result = await self._run_default_pack_mutation(
-                "清空全部表情图片", mutate
-            )
+            result = await self._run_default_pack_mutation("清空全部表情图片", mutate)
         except RuntimeError as exc:
             yield event.plain_result(f"⚠️ {exc}")
             return

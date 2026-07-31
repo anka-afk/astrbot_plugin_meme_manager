@@ -112,9 +112,7 @@ def validate_pack_manifest(manifest: dict, context: str = "manifest") -> dict:
             or "\\" in category_name
             or Path(category_name).name != category_name
         ):
-            raise ValueError(
-                f"{context}.categories 包含非法分类名: {category_name}"
-            )
+            raise ValueError(f"{context}.categories 包含非法分类名: {category_name}")
 
         if isinstance(category_meta, dict):
             description = str(category_meta.get("description") or "").strip()

@@ -1650,9 +1650,7 @@ class EventHandlerMixin:
                     continue
 
                 try:
-                    emotion_path = resolve_safe_category_directory(
-                        memes_root, emotion
-                    )
+                    emotion_path = resolve_safe_category_directory(memes_root, emotion)
                 except ValueError:
                     continue
                 if not emotion_path.is_dir():
