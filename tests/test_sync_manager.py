@@ -1,8 +1,10 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from image_host.core.sync_manager import SyncManager
+from image_host.providers import stardots_provider
 
 
 class FakeImageHost:
@@ -87,6 +89,59 @@ class SyncFailureReportingTests(unittest.TestCase):
 
             self.assertFalse(manager.overwrite_from_remote())
             self.assertTrue(local_path.exists())
+
+
+class StarDotsFilenameRegressionTests(unittest.TestCase):
+    def test_download_uses_the_same_category_encoding_as_upload(self):
+        class TicketResponse:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"success": True, "data": {"ticket": "ticket-value"}}
+
+        class DownloadResponse:
+            status_code = 200
+            headers = {"Content-Type": "image/png", "Content-Length": "1001"}
+            text = ""
+
+            @staticmethod
+            def iter_content(chunk_size):
+                yield b"x" * 1001
+
+        cases = (
+            ("", "meme.png"),
+            ("default", "default@@CAT@@meme.png"),
+            ("animals/cats", "animals@@DIR@@cats@@CAT@@meme.png"),
+        )
+        for category, expected_remote_name in cases:
+            with self.subTest(category=category), tempfile.TemporaryDirectory() as temp_dir:
+                provider = object.__new__(stardots_provider.StarDotsProvider)
+                provider.space = "test-space"
+                provider.base_url = "https://api.stardots.io"
+                provider._sync_server_time = lambda: None
+                provider._generate_headers = lambda: {}
+                requested_filenames = []
+
+                def make_request(method, url, **kwargs):
+                    requested_filenames.append(kwargs["json"]["filename"])
+                    return TicketResponse()
+
+                provider._make_request = make_request
+                save_path = Path(temp_dir) / "meme.png"
+
+                with patch.object(
+                    stardots_provider.requests,
+                    "get",
+                    return_value=DownloadResponse(),
+                ):
+                    downloaded = provider.download_image(
+                        {"category": category, "filename": "meme.png"}, save_path
+                    )
+
+                self.assertTrue(downloaded)
+                self.assertEqual(requested_filenames, [expected_remote_name])
+                self.assertEqual(save_path.stat().st_size, 1001)
 
 
 if __name__ == "__main__":

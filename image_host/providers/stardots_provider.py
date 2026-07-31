@@ -534,7 +534,7 @@ class StarDotsProvider(ImageHostInterface):
                 encoded_category = self._encode_category(image_info["category"])
                 original_name = (
                     f"{encoded_category}@@CAT@@{image_info['filename']}"  # 使用 @@CAT@@ 作为分隔符
-                    if image_info["category"] != "default"
+                    if encoded_category
                     else image_info["filename"]
                 )
 
