@@ -1,4 +1,4 @@
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 class FileHandler:
@@ -39,9 +39,49 @@ class FileHandler:
         return images
 
     def get_file_path(self, category: str, filename: str) -> Path:
-        """获取文件完整路径，支持分类目录"""
-        path = self.base_dir
-        if category:
-            path = path / category
-            path.mkdir(parents=True, exist_ok=True)
-        return path / filename
+        """Return a safe local path for a remotely supplied image name.
+
+        Args:
+            category: Optional relative category path from the remote provider.
+            filename: Image filename from the remote provider.
+
+        Returns:
+            A resolved path contained by the configured base directory.
+
+        Raises:
+            ValueError: If the category or filename can escape the base directory.
+        """
+        normalized_category = str(category or "").replace("\\", "/")
+        normalized_filename = str(filename or "").replace("\\", "/")
+
+        category_parts = (
+            PurePosixPath(normalized_category).parts if normalized_category else ()
+        )
+        if (
+            (normalized_category and normalized_category.startswith("/"))
+            or PureWindowsPath(normalized_category).drive
+            or any(part in {"", ".", ".."} for part in category_parts)
+        ):
+            raise ValueError(f"Unsafe remote category path: {category!r}")
+
+        filename_parts = PurePosixPath(normalized_filename).parts
+        if (
+            not normalized_filename
+            or normalized_filename.startswith("/")
+            or PureWindowsPath(normalized_filename).drive
+            or len(filename_parts) != 1
+            or filename_parts[0] in {"", ".", ".."}
+        ):
+            raise ValueError(f"Unsafe remote filename: {filename!r}")
+
+        base_dir = self.base_dir.resolve()
+        target_path = base_dir.joinpath(*category_parts, filename_parts[0]).resolve()
+        try:
+            target_path.relative_to(base_dir)
+        except ValueError as exc:
+            raise ValueError(
+                f"Remote image path escapes the local directory: {target_path}"
+            ) from exc
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        return target_path

@@ -27,6 +27,9 @@ category_manager_module = importlib.import_module(
 pack_storage = importlib.import_module(
     "astrbot_plugin_meme_manager.backend.pack_storage"
 )
+file_handler_module = importlib.import_module(
+    "astrbot_plugin_meme_manager.image_host.core.file_handler"
+)
 
 
 class CategoryPathSafetyTests(unittest.TestCase):
@@ -79,6 +82,55 @@ class CategoryPathSafetyTests(unittest.TestCase):
                     models.add_emoji_to_category("..", UploadedFile())
 
             self.assertFalse((root / "payload.png").exists())
+
+
+class RemoteSyncPathSafetyTests(unittest.TestCase):
+    def test_safe_nested_remote_category_stays_inside_base_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_dir = Path(temp_dir) / "memes"
+            handler = file_handler_module.FileHandler(base_dir)
+
+            target = handler.get_file_path("animals/cats", "happy.png")
+
+            self.assertEqual(
+                target, (base_dir / "animals" / "cats" / "happy.png").resolve()
+            )
+            self.assertTrue(target.parent.is_dir())
+
+    def test_rejects_remote_category_path_traversal_without_creating_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            base_dir = root / "memes"
+            handler = file_handler_module.FileHandler(base_dir)
+
+            for category in (
+                "../escape",
+                "..\\escape",
+                "/absolute",
+                "C:\\absolute",
+                "safe/../escape",
+            ):
+                with self.subTest(category=category):
+                    with self.assertRaises(ValueError):
+                        handler.get_file_path(category, "proof.png")
+
+            self.assertFalse((root / "escape").exists())
+
+    def test_rejects_remote_filename_path_traversal(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            handler = file_handler_module.FileHandler(Path(temp_dir) / "memes")
+
+            for filename in (
+                "../proof.png",
+                "..\\proof.png",
+                "/proof.png",
+                "C:\\proof.png",
+                "nested/proof.png",
+                "",
+            ):
+                with self.subTest(filename=filename):
+                    with self.assertRaises(ValueError):
+                        handler.get_file_path("safe", filename)
 
 
 class DomXssRegressionTests(unittest.TestCase):
