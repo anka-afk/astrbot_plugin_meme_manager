@@ -257,10 +257,10 @@ class SyncManager:
 
         # 上传新文件
         to_upload = status["to_upload"]
+        failed_count = 0
         if to_upload:
             print(f"\n开始上传 {len(to_upload)} 个文件...")
             uploaded_count = 0
-            skipped_count = 0
 
             with tqdm(total=len(to_upload), desc="上传进度") as pbar:
                 for image in to_upload:
@@ -283,14 +283,14 @@ class SyncManager:
 
                     except Exception as e:
                         print(f"\n上传失败: {file_path.name} - {str(e)}")
-                        skipped_count += 1
+                        failed_count += 1
                         pbar.update(1)
 
-            print(f"\n上传完成: 成功 {uploaded_count} 个，失败 {skipped_count} 个")
+            print(f"\n上传完成: 成功 {uploaded_count} 个，失败 {failed_count} 个")
         else:
             print("\n没有需要上传的文件")
 
-        return True
+        return failed_count == 0
 
     def sync_from_remote(self) -> bool:
         """从远程同步文件到本地 - 只下载本地不存在的文件"""
@@ -302,6 +302,7 @@ class SyncManager:
 
         # 下载新文件
         to_download = status["to_download"]
+        failed_count = 0
         if to_download:
             print(f"\n开始下载 {len(to_download)} 个文件...")
             downloaded_count = 0
@@ -330,10 +331,12 @@ class SyncManager:
                         else:
                             print(f"\n下载失败: {filename}")
                             skipped_count += 1
+                            failed_count += 1
                             pbar.update(1)
                     except Exception as e:
                         print(f"\n下载失败: {filename} - {str(e)}")
                         skipped_count += 1
+                        failed_count += 1
                         pbar.update(1)
 
             print(
@@ -342,17 +345,20 @@ class SyncManager:
         else:
             print("\n没有需要下载的文件")
 
-        return True
+        return failed_count == 0
 
     def overwrite_to_remote(self) -> bool:
         """从本地覆盖云端 - 让云端完全和本地一致"""
         status = self.check_sync_status()
 
         # 1. 上传本地多出的文件
-        self.sync_to_remote()
+        if not self.sync_to_remote():
+            print("\n上传阶段存在失败，已取消远端清理")
+            return False
 
         # 2. 删除云端多出的文件
         to_delete_remote = status.get("to_delete_remote", [])
+        failed_count = 0
         if to_delete_remote:
             print(f"\n开始清理云端多出的 {len(to_delete_remote)} 个文件...")
             deleted_count = 0
@@ -360,23 +366,29 @@ class SyncManager:
                 try:
                     if self.image_host.delete_image(img["id"]):
                         deleted_count += 1
+                    else:
+                        failed_count += 1
                 except Exception as e:
                     print(f"\n删除云端文件失败: {img['filename']} - {str(e)}")
+                    failed_count += 1
             print(f"\n云端清理完成: 成功删除 {deleted_count} 个")
         else:
             print("\n云端没有多出的文件，无需清理")
 
-        return True
+        return failed_count == 0
 
     def overwrite_from_remote(self) -> bool:
         """从云端覆盖本地 - 让本地完全和云端一致"""
         status = self.check_sync_status()
 
         # 1. 下载本地缺失的文件
-        self.sync_from_remote()
+        if not self.sync_from_remote():
+            print("\n下载阶段存在失败，已取消本地清理")
+            return False
 
         # 2. 删除本地多出的文件
         to_delete_local = status.get("to_delete_local", [])
+        failed_count = 0
         if to_delete_local:
             print(f"\n开始清理本地多出的 {len(to_delete_local)} 个文件...")
             deleted_count = 0
@@ -393,8 +405,9 @@ class SyncManager:
                             )
                 except Exception as e:
                     print(f"\n删除本地文件失败: {img['filename']} - {str(e)}")
+                    failed_count += 1
             print(f"\n本地清理完成: 成功删除 {deleted_count} 个")
         else:
             print("\n本地没有多出的文件，无需清理")
 
-        return True
+        return failed_count == 0
