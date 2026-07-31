@@ -39,17 +39,17 @@ class FileHandler:
         return images
 
     def get_file_path(self, category: str, filename: str) -> Path:
-        """Return a safe local path for a remotely supplied image name.
+        """为远程图片名称生成安全的本地路径。
 
         Args:
-            category: Optional relative category path from the remote provider.
-            filename: Image filename from the remote provider.
+            category: 远程存储返回的可选相对分类路径。
+            filename: 远程存储返回的图片文件名。
 
         Returns:
-            A resolved path contained by the configured base directory.
+            解析后且位于配置基础目录内的文件路径。
 
         Raises:
-            ValueError: If the category or filename can escape the base directory.
+            ValueError: 分类或文件名可能逃逸基础目录时抛出。
         """
         normalized_category = str(category or "").replace("\\", "/")
         normalized_filename = str(filename or "").replace("\\", "/")
