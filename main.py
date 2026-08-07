@@ -477,8 +477,8 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 current_dir = None
 
         if current_dir != target_memes_dir.resolve():
-            # 图床客户端构造可能因网络不可达/凭据错误抛错（如 R2 head_bucket 探测），
-            # 此处兜底为“图床不可用”降级，避免阻塞插件加载与指令/WebUI 使用。
+            # Provider construction may fail during remote probes, such as an
+            # R2 head_bucket call, so degrade without blocking plugin startup.
             try:
                 self.img_sync = ImageSync(
                     config=self.img_sync_config,
@@ -487,7 +487,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 )
             except Exception as exc:
                 logger.error(
-                    "图床 %s 初始化失败，图床功能暂不可用: %s",
+                    "Image host %s initialization failed; sync is unavailable: %s",
                     self.img_sync_provider_type,
                     exc,
                 )

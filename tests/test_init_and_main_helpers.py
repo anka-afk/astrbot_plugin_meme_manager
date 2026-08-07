@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from astrbot_plugin_meme_manager import init as plugin_init
+from astrbot_plugin_meme_manager import main as plugin_main
 from astrbot_plugin_meme_manager.main import MemeSender
 
 
@@ -114,6 +115,27 @@ def test_main_image_host_type_supports_string_and_object_config():
         {"storage": {"provider": {"name": "CloudFlare_R2"}}}
     )._get_image_host_type() == "cloudflare_r2"
     assert make_sender({})._get_image_host_type() == "stardots"
+
+
+def test_main_image_sync_init_failure_degrades_gracefully(tmp_path, monkeypatch):
+    sender = make_sender()
+    sender.img_sync_config = {"bucket": "configured"}
+    sender.img_sync_provider_type = "cloudflare_r2"
+    sender.img_sync = None
+    memes_dir = tmp_path / "memes"
+    memes_dir.mkdir()
+    sender._resolve_sync_pack_target = lambda preferred_pack_id=None: (
+        "pack-a",
+        memes_dir,
+    )
+
+    def fail_image_sync(**kwargs):
+        raise RuntimeError("remote probe failed")
+
+    monkeypatch.setattr(plugin_main, "ImageSync", fail_image_sync)
+
+    assert sender._ensure_img_sync_for_pack() is None
+    assert sender.img_sync is None
 
 
 def test_main_webdav_aliases_are_normalized():
