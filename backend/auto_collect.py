@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import shutil
 import tempfile
 import time
 from dataclasses import dataclass
@@ -60,14 +61,14 @@ class AutoCollectJob:
     """保存单张图片自动收集请求的快照。
 
     Args:
-        image: 从平台收到的 AstrBot 图片消息组件。
+        snapshot_path: 在消息事件结束前创建的插件自有图片快照路径。
         target_pack_id: 最终接收图片的表情包 ID。
         categories: 用于识别分类的运行时分类描述。
         source_kind: 来源类型，值为 ``group`` 或 ``user``。
         source_id: 原始群聊或个人用户 ID。
     """
 
-    image: Image
+    snapshot_path: Path
     target_pack_id: str
     categories: dict[str, str]
     source_kind: str
@@ -200,6 +201,13 @@ class AutoCollectManager:
         if task and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        while True:
+            try:
+                job = self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            job.snapshot_path.unlink(missing_ok=True)
+            self.queue.task_done()
 
     def _source_allowed(self, event: Any) -> tuple[bool, str, str]:
         """检查消息是否匹配配置的群聊或个人来源范围。
@@ -227,7 +235,7 @@ class AutoCollectManager:
         return bool(self.scope.intersection(candidates)), source_kind, source_id
 
     async def submit(self, event: Any) -> bool:
-        """执行低成本过滤，并将消息中的第一张直接图片加入队列。
+        """过滤消息，并将第一张直接图片的独立快照加入队列。
 
         Args:
             event: 当前 AstrBot 消息事件。
@@ -278,15 +286,43 @@ class AutoCollectManager:
             )
             return False
 
-        self.queue.put_nowait(
-            AutoCollectJob(
-                image=images[0],
-                target_pack_id=target_pack_id,
-                categories=categories,
-                source_kind=source_kind,
-                source_id=source_id,
+        snapshot_path: Path | None = None
+        try:
+            local_path = Path(await images[0].convert_to_file_path())
+            file_size = (await asyncio.to_thread(local_path.stat)).st_size
+            if file_size > MAX_IMAGE_BYTES:
+                logger.warning("[meme_manager] Auto-collect image exceeds 20 MiB limit")
+                return False
+            AUTO_COLLECT_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+            snapshot_file = tempfile.NamedTemporaryFile(
+                prefix="queued_",
+                suffix=local_path.suffix,
+                dir=AUTO_COLLECT_TEMP_DIR,
+                delete=False,
             )
-        )
+            snapshot_path = Path(snapshot_file.name)
+            snapshot_file.close()
+            await asyncio.to_thread(shutil.copyfile, local_path, snapshot_path)
+            self.queue.put_nowait(
+                AutoCollectJob(
+                    snapshot_path=snapshot_path,
+                    target_pack_id=target_pack_id,
+                    categories=categories,
+                    source_kind=source_kind,
+                    source_id=source_id,
+                )
+            )
+        except asyncio.QueueFull:
+            if snapshot_path is not None:
+                snapshot_path.unlink(missing_ok=True)
+            return False
+        except Exception as exc:
+            if snapshot_path is not None:
+                snapshot_path.unlink(missing_ok=True)
+            logger.warning(
+                "[meme_manager] Failed to snapshot auto-collect image: %s", exc
+            )
+            return False
         self._cooldowns[cooldown_key] = now
         return True
 
@@ -305,6 +341,7 @@ class AutoCollectManager:
                     exc_info=True,
                 )
             finally:
+                job.snapshot_path.unlink(missing_ok=True)
                 self.queue.task_done()
 
     @staticmethod
@@ -690,8 +727,7 @@ class AutoCollectManager:
         Args:
             job: 自动收集任务快照。
         """
-        local_path = await job.image.convert_to_file_path()
-        content = await asyncio.to_thread(Path(local_path).read_bytes)
+        content = await asyncio.to_thread(job.snapshot_path.read_bytes)
         extension = await asyncio.to_thread(self._validate_image, content)
         digest = hashlib.sha256(content).hexdigest()
         if await asyncio.to_thread(

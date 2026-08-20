@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import sys
@@ -42,7 +43,13 @@ class DummyPlugin:
 
 
 class DummyEvent:
-    def __init__(self, source_id: str, *, private: bool = False):
+    def __init__(
+        self,
+        source_id: str,
+        *,
+        private: bool = False,
+        image_path: Path | None = None,
+    ):
         self.source_id = source_id
         self.private = private
         self.unified_msg_origin = (
@@ -51,7 +58,15 @@ class DummyEvent:
             else f"test:GroupMessage:{source_id}"
         )
         self.message_obj = SimpleNamespace(
-            message=[auto_collect.Image(file="https://example.com/meme.png")]
+            message=[
+                auto_collect.Image(
+                    file=(
+                        image_path.resolve().as_uri()
+                        if image_path is not None
+                        else "https://example.com/meme.png"
+                    )
+                )
+            ]
         )
 
     def is_private_chat(self):
@@ -145,8 +160,11 @@ class AutoCollectScopeAndCooldownTests(unittest.IsolatedAsyncioTestCase):
             root = Path(temp_dir)
             packs_dir = root / "packs"
             (packs_dir / "pack-a" / "memes" / "happy").mkdir(parents=True)
+            source = root / "source.png"
+            source.write_bytes(png_bytes())
             with (
                 patch.object(auto_collect, "PACKS_DIR", packs_dir),
+                patch.object(auto_collect, "AUTO_COLLECT_TEMP_DIR", root / "queue"),
                 patch.object(
                     auto_collect, "AUTO_COLLECT_STATE_PATH", root / "state.json"
                 ),
@@ -167,11 +185,93 @@ class AutoCollectScopeAndCooldownTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
                 manager._ready = True
-                event = DummyEvent("100")
+                event = DummyEvent("100", image_path=source)
 
                 self.assertTrue(await manager.submit(event))
                 self.assertFalse(await manager.submit(event))
                 self.assertEqual(manager.queue.qsize(), 1)
+                await manager.close()
+
+    async def test_worker_uses_snapshot_after_event_file_is_deleted(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            packs_dir = root / "packs"
+            (packs_dir / "pack-a" / "memes" / "happy").mkdir(parents=True)
+            source = root / "event-image.png"
+            source.write_bytes(png_bytes())
+            with (
+                patch.object(auto_collect, "PACKS_DIR", packs_dir),
+                patch.object(auto_collect, "AUTO_COLLECT_TEMP_DIR", root / "queue"),
+                patch.object(
+                    auto_collect, "AUTO_COLLECT_STATE_PATH", root / "state.json"
+                ),
+                patch.object(
+                    auto_collect,
+                    "load_pack_category_mapping",
+                    return_value={"happy": "positive reaction"},
+                ),
+            ):
+                manager = auto_collect.AutoCollectManager(
+                    DummyPlugin(),
+                    {
+                        "enabled": True,
+                        "vision_provider_id": "vision",
+                        "target_pack_id": "pack-a",
+                    },
+                )
+                manager._ready = True
+
+                self.assertTrue(
+                    await manager.submit(DummyEvent("100", image_path=source))
+                )
+                snapshot_path = next((root / "queue").glob("queued_*"))
+                source.unlink()
+                with patch.object(manager, "_pack_contains_digest", return_value=True):
+                    manager._worker_task = asyncio.create_task(manager._worker())
+                    await manager.queue.join()
+                await manager.close()
+
+                self.assertFalse(snapshot_path.exists())
+
+    async def test_close_removes_unprocessed_snapshots(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            packs_dir = root / "packs"
+            (packs_dir / "pack-a" / "memes" / "happy").mkdir(parents=True)
+            source = root / "event-image.png"
+            source.write_bytes(png_bytes())
+            with (
+                patch.object(auto_collect, "PACKS_DIR", packs_dir),
+                patch.object(auto_collect, "AUTO_COLLECT_TEMP_DIR", root / "queue"),
+                patch.object(
+                    auto_collect, "AUTO_COLLECT_STATE_PATH", root / "state.json"
+                ),
+                patch.object(
+                    auto_collect,
+                    "load_pack_category_mapping",
+                    return_value={"happy": "positive reaction"},
+                ),
+            ):
+                manager = auto_collect.AutoCollectManager(
+                    DummyPlugin(),
+                    {
+                        "enabled": True,
+                        "vision_provider_id": "vision",
+                        "target_pack_id": "pack-a",
+                    },
+                )
+                manager._ready = True
+
+                self.assertTrue(
+                    await manager.submit(DummyEvent("100", image_path=source))
+                )
+                snapshot_path = next((root / "queue").glob("queued_*"))
+                self.assertTrue(snapshot_path.exists())
+
+                await manager.close()
+
+                self.assertFalse(snapshot_path.exists())
+                self.assertTrue(manager.queue.empty())
 
 
 class AutoCollectInboxTests(unittest.IsolatedAsyncioTestCase):
@@ -220,7 +320,7 @@ class AutoCollectInboxTests(unittest.IsolatedAsyncioTestCase):
                     {"enabled": True, "vision_provider_id": "vision"},
                 )
                 job = auto_collect.AutoCollectJob(
-                    image=SimpleNamespace(),
+                    snapshot_path=root / "unused.png",
                     target_pack_id="pack-a",
                     categories={"happy": "positive reaction"},
                     source_kind="group",
