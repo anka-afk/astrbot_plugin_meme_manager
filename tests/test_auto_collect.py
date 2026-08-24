@@ -17,9 +17,9 @@ from astrbot_plugin_meme_manager.backend import auto_collect
 from astrbot_plugin_meme_manager.backend.semantic_caption import prepare_visual_inputs
 
 
-def png_bytes() -> bytes:
+def png_bytes(color=(255, 0, 0)) -> bytes:
     output = io.BytesIO()
-    PILImage.new("RGB", (8, 8), color=(255, 0, 0)).save(output, format="PNG")
+    PILImage.new("RGB", (8, 8), color=color).save(output, format="PNG")
     return output.getvalue()
 
 
@@ -49,6 +49,8 @@ class DummyEvent:
         *,
         private: bool = False,
         image_path: Path | None = None,
+        image_paths: list[Path] | None = None,
+        raw_image_data: list[dict] | None = None,
     ):
         self.source_id = source_id
         self.private = private
@@ -57,17 +59,23 @@ class DummyEvent:
             if private
             else f"test:GroupMessage:{source_id}"
         )
+        paths = image_paths or [image_path]
         self.message_obj = SimpleNamespace(
             message=[
                 auto_collect.Image(
                     file=(
-                        image_path.resolve().as_uri()
-                        if image_path is not None
+                        path.resolve().as_uri()
+                        if path is not None
                         else "https://example.com/meme.png"
                     )
                 )
+                for path in paths
             ]
         )
+        if raw_image_data is not None:
+            self.message_obj.raw_message = {
+                "message": [{"type": "image", "data": data} for data in raw_image_data]
+            }
 
     def is_private_chat(self):
         return self.private
@@ -101,13 +109,15 @@ class AutoCollectConfigurationTests(unittest.TestCase):
         self.assertIn('id="auto-inbox-panel"', html)
         self.assertIn("auto-inbox-panel hidden", html)
         self.assertIn("data?.visible", script)
-        self.assertIn('semantic/auto-inbox/import', script)
-        self.assertIn('semantic/start', script)
+        self.assertIn("semantic/auto-inbox/import", script)
+        self.assertIn("semantic/start", script)
 
 
 class AutoCollectImageTests(unittest.TestCase):
     def test_validates_static_png_without_animation_setting(self):
-        self.assertEqual(auto_collect.AutoCollectManager._validate_image(png_bytes()), ".png")
+        self.assertEqual(
+            auto_collect.AutoCollectManager._validate_image(png_bytes()), ".png"
+        )
 
     def test_samples_all_frames_from_animated_gif(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -128,7 +138,9 @@ class AutoCollectImageTests(unittest.TestCase):
             try:
                 self.assertEqual(len(visual_paths), 3)
                 self.assertEqual(visual_paths, temporary_paths)
-                self.assertTrue(all(Path(path).suffix == ".png" for path in visual_paths))
+                self.assertTrue(
+                    all(Path(path).suffix == ".png" for path in visual_paths)
+                )
             finally:
                 for path in temporary_paths:
                     Path(path).unlink(missing_ok=True)
@@ -150,9 +162,7 @@ class AutoCollectScopeAndCooldownTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(manager._source_allowed(DummyEvent("100"))[0])
-            self.assertTrue(
-                manager._source_allowed(DummyEvent("200", private=True))[0]
-            )
+            self.assertTrue(manager._source_allowed(DummyEvent("200", private=True))[0])
             self.assertFalse(manager._source_allowed(DummyEvent("300"))[0])
 
     async def test_submit_uses_100_percent_sampling_and_20_second_cooldown(self):
@@ -190,6 +200,102 @@ class AutoCollectScopeAndCooldownTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(await manager.submit(event))
                 self.assertFalse(await manager.submit(event))
                 self.assertEqual(manager.queue.qsize(), 1)
+                await manager.close()
+
+    async def test_submit_prefilters_images_with_napcat_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            packs_dir = root / "packs"
+            (packs_dir / "pack-a" / "memes" / "happy").mkdir(parents=True)
+            regular = root / "regular.png"
+            meme = root / "meme.png"
+            regular.write_bytes(png_bytes())
+            meme.write_bytes(png_bytes((0, 0, 255)))
+            cases = [
+                ("regular", [{"sub_type": 0, "summary": "[图片]"}], False),
+                ("custom", [{"sub_type": "1", "summary": "[动画表情]"}], True),
+                ("legacy", [{"sub_type": 11, "summary": "[动画表情]"}], True),
+                ("market", [{"emoji_id": "123", "summary": "商城表情"}], True),
+                ("fallback", None, True),
+                ("mismatched", [], True),
+            ]
+            with (
+                patch.object(auto_collect, "PACKS_DIR", packs_dir),
+                patch.object(auto_collect, "AUTO_COLLECT_TEMP_DIR", root / "queue"),
+                patch.object(
+                    auto_collect, "AUTO_COLLECT_STATE_PATH", root / "state.json"
+                ),
+                patch.object(
+                    auto_collect,
+                    "load_pack_category_mapping",
+                    return_value={"happy": "positive reaction"},
+                ),
+            ):
+                for name, raw_image_data, expected in cases:
+                    with self.subTest(name=name):
+                        manager = auto_collect.AutoCollectManager(
+                            DummyPlugin(),
+                            {
+                                "enabled": True,
+                                "vision_provider_id": "vision",
+                                "target_pack_id": "pack-a",
+                                "cooldown_seconds": 0,
+                            },
+                        )
+                        manager._ready = True
+                        event = DummyEvent(
+                            "100",
+                            image_path=meme,
+                            raw_image_data=raw_image_data,
+                        )
+
+                        self.assertEqual(await manager.submit(event), expected)
+                        self.assertEqual(manager.queue.qsize(), int(expected))
+                        await manager.close()
+
+    async def test_submit_selects_tagged_image_from_multi_image_message(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            packs_dir = root / "packs"
+            (packs_dir / "pack-a" / "memes" / "happy").mkdir(parents=True)
+            regular = root / "regular.png"
+            meme = root / "meme.png"
+            regular.write_bytes(png_bytes())
+            meme_content = png_bytes((0, 0, 255))
+            meme.write_bytes(meme_content)
+            with (
+                patch.object(auto_collect, "PACKS_DIR", packs_dir),
+                patch.object(auto_collect, "AUTO_COLLECT_TEMP_DIR", root / "queue"),
+                patch.object(
+                    auto_collect, "AUTO_COLLECT_STATE_PATH", root / "state.json"
+                ),
+                patch.object(
+                    auto_collect,
+                    "load_pack_category_mapping",
+                    return_value={"happy": "positive reaction"},
+                ),
+            ):
+                manager = auto_collect.AutoCollectManager(
+                    DummyPlugin(),
+                    {
+                        "enabled": True,
+                        "vision_provider_id": "vision",
+                        "target_pack_id": "pack-a",
+                    },
+                )
+                manager._ready = True
+                event = DummyEvent(
+                    "100",
+                    image_paths=[regular, meme],
+                    raw_image_data=[
+                        {"sub_type": 0, "summary": "[图片]"},
+                        {"sub_type": 1, "summary": "[动画表情]"},
+                    ],
+                )
+
+                self.assertTrue(await manager.submit(event))
+                snapshot_path = next((root / "queue").glob("queued_*"))
+                self.assertEqual(snapshot_path.read_bytes(), meme_content)
                 await manager.close()
 
     async def test_worker_uses_snapshot_after_event_file_is_deleted(self):

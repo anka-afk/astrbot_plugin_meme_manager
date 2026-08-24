@@ -9,6 +9,7 @@ import re
 import shutil
 import tempfile
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -235,7 +236,7 @@ class AutoCollectManager:
         return bool(self.scope.intersection(candidates)), source_kind, source_id
 
     async def submit(self, event: Any) -> bool:
-        """过滤消息，并将第一张直接图片的独立快照加入队列。
+        """过滤消息，并将第一张符合条件的直接图片快照加入队列。
 
         Args:
             event: 当前 AstrBot 消息事件。
@@ -253,6 +254,50 @@ class AutoCollectManager:
             for component in event.message_obj.message
             if isinstance(component, Image)
         ]
+        raw_message = getattr(event.message_obj, "raw_message", None)
+        if isinstance(raw_message, Mapping):
+            raw_segments = raw_message.get("message")
+            if isinstance(raw_segments, list):
+                raw_image_data = [
+                    segment.get("data")
+                    for segment in raw_segments
+                    if isinstance(segment, Mapping)
+                    and segment.get("type") == "image"
+                    and isinstance(segment.get("data"), Mapping)
+                ]
+                if len(raw_image_data) == len(images):
+                    # NapCat exposes image classification only in the raw OneBot
+                    # segment. AstrBot's Image component currently drops these
+                    # extension fields, so preserve positional pairing here.
+                    classified_images = []
+                    classifier_metadata_available = False
+                    for image, data in zip(images, raw_image_data, strict=True):
+                        summary = str(data.get("summary") or "").strip()
+                        explicit_summary = summary in {
+                            "动画表情",
+                            "[动画表情]",
+                            "[表情]",
+                        }
+                        try:
+                            image_sub_type = int(data.get("sub_type"))
+                        except (TypeError, ValueError):
+                            image_sub_type = None
+                        if (
+                            image_sub_type is not None
+                            or data.get("emoji_id")
+                            or data.get("emoji_package_id")
+                            or explicit_summary
+                        ):
+                            classifier_metadata_available = True
+                        if (
+                            image_sub_type == 1
+                            or bool(data.get("emoji_id"))
+                            or bool(data.get("emoji_package_id"))
+                            or explicit_summary
+                        ):
+                            classified_images.append(image)
+                    if classifier_metadata_available:
+                        images = classified_images
         if not images or self.queue.full():
             return False
         cooldown_key = f"{source_kind}:{source_id}"
