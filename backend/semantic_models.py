@@ -155,6 +155,27 @@ def category_analysis_is_current(item: Any) -> bool:
     return str(item.get("prompt_version") or "") == PROMPT_VERSION
 
 
+def semantic_caption_is_complete(item: Any) -> bool:
+    """Return whether an image already has reusable semantic text.
+
+    Caption reuse deliberately does not depend on the prompt version or category
+    review version. Those fields describe how the text was produced, while a
+    non-forced semantic run must preserve existing text and only rebuild vectors.
+
+    Args:
+        item: Raw semantic image record.
+
+    Returns:
+        True when the record has a completed caption and at least one tag.
+    """
+    return bool(
+        isinstance(item, dict)
+        and item.get("caption_status") not in {"failed", "running"}
+        and str(item.get("caption") or "").strip()
+        and normalize_tags(item.get("tags"))
+    )
+
+
 def semantic_entry_id(
     content_sha256: str, category: str, relative_path: str = ""
 ) -> str:

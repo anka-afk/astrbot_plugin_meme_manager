@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from astrbot_plugin_meme_manager.mixins import web_api as web_api_module
 from astrbot_plugin_meme_manager.mixins.commands import CommandMixin
 from astrbot_plugin_meme_manager.mixins.event_handlers import (
     LLM_REQUEST_ORIGIN_CHAT,
@@ -276,3 +277,69 @@ def test_web_api_build_file_data_url(tmp_path):
     assert result == "data:image/png;base64," + base64.b64encode(b"image").decode(
         "ascii"
     )
+
+
+class CommunityInstallJobHarness(WebAPIMixin):
+    def __init__(self):
+        self._community_install_jobs = {}
+        self.reloaded = False
+
+    async def _run_guarded_runtime_file_operation(
+        self, operation, function, *args, **kwargs
+    ):
+        del operation
+        return function(*args, **kwargs)
+
+    def _get_github_accelerator_url(self):
+        return "https://proxy/"
+
+    def _reload_personas(self):
+        self.reloaded = True
+
+
+@pytest.mark.asyncio
+async def test_community_install_job_reports_unknown_total_without_fake_percent(
+    monkeypatch,
+):
+    api = CommunityInstallJobHarness()
+    api._community_install_jobs["job"] = {
+        "status": "running",
+        "progress": 0,
+        "cancel_requested": False,
+    }
+    snapshots = []
+
+    def install(**kwargs):
+        kwargs["progress_callback"]("downloading", 1024, None)
+        snapshots.append(dict(api._community_install_jobs["job"]))
+        return {"pack_id": "pack"}
+
+    monkeypatch.setattr(web_api_module, "install_pack_from_github_source", install)
+    await api._run_community_pack_install_job("job", {}, False, False)
+
+    assert snapshots[0]["progress"] is None
+    assert snapshots[0]["downloaded_bytes"] == 1024
+    assert api._community_install_jobs["job"]["status"] == "succeeded"
+    assert api.reloaded
+
+
+@pytest.mark.asyncio
+async def test_community_install_job_honors_cancel_request(monkeypatch):
+    api = CommunityInstallJobHarness()
+    api._community_install_jobs["job"] = {
+        "status": "cancelling",
+        "progress": 0,
+        "cancel_requested": True,
+    }
+
+    def install(**kwargs):
+        kwargs["progress_callback"]("connecting", 0, None)
+        raise AssertionError("cancelled progress callback must stop installation")
+
+    monkeypatch.setattr(web_api_module, "install_pack_from_github_source", install)
+    await api._run_community_pack_install_job("job", {}, False, False)
+
+    job = api._community_install_jobs["job"]
+    assert job["status"] == "cancelled"
+    assert job["message"] == "安装已取消"
+    assert not api.reloaded

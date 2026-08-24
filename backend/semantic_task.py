@@ -23,9 +23,9 @@ from .semantic_index import (
 from .semantic_models import (
     REVIEW_CATEGORY,
     SemanticImage,
-    category_analysis_is_current,
     ensure_category_tag,
     is_category_tag,
+    semantic_caption_is_complete,
     text_hash,
     utc_now,
 )
@@ -957,9 +957,7 @@ class SemanticTaskManager:
                 self._save_state(pack_id, state)
         images = data.get("images", {})
         caption_done = sum(
-            1
-            for item in images.values()
-            if isinstance(item, dict) and item.get("caption_status") == "done"
+            1 for item in images.values() if semantic_caption_is_complete(item)
         )
         caption_failed = sum(
             1
@@ -982,9 +980,8 @@ class SemanticTaskManager:
             for item in images.values()
             if isinstance(item, dict)
             and (
-                item.get("caption_status") == "pending"
+                not semantic_caption_is_complete(item)
                 or item.get("embedding_status") == "pending"
-                or not category_analysis_is_current(item)
             )
         )
         embedding = self._embedding_adapter(pack_id)
@@ -1005,8 +1002,7 @@ class SemanticTaskManager:
             1
             for item in images.values()
             if isinstance(item, dict)
-            and item.get("caption_status") == "done"
-            and category_analysis_is_current(item)
+            and semantic_caption_is_complete(item)
             and item.get("embedding_status") == "done"
         )
         failed = sum(
@@ -1047,20 +1043,15 @@ class SemanticTaskManager:
             for item in images.values()
             if isinstance(item, dict)
             and (
-                item.get("caption_status") == "pending"
+                not semantic_caption_is_complete(item)
                 or (not worker_alive and item.get("caption_status") == "running")
-                or (
-                    item.get("caption_status") == "done"
-                    and not category_analysis_is_current(item)
-                )
             )
         )
         queued_embedding_tasks = sum(
             1
             for item in images.values()
             if isinstance(item, dict)
-            and item.get("caption_status") == "done"
-            and category_analysis_is_current(item)
+            and semantic_caption_is_complete(item)
             and (
                 item.get("embedding_status") == "pending"
                 or (not worker_alive and item.get("embedding_status") == "running")
@@ -1090,11 +1081,7 @@ class SemanticTaskManager:
         caption_complete = bool(
             not queue_cleared
             and images
-            and caption_done == len(images)
-            and all(
-                isinstance(item, dict) and category_analysis_is_current(item)
-                for item in images.values()
-            )
+            and all(semantic_caption_is_complete(item) for item in images.values())
         )
         # active_items 是进程内请求快照；插件重载后旧值只能视为待恢复记录，
         # 不能再显示成“仍有模型请求执行中”。
@@ -1289,11 +1276,9 @@ class SemanticTaskManager:
     def _item_is_queued(item: Any) -> bool:
         if not isinstance(item, dict):
             return False
-        return (
-            item.get("caption_status") in {"pending", "running", "failed"}
-            or not category_analysis_is_current(item)
-            or item.get("embedding_status") in {"pending", "running", "failed"}
-        )
+        return not semantic_caption_is_complete(item) or item.get(
+            "embedding_status"
+        ) in {"pending", "running", "failed"}
 
     def _reset_running_items(
         self, pack_id: str, metadata: dict[str, Any] | None = None
@@ -1401,10 +1386,7 @@ class SemanticTaskManager:
                     item.get("manual_override")
                     or item.get("provenance") in {"manual", "mixed"}
                 )
-                and (
-                    item.get("caption_status") != "done"
-                    or not category_analysis_is_current(item)
-                )
+                and (force or not semantic_caption_is_complete(item))
                 for item in metadata.get("images", {}).values()
             )
             if needs_caption and not self._vision_provider_ready():
@@ -1582,10 +1564,7 @@ class SemanticTaskManager:
                         "captioning"
                         if any(
                             isinstance(item, dict)
-                            and (
-                                item.get("caption_status") != "done"
-                                or not category_analysis_is_current(item)
-                            )
+                            and not semantic_caption_is_complete(item)
                             for item in metadata.get("images", {}).values()
                         )
                         else "indexing"
@@ -1659,9 +1638,7 @@ class SemanticTaskManager:
                 1
                 for item in images.values()
                 if (
-                    not isinstance(item, dict)
-                    or item.get("caption_status") != "done"
-                    or not category_analysis_is_current(item)
+                    not isinstance(item, dict) or not semantic_caption_is_complete(item)
                 )
             )
             if incomplete:
@@ -1869,11 +1846,7 @@ class SemanticTaskManager:
         item = SemanticImage.from_dict(raw_item)
         if item.manual_override or item.provenance in {"manual", "mixed"}:
             return
-        if (
-            not force
-            and item.caption_status == "done"
-            and category_analysis_is_current(item.to_dict())
-        ):
+        if not force and semantic_caption_is_complete(item.to_dict()):
             return
         event = self._pause_events.setdefault(pack_id, asyncio.Event())
         # 第一次等待避免暂停状态下无意义地争抢并发名额。
@@ -2059,11 +2032,7 @@ class SemanticTaskManager:
                     raw_item.get("manual_override")
                     or raw_item.get("provenance") in {"manual", "mixed"}
                 )
-                and (
-                    force
-                    or raw_item.get("caption_status") != "done"
-                    or not category_analysis_is_current(raw_item)
-                )
+                and (force or not semantic_caption_is_complete(raw_item))
             ]
             if caption_tasks:
                 try:
@@ -2093,27 +2062,19 @@ class SemanticTaskManager:
                 state["updated_at"] = utc_now()
                 await self._run_blocking(self._save_state, pack_id, state)
             has_caption = any(
-                isinstance(item, dict)
-                and item.get("caption_status") == "done"
-                and category_analysis_is_current(item)
+                isinstance(item, dict) and semantic_caption_is_complete(item)
                 for item in metadata.get("images", {}).values()
             )
             all_captions_done = bool(
                 metadata.get("images")
                 and all(
-                    isinstance(item, dict)
-                    and item.get("caption_status") == "done"
-                    and category_analysis_is_current(item)
+                    isinstance(item, dict) and semantic_caption_is_complete(item)
                     for item in metadata.get("images", {}).values()
                 )
             )
             if mode == "caption_only":
                 failed = any(
-                    isinstance(item, dict)
-                    and (
-                        item.get("caption_status") != "done"
-                        or not category_analysis_is_current(item)
-                    )
+                    isinstance(item, dict) and not semantic_caption_is_complete(item)
                     for item in metadata.get("images", {}).values()
                 )
             elif embedding.ready and has_caption and all_captions_done:
@@ -2139,10 +2100,8 @@ class SemanticTaskManager:
                 )
             elif has_caption and not embedding.ready:
                 for item in metadata.get("images", {}).values():
-                    if (
-                        not isinstance(item, dict)
-                        or item.get("caption_status") != "done"
-                        or not category_analysis_is_current(item)
+                    if not isinstance(item, dict) or not semantic_caption_is_complete(
+                        item
                     ):
                         continue
                     item["embedding_status"] = "failed"
@@ -2153,8 +2112,7 @@ class SemanticTaskManager:
                 failed = any(
                     isinstance(item, dict)
                     and (
-                        item.get("caption_status") != "done"
-                        or not category_analysis_is_current(item)
+                        not semantic_caption_is_complete(item)
                         or item.get("embedding_status") != "done"
                     )
                     for item in latest.get("images", {}).values()

@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import zipfile
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -49,12 +50,16 @@ from .semantic_storage import (
 
 PackOperationGuard = Callable[[str, str], None]
 InstallProgressCallback = Callable[[str, int, int | None], None]
+InstallCancelCheck = Callable[[], bool]
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 MAX_ARCHIVE_FILE_COUNT = 20_000
 MAX_ARCHIVE_COMPRESSED_BYTES = 1024 * 1024 * 1024
 MAX_ARCHIVE_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
 MAX_ARCHIVE_SINGLE_FILE_BYTES = 1024 * 1024 * 1024
 MIN_FREE_SPACE_RESERVE_BYTES = 512 * 1024 * 1024
+ARCHIVE_DOWNLOAD_CONNECT_TIMEOUT_SECONDS = 15
+ARCHIVE_DOWNLOAD_READ_TIMEOUT_SECONDS = 30
+ARCHIVE_DOWNLOAD_SOURCE_TIMEOUT_SECONDS = 30 * 60
 ARCHIVE_JSON_SIZE_LIMITS = {
     "manifest.json": 4 * 1024 * 1024,
     PACK_TRANSFER_MANIFEST: 1024 * 1024,
@@ -62,6 +67,10 @@ ARCHIVE_JSON_SIZE_LIMITS = {
     "semantic_metadata.json": 256 * 1024 * 1024,
     "index_manifest.json": 256 * 1024 * 1024,
 }
+
+
+class InstallCancelledError(RuntimeError):
+    """Raised when an operator cancels an in-progress pack installation."""
 
 
 def _build_accelerated_url(raw_url: str, github_accelerator_url: str) -> str:
@@ -1423,6 +1432,7 @@ def _download_github_archive(
     target_zip_path: Path,
     github_accelerator_url: str = "",
     progress_callback: InstallProgressCallback | None = None,
+    cancel_check: InstallCancelCheck | None = None,
 ) -> None:
     """分块下载 GitHub 仓库压缩包并报告真实字节进度。
 
@@ -1432,40 +1442,72 @@ def _download_github_archive(
         target_zip_path: 压缩包写入路径。
         github_accelerator_url: 可选的 GitHub 加速地址。
         progress_callback: 下载阶段、已下载字节和总字节的回调。
+        cancel_check: 返回 True 时终止下载的协作式取消检查。
 
     Raises:
-        ValueError: 下载失败或压缩包超过安全大小限制时抛出。
+        InstallCancelledError: 操作者取消安装时抛出。
+        ValueError: 下载失败、超时或压缩包超过安全大小限制时抛出。
     """
     archive_url = f"https://github.com/{repo}/archive/{ref}.zip"
-    response = _http_get_with_optional_acceleration(
-        archive_url,
-        timeout=30,
-        github_accelerator_url=github_accelerator_url,
-        stream=True,
-    )
-    try:
-        if response.status_code != 200:
-            raise ValueError(f"下载 GitHub 压缩包失败，状态码: {response.status_code}")
-        total_bytes = _safe_nonnegative_int(response.headers.get("content-length"))
-        if total_bytes is not None and total_bytes > MAX_ARCHIVE_COMPRESSED_BYTES:
-            raise ValueError("GitHub 压缩包超过 1 GB 安全限制")
+    accelerated_url = _build_accelerated_url(archive_url, github_accelerator_url)
+    download_urls = [accelerated_url] if accelerated_url != archive_url else []
+    download_urls.append(archive_url)
+    failures = []
+    target_zip_path.parent.mkdir(parents=True, exist_ok=True)
 
-        target_zip_path.parent.mkdir(parents=True, exist_ok=True)
-        downloaded_bytes = 0
-        if progress_callback:
-            progress_callback("downloading", downloaded_bytes, total_bytes)
-        with target_zip_path.open("wb") as file_obj:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if not chunk:
-                    continue
-                downloaded_bytes += len(chunk)
-                if downloaded_bytes > MAX_ARCHIVE_COMPRESSED_BYTES:
-                    raise ValueError("GitHub 压缩包超过 1 GB 安全限制")
-                file_obj.write(chunk)
-                if progress_callback:
-                    progress_callback("downloading", downloaded_bytes, total_bytes)
-    finally:
-        response.close()
+    for download_url in download_urls:
+        response = None
+        try:
+            if cancel_check and cancel_check():
+                raise InstallCancelledError("安装已取消")
+            response = requests.get(
+                download_url,
+                timeout=(
+                    ARCHIVE_DOWNLOAD_CONNECT_TIMEOUT_SECONDS,
+                    ARCHIVE_DOWNLOAD_READ_TIMEOUT_SECONDS,
+                ),
+                stream=True,
+            )
+            if response.status_code != 200:
+                raise ValueError(f"HTTP {response.status_code}")
+            total_bytes = _safe_nonnegative_int(response.headers.get("content-length"))
+            if total_bytes is not None and total_bytes > MAX_ARCHIVE_COMPRESSED_BYTES:
+                raise ValueError("GitHub 压缩包超过 1 GB 安全限制")
+
+            downloaded_bytes = 0
+            started_at = time.monotonic()
+            if progress_callback:
+                progress_callback("downloading", downloaded_bytes, total_bytes)
+            with target_zip_path.open("wb") as file_obj:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if cancel_check and cancel_check():
+                        raise InstallCancelledError("安装已取消")
+                    if (
+                        time.monotonic() - started_at
+                        > ARCHIVE_DOWNLOAD_SOURCE_TIMEOUT_SECONDS
+                    ):
+                        raise TimeoutError("下载源超过 30 分钟仍未完成")
+                    if not chunk:
+                        continue
+                    downloaded_bytes += len(chunk)
+                    if downloaded_bytes > MAX_ARCHIVE_COMPRESSED_BYTES:
+                        raise ValueError("GitHub 压缩包超过 1 GB 安全限制")
+                    file_obj.write(chunk)
+                    if progress_callback:
+                        progress_callback("downloading", downloaded_bytes, total_bytes)
+            return
+        except InstallCancelledError:
+            target_zip_path.unlink(missing_ok=True)
+            raise
+        except Exception as exc:
+            target_zip_path.unlink(missing_ok=True)
+            source_name = "加速源" if download_url != archive_url else "GitHub 原生源"
+            failures.append(f"{source_name}: {exc}")
+        finally:
+            if response is not None:
+                response.close()
+
+    raise ValueError("下载 GitHub 压缩包失败；" + "；".join(failures))
 
 
 def fetch_and_cache_community_index(
@@ -1535,6 +1577,7 @@ def install_pack_from_github_source(
     operation_guard: PackOperationGuard | None = None,
     github_accelerator_url: str = "",
     progress_callback: InstallProgressCallback | None = None,
+    cancel_check: InstallCancelCheck | None = None,
 ) -> dict:
     """从 GitHub 来源下载并安装表情包。
 
@@ -1545,6 +1588,7 @@ def install_pack_from_github_source(
         operation_guard: 写入资源包前调用的并发操作保护器。
         github_accelerator_url: 可选的 GitHub 加速地址。
         progress_callback: 安装阶段、已下载字节和总字节的回调。
+        cancel_check: 返回 True 时终止安装的协作式取消检查。
 
     Returns:
         已安装表情包的信息。
@@ -1573,10 +1617,13 @@ def install_pack_from_github_source(
             remote_zip,
             github_accelerator_url=github_accelerator_url,
             progress_callback=progress_callback,
+            cancel_check=cancel_check,
         )
 
         if progress_callback:
             progress_callback("extracting", 0, None)
+        if cancel_check and cancel_check():
+            raise InstallCancelledError("安装已取消")
         extract_dir = tmp_root / "extract"
         extract_dir.mkdir(parents=True, exist_ok=True)
         # 远程仓库可能包含与 pack 无关的脚本文件；这里只做路径安全校验。
@@ -1601,6 +1648,8 @@ def install_pack_from_github_source(
 
         if progress_callback:
             progress_callback("preparing", 0, None)
+        if cancel_check and cancel_check():
+            raise InstallCancelledError("安装已取消")
         local_zip = tmp_root / "pack.zip"
         with zipfile.ZipFile(local_zip, "w", zipfile.ZIP_DEFLATED) as zip_file:
             for file_path in source_pack_dir.rglob("*"):
@@ -1611,6 +1660,8 @@ def install_pack_from_github_source(
 
         if progress_callback:
             progress_callback("installing", 0, None)
+        if cancel_check and cancel_check():
+            raise InstallCancelledError("安装已取消")
         result = import_pack_archive(
             local_zip,
             overwrite=overwrite,

@@ -234,6 +234,17 @@ class DomXssRegressionTests(unittest.TestCase):
         self.assertIn("maintainerMeta.textContent", source)
         self.assertIn("sourceMeta.textContent", source)
 
+    def test_catalog_install_supports_unknown_size_cancel_and_reconnect(self):
+        root = Path(__file__).parents[1] / "pages/catalog"
+        source = (root / "script.js").read_text(encoding="utf-8")
+        html = (root / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("status?.progress !== null", source)
+        self.assertIn('"community/install/cancel"', source)
+        self.assertIn('apiGet("community/install/status")', source)
+        self.assertIn("restoreActiveInstall", source)
+        self.assertIn('id="install-progress-cancel"', html)
+
     def test_settings_dynamic_values_are_not_html_templates(self):
         source = (Path(__file__).parents[1] / "pages/settings/script.js").read_text(
             encoding="utf-8"
@@ -266,10 +277,10 @@ class ArchiveDownloadProgressTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             target_path = Path(temp_dir) / "archive.zip"
             with patch.object(
-                pack_storage,
-                "_http_get_with_optional_acceleration",
+                pack_storage.requests,
+                "get",
                 return_value=response,
-            ) as http_get:
+            ) as requests_get:
                 pack_storage._download_github_archive(
                     "owner/repo",
                     "main",
@@ -281,10 +292,12 @@ class ArchiveDownloadProgressTests(unittest.TestCase):
 
             self.assertEqual(target_path.read_bytes(), b"abcdef")
 
-        http_get.assert_called_once_with(
+        requests_get.assert_called_once_with(
             "https://github.com/owner/repo/archive/main.zip",
-            timeout=30,
-            github_accelerator_url="",
+            timeout=(
+                pack_storage.ARCHIVE_DOWNLOAD_CONNECT_TIMEOUT_SECONDS,
+                pack_storage.ARCHIVE_DOWNLOAD_READ_TIMEOUT_SECONDS,
+            ),
             stream=True,
         )
         self.assertEqual(

@@ -17,8 +17,8 @@ from .semantic_models import (
     SCHEMA_VERSION,
     SemanticImage,
     build_id_map,
-    category_analysis_is_current,
     normalize_vector,
+    semantic_caption_is_complete,
     text_hash,
     utc_now,
 )
@@ -391,8 +391,7 @@ def index_is_ready(
         for digest, item in images.items()
         if isinstance(item, dict)
         and item.get("category") != REVIEW_CATEGORY
-        and item.get("caption_status") == "done"
-        and category_analysis_is_current(item)
+        and semantic_caption_is_complete(item)
         and item.get("embedding_status") == "done"
         and item.get("caption")
         and item.get("tags")
@@ -468,8 +467,7 @@ async def build_index(
         if (
             not isinstance(value, dict)
             or value.get("category") == REVIEW_CATEGORY
-            or value.get("caption_status") != "done"
-            or not category_analysis_is_current(value)
+            or not semantic_caption_is_complete(value)
         ):
             continue
         if not value.get("caption") or not value.get("tags"):
@@ -693,8 +691,7 @@ async def search_index(
         if (
             not isinstance(item, dict)
             or item.get("category") == REVIEW_CATEGORY
-            or item.get("caption_status") != "done"
-            or not category_analysis_is_current(item)
+            or not semantic_caption_is_complete(item)
         ):
             continue
         if float(score) < float(min_score):

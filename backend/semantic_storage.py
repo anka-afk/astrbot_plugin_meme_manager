@@ -19,11 +19,11 @@ from .semantic_models import (
     SemanticImage,
     build_category_tag,
     build_semantic_text,
-    category_analysis_is_current,
     category_context_hash,
     ensure_category_tag,
     is_category_tag,
     normalize_tags,
+    semantic_caption_is_complete,
     semantic_entry_id,
     text_hash,
     utc_now,
@@ -642,11 +642,12 @@ def _normalize_image_records(
             "caption_status",
             "done" if value.get("caption") and value.get("tags") else "pending",
         )
+        if semantic_caption_is_complete(value):
+            value["caption_status"] = "done"
         value.setdefault("embedding_status", "pending")
         if context_changed:
-            # 分类名/描述变化后必须重新让模型判断；已有描述仍保留，人工内容
-            # 也不会在这里被删除，但旧确认和旧向量立即失效。
-            value["caption_status"] = "pending"
+            # 分类名/描述变化只让旧确认和向量失效。已有描述属于可移植内容，
+            # 普通语义化不得因此再次产生视觉模型费用。
             value["embedding_status"] = "pending"
             value["category_review_status"] = "unchecked"
             value["category_fit"] = "uncertain"
@@ -654,6 +655,8 @@ def _normalize_image_records(
             value["category_review_context_hash"] = ""
             value["manual_confirmation_context_hash"] = ""
             value["text_hash"] = ""
+            if not semantic_caption_is_complete(value):
+                value["caption_status"] = "pending"
         elif not old_context:
             # v2 导入数据若缺少上下文指纹，保留描述但重新做分类符合判断。
             value.setdefault("category_review_status", "unchecked")
@@ -778,10 +781,7 @@ def semantic_metadata_is_complete(
             and recorded_unique_total == len(current_entry_ids)
             and all(
                 isinstance(images.get(entry_id), dict)
-                and images[entry_id].get("caption_status") == "done"
-                and category_analysis_is_current(images[entry_id])
-                and str(images[entry_id].get("caption") or "").strip()
-                and normalize_tags(images[entry_id].get("tags"))
+                and semantic_caption_is_complete(images[entry_id])
                 and (
                     not require_embeddings
                     or images[entry_id].get("category") == REVIEW_CATEGORY
@@ -2040,9 +2040,10 @@ def reconcile_metadata(
         item.setdefault("category_review_reason", "")
         item.setdefault("category_review_context_hash", "")
         item.setdefault("manual_confirmation_context_hash", "")
+        if semantic_caption_is_complete(item):
+            item["caption_status"] = "done"
         context_changed = bool(previous_context and previous_context != current_context)
         if not exact_context or context_changed:
-            item["caption_status"] = "pending"
             item["embedding_status"] = "pending"
             item["category_review_status"] = "unchecked"
             item["category_fit"] = "uncertain"
@@ -2051,6 +2052,8 @@ def reconcile_metadata(
             item["manual_confirmation_context_hash"] = ""
             item["text_hash"] = ""
             item["error"] = None
+            if not semantic_caption_is_complete(item):
+                item["caption_status"] = "pending"
         if item.get("caption_status") == "done" and (
             not str(item.get("caption") or "").strip() or not item.get("tags")
         ):

@@ -3,7 +3,10 @@ import json
 
 import pytest
 from astrbot_plugin_meme_manager.backend import semantic_storage as storage
-from astrbot_plugin_meme_manager.backend.semantic_models import SemanticImage
+from astrbot_plugin_meme_manager.backend.semantic_models import (
+    SemanticImage,
+    category_analysis_is_current,
+)
 
 
 def create_pack(tmp_path):
@@ -159,6 +162,50 @@ def test_semantic_metadata_complete_requires_current_snapshot(tmp_path):
     )
     loaded["file_total"] = 2
     assert not storage.semantic_metadata_is_complete(pack_dir, loaded)
+
+
+def test_reconcile_preserves_existing_caption_when_prompt_or_context_changes(tmp_path):
+    pack_dir, memes_dir = create_pack(tmp_path)
+    category_dir = memes_dir / "happy"
+    category_dir.mkdir()
+    (category_dir / "meme.png").write_bytes(b"image")
+    (pack_dir / "memes_data.json").write_text(
+        json.dumps({"happy": "旧分类描述"}, ensure_ascii=False), encoding="utf-8"
+    )
+    scanned = storage.scan_images(pack_dir)[0]
+    image = SemanticImage(
+        content_sha256=scanned["content_sha256"],
+        relative_path=scanned["relative_path"],
+        category="happy",
+        category_description="旧分类描述",
+        caption="已经付费生成的描述",
+        tags=["已有标签"],
+        caption_status="done",
+        embedding_status="done",
+        prompt_version="old-prompt",
+        category_review_status="auto_match",
+    )
+    storage.save_metadata(
+        pack_dir,
+        {
+            "file_total": 1,
+            "unique_total": 1,
+            "images": {scanned["entry_id"]: image.to_dict()},
+        },
+    )
+    (pack_dir / "memes_data.json").write_text(
+        json.dumps({"happy": "新分类描述"}, ensure_ascii=False), encoding="utf-8"
+    )
+
+    reconciled = storage.reconcile_metadata(pack_dir)
+    item = reconciled["images"][scanned["entry_id"]]
+
+    assert item["caption"] == "已经付费生成的描述"
+    assert item["caption_status"] == "done"
+    assert item["embedding_status"] == "pending"
+    assert item["category_review_status"] == "unchecked"
+    assert not category_analysis_is_current(item)
+    assert storage.semantic_metadata_is_complete(pack_dir, reconciled)
 
 
 def test_semantic_summary_reports_none_and_complete(tmp_path):

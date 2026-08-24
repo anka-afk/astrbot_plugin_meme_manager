@@ -33,6 +33,7 @@ from ..backend.models import (
     scan_emoji_folder,
 )
 from ..backend.pack_storage import (
+    InstallCancelledError,
     export_pack_archive,
     export_runtime_backup,
     fetch_and_cache_community_index,
@@ -355,6 +356,12 @@ class WebAPIMixin:
             self._api_community_pack_install_status,
             ["GET"],
             "获取社区表情包安装进度",
+        )
+        self._register_webui_api(
+            "community/install/cancel",
+            self._api_cancel_community_pack_install,
+            ["POST"],
+            "取消社区表情包安装任务",
         )
         self._register_webui_api(
             "community/install_official_first",
@@ -2831,8 +2838,24 @@ class WebAPIMixin:
                     > COMMUNITY_INSTALL_JOB_TTL_SECONDS
                 ):
                     jobs.pop(stale_job_id, None)
-            if any(job.get("status") == "running" for job in jobs.values()):
-                return jsonify({"message": "已有表情包正在安装，请稍候"}), 409
+            running_job = next(
+                (
+                    job
+                    for job in jobs.values()
+                    if job.get("status") in {"running", "cancelling"}
+                ),
+                None,
+            )
+            if running_job:
+                return (
+                    jsonify(
+                        {
+                            "message": "已有表情包正在安装，请稍候",
+                            "job_id": running_job.get("job_id"),
+                        }
+                    ),
+                    409,
+                )
 
             job_id = secrets.token_urlsafe(18)
             jobs[job_id] = {
@@ -2844,6 +2867,8 @@ class WebAPIMixin:
                 "downloaded_bytes": 0,
                 "total_bytes": None,
                 "result": None,
+                "cancel_requested": False,
+                "source_label": str(pack_id or source.get("repo") or ""),
                 "created_at": now,
                 "updated_at": now,
             }
@@ -2897,11 +2922,13 @@ class WebAPIMixin:
         def update_progress(
             phase: str, downloaded_bytes: int, total_bytes: int | None
         ) -> None:
+            if job.get("cancel_requested"):
+                raise InstallCancelledError("安装已取消")
             progress = phase_progress.get(phase, job["progress"])
             if phase == "downloading" and total_bytes:
                 progress = 5 + round(min(downloaded_bytes / total_bytes, 1) * 80)
             elif phase == "downloading":
-                progress = max(int(job["progress"]), 5)
+                progress = None
             job.update(
                 {
                     "phase": phase,
@@ -2922,6 +2949,7 @@ class WebAPIMixin:
                 set_as_default=set_as_default,
                 github_accelerator_url=self._get_github_accelerator_url(),
                 progress_callback=update_progress,
+                cancel_check=lambda: bool(job.get("cancel_requested")),
             )
             self._reload_personas()
             job.update(
@@ -2934,11 +2962,20 @@ class WebAPIMixin:
                     "updated_at": time.time(),
                 }
             )
+        except InstallCancelledError:
+            job.update(
+                {
+                    "status": "cancelled",
+                    "phase": "cancelled",
+                    "message": "安装已取消",
+                    "updated_at": time.time(),
+                }
+            )
         except asyncio.CancelledError:
             job.update(
                 {
-                    "status": "failed",
-                    "phase": "failed",
+                    "status": "cancelled",
+                    "phase": "cancelled",
                     "message": "安装任务已停止",
                     "updated_at": time.time(),
                 }
@@ -2959,11 +2996,40 @@ class WebAPIMixin:
         """返回指定社区表情包安装任务的当前进度。"""
         job_id = str(request.args.get("job_id") or "").strip()
         if not job_id:
-            return jsonify({"message": "job_id 不能为空"}), 400
+            active_jobs = [
+                job
+                for job in self._community_install_jobs.values()
+                if job.get("status") in {"running", "cancelling"}
+            ]
+            if not active_jobs:
+                return jsonify({"status": "idle"}), 200
+            job = max(active_jobs, key=lambda item: float(item.get("created_at") or 0))
+            return jsonify(job.copy()), 200
         job = self._community_install_jobs.get(job_id)
         if not job:
             return jsonify({"message": "安装任务不存在或已过期"}), 404
         return jsonify(job.copy()), 200
+
+    async def _api_cancel_community_pack_install(self):
+        """请求协作式取消正在运行的社区表情包安装任务。"""
+        payload = (await request.get_json()) or {}
+        job_id = str(payload.get("job_id") or "").strip()
+        if not job_id:
+            return jsonify({"message": "job_id 不能为空"}), 400
+        job = self._community_install_jobs.get(job_id)
+        if not job:
+            return jsonify({"message": "安装任务不存在或已过期"}), 404
+        if job.get("status") not in {"running", "cancelling"}:
+            return jsonify(job.copy()), 200
+        job.update(
+            {
+                "status": "cancelling",
+                "message": "正在取消安装，请稍候",
+                "cancel_requested": True,
+                "updated_at": time.time(),
+            }
+        )
+        return jsonify(job.copy()), 202
 
     async def _api_install_official_first_pack(self):
         data = None

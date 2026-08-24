@@ -68,6 +68,78 @@ def test_http_get_reports_both_failures(monkeypatch):
         )
 
 
+def test_archive_download_falls_back_after_accelerated_stream_failure(
+    tmp_path, monkeypatch
+):
+    class Response:
+        status_code = 200
+        headers = {}
+
+        def __init__(self, chunks):
+            self.chunks = chunks
+            self.closed = False
+
+        def iter_content(self, chunk_size):
+            del chunk_size
+            for chunk in self.chunks:
+                if isinstance(chunk, Exception):
+                    raise chunk
+                yield chunk
+
+        def close(self):
+            self.closed = True
+
+    accelerated = Response([b"partial", requests.ReadTimeout("stalled")])
+    native = Response([b"complete"])
+    responses = iter([accelerated, native])
+    calls = []
+    monkeypatch.setattr(
+        storage.requests,
+        "get",
+        lambda url, **kwargs: calls.append((url, kwargs)) or next(responses),
+    )
+
+    target = tmp_path / "archive.zip"
+    storage._download_github_archive(
+        "owner/repo",
+        "main",
+        target,
+        github_accelerator_url="https://proxy/",
+    )
+
+    assert target.read_bytes() == b"complete"
+    assert calls[0][0].startswith("https://proxy/")
+    assert calls[1][0] == "https://github.com/owner/repo/archive/main.zip"
+    assert accelerated.closed and native.closed
+
+
+def test_archive_download_cancellation_removes_partial_file(tmp_path, monkeypatch):
+    class Response:
+        status_code = 200
+        headers = {}
+
+        def iter_content(self, chunk_size):
+            del chunk_size
+            yield b"partial"
+            yield b"ignored"
+
+        def close(self):
+            pass
+
+    checks = iter([False, False, True])
+    monkeypatch.setattr(storage.requests, "get", lambda *args, **kwargs: Response())
+    target = tmp_path / "archive.zip"
+
+    with pytest.raises(storage.InstallCancelledError, match="安装已取消"):
+        storage._download_github_archive(
+            "owner/repo",
+            "main",
+            target,
+            cancel_check=lambda: next(checks),
+        )
+    assert not target.exists()
+
+
 def test_atomic_json_and_snapshot_helpers(tmp_path):
     path = tmp_path / "state" / "data.json"
     storage._save_json(path, {"value": "开心"})

@@ -62,6 +62,22 @@ def test_category_analysis_currentness():
     )
 
 
+def test_completed_caption_remains_reusable_across_prompt_versions():
+    item = {
+        "caption_status": "done",
+        "caption": "已有描述",
+        "tags": ["已有标签"],
+        "category_review_status": "unchecked",
+        "prompt_version": "old",
+    }
+    assert models.semantic_caption_is_complete(item)
+    assert not models.category_analysis_is_current(item)
+    assert models.semantic_caption_is_complete({**item, "caption_status": "pending"})
+    assert not models.semantic_caption_is_complete({**item, "caption_status": "failed"})
+    assert not models.semantic_caption_is_complete({**item, "caption": ""})
+    assert not models.semantic_caption_is_complete({**item, "tags": []})
+
+
 def test_semantic_entry_id_is_stable_and_path_sensitive():
     first = models.semantic_entry_id(VALID_HASH, "happy", "happy/a.png")
     assert first == models.semantic_entry_id(

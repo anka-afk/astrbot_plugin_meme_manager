@@ -1,9 +1,8 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
-
 from astrbot_plugin_meme_manager.backend import semantic_task as task_module
 from astrbot_plugin_meme_manager.backend.semantic_task import (
     SemanticTaskManager,
@@ -40,13 +39,16 @@ def test_revision_original_category_prefers_direct_then_history():
     ],
 )
 def test_revision_category_choice(current, original, fit, suggested, expected):
-    assert _revision_category_choice(
-        current_category=current,
-        original_category=original,
-        category_fit=fit,
-        suggested_category=suggested,
-        selectable_categories={"happy", "sad"},
-    ) == expected
+    assert (
+        _revision_category_choice(
+            current_category=current,
+            original_category=original,
+            category_fit=fit,
+            suggested_category=suggested,
+            selectable_categories={"happy", "sad"},
+        )
+        == expected
+    )
 
 
 @pytest.mark.parametrize("value", ["", "a", "../pack", "中文", "a" * 65])
@@ -142,12 +144,18 @@ def test_configured_concurrency_is_bounded(tmp_path, configured, expected):
 
 
 def test_elapsed_seconds_handles_timezones_and_invalid_values():
-    assert SemanticTaskManager._elapsed_seconds(
-        "2026-01-01T00:00:00Z", "2026-01-01T00:00:03+00:00"
-    ) == 3
-    assert SemanticTaskManager._elapsed_seconds(
-        datetime(2026, 1, 1), datetime(2026, 1, 1, 0, 0, 2)
-    ) == 2
+    assert (
+        SemanticTaskManager._elapsed_seconds(
+            "2026-01-01T00:00:00Z", "2026-01-01T00:00:03+00:00"
+        )
+        == 3
+    )
+    assert (
+        SemanticTaskManager._elapsed_seconds(
+            datetime(2026, 1, 1), datetime(2026, 1, 1, 0, 0, 2)
+        )
+        == 2
+    )
     assert SemanticTaskManager._elapsed_seconds("bad", "bad") == 0
 
 
@@ -176,7 +184,9 @@ def test_record_vision_usage_accumulates_and_saves(manager, monkeypatch):
         "_load_state",
         lambda pack_id: {"token_usage": {"input": 2, "total": 2, "calls": 1}},
     )
-    monkeypatch.setattr(manager, "_save_state", lambda pack_id, state: saved.append(state))
+    monkeypatch.setattr(
+        manager, "_save_state", lambda pack_id, state: saved.append(state)
+    )
     manager._record_vision_usage("pack-a", {"output": 3})
     assert saved[0]["token_usage"] == {
         "input": 2,
@@ -292,7 +302,11 @@ def test_status_reports_primary_queue_states(
     monkeypatch.setattr(manager, "_load_state", lambda pack_id: state)
     monkeypatch.setattr(manager, "_embedding_adapter", lambda pack_id: adapter)
     monkeypatch.setattr(manager, "_load_selection", lambda pack_id: {})
-    monkeypatch.setattr(manager, "_vision_provider_details", lambda: {"id": "", "model": "", "ready": False})
+    monkeypatch.setattr(
+        manager,
+        "_vision_provider_details",
+        lambda: {"id": "", "model": "", "ready": False},
+    )
     monkeypatch.setattr(manager, "capabilities", lambda *args, **kwargs: {})
     if external:
         manager._external_pack_operations["pack-a"] = external
@@ -305,19 +319,20 @@ def test_status_reports_primary_queue_states(
     [
         (None, False),
         ({"caption_status": "pending"}, True),
-        ({"embedding_status": "failed", "current": True}, True),
+        ({"embedding_status": "failed"}, True),
         (
-            {"caption_status": "done", "embedding_status": "done", "current": True},
+            {
+                "caption_status": "done",
+                "caption": "已有描述",
+                "tags": ["标签"],
+                "embedding_status": "done",
+                "prompt_version": "old",
+            },
             False,
         ),
     ],
 )
-def test_item_queue_detection(monkeypatch, item, expected):
-    monkeypatch.setattr(
-        task_module,
-        "category_analysis_is_current",
-        lambda value: bool(value.get("current")),
-    )
+def test_item_queue_detection(item, expected):
     assert SemanticTaskManager._item_is_queued(item) is expected
 
 
@@ -330,9 +345,87 @@ def test_reset_running_items_returns_them_to_pending(manager, monkeypatch):
         }
     }
     saved = []
-    monkeypatch.setattr(task_module, "save_metadata", lambda path, data: saved.append(data))
+    monkeypatch.setattr(
+        task_module, "save_metadata", lambda path, data: saved.append(data)
+    )
     result, recovered = manager._reset_running_items("pack-a", metadata)
     assert result["images"]["a"]["caption_status"] == "pending"
     assert result["images"]["b"]["embedding_status"] == "pending"
     assert recovered == 2
     assert saved == [metadata]
+
+
+@pytest.mark.asyncio
+async def test_caption_worker_skips_completed_caption_from_old_prompt(
+    manager, monkeypatch
+):
+    raw_item = {
+        "content_sha256": "a" * 64,
+        "relative_path": "memes/happy/meme.png",
+        "category": "happy",
+        "caption": "已有描述",
+        "tags": ["已有标签"],
+        "caption_status": "done",
+        "embedding_status": "pending",
+        "category_review_status": "unchecked",
+        "prompt_version": "old-prompt",
+    }
+
+    async def unexpected_generation(*args, **kwargs):
+        raise AssertionError("completed captions must not call the vision provider")
+
+    monkeypatch.setattr(task_module, "generate_caption", unexpected_generation)
+    await manager._process_caption_item(
+        "pack-a",
+        manager._pack_dir("pack-a"),
+        {"images": {"entry": raw_item}},
+        "entry",
+        raw_item,
+        "vision",
+        {"happy": "开心"},
+        False,
+        asyncio.Semaphore(1),
+    )
+    assert raw_item["caption"] == "已有描述"
+
+
+def test_status_allows_index_rebuild_for_completed_old_prompt_caption(
+    manager, monkeypatch
+):
+    metadata = {
+        "images": {
+            "entry": {
+                "caption_status": "done",
+                "caption": "已有描述",
+                "tags": ["已有标签"],
+                "embedding_status": "pending",
+                "category_review_status": "unchecked",
+                "prompt_version": "old-prompt",
+            }
+        }
+    }
+    adapter = SimpleNamespace(
+        ready=True,
+        provider_id="embedding",
+        model_name="model",
+        dimension=8,
+        provider=object(),
+    )
+    monkeypatch.setattr(task_module, "load_metadata", lambda pack_dir: metadata)
+    monkeypatch.setattr(task_module, "load_index_manifest", lambda *args: {})
+    monkeypatch.setattr(task_module, "index_is_ready", lambda *args, **kwargs: False)
+    monkeypatch.setattr(manager, "_load_state", lambda pack_id: {})
+    monkeypatch.setattr(manager, "_embedding_adapter", lambda pack_id: adapter)
+    monkeypatch.setattr(manager, "_load_selection", lambda pack_id: {})
+    monkeypatch.setattr(
+        manager,
+        "_vision_provider_details",
+        lambda: {"id": "", "model": "", "ready": False},
+    )
+    monkeypatch.setattr(manager, "capabilities", lambda *args, **kwargs: {})
+
+    status = manager.status("pack-a")
+
+    assert status["can_rebuild_index"] is True
+    assert status["queued_caption_tasks"] == 0
+    assert status["queued_embedding_tasks"] == 1

@@ -93,6 +93,9 @@ async function initCatalogPage() {
   const installProgressBytes = document.getElementById(
     "install-progress-bytes",
   );
+  const installProgressCancel = document.getElementById(
+    "install-progress-cancel",
+  );
   const officialGrid = document.getElementById("official-grid");
   const communityGrid = document.getElementById("community-grid");
   const officialPackCount = document.getElementById("official-pack-count");
@@ -104,6 +107,7 @@ async function initCatalogPage() {
   let cachedIndex = null;
   let installedPackIds = new Set();
   let pendingInstallAction = null;
+  let activeInstallJobId = "";
 
   async function apiGet(endpoint, params = {}) {
     return window.AstrBotPluginPage.apiGet(endpoint, params);
@@ -153,7 +157,8 @@ async function initCatalogPage() {
     installDialog.setAttribute("aria-hidden", "true");
   }
 
-  async function installWithProgress(payload, packName) {
+  async function monitorInstallProgress(jobId, packName) {
+    activeInstallJobId = jobId;
     installProgressPackName.textContent = `目标: ${packName || "未命名"}`;
     installProgressPhase.textContent = "正在准备安装任务";
     installProgressPercent.textContent = "0%";
@@ -161,36 +166,54 @@ async function initCatalogPage() {
     installProgressTrack.classList.add("indeterminate");
     installProgressTrack.setAttribute("aria-valuenow", "0");
     installProgressBytes.textContent = "等待下载开始…";
+    installProgressCancel.disabled = false;
+    installProgressCancel.textContent = "取消安装";
     installProgressDialog.classList.remove("hidden");
     installProgressDialog.setAttribute("aria-hidden", "false");
+    let consecutivePollFailures = 0;
     try {
-      const startResponse = await apiPost("community/install/start", payload);
-      const jobId = String(startResponse?.job_id || "").trim();
-      if (!jobId) {
-        throw new Error("安装任务未返回 job_id");
-      }
-
       while (true) {
-        await new Promise((resolve) => window.setTimeout(resolve, 350));
-        const status = await apiGet("community/install/status", {
-          job_id: jobId,
-        });
-        const progress = Math.max(
-          0,
-          Math.min(100, Number(status?.progress || 0)),
-        );
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        let status;
+        try {
+          status = await apiGet("community/install/status", {
+            job_id: jobId,
+          });
+          consecutivePollFailures = 0;
+        } catch (error) {
+          consecutivePollFailures += 1;
+          if (consecutivePollFailures >= 5) throw error;
+          installProgressPhase.textContent =
+            `连接暂时中断，正在重试（${consecutivePollFailures}/5）`;
+          continue;
+        }
+        const hasKnownProgress =
+          status?.progress !== null &&
+          status?.progress !== undefined &&
+          Number.isFinite(Number(status.progress));
+        const progress = hasKnownProgress
+          ? Math.max(0, Math.min(100, Number(status.progress)))
+          : 0;
         const downloadedBytes = Number(status?.downloaded_bytes || 0);
         const totalBytes = Number(status?.total_bytes || 0);
         installProgressPhase.textContent = status?.message || "正在安装表情包";
-        installProgressPercent.textContent = `${Math.round(progress)}%`;
+        installProgressPercent.textContent = hasKnownProgress
+          ? `${Math.round(progress)}%`
+          : "下载中";
         installProgressBar.style.width = `${progress}%`;
-        installProgressTrack.setAttribute(
-          "aria-valuenow",
-          String(Math.round(progress)),
-        );
+        if (hasKnownProgress) {
+          installProgressTrack.setAttribute(
+            "aria-valuenow",
+            String(Math.round(progress)),
+          );
+          installProgressTrack.removeAttribute("aria-valuetext");
+        } else {
+          installProgressTrack.removeAttribute("aria-valuenow");
+          installProgressTrack.setAttribute("aria-valuetext", "正在下载");
+        }
         installProgressTrack.classList.toggle(
           "indeterminate",
-          status?.phase === "downloading" && !totalBytes,
+          !hasKnownProgress,
         );
         if (status?.phase === "downloading") {
           const downloadedMegabytes = (downloadedBytes / 1024 ** 2).toFixed(1);
@@ -208,10 +231,45 @@ async function initCatalogPage() {
         if (status?.status === "failed") {
           throw new Error(status?.message || "安装失败");
         }
+        if (status?.status === "cancelled") {
+          throw new Error(status?.message || "安装已取消");
+        }
       }
     } finally {
-      installProgressDialog.classList.add("hidden");
-      installProgressDialog.setAttribute("aria-hidden", "true");
+      if (activeInstallJobId === jobId) {
+        activeInstallJobId = "";
+        installProgressDialog.classList.add("hidden");
+        installProgressDialog.setAttribute("aria-hidden", "true");
+      }
+    }
+  }
+
+  async function installWithProgress(payload, packName) {
+    const startResponse = await apiPost("community/install/start", payload);
+    const jobId = String(startResponse?.job_id || "").trim();
+    if (!jobId) {
+      throw new Error("安装任务未返回 job_id");
+    }
+    return monitorInstallProgress(jobId, packName);
+  }
+
+  async function restoreActiveInstall() {
+    try {
+      const status = await apiGet("community/install/status");
+      const jobId = String(status?.job_id || "").trim();
+      if (!jobId || !["running", "cancelling"].includes(status?.status)) {
+        return;
+      }
+      addLog("检测到后台安装任务，已恢复进度显示");
+      await monitorInstallProgress(
+        jobId,
+        status?.source_label || "后台安装任务",
+      );
+      addLog("后台安装任务已完成");
+      await refreshInstalledSet();
+      renderCatalog();
+    } catch (error) {
+      addLog(`后台安装任务结束: ${error?.message || String(error)}`, true);
     }
   }
 
@@ -675,9 +733,26 @@ async function initCatalogPage() {
     }
   });
 
+  installProgressCancel.addEventListener("click", async () => {
+    if (!activeInstallJobId || installProgressCancel.disabled) return;
+    installProgressCancel.disabled = true;
+    installProgressCancel.textContent = "正在取消...";
+    try {
+      await apiPost("community/install/cancel", {
+        job_id: activeInstallJobId,
+      });
+      installProgressPhase.textContent = "正在取消安装，请稍候";
+    } catch (error) {
+      installProgressCancel.disabled = false;
+      installProgressCancel.textContent = "取消安装";
+      addLog(`取消安装失败: ${error?.message || String(error)}`, true);
+    }
+  });
+
   await refreshInstalledSet();
   renderCatalog();
   addLog("资源广场已就绪");
+  void restoreActiveInstall();
   const hasCache = await loadCachedIndex({ silentOnMissing: true });
   if (hasCache) {
     await fetchIndex();
