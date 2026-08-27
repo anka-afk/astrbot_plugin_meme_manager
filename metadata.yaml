@@ -6,7 +6,7 @@ desc: >-
   支持官方及社区资源包安装、多表情包管理、AI 智能发送、自动收集、
   会话与人格选包、云端同步，以及 prompt 自动维护。
 help: 功能：1. AI自动发送表情包 2. WebUI插件页面管理与资源广场 3. /表情管理 恢复默认表情包 4. /表情管理 查看图库 5. /表情管理 添加表情 [类别] 6. /表情管理 同步到云端 7. /表情管理 从云端同步 8. /表情管理 同步状态
-version: 4.15.3
+version: 4.15.4
 author: anka
 repo: https://github.com/anka-afk/astrbot_plugin_meme_manager
 astrbot_version: ">=4.17.0"
