@@ -140,7 +140,14 @@ class _LightweightToolSet:
 
 
 def _build_caption_tool_set(category_names: list[str] | None = None) -> Any:
-    """使用 AstrBot 通用 ToolSet 描述结果，不绑定某一家供应商协议。"""
+    """使用 AstrBot 通用 ToolSet 描述结果，不绑定某一家供应商协议。
+
+    Args:
+        category_names: 可供模型参考的现有分类键。
+
+    Returns:
+        包含语义化结果提交工具的 ToolSet。
+    """
     parameters = {
         "type": "object",
         "properties": {
@@ -168,7 +175,6 @@ def _build_caption_tool_set(category_names: list[str] | None = None) -> Any:
             },
             "suggested_category": {
                 "type": "string",
-                "enum": ["", *list(category_names or [])],
                 "description": "仅在明确冲突时选择一个现有分类键，否则为空字符串。",
             },
         },

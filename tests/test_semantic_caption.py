@@ -6,17 +6,15 @@ from backend import semantic_caption as caption
 from PIL import Image
 
 
-def test_build_caption_tool_set_contains_required_schema():
+def test_build_caption_tool_set_allows_empty_suggested_category():
     tool_set = caption._build_caption_tool_set(["happy", "sad"])
     tools = getattr(tool_set, "tools", [])
     assert len(tools) == 1
     tool = tools[0]
     assert tool.name == caption.CAPTION_TOOL_NAME
-    assert tool.parameters["properties"]["suggested_category"]["enum"] == [
-        "",
-        "happy",
-        "sad",
-    ]
+    suggested_category = tool.parameters["properties"]["suggested_category"]
+    assert suggested_category["type"] == "string"
+    assert "enum" not in suggested_category
 
 
 def test_build_caption_prompt_contains_category_catalog_frames_and_review():
