@@ -2,6 +2,14 @@
 
 本文件记录 AstrBot 表情包管理器的版本更新，最新版本排在最前。
 
+## v4.15.5
+
+- 🧠 修复 SiliconFlow 等视觉模型在语义化及人工复审时返回 `tool_choice` 的 `not yet supported` 错误后，未能触发自动降级的问题（[#123](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/123)）。
+- 🔄 补齐工具调用和结构化输出的兼容性错误识别：工具参数被拒绝后自动改用无工具的 JSON 请求，`response_format` 也不受支持时继续退回普通 JSON 提示词。
+- 💰 复用已有 Provider 降级缓存，避免同一上下文中的后续图片重复尝试不受支持的工具调用。
+- 🛡️ 网络超时、认证失败等无关错误继续上抛，不误触发降级。
+- ✅ 新增原始报错、降级重试、模式缓存及无关错误不误判的回归测试；完整插件测试通过（451 项测试、81 项子测试）。
+
 ## v4.15.4
 
 - 🧠 修复 Gemini 视觉模型执行语义化及人工复审时，因 `suggested_category` 工具参数包含空字符串枚举而返回 `INVALID_ARGUMENT` 的问题。

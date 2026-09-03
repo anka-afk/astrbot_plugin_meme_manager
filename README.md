@@ -447,11 +447,11 @@ async def send_in_two_steps(context, event, chain: MessageChain):
 
 ## 📜 更新日志
 
-当前版本：v4.15.4
+当前版本：v4.15.5
 
-- 🧠 修复 Gemini 视觉模型执行语义化及人工复审时，工具 schema 因空字符串枚举被拒绝的问题。
-- 🛡️ 分类建议仍在模型响应后经过现有分类白名单校验，未知分类不会被采用。
-- ✅ 新增工具 schema 回归测试并完成完整插件测试。
+- 🧠 修复 SiliconFlow 等视觉模型返回 `tool_choice is not yet supported` 时，语义化及人工复审直接失败的问题。
+- 🔄 正确识别该兼容性错误并自动改用无工具的 JSON 请求；同一 Provider 后续图片复用降级模式，结构化输出也不受支持时继续退回普通 JSON 提示词。
+- ✅ 新增原始报错、降级重试、模式缓存及无关错误不误判的回归测试。
 
 完整版本记录请查看 [CHANGELOG.md](./CHANGELOG.md)。
 

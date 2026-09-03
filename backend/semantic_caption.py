@@ -421,6 +421,7 @@ def _structured_output_is_unsupported(exc: Exception) -> bool:
         for marker in (
             "unsupported",
             "not support",
+            "not yet support",
             "does not support",
             "unknown",
             "unrecognized",
@@ -461,6 +462,7 @@ def _tool_call_is_unsupported(exc: Exception) -> bool:
         for marker in (
             "unsupported",
             "not support",
+            "not yet support",
             "does not support",
             "doesn't support",
             "not enabled",

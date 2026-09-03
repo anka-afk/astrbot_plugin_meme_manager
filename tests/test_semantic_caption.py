@@ -1,9 +1,17 @@
+import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from backend import semantic_caption as caption
 from PIL import Image
+
+SILICONFLOW_TOOL_CHOICE_ERROR = (
+    "Error code: 400 - {'code': 20015, 'message': 'Value error, The `required` "
+    "option for tool_choice is not yet supported.', 'data': None}"
+)
 
 
 def test_build_caption_tool_set_allows_empty_suggested_category():
@@ -132,6 +140,7 @@ def test_merge_token_usage_ignores_invalid_and_negative_values():
     ("message", "expected"),
     [
         ("response_format is unsupported", True),
+        ("response_format is not yet supported", True),
         ("结构化输出不支持", True),
         ("network unavailable", False),
     ],
@@ -144,6 +153,7 @@ def test_structured_output_unsupported_detection(message, expected):
     ("message", "expected"),
     [
         ("tool_choice is unsupported", True),
+        (SILICONFLOW_TOOL_CHOICE_ERROR, True),
         ("工具调用未启用", True),
         ("request timed out", False),
         ("tools request timed out", False),
@@ -151,6 +161,64 @@ def test_structured_output_unsupported_detection(message, expected):
 )
 def test_tool_call_unsupported_detection(message, expected):
     assert caption._tool_call_is_unsupported(RuntimeError(message)) is expected
+
+
+@pytest.mark.parametrize("json_format_supported", [True, False])
+def test_generate_caption_falls_back_and_caches_siliconflow_mode(
+    tmp_path, json_format_supported
+):
+    image_path = tmp_path / "meme.png"
+    Image.new("RGB", (2, 2), "red").save(image_path)
+    response = {
+        "completion_text": json.dumps(
+            {"caption": "A happy cat", "tags": ["happy"], "category_fit": "match"}
+        )
+    }
+    effects = [RuntimeError(SILICONFLOW_TOOL_CHOICE_ERROR)]
+    for _ in range(2):
+        if not json_format_supported:
+            effects.append(RuntimeError("response_format is not yet supported"))
+        effects.append(response)
+    context = SimpleNamespace(llm_generate=AsyncMock(side_effect=effects))
+
+    for _ in range(2):
+        result = asyncio.run(
+            caption.generate_caption(context, image_path, provider_id="siliconflow")
+        )
+        assert result["caption"] == "A happy cat"
+        assert result["tags"] == ["happy"]
+
+    requests = [call.kwargs for call in context.llm_generate.await_args_list]
+    assert len(requests) == (3 if json_format_supported else 5)
+    assert requests[0]["tool_choice"] == "required"
+    assert not requests[0]["tools"].empty()
+    for request in requests[1:]:
+        assert "tools" not in request
+        assert "tool_choice" not in request
+        assert caption.CAPTION_TOOL_PROMPT_SUFFIX not in request["prompt"]
+        assert request["image_urls"] == [str(image_path.resolve())]
+    assert caption._caption_output_mode(context, "siliconflow") == "json"
+    assert caption._caption_output_mode(context, "other-provider") == ""
+    if not json_format_supported:
+        assert "response_format" not in requests[2]
+        assert "response_format" not in requests[4]
+
+
+@pytest.mark.parametrize(
+    "message", ["tools request timed out", "Error code: 401 - Invalid API key"]
+)
+def test_generate_caption_does_not_downgrade_unrelated_errors(tmp_path, message):
+    error = RuntimeError(message)
+    context = SimpleNamespace(llm_generate=AsyncMock(side_effect=error))
+    with pytest.raises(RuntimeError) as caught:
+        asyncio.run(
+            caption.generate_caption(
+                context, tmp_path / "meme.png", provider_id="siliconflow"
+            )
+        )
+    assert caught.value is error
+    assert context.llm_generate.await_count == 1
+    assert caption._caption_output_mode(context, "siliconflow") == ""
 
 
 def test_caption_output_mode_cache():
