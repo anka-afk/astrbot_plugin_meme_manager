@@ -133,7 +133,8 @@ class ImageSync:
 
         # 创建并启动进程
         self.sync_process = multiprocessing.Process(
-            target=run_sync_process, args=(self.config, str(self.local_dir), task)
+            target=run_sync_process,
+            args=(self.config, str(self.local_dir), task, self.provider_type),
         )
         self.sync_process.start()
 
@@ -237,7 +238,8 @@ class ImageSync:
         """
         # 创建进程对象
         process = multiprocessing.Process(
-            target=run_sync_process, args=(self.config, str(self.local_dir), task)
+            target=run_sync_process,
+            args=(self.config, str(self.local_dir), task, self.provider_type),
         )
 
         # 启动进程
@@ -245,45 +247,25 @@ class ImageSync:
         return process
 
 
-def run_sync_process(config: dict[str, str], local_dir: str, task: str):
-    """
-    在独立进程中运行同步任务
+def run_sync_process(
+    config: dict[str, str], local_dir: str, task: str, provider_type: str
+):
+    """Run a sync task in a separate process using the selected provider.
+
+    Args:
+        config: The selected provider's configuration.
+        local_dir: The local image directory.
+        task: The upload, download, or sync_all operation to perform.
+        provider_type: The provider explicitly selected by the parent process.
     """
     try:
         logger.info(f"启动同步进程，任务类型: {task}, 本地目录: {local_dir}")
 
-        # 检测配置类型并提取正确的配置
-        if "cloudflare_r2" in config:
-            # 如果是完整配置，提取 cloudflare_r2 部分
-            provider_config = config["cloudflare_r2"]
-            provider_type = "cloudflare_r2"
-        elif "stardots" in config:
-            # 如果是 stardots 配置
-            provider_config = config["stardots"]
-            provider_type = "stardots"
-        elif "webdav" in config:
-            # 如果是完整配置，提取 webdav 部分
-            provider_config = config["webdav"]
-            provider_type = "webdav"
-        elif "account_id" in config:
-            # 如果是直接的 R2 配置
-            provider_config = config
-            provider_type = "cloudflare_r2"
-        elif "key" in config:
-            # 如果是直接的 stardots 配置
-            provider_config = config
-            provider_type = "stardots"
-        elif config.get("provider") == "webdav" or all(
-            config.get(field) for field in ("url", "username", "password")
-        ):
-            # 如果是直接的 WebDAV 配置
-            provider_config = config
-            provider_type = "webdav"
-        else:
-            logger.error(f"无法识别的配置格式: {list(config.keys())}")
+        if provider_type not in {"cloudflare_r2", "stardots", "webdav"}:
+            logger.error("Unsupported sync provider: %s", provider_type)
             sys.exit(1)
 
-        sync = ImageSync(provider_config, local_dir, provider_type)
+        sync = ImageSync(config, local_dir, provider_type)
 
         if task == "upload":
             logger.info("开始上传任务")

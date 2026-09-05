@@ -27,52 +27,6 @@ def test_json_file_helpers_and_content_detection(tmp_path):
     assert config._load_json_file(path, {}) == {"text": "开心"}
     path.write_text("not-json", encoding="utf-8")
     assert config._load_json_file(path, {"fallback": True}) == {"fallback": True}
-    assert not config._plugin_data_dir_has_content(tmp_path / "empty")
-    plugin_data = tmp_path / "plugin"
-    plugin_data.mkdir()
-    (plugin_data / "memes_data.json").write_text("{}", encoding="utf-8")
-    assert config._plugin_data_dir_has_content(plugin_data)
-
-
-def test_copy_directory_contents_merges_without_overwriting(tmp_path):
-    source = tmp_path / "source"
-    target = tmp_path / "target"
-    (source / "nested").mkdir(parents=True)
-    target.mkdir()
-    (source / "file.txt").write_text("source", encoding="utf-8")
-    (source / "nested" / "child.txt").write_text("child", encoding="utf-8")
-    (target / "file.txt").write_text("target", encoding="utf-8")
-    config._copy_directory_contents(source, target)
-    assert (target / "file.txt").read_text(encoding="utf-8") == "target"
-    assert (target / "nested" / "child.txt").read_text(encoding="utf-8") == "child"
-
-
-def test_migrate_legacy_data_only_when_target_empty(tmp_path, monkeypatch):
-    legacy = tmp_path / "legacy"
-    legacy.mkdir()
-    (legacy / "memes_data.json").write_text('{"happy":"开心"}', encoding="utf-8")
-    target = tmp_path / "target"
-    monkeypatch.setattr(config, "get_legacy_plugin_data_dir", lambda: legacy)
-    config.migrate_legacy_data_dir_if_needed(target)
-    assert (target / "memes_data.json").is_file()
-    (target / "keep.txt").write_text("keep", encoding="utf-8")
-    (legacy / "keep.txt").write_text("overwrite", encoding="utf-8")
-    config.migrate_legacy_data_dir_if_needed(target)
-    assert (target / "keep.txt").read_text(encoding="utf-8") == "keep"
-
-
-def test_collect_descriptions_combines_metadata_fallback_and_directories(tmp_path):
-    memes_dir = tmp_path / "memes"
-    (memes_dir / "local").mkdir(parents=True)
-    metadata = tmp_path / "memes_data.json"
-    metadata.write_text(
-        json.dumps({"happy": "元数据", "": "忽略"}, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    result = config._collect_category_descriptions(
-        metadata, memes_dir, {"happy": "默认", "sad": "伤心"}
-    )
-    assert result == {"happy": "元数据", "sad": "伤心", "local": "请添加描述"}
 
 
 def test_pack_manifest_uses_stable_names_and_sorted_categories():
@@ -81,8 +35,6 @@ def test_pack_manifest_uses_stable_names_and_sorted_categories():
     )
     assert manifest["name"] == "Builtin Default Meme Pack"
     assert list(manifest["categories"]) == ["happy", "sad"]
-    legacy = config._build_pack_manifest(config.LEGACY_MIGRATED_PACK_ID, {})
-    assert legacy["name"] == "Migrated Legacy Meme Pack"
     custom = config._build_pack_manifest("custom", {})
     assert custom["name"] == "Meme Pack custom"
 
@@ -96,11 +48,11 @@ def test_bootstrap_fresh_runtime_creates_builtin_registry_and_rules(tmp_path):
     assert registry["installed_packs"][0]["id"] == config.DEFAULT_PACK_ID
     rules = json.loads((tmp_path / "selection_rules.json").read_text(encoding="utf-8"))
     assert rules["rules"][0]["pack_id"] == config.DEFAULT_PACK_ID
-    for directory in ("backup", "migration", "temp"):
+    for directory in ("backup", "temp"):
         assert (tmp_path / directory).is_dir()
 
 
-def test_bootstrap_migrates_legacy_root_data(tmp_path):
+def test_bootstrap_ignores_legacy_root_data_without_deleting_it(tmp_path):
     legacy_memes = tmp_path / "memes" / "happy"
     legacy_memes.mkdir(parents=True)
     (legacy_memes / "meme.png").write_bytes(b"image")
@@ -108,21 +60,48 @@ def test_bootstrap_migrates_legacy_root_data(tmp_path):
         json.dumps({"happy": "开心"}, ensure_ascii=False), encoding="utf-8"
     )
     config._bootstrap_pack_runtime(tmp_path)
-    migrated = tmp_path / "packs" / config.LEGACY_MIGRATED_PACK_ID
-    assert (migrated / "memes" / "happy" / "meme.png").is_file()
-    assert (tmp_path / "migration" / "legacy_runtime_migrated.json").is_file()
+    assert not (tmp_path / "packs" / "legacy-migrated").exists()
+    assert not (tmp_path / "migration").exists()
+    assert (legacy_memes / "meme.png").read_bytes() == b"image"
     rules = json.loads((tmp_path / "selection_rules.json").read_text(encoding="utf-8"))
-    assert rules["rules"][0]["pack_id"] == config.LEGACY_MIGRATED_PACK_ID
+    assert rules["rules"][0]["pack_id"] == config.DEFAULT_PACK_ID
 
 
-def test_resolve_default_pack_id_prefers_valid_rule_then_legacy(tmp_path):
+def test_resolve_default_pack_id_has_no_legacy_directory_fallback(tmp_path):
     custom = tmp_path / "packs" / "custom"
     custom.mkdir(parents=True)
     config._write_default_selection_rules(tmp_path, "custom")
     assert config._resolve_default_pack_id(tmp_path) == "custom"
 
     (tmp_path / "selection_rules.json").unlink()
-    legacy_memes = tmp_path / "packs" / config.LEGACY_MIGRATED_PACK_ID / "memes"
+    legacy_memes = tmp_path / "packs" / "legacy-migrated" / "memes"
     legacy_memes.mkdir(parents=True)
     (legacy_memes / "meme.png").write_bytes(b"image")
-    assert config._resolve_default_pack_id(tmp_path) == config.LEGACY_MIGRATED_PACK_ID
+    assert config._resolve_default_pack_id(tmp_path) == config.DEFAULT_PACK_ID
+
+
+def test_bootstrap_preserves_installed_pack_manifest_and_rules(tmp_path):
+    config._bootstrap_pack_runtime(tmp_path)
+    manifest = tmp_path / "packs" / config.DEFAULT_PACK_ID / "manifest.json"
+    custom = {"id": config.DEFAULT_PACK_ID, "name": "My pack", "categories": {}}
+    manifest.write_text(json.dumps(custom), encoding="utf-8")
+    before = {
+        name: (tmp_path / name).read_bytes()
+        for name in ("registry.json", "selection_rules.json")
+    }
+    config._bootstrap_pack_runtime(tmp_path)
+    assert json.loads(manifest.read_text(encoding="utf-8")) == custom
+    for name, content in before.items():
+        assert (tmp_path / name).read_bytes() == content
+
+
+def test_startup_no_longer_exports_frozen_pack_directory_aliases():
+    for name in (
+        "MEMES_DIR",
+        "MEMES_DATA_PATH",
+        "ACTIVE_PACK_ID",
+        "ACTIVE_PACK_DIR",
+        "sync_active_pack_metadata",
+        "migrate_legacy_data_dir_if_needed",
+    ):
+        assert not hasattr(config, name)

@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>表情包设置中心</title>
+    <link rel="stylesheet" href="../shared/fa.min.css" />
+    <link rel="stylesheet" href="../shared/ui.css" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">Meme Pack Settings</p>
+        <h1><i class="fas fa-sliders icon"></i>表情包设置中心</h1>
+        <p class="subtitle">从选图到发送，让每个表情都恰到好处。</p>
+      </div>
+      <nav class="nav-actions" aria-label="页面导航"></nav>
+    </header>
+
+    <main class="settings-layout">
+      <aside class="settings-sidebar" aria-label="设置分类">
+        <label class="settings-search" for="settings-search">
+          <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+          <input
+            id="settings-search"
+            type="search"
+            placeholder="搜索配置…"
+            aria-label="搜索配置"
+            autocomplete="off"
+          />
+        </label>
+        <p class="settings-nav-label">偏好设置</p>
+        <nav id="settings-nav" aria-label="设置分类导航">
+          <button type="button" data-settings-tab="rules" aria-current="page">
+            <i class="fas fa-route" aria-hidden="true"></i>使用规则
+          </button>
+          <button type="button" data-settings-tab="sending">
+            <i class="fas fa-comment-dots" aria-hidden="true"></i>表情发送<span
+              class="settings-dirty-dot"
+              hidden
+            ></span>
+          </button>
+          <button type="button" data-settings-tab="models">
+            <i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i
+            >语义与模型<span class="settings-dirty-dot" hidden></span>
+          </button>
+          <button type="button" data-settings-tab="collect">
+            <i class="fas fa-inbox" aria-hidden="true"></i>自动收集<span
+              class="settings-dirty-dot"
+              hidden
+            ></span>
+          </button>
+          <button type="button" data-settings-tab="storage">
+            <i class="fas fa-cloud" aria-hidden="true"></i>存储与下载<span
+              class="settings-dirty-dot"
+              hidden
+            ></span>
+          </button>
+          <button type="button" data-settings-tab="prompts">
+            <i class="fas fa-pen-to-square" aria-hidden="true"></i
+            >提示词模板<span class="settings-dirty-dot" hidden></span>
+          </button>
+          <button type="button" data-settings-tab="matching">
+            <i class="fas fa-tags" aria-hidden="true"></i>标签与匹配<span
+              class="settings-dirty-dot"
+              hidden
+            ></span>
+          </button>
+          <button type="button" data-settings-tab="backup">
+            <i class="fas fa-box-archive" aria-hidden="true"></i>导入与备份
+          </button>
+        </nav>
+        <p class="settings-sidebar-note">设置集中于此，按你的习惯慢慢调整。</p>
+      </aside>
+      <div class="settings-content">
+        <section class="panel rules-panel" data-settings-panel="rules">
+          <div class="panel-head">
+            <h2><i class="fas fa-route icon"></i>表情包使用规则</h2>
+            <div class="head-actions">
+              <button id="add-rule-btn" class="secondary">新增规则</button>
+              <button id="reload-rules-btn" class="ghost">重新加载</button>
+            </div>
+          </div>
+
+          <p class="hint">
+            从上到下优先匹配人设或会话，未匹配时使用默认表情包。可拖动规则，也可用上移、下移按钮调整顺序。
+          </p>
+
+          <div
+            id="rules-validation"
+            class="validation hidden"
+            role="alert"
+            tabindex="-1"
+          ></div>
+
+          <div id="rules-list" class="rules-list" aria-label="表情包使用规则">
+            <p class="rules-placeholder" role="status">正在加载规则…</p>
+          </div>
+
+          <div class="save-row">
+            <p
+              id="rules-save-status"
+              class="result"
+              role="status"
+              aria-live="polite"
+            >
+              正在读取设置…
+            </p>
+            <button id="save-rules-btn" disabled>
+              <i class="fas fa-floppy-disk icon"></i>保存规则
+            </button>
+          </div>
+        </section>
+
+        <form
+          id="plugin-config-form"
+          data-settings-panel="config"
+          hidden
+          novalidate
+        >
+          <div class="settings-section-heading">
+            <div>
+              <p class="eyebrow">Preferences</p>
+              <h2 id="config-section-title">表情发送</h2>
+              <p id="config-section-description" class="hint"></p>
+            </div>
+            <div class="settings-heading-actions">
+              <button
+                type="button"
+                id="reset-prompts-btn"
+                class="secondary"
+                hidden
+                disabled
+              >
+                恢复默认模板
+              </button>
+              <button type="button" id="reload-config-btn" class="ghost">
+                <i class="fas fa-rotate icon" aria-hidden="true"></i>重新加载
+              </button>
+            </div>
+          </div>
+          <p id="config-load-status" class="config-notice" role="status">
+            正在读取配置…
+          </p>
+          <div id="config-sections"></div>
+          <p id="config-search-empty" class="rules-placeholder" hidden>
+            没有找到相关配置，试试“模型”“概率”或“图床”。
+          </p>
+          <div class="config-save-bar">
+            <div>
+              <p id="config-save-status" role="status">正在读取设置…</p>
+            </div>
+            <button id="save-config-btn" type="submit" disabled>
+              <i class="fas fa-floppy-disk icon" aria-hidden="true"></i
+              >保存并应用
+            </button>
+          </div>
+        </form>
+        <div data-settings-panel="backup" hidden>
+          <section class="panel backup-panel">
+            <h2><i class="fas fa-box-archive icon"></i>导入与备份</h2>
+
+            <div class="block pack-transfer-block">
+              <h3>单个表情包</h3>
+              <p class="hint compact-hint">分享、备份或迁移一个表情包。</p>
+              <div class="field-row">
+                <label for="transfer-pack-select">当前表情包</label>
+                <select
+                  id="transfer-pack-select"
+                  aria-label="选择迁移的表情包"
+                ></select>
+              </div>
+              <p id="transfer-current-pack" class="result" aria-live="polite">
+                正在读取当前表情包…
+              </p>
+
+              <details class="pack-transfer-section" open>
+                <summary>
+                  <span class="pack-transfer-summary-icon share-icon">
+                    <i class="fas fa-file-export"></i>
+                  </span>
+                  <span>
+                    <strong>导出当前表情包</strong>
+                    <small>分享或迁回自己的环境</small>
+                  </span>
+                  <i class="fas fa-chevron-down pack-transfer-chevron"></i>
+                </summary>
+                <div class="pack-transfer-section-body">
+                  <div
+                    class="export-mode-list"
+                    role="radiogroup"
+                    aria-label="导出类型"
+                  >
+                    <label
+                      class="export-mode-option selected"
+                      for="export-mode-share"
+                    >
+                      <input
+                        id="export-mode-share"
+                        name="export-mode"
+                        type="radio"
+                        value="share"
+                        checked
+                      />
+                      <span>
+                        <strong>分享版</strong>
+                        <small>不带向量，可上传资源广场</small>
+                      </span>
+                      <em>推荐</em>
+                    </label>
+                    <label class="export-mode-option" for="export-mode-backup">
+                      <input
+                        id="export-mode-backup"
+                        name="export-mode"
+                        type="radio"
+                        value="backup"
+                      />
+                      <span>
+                        <strong>自用备份</strong>
+                        <small id="vector-backup-hint">正在检查向量状态…</small>
+                      </span>
+                    </label>
+                  </div>
+                  <button id="export-pack-download-btn" type="button">
+                    <i class="fas fa-download icon"></i>下载分享版
+                  </button>
+                  <p
+                    id="export-pack-result"
+                    class="result"
+                    aria-live="polite"
+                  ></p>
+                </div>
+              </details>
+
+              <details class="pack-transfer-section">
+                <summary>
+                  <span class="pack-transfer-summary-icon import-icon">
+                    <i class="fas fa-file-import"></i>
+                  </span>
+                  <span>
+                    <strong>从压缩包导入</strong>
+                    <small>兼容新版与旧版表情包</small>
+                  </span>
+                  <i class="fas fa-chevron-down pack-transfer-chevron"></i>
+                </summary>
+                <div class="pack-transfer-section-body">
+                  <label
+                    id="pack-import-dropzone"
+                    class="pack-import-dropzone"
+                    for="pack-import-file"
+                    tabindex="0"
+                    role="button"
+                    aria-label="选择 zip 格式的表情包"
+                  >
+                    <input
+                      id="pack-import-file"
+                      type="file"
+                      accept=".zip,application/zip"
+                    />
+                    <i class="fas fa-cloud-arrow-up"></i>
+                    <span>
+                      <strong id="pack-import-file-label"
+                        >选择或拖入 zip 文件</strong
+                      >
+                      <small>先检查，不会立即覆盖</small>
+                    </span>
+                  </label>
+
+                  <div
+                    id="pack-import-preview"
+                    class="pack-import-preview hidden"
+                    aria-live="polite"
+                  >
+                    <div class="pack-import-preview-header">
+                      <div>
+                        <strong id="pack-import-preview-name"
+                          >待导入表情包</strong
+                        >
+                        <span id="pack-import-preview-format"
+                          >正在识别格式</span
+                        >
+                      </div>
+                      <button
+                        id="pack-import-reset-btn"
+                        type="button"
+                        class="secondary compact-btn"
+                      >
+                        重选
+                      </button>
+                    </div>
+                    <dl class="pack-import-preview-stats">
+                      <div>
+                        <dt>图片</dt>
+                        <dd id="pack-import-image-count">0</dd>
+                      </div>
+                      <div>
+                        <dt>分类</dt>
+                        <dd id="pack-import-category-count">0</dd>
+                      </div>
+                      <div>
+                        <dt>语义</dt>
+                        <dd id="pack-import-semantic-count">无</dd>
+                      </div>
+                      <div>
+                        <dt>向量</dt>
+                        <dd id="pack-import-vector-state">不包含</dd>
+                      </div>
+                    </dl>
+                    <p
+                      id="pack-import-warning"
+                      class="pack-import-warning hidden"
+                    ></p>
+                    <div class="pack-import-options">
+                      <label>
+                        <input id="pack-import-set-default" type="checkbox" />
+                        导入后设为默认表情包
+                      </label>
+                      <label>
+                        <input id="pack-import-overwrite" type="checkbox" />
+                        同名时覆盖现有表情包
+                      </label>
+                      <label>
+                        <input
+                          id="pack-import-overwrite-manual"
+                          type="checkbox"
+                          disabled
+                        />
+                        同时覆盖本机人工描述、标签和图片文字
+                      </label>
+                    </div>
+                    <button id="pack-import-confirm-btn" type="button">
+                      <i class="fas fa-circle-check icon"></i>确认导入
+                    </button>
+                  </div>
+                  <p
+                    id="pack-import-result"
+                    class="result"
+                    aria-live="polite"
+                  ></p>
+                </div>
+              </details>
+            </div>
+
+            <div class="block">
+              <h3>导出全量备份</h3>
+              <p class="hint">
+                备份所有表情包与运行时设置，文件保存在服务器上。
+              </p>
+              <div class="field-row">
+                <label for="backup-output-dir-input">导出目录（可选）</label>
+                <input
+                  id="backup-output-dir-input"
+                  type="text"
+                  placeholder="留空则导出到默认 backup 目录"
+                />
+              </div>
+              <button id="export-backup-btn">
+                <i class="fas fa-file-export icon"></i>导出全量备份
+              </button>
+              <p
+                id="export-result"
+                class="result"
+                role="status"
+                aria-live="polite"
+              ></p>
+            </div>
+
+            <div class="block">
+              <h3>恢复全量备份</h3>
+              <p class="hint">从已有备份恢复表情包与运行时设置。</p>
+              <div class="field-row">
+                <label for="backup-file-input">备份压缩包（zip）</label>
+                <input id="backup-file-input" type="file" accept=".zip" />
+              </div>
+              <label class="checkbox">
+                <input id="import-overwrite-checkbox" type="checkbox" />
+                <span
+                  >以备份替换全部表情包（备份中没有的表情包也会被移除）</span
+                >
+              </label>
+              <button id="import-backup-btn" class="danger">
+                <i class="fas fa-file-import icon"></i>恢复全量备份
+              </button>
+              <p
+                id="import-result"
+                class="result"
+                role="status"
+                aria-live="polite"
+              ></p>
+            </div>
+          </section>
+
+          <section class="panel log-panel">
+            <h2><i class="fas fa-list-check icon"></i>操作日志</h2>
+            <div
+              id="log-list"
+              class="log-list"
+              role="log"
+              aria-live="polite"
+              aria-label="最近的操作记录"
+            ></div>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <div id="storage-guide-mask" class="dialog-mask hidden" aria-hidden="true">
+      <section
+        class="dialog-card storage-guide"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="storage-guide-title"
+      >
+        <header class="storage-guide-header">
+          <h3 id="storage-guide-title" class="text-h3 pa-4 pb-0 pl-6">
+            图床配置教程
+          </h3>
+        </header>
+        <div class="storage-guide-body" tabindex="0" aria-label="教程内容">
+          <article data-storage-guide="cloudflare_r2">
+            <h4>Cloudflare R2</h4>
+            <ol>
+              <li>
+                <strong>创建存储桶。</strong>登录 Cloudflare 控制台，在 R2
+                对象存储中创建一个桶，记下桶名称和 Account ID。
+              </li>
+              <li>
+                <strong>创建 R2 API 凭证。</strong
+                >为这个桶授予对象读写权限，保存生成的 Access Key ID 和 Secret
+                Access Key。
+              </li>
+              <li>
+                <strong>填写设置。</strong>关闭教程，在“图床服务”选择 Cloudflare
+                R2，将上述四项分别填入账号 ID、访问密钥
+                ID、访问密钥和存储桶名称。
+              </li>
+              <li>
+                <strong>按需填写公开地址。</strong
+                >需要公开外链时，在桶设置中绑定自定义域名，或复制控制台提供的公共开发地址。将完整的
+                HTTPS 地址填入“自定义 CDN 域名”；不要填写 S3 API 地址。r2.dev
+                开发地址有访问限流。
+              </li>
+            </ol>
+            <p class="hint">
+              仅做同步可以不填写公开地址。凭证用于插件访问存储桶，公开地址用于访问图片，两者用途不同。
+            </p>
+            <p>
+              <a
+                href="https://developers.cloudflare.com/r2/api/tokens/"
+                target="_blank"
+                rel="noopener noreferrer"
+                >官方凭证说明 ↗</a
+              >
+              ·
+              <a
+                href="https://developers.cloudflare.com/r2/buckets/public-buckets/"
+                target="_blank"
+                rel="noopener noreferrer"
+                >公开访问说明 ↗</a
+              >
+            </p>
+          </article>
+          <article data-storage-guide="webdav" hidden>
+            <h4>WebDAV</h4>
+            <ol>
+              <li>
+                <strong>准备连接信息。</strong>在 NAS 或云存储服务中启用
+                WebDAV，获取 WebDAV 地址、用户名和密码或应用密码。填写 WebDAV
+                接口地址，不是网页登录地址。
+              </li>
+              <li>
+                <strong>填写设置。</strong>在“图床服务”选择
+                WebDAV，填写根地址和账号凭证。远端目录可填
+                <code>memes</code>，插件会在该目录保存同步图片。
+              </li>
+              <li>
+                <strong>检查连接选项。</strong>保持 SSL
+                证书校验开启；连接较慢时可适当增加请求超时时间。服务端账号需有远端目录的读取、写入权限，使用覆盖同步时还需删除权限。
+              </li>
+              <li>
+                <strong>按需填写公开地址。</strong
+                >只有服务提供无需登录的图片外链时才填写公开访问根地址。它应对应远端目录，例如
+                <code>https://cdn.example.com/memes</code
+                >；不提供外链也可以用于同步。
+              </li>
+            </ol>
+            <p class="hint">
+              不同服务的 WebDAV 路径不同，请从服务端的 WebDAV
+              设置或帮助文档复制。出现 401/403 时检查应用密码与目录权限，出现
+              404 时检查根地址。
+            </p>
+          </article>
+          <article data-storage-guide="stardots" hidden>
+            <h4>StarDots</h4>
+            <ol>
+              <li>
+                <strong>创建空间。</strong>登录 StarDots
+                控制台，创建用于保存表情图片的空间，并记下空间名称。
+              </li>
+              <li>
+                <strong>获取凭证。</strong>在控制台设置的 API 管理区域获取 Key
+                和 Secret。
+              </li>
+              <li>
+                <strong>填写设置。</strong>在“图床服务”选择 StarDots，将
+                Key、Secret 和空间名称填入对应配置项。
+              </li>
+            </ol>
+            <p class="hint">
+              同步前请在服务商控制台确认可用容量和 API
+              配额；套餐限制以服务商当前说明为准。
+            </p>
+            <p>
+              <a
+                href="https://stardots.io/en/documentation/openapi"
+                target="_blank"
+                rel="noopener noreferrer"
+                >官方 API 说明 ↗</a
+              >
+            </p>
+          </article>
+          <section class="storage-guide-finish">
+            <h4>保存后开始同步</h4>
+            <p>
+              关闭教程，点击设置页的“保存并应用”，然后在表情包管理页使用云端同步。
+            </p>
+          </section>
+        </div>
+        <footer class="dialog-actions">
+          <button
+            id="storage-guide-close"
+            type="button"
+            variant="tonal"
+            data-dialog-dismiss
+          >
+            知道了
+          </button>
+        </footer>
+      </section>
+    </div>
+    <script type="module" src="../shared/ui.js"></script>
+    <script type="module" src="./config.js"></script>
+    <script type="module" src="./script.js"></script>
+  </body>
+</html>

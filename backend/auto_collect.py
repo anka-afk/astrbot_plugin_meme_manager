@@ -22,15 +22,12 @@ from astrbot.core.message.components import Image
 
 from ..config import PACKS_DIR, PLUGIN_DATA_DIR, TEMP_DIR
 from ..utils import probability_hit
-from .category_manager import is_safe_category_name
-from .pack_protocol import validate_pack_id
-from .pack_resolver import get_pack_paths, load_pack_category_mapping
-from .semantic_caption import (
-    _structured_output_is_unsupported,
-    prepare_visual_inputs,
-)
-from .semantic_models import REVIEW_CATEGORY
-from .semantic_storage import invalidate_semantic_metadata
+from .packs.categories import is_safe_category_name
+from .packs.protocol import validate_pack_id
+from .packs.resolver import get_pack_paths, load_pack_category_mapping
+from .semantic.caption import _structured_output_is_unsupported, prepare_visual_inputs
+from .semantic.models import REVIEW_CATEGORY
+from .semantic.storage import invalidate_semantic_metadata
 
 AUTO_COLLECT_INBOX_DIR = PLUGIN_DATA_DIR / "auto_collect_inbox"
 AUTO_COLLECT_INBOX_IMAGES_DIR = AUTO_COLLECT_INBOX_DIR / "images"

@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>语义表情包</title>
+    <link rel="stylesheet" href="../shared/fa.min.css" />
+    <link rel="stylesheet" href="../shared/ui.css" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">Semantic Meme Workspace</p>
+        <h1><i class="fas fa-wand-magic-sparkles icon"></i>语义表情包</h1>
+        <p class="subtitle">
+          为图片生成描述和向量索引，让回复模型按语义选择更合适的表情包。
+        </p>
+      </div>
+      <nav class="nav-actions" aria-label="页面导航"></nav>
+    </header>
+
+    <main class="layout">
+      <section class="panel control-panel">
+        <div class="panel-header">
+          <div>
+            <h2><i class="fas fa-gears icon"></i>语义化任务</h2>
+            <p class="panel-hint">
+              选择资源包，生成图片描述并建立向量索引。已有描述会保留，只处理缺失或失败的图片。
+            </p>
+          </div>
+          <div class="control-fields">
+            <div class="field-row pack-field">
+              <label for="pack">资源包</label>
+              <select id="pack" aria-label="选择资源包" disabled>
+                <option value="">正在加载资源包…</option>
+              </select>
+            </div>
+            <div class="field-row concurrency-field">
+              <label for="concurrency">模型调用并发上限</label>
+              <input
+                id="concurrency"
+                type="number"
+                min="1"
+                max="16"
+                step="1"
+                value="1"
+                aria-describedby="concurrency-hint"
+              />
+              <small id="concurrency-hint"
+                >同时提交给视觉模型的图片上限，建议按模型限流设置。</small
+              >
+            </div>
+          </div>
+        </div>
+        <div class="button-row action-row">
+          <a
+            class="nav-link"
+            href="../settings/index.html#models"
+            data-nav-target="../settings/index.html#models"
+            >模型设置</a
+          >
+          <button type="button" data-action="start" disabled>
+            <i class="fas fa-play icon"></i>一键完整语义化
+          </button>
+          <button type="button" class="secondary" data-action="resume" disabled>
+            <i class="fas fa-forward icon"></i>继续队列
+          </button>
+          <button type="button" class="secondary" data-action="retry" disabled>
+            <i class="fas fa-rotate-right icon"></i>重试失败项
+          </button>
+          <button type="button" class="ghost" data-action="pause" disabled>
+            <i class="fas fa-pause icon"></i>暂停任务
+          </button>
+        </div>
+        <details class="advanced-actions">
+          <summary>高级维护 <span>索引、队列与重新生成</span></summary>
+          <div class="maintenance-group">
+            <p class="panel-hint">
+              描述已完成后，可单独修复索引；更换向量模型或维度后，请重建向量。
+            </p>
+            <div class="button-row">
+              <button
+                type="button"
+                class="secondary"
+                data-action="index"
+                disabled
+              >
+                <i class="fas fa-database icon"></i>建立或重建索引
+              </button>
+              <button
+                type="button"
+                class="secondary"
+                data-action="dimension"
+                disabled
+              >
+                <i class="fas fa-ruler-combined icon"></i>按当前维度重建向量
+              </button>
+            </div>
+          </div>
+          <div class="maintenance-group destructive-actions">
+            <p class="panel-hint">
+              以下操作会清理队列或覆盖语义数据，执行前会说明影响并请你确认。
+            </p>
+            <div class="button-row">
+              <button type="button" class="danger" data-action="clear" disabled>
+                <i class="fas fa-broom icon"></i>清空当前任务队列
+              </button>
+              <button type="button" class="danger" data-action="force" disabled>
+                <i class="fas fa-arrows-rotate icon"></i>强制重新生成
+              </button>
+              <button
+                type="button"
+                class="danger"
+                data-action="delete-all"
+                disabled
+              >
+                <i class="fas fa-trash-can icon"></i>删除当前包全部语义化
+              </button>
+            </div>
+          </div>
+        </details>
+        <p id="notice" class="result" aria-live="polite"></p>
+        <p
+          id="other-tasks-warning"
+          class="result warning"
+          aria-live="polite"
+        ></p>
+      </section>
+
+      <section id="auto-inbox-panel" class="panel auto-inbox-panel hidden">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Auto Collection Inbox</p>
+            <h2>
+              <i class="fas fa-inbox icon"></i>自动收集待语义化桶
+              <span class="badge" id="auto-inbox-count">0</span>
+            </h2>
+            <p class="panel-hint">
+              自动识别的图片暂存在独立待整理桶，不会立即改变当前语义包。确认后将按建议分类合入当前包，并启动现有语义化任务。
+            </p>
+          </div>
+          <button type="button" id="auto-inbox-semanticize">
+            <i class="fas fa-wand-magic-sparkles icon"></i>合入并语义化
+          </button>
+        </div>
+        <div id="auto-inbox-items" class="auto-inbox-items"></div>
+      </section>
+
+      <section class="panel status-panel">
+        <div class="panel-header">
+          <h2><i class="fas fa-chart-line icon"></i>任务状态</h2>
+          <div class="status-header-tools">
+            <span class="badge" id="task-timer">用时 00:00:00</span>
+            <span class="refresh-label" id="status-refresh-label" role="status"
+              >正在连接…</span
+            >
+            <button type="button" class="ghost page-button" id="status-retry">
+              刷新
+            </button>
+          </div>
+        </div>
+        <div id="status-error" class="status-error hidden" role="alert"></div>
+        <div class="task-overview" aria-live="polite">
+          <div class="task-overview-heading">
+            <strong id="task-state">正在加载任务状态…</strong>
+            <span id="task-progress-label"></span>
+          </div>
+          <progress
+            id="task-progress"
+            max="1"
+            value="0"
+            aria-label="描述生成进度"
+          ></progress>
+          <p id="task-guidance" class="panel-hint">
+            任务运行时每 3 秒自动更新。
+          </p>
+        </div>
+        <div id="status" class="status-grid"></div>
+      </section>
+
+      <section class="panel records-panel">
+        <div class="panel-header">
+          <h2><i class="fas fa-list-check icon"></i>最近记录</h2>
+          <div class="records-toolbar">
+            <label class="filter-label" for="records-filter">筛选</label>
+            <select
+              id="records-filter"
+              class="records-filter"
+              aria-label="按任务状态筛选"
+            >
+              <option value="all">全部</option>
+              <option value="pending">待处理</option>
+              <option value="running">进行中</option>
+              <option value="failed">全部失败</option>
+              <option value="caption_failed">描述失败</option>
+              <option value="embedding_failed">向量失败</option>
+              <option value="caption_done">描述已完成</option>
+              <option value="embedding_done">向量已完成</option>
+              <option value="reclassified">自动重分类</option>
+              <option value="completed">全部完成</option>
+            </select>
+            <span class="badge" id="record-count">0</span>
+            <button type="button" class="ghost page-button" id="records-prev">
+              上一页
+            </button>
+            <span class="page-label" id="records-page">第 1 / 1 页</span>
+            <button type="button" class="ghost page-button" id="records-next">
+              下一页
+            </button>
+          </div>
+        </div>
+        <div id="items" class="records" aria-busy="true">
+          <p class="empty">正在加载记录…</p>
+        </div>
+      </section>
+    </main>
+
+    <div id="image-preview-mask" class="dialog-mask hidden" aria-hidden="true">
+      <section
+        class="image-preview-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="image-preview-title"
+      >
+        <div class="image-preview-header">
+          <h3 id="image-preview-title">表情包预览</h3>
+          <button id="image-preview-close" type="button" class="ghost">
+            关闭
+          </button>
+        </div>
+        <div class="image-preview-stage">
+          <img id="image-preview-img" alt="表情包大图预览" />
+          <span id="image-preview-loading" role="status">正在加载大图……</span>
+        </div>
+        <button id="image-preview-retry" type="button" class="secondary hidden">
+          重新加载大图
+        </button>
+      </section>
+    </div>
+    <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+    <script src="/api/plugin/page/bridge-sdk.js"></script>
+    <script type="module" src="../shared/ui.js"></script>
+    <script type="module" src="./script.js"></script>
+  </body>
+</html>
