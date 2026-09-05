@@ -18,8 +18,8 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 from astrbot.api import logger
 
-from ..backend.category_manager import is_safe_category_name
-from ..backend.models import (
+from ..backend.packs.categories import is_safe_category_name
+from ..backend.packs.images import (
     DuplicateEmojiError,
     add_emoji_to_category,
     batch_copy_emojis,
@@ -32,7 +32,7 @@ from ..backend.models import (
     move_emoji_to_category,
     scan_emoji_folder,
 )
-from ..backend.pack_storage import (
+from ..backend.packs.storage import (
     InstallCancelledError,
     export_pack_archive,
     export_runtime_backup,
@@ -52,8 +52,9 @@ from ..backend.pack_storage import (
     set_default_pack,
     uninstall_pack,
 )
-from ..backend.semantic_index import EmbeddingAdapter, index_is_ready
-from ..backend.semantic_storage import (
+from ..backend.plugin_settings import describe_settings, validate_settings_changes
+from ..backend.semantic.index import EmbeddingAdapter, index_is_ready
+from ..backend.semantic.storage import (
     get_category_review_overview,
     get_image_semantic_detail,
     import_metadata_file,
@@ -87,7 +88,6 @@ class WebAPIMixin:
         value = self._read_config_value(
             ("community", "github_accelerator_url"),
             default="https://ghfast.top/",
-            legacy_keys=("github_accelerator_url",),
         )
         return str(value or "").strip()
 
@@ -374,6 +374,12 @@ class WebAPIMixin:
             self._api_settings_rules,
             ["GET", "POST"],
             "获取或保存表情包选择规则",
+        )
+        self._register_webui_api(
+            "settings/config",
+            self._api_settings_config,
+            ["GET", "POST"],
+            "Read and update shared plugin configuration",
         )
         self._register_webui_api(
             "settings/targets",
@@ -1475,7 +1481,6 @@ class WebAPIMixin:
         raw_value = self._read_config_value(
             ("sync", "status_cache_ttl_seconds"),
             default=IMG_HOST_STATUS_CACHE_TTL_SECONDS,
-            legacy_keys=("img_host_status_cache_ttl_seconds",),
         )
         try:
             ttl = int(raw_value)
@@ -3063,6 +3068,101 @@ class WebAPIMixin:
         except Exception as e:
             logger.error(f"安装官方首个表情包失败: {e}", exc_info=True)
             return jsonify({"message": f"安装官方首个表情包失败: {str(e)}"}), 500
+
+    async def _api_settings_config(self):
+        """Edit the same AstrBotConfig and reload through AstrBot's plugin manager.
+
+        Returns:
+            A redacted configuration snapshot or a validation/conflict response.
+        """
+        try:
+            data = await request.get_json() if request.method == "POST" else None
+            snapshot, values = describe_settings(self.config)
+            if request.method == "GET":
+                providers = {"chat": [], "embedding": []}
+                for kind, getter in (
+                    ("chat", self.context.get_all_providers),
+                    ("embedding", self.context.get_all_embedding_providers),
+                ):
+                    for provider in getter():
+                        meta = provider.meta()
+                        providers[kind].append(
+                            {"id": meta.id, "model": meta.model or ""}
+                        )
+                snapshot["providers"] = providers
+                return jsonify(snapshot), 200
+            if not isinstance(data, dict):
+                return jsonify({"message": "请求格式不正确。"}), 400
+            if data.get("revision") != snapshot["revision"]:
+                return jsonify(
+                    {
+                        "message": "配置已在其他页面更新。请重新加载后再保存，避免覆盖新的设置。"
+                    }
+                ), 409
+            updated = validate_settings_changes(
+                values, snapshot["fields"], data.get("changes"), self.config.schema
+            )
+            manager = getattr(self.context, "_star_manager", None)
+            if manager is None:
+                return jsonify({"message": "暂时无法应用设置，请重载插件后重试。"}), 503
+            metadata = self.context.get_registered_star(PLUGIN_NAME)
+            if metadata is None or metadata.star_cls is not self:
+                return jsonify(
+                    {"message": "插件已经重新加载，请刷新设置页面后重试。"}
+                ), 409
+            if any(
+                not task.done()
+                for task in getattr(self, "_community_install_tasks", set())
+            ):
+                return jsonify(
+                    {"message": "正在安装表情包，请等待完成后再保存设置。"}
+                ), 409
+            task_manager = getattr(self, "semantic_task_manager", None)
+            if task_manager:
+                if (
+                    task_manager.active_pack_tasks()
+                    or task_manager._external_pack_operations
+                ):
+                    return jsonify(
+                        {"message": "正在处理表情包任务，请等待完成后再保存设置。"}
+                    ), 409
+            sync = getattr(self, "img_sync", None)
+            sync_process = getattr(sync, "sync_process", None)
+            if sync_process and sync_process.is_alive():
+                return jsonify(
+                    {"message": "图床正在同步，请等待完成后再保存设置。"}
+                ), 409
+            # Save synchronously before yielding, using AstrBot's atomic config writer.
+            try:
+                self.config.clear()
+                self.config.save_config(updated)
+            except Exception:
+                self.config.clear()
+                self.config.update(values)
+                raise
+            snapshot, _ = describe_settings(self.config)
+        except ValueError as error:
+            return jsonify({"message": str(error)}), 400
+        except Exception:
+            logger.exception("Failed to read or save plugin settings")
+            return jsonify(
+                {"message": "读取或保存配置失败，请检查服务日志后重试。"}
+            ), 500
+        try:
+            success, _ = await manager.reload(PLUGIN_NAME)
+            if success:
+                return jsonify(
+                    {**snapshot, "applied": True, "message": "设置已保存并生效。"}
+                ), 200
+        except Exception:
+            logger.exception("Plugin settings were saved but reload failed")
+        return jsonify(
+            {
+                **snapshot,
+                "applied": False,
+                "message": "设置已保存，但插件重载失败。请在 AstrBot 插件管理中重载此插件。",
+            }
+        ), 200
 
     async def _api_settings_rules(self):
         if request.method == "GET":

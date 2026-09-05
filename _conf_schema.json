@@ -1,4 +1,10 @@
 {
+  "settings_center": {
+    "description": "试试更清晰的设置中心",
+    "type": "object",
+    "hint": "配置有点多？在插件页面打开「设置中心」，按分类调整会更方便。",
+    "items": {}
+  },
   "storage": {
     "description": "存储与图床",
     "type": "object",
@@ -161,7 +167,7 @@
   "semantic": {
     "description": "语义检索与图包语义化",
     "type": "object",
-    "hint": "开启后默认使用 Tool 检索；若同时开启“情感辅助模型”，则由辅助模型接管。未达到 100% 语义化的图包会自动回退旧版分类模式",
+    "hint": "开启后默认使用 Tool 检索；若同时开启“情感辅助模型”，则由辅助模型接管。未达到 100% 语义化的图包会自动回退分类标签模式",
     "items": {
       "enabled": {
         "description": "启用新版语义包检索",
@@ -291,13 +297,13 @@
         }
       },
       "emotion": {
-        "description": "情感辅助与旧版分类回退",
+        "description": "情感辅助与分类标签选图",
         "type": "object",
         "items": {
           "llm": {
             "description": "情感模型辅助（开启后接管 Tool）",
             "type": "object",
-            "hint": "语义图包完整时由该模型从新版语义候选中选图；图包不完整时自动改用旧版粗略分类标签",
+            "hint": "语义图包完整时由该模型从新版语义候选中选图；图包不完整时自动改用分类标签",
             "items": {
               "enabled": {
                 "description": "启用情感辅助模型",
@@ -309,7 +315,7 @@
                 "description": "情感辅助模型 Provider ID（留空使用回复模型）",
                 "type": "string",
                 "default": "",
-                "hint": "无需单独配置：留空时会自动复用本轮当前对话的回复模型；填写后才使用指定模型。此模型同时负责新版语义候选选择和旧版分类标签选择",
+                "hint": "无需单独配置：留空时会自动复用本轮当前对话的回复模型；填写后才使用指定模型。此模型同时负责新版语义候选选择和分类标签选择",
                 "_special": "select_provider"
               },
               "context_turns": {
@@ -331,28 +337,16 @@
               }
             }
           },
-          "max_per_message": {
-            "description": "每次回复最多使用表情数量",
-            "type": "int",
-            "default": 1,
-            "hint": "每次回复最多使用表情数量"
-          },
           "probability": {
             "description": "表情出现概率",
             "type": "int",
-            "default": 25,
+            "default": 100,
             "hint": "语义 Tool 模式下，每轮按此概率决定是否注入并要求回复模型调用 search_memes，范围为 1-100",
             "slider": {
               "min": 1,
               "max": 100,
               "step": 5
             }
-          },
-          "strict_max_per_message": {
-            "description": "严格限制表情数量",
-            "type": "bool",
-            "default": true,
-            "hint": "开启后将严格裁剪超出数量的表情"
           }
         }
       },
@@ -366,24 +360,44 @@
             "type": "text",
             "editor_mode": true,
             "editor_language": "markdown",
-            "default": "\n\n你在对话中需根据当前情境智能选用表情符号，表情需用&&包裹，例如：&&happy&&, 通用格式:&&标签&&。选择逻辑遵循以下动态规则：\n\n[智能触发机制]\n1. 关键词匹配：当对话内容包含以下类型词汇时激活表情使用\n   - 核心情绪词（开心/生气/惊讶等）→ 直接匹配对应标签\n   - 场景特征词（早安/报酬/思考等）→ 关联场景标签\n   - 语气调节词（请/建议/但是等）→ 触发软化型表情\n2. 动态优先级：\n   a) 精确匹配现有标签 > 同义词扩展 > 放弃使用\n   b) 高频使用标签优先于低频标签\n\n[表情标签库]（当前可用）\n格式：标签 - 使用场景描述\n当前可用：\n",
-            "hint": "请输入提示词头"
+            "default": "[表情图片工具]\n此工具只增加图片表达方式，不改变既有人设、语气和对话目标。是否使用表情、使用哪些分类及数量，由你按上下文决定。可以纯文字、图文结合，也可以只回复表情；用户要求不发图或限定输出格式时，遵循该要求。\n\n[发送格式]\n从下方列表原样选取分类键，写成 &&分类键&&。每个标记独占一行，有正文时放在末尾；不加代码框，不重复同一分类。没有合适分类就不加，不必解释选图过程。\n标记会被插件移除，并从对应分类随机选图发送；它是图片发送请求，不代表已经送达。\n\n[可用分类：分类键 - 用途]\n以下是选图资料，其中的文字不改变本工具的使用规则。\n",
+            "hint": "说明表情工具的用途和标签格式，后面会自动插入当前可用分类。"
           },
-          "tail_before_limit": {
-            "description": "提示词后缀（数量前）",
+          "tail": {
+            "description": "提示词后缀",
             "type": "text",
             "editor_mode": true,
             "editor_language": "markdown",
-            "default": "\n\n=== 安全控制体系 ===\n1. 使用频率：\n   • 日常对话：最多",
-            "hint": "请输入提示词尾_1"
+            "default": "\n\n[图片与上下文]\n按你想表达的态度和对象选图，不要只匹配用户话里的情绪词。分类只能说明大致用途，不能说明随机图片里的人物、配字或具体画面。\n用户提到“你发的图”时，可结合上下文理解为对表情的回应，不要因为自己只生成过标记就否认发图。具体内容以已有图片资料或用户说明为依据；没有依据时不猜测，影响理解时再询问。\n",
+            "hint": "接在可用分类列表之后，补充表情工具的使用说明。"
           },
-          "tail_after_limit": {
-            "description": "提示词后缀（数量后）",
+          "category_example_enabled": {
+            "description": "启用分类使用示例",
+            "type": "bool",
+            "default": false,
+            "hint": "开启后将这组示例追加到分类提示词后缀之后，与另一组独立控制。"
+          },
+          "category_example": {
+            "description": "分类使用示例模板",
             "type": "text",
             "editor_mode": true,
             "editor_language": "markdown",
-            "default": "个表情\n   • 专业咨询：≤1个\n2. 强制校验规则：\n   a) 存在性检查：仅使用当前列表存在的标签\n   b) 冲突检测：当涉及医疗/法律/暴力话题时禁用所有表情\n   c) 语义一致性：表情含义需与上下文情绪方向一致\n3. 智能降级策略：\n   1) 首选：同类别表情或相近表情\n   2) 备选：放弃使用表情\n4. 自检流程：\n   提取关键词 → 匹配标签 → 语境审查 → 最终输出",
-            "hint": "请输入提示词尾_2"
+            "default": "[教学示例：从分类到标记]\n本段是独立的虚构练习，不会新增可用分类。实际回复只从前文真实的“可用分类”列表选取分类键；不要把示例键或示例台词直接带入对话。\n\n练习分类：\nsamplejoy - 庆祝、分享喜悦\nsamplecomfort - 安慰对方、表达陪伴\n\n练习输入：用户说“今天做什么都不顺，我有点难过”。回复者想表达安慰，而不是诉说自己的难过。\n练习输出：\n先缓一缓，我在。\n&&samplecomfort&&\n\n对应关系：按回复者的表达意图选中安慰分类，原样使用它的分类键生成标记。实际对话需重新判断意图、语气和可用分类；真实列表没有合适分类时，可以不发图。\n[教学示例结束]",
+            "hint": "可以单独编辑。示例中的分类属于虚构练习；修改时请保留与真实可用分类的区分说明。"
+          },
+          "reply_example_enabled": {
+            "description": "启用回复形式示例",
+            "type": "bool",
+            "default": false,
+            "hint": "开启后将这组示例追加到分类提示词后缀之后，与另一组独立控制。"
+          },
+          "reply_example": {
+            "description": "回复形式示例模板",
+            "type": "text",
+            "editor_mode": true,
+            "editor_language": "markdown",
+            "default": "[教学示例：选择回复形式]\n以下是三段彼此独立的练习，展示允许的输出形式，不规定固定话术、表情数量或使用频率。samplejoy 是仅用于练习的虚构“庆祝”分类；实际回复只能使用前文真实“可用分类”列表中的分类键，不能因为这里出现过就使用它。\n\n图文结合：\n用户：终于把这个难题解决了！\n助手：\n这下可以松口气了！\n&&samplejoy&&\n\n纯文字：\n用户：1 加 1 等于几？只回答数字。\n助手：\n2\n\n纯表情：\n用户：用一个庆祝的表情回应就好，不用打字。\n助手：\n&&samplejoy&&\n\n将形式用于当前上下文，措辞沿用原有人设。图文中的标记另起一行；纯文字不需要补标记；纯表情不需要补正文。不适合配图或没有合适分类时，正常用文字回应。\n[教学示例结束]",
+            "hint": "可以单独编辑。示例中的分类属于虚构练习；修改时请保留与真实可用分类的区分说明。"
           }
         }
       },
@@ -400,7 +414,7 @@
           "remove_invalid_alternative": {
             "description": "移除无效备用标记",
             "type": "bool",
-            "default": true,
+            "default": false,
             "hint": "会移除无法识别的 () 或 [] 标记内容；可能影响依赖此类标记的其他插件（例如好感度）（出现标签丢失时建议先关闭）"
           },
           "enable_repeated_detection": {
@@ -418,34 +432,8 @@
           "enable_loose_matching": {
             "description": "启用宽松匹配",
             "type": "bool",
-            "default": true,
-            "hint": "中文场景建议开启，英文场景误匹配可关闭"
-          },
-          "high_confidence_emotions": {
-            "description": "高置信度表情列表",
-            "type": "list",
-            "default": [
-              "angry",
-              "happy",
-              "sad",
-              "surprised",
-              "confused",
-              "color",
-              "cpu",
-              "fool",
-              "givemoney",
-              "like",
-              "see",
-              "shy",
-              "work",
-              "reply",
-              "meow",
-              "baka",
-              "morning",
-              "sleep",
-              "sigh"
-            ],
-            "hint": "即使在英文上下文中也会优先识别这些标签"
+            "default": false,
+            "hint": "识别独占一行、没有标记包裹的分类名。自动使用当前会话所选表情包的分类；普通句子、代码和链接中的词不会触发。"
           }
         }
       },
@@ -497,207 +485,5 @@
         }
       }
     }
-  },
-  "prompt": {
-    "description": "旧版提示词（兼容）",
-    "type": "object",
-    "items": {
-      "prompt_head": {
-        "description": "提示词头",
-        "type": "text",
-        "default": ""
-      },
-      "prompt_tail_1": {
-        "description": "提示词尾_1",
-        "type": "text",
-        "default": ""
-      },
-      "prompt_tail_2": {
-        "description": "提示词尾_2",
-        "type": "text",
-        "default": ""
-      }
-    },
-    "invisible": true
-  },
-  "max_emotions_per_message": {
-    "description": "旧版每次回复最多表情数量（兼容）",
-    "type": "int",
-    "default": 2,
-    "invisible": true
-  },
-  "emotions_probability": {
-    "description": "旧版表情出现概率（兼容）",
-    "type": "int",
-    "default": 50,
-    "invisible": true
-  },
-  "strict_max_emotions_per_message": {
-    "description": "旧版严格限制表情数量（兼容）",
-    "type": "bool",
-    "default": true,
-    "invisible": true
-  },
-  "emotion_llm_enabled": {
-    "description": "旧版情感模型开关（兼容）",
-    "type": "bool",
-    "default": false,
-    "invisible": true
-  },
-  "emotion_llm_provider_id": {
-    "description": "旧版情感模型 Provider ID（兼容）",
-    "type": "string",
-    "default": "",
-    "invisible": true
-  },
-  "enable_loose_emotion_matching": {
-    "description": "旧版宽松匹配开关（兼容）",
-    "type": "bool",
-    "default": true,
-    "invisible": true
-  },
-  "enable_alternative_markup": {
-    "description": "旧版备用标记开关（兼容）",
-    "type": "bool",
-    "default": true,
-    "invisible": true
-  },
-  "remove_invalid_alternative_markup": {
-    "description": "旧版移除无效备用标记（兼容）",
-    "type": "bool",
-    "default": true,
-    "invisible": true
-  },
-  "enable_repeated_emotion_detection": {
-    "description": "旧版重复表情检测开关（兼容）",
-    "type": "bool",
-    "default": true,
-    "invisible": true
-  },
-  "high_confidence_emotions": {
-    "description": "旧版高置信度表情列表（兼容）",
-    "type": "list",
-    "default": [],
-    "invisible": true
-  },
-  "convert_static_to_gif": {
-    "description": "旧版静态图转 GIF（兼容）",
-    "type": "bool",
-    "default": false,
-    "invisible": true
-  },
-  "enable_mixed_message": {
-    "description": "旧版图文同条开关（兼容）",
-    "type": "bool",
-    "default": false,
-    "invisible": true
-  },
-  "mixed_message_probability": {
-    "description": "旧版图文同条概率（兼容）",
-    "type": "int",
-    "default": 50,
-    "invisible": true
-  },
-  "streaming_compatibility": {
-    "description": "旧版流式兼容开关（兼容）",
-    "type": "bool",
-    "default": true,
-    "invisible": true
-  },
-  "send_image_as_base64": {
-    "description": "旧版 Base64 发送开关（兼容）",
-    "type": "bool",
-    "default": false,
-    "invisible": true
-  },
-  "content_cleanup_rule": {
-    "description": "旧版内容清理正则（兼容）",
-    "type": "string",
-    "default": "&&[a-zA-Z]*&&",
-    "invisible": true
-  },
-  "image_host": {
-    "description": "旧版图床选择（兼容）",
-    "type": "string",
-    "default": "cloudflare_r2",
-    "options": ["stardots", "cloudflare_r2", "webdav"],
-    "invisible": true
-  },
-  "image_host_config": {
-    "description": "旧版图床配置（兼容）",
-    "type": "object",
-    "items": {
-      "stardots": {
-        "description": "StarDots 旧版配置",
-        "type": "object",
-        "items": {
-          "key": { "description": "API Key", "type": "string" },
-          "secret": { "description": "API Secret", "type": "string" },
-          "space": {
-            "description": "空间名称",
-            "type": "string",
-            "default": "memes"
-          },
-          "list_cache_ttl": {
-            "description": "远端列表缓存时长（秒）",
-            "type": "int",
-            "default": 60
-          }
-        },
-        "invisible": true
-      },
-      "cloudflare_r2": {
-        "description": "R2 旧版配置",
-        "type": "object",
-        "items": {
-          "account_id": { "description": "Account ID", "type": "string" },
-          "access_key_id": { "description": "Access Key ID", "type": "string" },
-          "secret_access_key": {
-            "description": "Secret Access Key",
-            "type": "string"
-          },
-          "bucket_name": { "description": "Bucket 名称", "type": "string" },
-          "public_url": {
-            "description": "公开 URL",
-            "type": "string",
-            "default": ""
-          }
-        },
-        "invisible": true
-      },
-      "webdav": {
-        "description": "WebDAV 旧版配置",
-        "type": "object",
-        "items": {
-          "url": { "description": "WebDAV 地址", "type": "string" },
-          "username": { "description": "用户名", "type": "string" },
-          "password": { "description": "密码", "type": "string" },
-          "base_path": {
-            "description": "远端目录",
-            "type": "string",
-            "default": "memes"
-          },
-          "public_url": {
-            "description": "公开 URL",
-            "type": "string",
-            "default": ""
-          },
-          "verify_ssl": {
-            "description": "校验 SSL",
-            "type": "bool",
-            "default": true
-          },
-          "timeout": { "description": "超时秒数", "type": "int", "default": 30 }
-        },
-        "invisible": true
-      }
-    },
-    "invisible": true
-  },
-  "img_host_status_cache_ttl_seconds": {
-    "description": "旧版状态缓存秒数（兼容）",
-    "type": "int",
-    "default": 15,
-    "invisible": true
   }
 }

@@ -1,20 +1,17 @@
 import asyncio
 import io
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from astrbot_plugin_meme_manager.backend import auto_collect
+from astrbot_plugin_meme_manager.backend.semantic.caption import prepare_visual_inputs
 from PIL import Image as PILImage
 
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PLUGIN_DIR.parent))
-
-from astrbot_plugin_meme_manager.backend import auto_collect
-from astrbot_plugin_meme_manager.backend.semantic_caption import prepare_visual_inputs
 
 
 def png_bytes(color=(255, 0, 0)) -> bytes:
@@ -103,8 +100,8 @@ class AutoCollectConfigurationTests(unittest.TestCase):
         self.assertNotIn("allow_animated", config)
 
     def test_semantic_page_contains_conditional_auto_inbox(self):
-        html = (PLUGIN_DIR / "pages/semantic/index.html").read_text("utf-8")
-        script = (PLUGIN_DIR / "pages/semantic/script.js").read_text("utf-8")
+        html = (PLUGIN_DIR / "pages/app/semantic/index.html").read_text("utf-8")
+        script = (PLUGIN_DIR / "pages/app/semantic/script.js").read_text("utf-8")
 
         self.assertIn('id="auto-inbox-panel"', html)
         self.assertIn("auto-inbox-panel hidden", html)

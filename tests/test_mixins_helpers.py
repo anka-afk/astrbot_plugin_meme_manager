@@ -39,8 +39,8 @@ class FakeEvent:
     [
         (None, TRIGGER_SCOPE_CHAT_ONLY),
         ("only_chat_llm", TRIGGER_SCOPE_CHAT_ONLY),
-        ("all_llm", TRIGGER_SCOPE_CHAT_AND_PLUGIN),
-        ("all_messages", TRIGGER_SCOPE_CHAT_AND_PLUGIN),
+        ("all_llm", TRIGGER_SCOPE_CHAT_ONLY),
+        ("all_messages", TRIGGER_SCOPE_CHAT_ONLY),
         ("chat_and_plugin_llm", TRIGGER_SCOPE_CHAT_AND_PLUGIN),
         ("invalid", TRIGGER_SCOPE_CHAT_ONLY),
     ],
@@ -145,20 +145,11 @@ def test_parse_emotion_llm_selection(raw, expected):
     )
 
 
-def test_filter_emotion_selection_deduplicates_and_applies_optional_limit():
+def test_filter_emotion_selection_preserves_all_distinct_tags():
     mixin = object.__new__(EventHandlerMixin)
-    mixin.max_emotions_per_message = 2
-    mixin.strict_max_emotions_per_message = True
-    assert mixin._filter_emotion_selection(["happy", "happy", "sad", "angry"]) == [
-        "happy",
-        "sad",
-    ]
-    mixin.strict_max_emotions_per_message = False
-    assert mixin._filter_emotion_selection(["happy", "sad", "angry"]) == [
-        "happy",
-        "sad",
-        "angry",
-    ]
+    assert mixin._filter_emotion_selection(
+        ["happy", "happy", "sad", "angry", "", None]
+    ) == ["happy", "sad", "angry"]
 
 
 def test_marked_emotion_extraction_and_text_cleanup():
@@ -171,19 +162,6 @@ def test_marked_emotion_extraction_and_text_cleanup():
     assert emotions == ["happy", "sad", "happy"]
     assert "&&" not in cleaned
     assert "[unknown]" in cleaned
-
-
-def test_emotion_markup_context_heuristics():
-    mixin = object.__new__(EventHandlerMixin)
-    mixin._read_config_value = lambda *args, **kwargs: ["special"]
-    text = "before <thinking>happy</thinking> after"
-    assert mixin._is_position_in_thinking_tags(text, text.index("happy"))
-    assert not mixin._is_position_in_thinking_tags(text, 0)
-    assert not mixin._is_likely_emotion_markup("[1]", "value [1] value", 6)
-    assert not mixin._is_likely_emotion_markup("(two words)", "(two words)", 0)
-    assert mixin._is_likely_emotion_markup("(happy)", "你好(happy)", 2)
-    assert mixin._is_likely_emotion("happy", "你好happy", 2, {"happy"})
-    assert mixin._is_likely_emotion("special", "xspecialx", 1, {"special"})
 
 
 def test_merge_components_distributes_images_after_plain_components():

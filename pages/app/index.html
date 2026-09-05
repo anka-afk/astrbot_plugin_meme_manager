@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>表情包管理</title>
+  </head>
+  <body>
+    <a id="entry" href="./a_manage/index.html">进入表情包管理</a>
+    <script>
+      (function redirectToManage() {
+        const nextUrl = new URL(document.getElementById("entry").href);
+        const currentParams = new URLSearchParams(window.location.search);
+        for (const [key, value] of currentParams.entries()) {
+          if (!nextUrl.searchParams.has(key)) {
+            nextUrl.searchParams.set(key, value);
+          }
+        }
+        nextUrl.hash = window.location.hash;
+        window.location.replace(nextUrl.toString());
+      })();
+    </script>
+  </body>
+</html>

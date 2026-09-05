@@ -21,18 +21,18 @@ sys.modules.setdefault("astrbot", types.ModuleType("astrbot"))
 sys.modules.setdefault("astrbot.core", types.ModuleType("astrbot.core"))
 sys.modules.setdefault("astrbot.core.utils", types.ModuleType("astrbot.core.utils"))
 sys.modules.setdefault("astrbot.core.utils.astrbot_path", astrbot_path_module)
-models = importlib.import_module("astrbot_plugin_meme_manager.backend.models")
+models = importlib.import_module("astrbot_plugin_meme_manager.backend.packs.images")
 category_manager_module = importlib.import_module(
-    "astrbot_plugin_meme_manager.backend.category_manager"
+    "astrbot_plugin_meme_manager.backend.packs.categories"
 )
 pack_protocol = importlib.import_module(
-    "astrbot_plugin_meme_manager.backend.pack_protocol"
+    "astrbot_plugin_meme_manager.backend.packs.protocol"
 )
 pack_storage = importlib.import_module(
-    "astrbot_plugin_meme_manager.backend.pack_storage"
+    "astrbot_plugin_meme_manager.backend.packs.storage"
 )
 semantic_models = importlib.import_module(
-    "astrbot_plugin_meme_manager.backend.semantic_models"
+    "astrbot_plugin_meme_manager.backend.semantic.models"
 )
 file_handler_module = importlib.import_module(
     "astrbot_plugin_meme_manager.image_host.core.file_handler"
@@ -226,7 +226,7 @@ class PackManifestCategorySafetyTests(unittest.TestCase):
 
 class DomXssRegressionTests(unittest.TestCase):
     def test_catalog_metadata_uses_text_content(self):
-        source = (Path(__file__).parents[1] / "pages/catalog/script.js").read_text(
+        source = (Path(__file__).parents[1] / "pages/app/catalog/script.js").read_text(
             encoding="utf-8"
         )
 
@@ -235,7 +235,7 @@ class DomXssRegressionTests(unittest.TestCase):
         self.assertIn("sourceMeta.textContent", source)
 
     def test_catalog_install_supports_unknown_size_cancel_and_reconnect(self):
-        root = Path(__file__).parents[1] / "pages/catalog"
+        root = Path(__file__).parents[1] / "pages/app/catalog"
         source = (root / "script.js").read_text(encoding="utf-8")
         html = (root / "index.html").read_text(encoding="utf-8")
 
@@ -246,7 +246,7 @@ class DomXssRegressionTests(unittest.TestCase):
         self.assertIn('id="install-progress-cancel"', html)
 
     def test_settings_dynamic_values_are_not_html_templates(self):
-        source = (Path(__file__).parents[1] / "pages/settings/script.js").read_text(
+        source = (Path(__file__).parents[1] / "pages/app/settings/script.js").read_text(
             encoding="utf-8"
         )
 

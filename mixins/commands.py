@@ -7,12 +7,12 @@ from astrbot.api import logger
 from astrbot.api.all import *
 from astrbot.api.event import AstrMessageEvent, filter
 
-from ..backend.models import (
+from ..backend.packs.images import (
     clear_all_emojis,
     clear_category_emojis,
     get_emoji_by_category,
 )
-from ..backend.pack_storage import install_first_official_pack_from_index
+from ..backend.packs.storage import install_first_official_pack_from_index
 from ..config import COMMUNITY_INDEX_URL
 
 

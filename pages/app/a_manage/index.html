@@ -1,0 +1,792 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>表情包管理中心</title>
+    <link rel="stylesheet" href="../shared/fa.min.css" />
+    <link rel="stylesheet" href="../shared/ui.css" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body class="app-page panel-console-hidden">
+    <header class="page-header">
+      <div class="page-header-main">
+        <div class="page-title-block">
+          <p class="eyebrow">Meme Pack Manager</p>
+          <h1><i class="fas fa-face-grin-beam icon"></i>表情包管理</h1>
+          <p class="page-subtitle">整理每一种心情，让表情随手可用。</p>
+        </div>
+      </div>
+      <nav class="nav-actions" aria-label="页面导航"></nav>
+    </header>
+    <div class="manage-pack-switch-row">
+      <div class="panel-toggle-group" role="group" aria-label="页面视图">
+        <button
+          id="console-toggle-btn"
+          class="panel-toggle"
+          type="button"
+          aria-expanded="true"
+          aria-controls="app-sidebar-panel"
+          aria-label="切换控制台"
+        >
+          <i class="fas fa-sliders icon"></i>控制台
+        </button>
+        <button
+          id="directory-toggle-btn"
+          class="panel-toggle"
+          type="button"
+          aria-expanded="true"
+          aria-controls="app-directory-panel"
+          aria-label="切换目录"
+        >
+          <i class="fas fa-folder-open icon"></i>目录
+        </button>
+      </div>
+      <label for="manage-pack-select">管理表情包</label>
+      <select id="manage-pack-select" aria-label="选择管理的表情包"></select>
+      <span
+        id="pack-semantic-status"
+        class="pack-semantic-status semantic-none"
+        role="status"
+        aria-live="polite"
+        hidden
+      >
+        <i class="fas fa-wand-magic-sparkles"></i>
+        <span id="pack-semantic-status-text">正在读取语义状态…</span>
+      </span>
+      <button
+        id="retry-manage-packs-btn"
+        type="button"
+        class="secondary"
+        hidden
+      >
+        重试
+      </button>
+    </div>
+
+    <div
+      id="sidebar-backdrop"
+      class="sidebar-backdrop hidden"
+      aria-hidden="true"
+    ></div>
+
+    <div class="container">
+      <aside class="left-panel" id="app-sidebar-panel">
+        <div class="left-panel-header">
+          <div>
+            <p class="left-panel-eyebrow">控制台</p>
+            <h2>管理控制台</h2>
+          </div>
+          <button
+            type="button"
+            class="panel-close-btn"
+            data-panel-close="console"
+            aria-label="收起控制台"
+          >
+            <i class="fas fa-xmark"></i>
+          </button>
+        </div>
+
+        <div class="console-section-heading">
+          <span><i class="fas fa-arrows-rotate"></i>同步管理</span>
+        </div>
+        <div class="sync-buttons">
+          <button id="check-sync-btn">
+            <i class="fas fa-sync icon"></i>检查同步状态
+          </button>
+        </div>
+
+        <div class="sync-panel">
+          <h3><i class="fas fa-gear icon"></i>配置同步</h3>
+          <div id="sync-status">
+            <p>
+              <i class="fas fa-spinner fa-spin icon"></i>正在检查同步状态...
+            </p>
+          </div>
+        </div>
+
+        <hr class="sync-divider" />
+
+        <div class="sync-panel">
+          <h4><i class="fas fa-cloud icon"></i>图床同步</h4>
+          <a
+            href="../settings/index.html#storage"
+            data-nav-target="../settings/index.html#storage"
+            >图床设置</a
+          >
+          <div class="sync-status">
+            <div class="sync-provider-summary">
+              <p>
+                <i class="fas fa-server icon"></i>图床服务商:
+                <span id="img-host-provider">--</span>
+              </p>
+              <p>
+                <i class="fas fa-images icon"></i>云端图片数:
+                <span id="remote-image-count">--</span> 张
+              </p>
+              <p>
+                <i class="fas fa-hard-drive icon"></i>云端占用:
+                <span id="remote-storage-size">--</span>
+              </p>
+            </div>
+            <div class="sync-metrics-summary">
+              <p class="sync-metric-item">
+                <i class="fas fa-upload icon"></i>
+                <span class="sync-metric-label">待上传</span>
+                <span class="sync-metric-value"
+                  ><span id="upload-count">0</span> 个文件</span
+                >
+              </p>
+              <p class="sync-metric-item">
+                <i class="fas fa-download icon"></i>
+                <span class="sync-metric-label">待下载</span>
+                <span class="sync-metric-value"
+                  ><span id="download-count">0</span> 个文件</span
+                >
+              </p>
+              <p class="sync-metric-item">
+                <i class="fas fa-cloud icon"></i>
+                <span class="sync-metric-label">云端多出</span>
+                <span class="sync-metric-value"
+                  ><span id="remote-extra-count">0</span> 个文件</span
+                >
+              </p>
+              <p class="sync-metric-item">
+                <i class="fas fa-folder-plus icon"></i>
+                <span class="sync-metric-label">本地多出</span>
+                <span class="sync-metric-value"
+                  ><span id="local-extra-count">0</span> 个文件</span
+                >
+              </p>
+            </div>
+            <p id="img-host-sync-progress" class="sync-progress-message hidden">
+              <i class="fas fa-spinner fa-spin icon"></i>
+              <span id="img-host-sync-progress-text">同步准备中...</span>
+            </p>
+            <button id="upload-sync-btn">
+              <i class="fas fa-cloud-arrow-up icon"></i>同步到云端
+            </button>
+            <button id="download-sync-btn">
+              <i class="fas fa-cloud-arrow-down icon"></i>从云端同步
+            </button>
+            <details class="manage-maintenance">
+              <summary>高级同步</summary>
+              <p class="hint">强制同步会覆盖云端内容，请先检查差异。</p>
+              <button id="force-upload-sync-btn" class="danger">
+                <i class="fas fa-triangle-exclamation icon"></i>强制同步云端
+              </button>
+            </details>
+          </div>
+        </div>
+      </aside>
+
+      <aside class="directory-panel" id="app-directory-panel">
+        <div id="sidebar">
+          <div class="directory-panel-header">
+            <h2><i class="fas fa-folder-open icon"></i>目录</h2>
+            <button
+              type="button"
+              class="panel-close-btn"
+              data-panel-close="directory"
+              aria-label="收起目录"
+            >
+              <i class="fas fa-xmark"></i>
+            </button>
+          </div>
+          <ul id="sidebar-list"></ul>
+        </div>
+      </aside>
+
+      <main id="content">
+        <div class="library-search-row">
+          <label class="library-search" for="library-search-input">
+            <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+            <input
+              id="library-search-input"
+              type="search"
+              aria-label="搜索分类或图片名称"
+              placeholder="搜索分类或图片名称"
+              autocomplete="off"
+            />
+          </label>
+          <span
+            id="library-result-count"
+            class="hint"
+            aria-live="polite"
+          ></span>
+        </div>
+        <div
+          id="library-load-state"
+          class="library-load-state"
+          role="status"
+          aria-live="polite"
+        >
+          <span id="library-load-message">正在加载表情包…</span>
+          <button id="library-retry-btn" class="ghost hidden" type="button">
+            重试
+          </button>
+        </div>
+        <div class="page-toolbar">
+          <div class="selection-toolbar">
+            <div class="selection-toolbar-copy">
+              <h2>批量管理</h2>
+              <p id="selection-summary">未开启批量选择</p>
+            </div>
+            <div class="selection-toolbar-controls">
+              <div class="pack-index-toolbar" aria-label="当前表情包向量状态">
+                <span
+                  id="pack-vector-status"
+                  class="pack-vector-status hidden"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <i class="fas fa-cubes-stacked"></i>
+                  <span id="pack-vector-status-text">正在读取向量维度…</span>
+                </span>
+                <button
+                  id="rebuild-pack-vectors-btn"
+                  type="button"
+                  class="secondary vector-rebuild-btn hidden"
+                  disabled
+                >
+                  <i class="fas fa-arrows-rotate icon"></i>按当前维度重建
+                </button>
+              </div>
+              <div class="selection-toolbar-actions">
+                <button id="batch-move-btn" class="secondary" disabled>
+                  <i class="fas fa-right-left icon"></i>移动已选
+                </button>
+                <button id="toggle-selection-mode-btn" class="secondary">
+                  <i class="fas fa-list-check icon"></i>开启批量选择
+                </button>
+                <button id="batch-delete-btn" class="danger" disabled>
+                  <i class="fas fa-trash-can icon"></i>删除已选
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <section
+          id="semantic-review-toolbar"
+          class="semantic-review-toolbar hidden"
+          aria-label="分类审核筛选"
+        >
+          <div class="semantic-review-toolbar-copy">
+            <p class="eyebrow">Category Review</p>
+            <h2>分类审核</h2>
+            <p>按审核状态筛选，快速找到需要复核的图片。</p>
+          </div>
+          <div
+            id="semantic-review-stats"
+            class="semantic-review-stats"
+            role="group"
+          >
+            <button type="button" data-review-filter="all" class="active">
+              全部 <span>0</span>
+            </button>
+            <button type="button" data-review-filter="auto_match">
+              自动符合 <span>0</span>
+            </button>
+            <button type="button" data-review-filter="needs_review">
+              建议复核 <span>0</span>
+            </button>
+            <button type="button" data-review-filter="reclassified">
+              自动重分类 <span>0</span>
+            </button>
+            <button type="button" data-review-filter="manual_confirmed">
+              已人工确认 <span>0</span>
+            </button>
+            <button type="button" data-review-filter="manual_rejected">
+              人工判定不符 <span>0</span>
+            </button>
+            <button type="button" data-review-filter="unchecked">
+              尚未检查 <span>0</span>
+            </button>
+          </div>
+        </section>
+        <div id="emoji-categories"></div>
+        <button id="add-category-btn">
+          <i class="fas fa-plus-circle icon"></i>添加分类
+        </button>
+        <div id="add-category-form" style="display: none">
+          <label for="new-category-name">分类名称</label>
+          <input
+            type="text"
+            id="new-category-name"
+            placeholder="输入类别名称"
+            class="form-control"
+          />
+          <label for="new-category-description">分类描述</label>
+          <input
+            type="text"
+            id="new-category-description"
+            placeholder="输入类别描述"
+            class="form-control mt-2"
+          />
+          <button id="save-category-btn" class="btn btn-primary mt-2">
+            <i class="fas fa-save icon"></i>保存分类
+          </button>
+          <button id="cancel-category-btn" class="ghost" type="button">
+            取消
+          </button>
+        </div>
+        <details class="manage-maintenance library-maintenance">
+          <summary>表情包维护</summary>
+          <p class="hint">
+            清空内容会保留分类；删除表情包会同时移除整个包。操作前会再次确认。
+          </p>
+          <div class="button-row">
+            <button id="clear-all-btn" class="danger" type="button">
+              <i class="fas fa-broom icon"></i>清空全部表情包
+            </button>
+            <button id="delete-manage-pack-btn" class="danger" type="button">
+              删除当前表情包
+            </button>
+          </div>
+        </details>
+      </main>
+    </div>
+
+    <div
+      id="toast-container"
+      class="toast-container"
+      aria-live="polite"
+      aria-atomic="true"
+    ></div>
+
+    <div
+      id="batch-context-menu"
+      class="batch-context-menu hidden"
+      role="menu"
+      aria-hidden="true"
+      aria-label="批量管理菜单"
+    >
+      <div class="batch-context-menu-header">
+        <p id="batch-context-menu-title">批量管理</p>
+        <p id="batch-context-menu-subtitle">选择一个操作继续</p>
+      </div>
+      <div class="batch-context-menu-actions">
+        <button
+          id="context-menu-delete-btn"
+          type="button"
+          class="danger"
+          role="menuitem"
+        >
+          <i class="fas fa-trash-can icon"></i>删除文件
+        </button>
+        <button
+          id="context-menu-move-btn"
+          type="button"
+          class="secondary"
+          role="menuitem"
+        >
+          <i class="fas fa-right-left icon"></i>移动文件
+        </button>
+        <button
+          id="context-menu-copy-btn"
+          type="button"
+          class="secondary"
+          role="menuitem"
+        >
+          <i class="fas fa-copy icon"></i>复制文件
+        </button>
+        <button id="context-menu-paste-btn" type="button" role="menuitem">
+          <i class="fas fa-paste icon"></i>粘贴文件
+        </button>
+      </div>
+    </div>
+
+    <div
+      id="move-target-modal"
+      class="move-target-modal hidden"
+      aria-hidden="true"
+    >
+      <div
+        class="move-target-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="move-target-modal-title"
+      >
+        <p class="move-target-modal-eyebrow">批量移动</p>
+        <h2 id="move-target-modal-title">选择目标分类</h2>
+        <p id="move-target-modal-description">
+          选择一个分类，将已选表情包批量移动过去。
+        </p>
+        <div id="move-target-list" class="move-target-list"></div>
+        <div class="move-target-modal-actions">
+          <button id="move-target-cancel-btn" class="secondary">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      id="category-edit-modal"
+      class="category-edit-modal hidden"
+      aria-hidden="true"
+    >
+      <div
+        class="category-edit-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="category-edit-modal-title"
+      >
+        <p class="category-edit-modal-eyebrow">类别编辑</p>
+        <h2 id="category-edit-modal-title">编辑类别</h2>
+        <p id="category-edit-modal-description">
+          修改类别名称和描述，保存后立即生效。
+        </p>
+        <div class="category-edit-form-panel">
+          <label for="category-edit-name-input">类别名称</label>
+          <input
+            id="category-edit-name-input"
+            type="text"
+            placeholder="输入类别名称"
+          />
+          <label for="category-edit-desc-input">类别描述</label>
+          <input
+            id="category-edit-desc-input"
+            type="text"
+            placeholder="输入类别描述"
+          />
+        </div>
+        <div class="category-edit-modal-actions">
+          <button id="category-edit-cancel-btn" class="secondary">取消</button>
+          <button id="category-edit-save-btn">保存修改</button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      id="confirm-modal"
+      class="confirm-modal hidden"
+      aria-hidden="true"
+      inert
+    >
+      <div
+        class="confirm-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-modal-title"
+      >
+        <p class="confirm-modal-eyebrow">操作确认</p>
+        <h2 id="confirm-modal-title">请确认操作</h2>
+        <p id="confirm-modal-description"></p>
+        <div class="confirm-modal-actions">
+          <button id="confirm-modal-cancel-btn" class="secondary">取消</button>
+          <button id="confirm-modal-confirm-btn">确认</button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      id="danger-confirm-modal"
+      class="danger-modal hidden"
+      aria-hidden="true"
+    >
+      <div
+        class="danger-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="danger-modal-title"
+      >
+        <p class="danger-modal-eyebrow">危险操作</p>
+        <h2 id="danger-modal-title">请确认操作</h2>
+        <p id="danger-modal-description"></p>
+        <label class="danger-modal-check" for="danger-modal-ack">
+          <input type="checkbox" id="danger-modal-ack" />
+          <span>我已理解该操作不可恢复</span>
+        </label>
+        <p id="danger-modal-stage-text" class="danger-modal-stage-text">
+          请先勾选已理解，再进入 5 秒倒计时的最终确认。
+        </p>
+        <div class="danger-modal-actions">
+          <button id="danger-modal-cancel-btn" class="secondary">取消</button>
+          <button id="danger-modal-confirm-btn" class="danger" disabled>
+            继续确认
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="drag-hud" class="drag-hud hidden" aria-hidden="true">
+      <div class="drag-hud-ring"></div>
+      <div class="drag-hud-center">
+        <span id="drag-hud-label">2s</span>
+      </div>
+      <div id="drag-hud-caption" class="drag-hud-caption">
+        长按 2 秒进入拖拽
+      </div>
+    </div>
+
+    <div
+      id="image-preview-modal"
+      class="image-preview-modal hidden"
+      aria-hidden="true"
+    >
+      <div
+        class="image-preview-stage"
+        role="dialog"
+        aria-modal="true"
+        aria-label="表情包预览"
+      >
+        <button
+          id="image-preview-close-btn"
+          class="image-preview-close"
+          type="button"
+          aria-label="关闭预览"
+        >
+          <i class="fas fa-xmark"></i>
+        </button>
+        <div id="image-preview-frame" class="image-preview-frame">
+          <div id="image-preview-loading" class="image-preview-loading">
+            <i class="fas fa-spinner fa-spin"></i>
+          </div>
+          <img id="image-preview-img" alt="表情包预览" />
+          <button
+            id="image-preview-original-btn"
+            class="image-preview-original"
+            type="button"
+          >
+            <i class="fas fa-up-right-and-down-left-from-center icon"></i>原图
+          </button>
+        </div>
+        <aside
+          id="image-preview-semantic"
+          class="image-preview-semantic semantic-loading"
+          aria-live="polite"
+        >
+          <div class="image-preview-semantic-header">
+            <div>
+              <p class="image-preview-semantic-eyebrow">Semantic Detail</p>
+              <h2>图片语义</h2>
+            </div>
+            <span
+              id="image-preview-semantic-state"
+              class="image-preview-semantic-state"
+              >读取中</span
+            >
+          </div>
+          <p
+            id="image-preview-semantic-filename"
+            class="image-preview-semantic-filename"
+          ></p>
+          <div class="image-preview-semantic-badges" aria-label="语义状态">
+            <span
+              id="image-preview-source-state"
+              class="image-preview-status-badge"
+              >自动生成</span
+            >
+            <span
+              id="image-preview-vector-state"
+              class="image-preview-status-badge"
+              >向量等待更新</span
+            >
+          </div>
+          <p
+            id="image-preview-duplicate-notice"
+            class="image-preview-duplicate-notice hidden"
+          ></p>
+          <div
+            id="image-preview-category-review"
+            class="image-preview-category-review"
+          >
+            <span
+              id="image-preview-category-tag"
+              class="image-preview-category-tag"
+            ></span>
+            <span
+              id="image-preview-category-review-state"
+              class="image-preview-category-review-state"
+            ></span>
+            <p
+              id="image-preview-category-review-reason"
+              class="image-preview-category-review-reason hidden"
+            ></p>
+            <p
+              id="image-preview-reclassification"
+              class="image-preview-reclassification hidden"
+            ></p>
+            <div
+              id="image-preview-review-actions"
+              class="image-preview-review-actions hidden"
+            >
+              <button
+                id="image-preview-category-confirm-btn"
+                type="button"
+                class="secondary hidden"
+              >
+                确认当前分类正确
+              </button>
+              <button
+                id="image-preview-review-edit-btn"
+                type="button"
+                class="hidden"
+              >
+                修改语义或分类
+              </button>
+            </div>
+          </div>
+          <div class="image-preview-semantic-section image-preview-read-view">
+            <p class="image-preview-semantic-label">图片含义</p>
+            <p
+              id="image-preview-semantic-caption"
+              class="image-preview-semantic-caption"
+            >
+              正在读取这张图片的语义信息…
+            </p>
+          </div>
+          <div
+            id="image-preview-semantic-tags-wrap"
+            class="image-preview-semantic-section image-preview-read-view hidden"
+          >
+            <p class="image-preview-semantic-label">语义标签</p>
+            <div
+              id="image-preview-semantic-tags"
+              class="image-preview-semantic-tags"
+            ></div>
+          </div>
+          <div
+            id="image-preview-visible-text-wrap"
+            class="image-preview-semantic-section image-preview-read-view hidden"
+          >
+            <p class="image-preview-semantic-label">图片内文字</p>
+            <p
+              id="image-preview-visible-text"
+              class="image-preview-visible-text"
+            ></p>
+          </div>
+          <p
+            id="image-preview-semantic-index"
+            class="image-preview-semantic-index"
+          ></p>
+          <div
+            id="image-preview-semantic-actions"
+            class="image-preview-semantic-actions"
+          >
+            <button id="image-preview-edit-btn" type="button">
+              修改图片语义
+            </button>
+            <button
+              id="image-preview-restore-auto-btn"
+              type="button"
+              class="secondary hidden"
+            >
+              恢复自动生成
+            </button>
+          </div>
+          <form
+            id="image-preview-edit-form"
+            class="image-preview-edit-form hidden"
+          >
+            <div class="image-preview-review-rewrite">
+              <div class="image-preview-edit-field">
+                <label for="image-preview-review-instruction"
+                  >人工复审意见</label
+                >
+                <textarea
+                  id="image-preview-review-instruction"
+                  rows="3"
+                  maxlength="2000"
+                  placeholder="例如：这不是生气，而是看到离谱内容后无语；请重新识别图片文字，并改写含义和标签。"
+                ></textarea>
+              </div>
+              <button
+                id="image-preview-review-rewrite-btn"
+                type="button"
+                class="secondary"
+              >
+                让视觉模型按意见重写
+              </button>
+              <p
+                id="image-preview-review-rewrite-status"
+                class="image-preview-review-rewrite-status"
+              >
+                模型会重写语义并自动选择分类；只生成候选，不会直接保存或移动。
+              </p>
+            </div>
+            <div class="image-preview-edit-field">
+              <label>固定分类标签（只读）</label>
+              <div
+                id="image-preview-fixed-tags"
+                class="image-preview-fixed-tags"
+              ></div>
+            </div>
+            <div class="image-preview-edit-field">
+              <label for="image-preview-caption-input">图片含义描述</label>
+              <textarea
+                id="image-preview-caption-input"
+                rows="4"
+                maxlength="4000"
+                required
+              ></textarea>
+            </div>
+            <div class="image-preview-edit-field">
+              <label for="image-preview-tags-input">普通语义标签</label>
+              <input
+                id="image-preview-tags-input"
+                type="text"
+                placeholder="用中文逗号、英文逗号或换行分隔"
+              />
+            </div>
+            <div class="image-preview-edit-field">
+              <label for="image-preview-visible-text-input"
+                >图片中可见文字</label
+              >
+              <textarea
+                id="image-preview-visible-text-input"
+                rows="3"
+                maxlength="4000"
+              ></textarea>
+            </div>
+            <div class="image-preview-edit-field">
+              <label for="image-preview-category-decision"
+                >当前分类人工判断</label
+              >
+              <select id="image-preview-category-decision">
+                <option value="keep">保持现有判断</option>
+                <option value="match">确认当前分类正确</option>
+                <option value="mismatch">确认当前分类不正确</option>
+              </select>
+            </div>
+            <div class="image-preview-edit-field">
+              <label for="image-preview-target-category"
+                >保存时移动到其他分类（可选）</label
+              >
+              <select id="image-preview-target-category">
+                <option value="">保持当前分类</option>
+              </select>
+              <small>
+                视觉模型重写后会自动填入建议分类，你只需检查。选择新分类后，请点击“保存、移动并更新该图向量”；其他同内容图片不变。
+              </small>
+            </div>
+            <p id="image-preview-edit-scope" class="image-preview-edit-scope">
+              只修改当前路径的图片。
+            </p>
+            <div class="image-preview-edit-actions">
+              <button
+                id="image-preview-edit-cancel-btn"
+                type="button"
+                class="secondary"
+              >
+                取消
+              </button>
+              <button
+                id="image-preview-save-btn"
+                type="submit"
+                class="secondary"
+              >
+                仅保存
+              </button>
+              <button id="image-preview-save-vector-btn" type="button">
+                保存并更新该图向量
+              </button>
+            </div>
+          </form>
+        </aside>
+      </div>
+    </div>
+
+    <script type="module" src="../shared/ui.js"></script>
+    <script type="module" src="./script.js"></script>
+  </body>
+</html>

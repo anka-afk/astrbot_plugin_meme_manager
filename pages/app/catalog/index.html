@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>表情包资源广场</title>
+    <link rel="stylesheet" href="../shared/fa.min.css" />
+    <link rel="stylesheet" href="../shared/ui.css" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">Meme Pack Catalog</p>
+        <h1><i class="fas fa-store icon"></i>表情包资源广场</h1>
+        <p class="subtitle">下载并安装官方与社区表情包。</p>
+      </div>
+      <nav class="nav-actions" aria-label="页面导航"></nav>
+    </header>
+
+    <main class="layout">
+      <section class="panel catalog-toolbar" aria-label="查找资源包">
+        <div class="catalog-search-row">
+          <div class="field-row catalog-search">
+            <label for="catalog-search">搜索资源包</label>
+            <input
+              id="catalog-search"
+              type="search"
+              placeholder="名称、标签、维护者或仓库"
+              autocomplete="off"
+            />
+          </div>
+          <div class="field-row catalog-filter">
+            <label for="catalog-filter">安装状态</label>
+            <select id="catalog-filter">
+              <option value="all">全部资源包</option>
+              <option value="available">未安装</option>
+              <option value="installed">已安装</option>
+            </select>
+          </div>
+          <button id="refresh-catalog-btn" type="button" class="ghost" disabled>
+            <i class="fas fa-rotate icon" aria-hidden="true"></i>刷新资源
+          </button>
+        </div>
+        <p id="catalog-status" class="catalog-status" role="status">
+          正在读取资源列表…
+        </p>
+        <p
+          id="installed-status"
+          class="catalog-status hidden"
+          role="status"
+        ></p>
+      </section>
+
+      <section
+        id="install-task"
+        class="panel install-task hidden"
+        aria-label="后台安装任务"
+      >
+        <div>
+          <strong id="install-task-name">正在安装</strong>
+          <p id="install-task-status" class="hint" role="status">
+            正在准备安装任务
+          </p>
+        </div>
+        <button id="show-install-progress" type="button" class="ghost">
+          查看进度
+        </button>
+      </section>
+
+      <section class="panel catalog-list official-zone">
+        <div class="panel-header">
+          <h2><i class="fas fa-crown icon"></i>官方包</h2>
+          <span id="official-pack-count" class="badge">—</span>
+        </div>
+        <div id="official-grid" class="catalog-grid empty">
+          <p>正在读取官方包…</p>
+        </div>
+      </section>
+
+      <section class="panel catalog-list community-zone">
+        <div class="panel-header">
+          <h2><i class="fas fa-users icon"></i>社区包</h2>
+          <span id="community-pack-count" class="badge">—</span>
+        </div>
+        <div id="community-grid" class="catalog-grid empty">
+          <p>正在读取社区包…</p>
+        </div>
+      </section>
+
+      <details class="panel manual-source">
+        <summary>
+          <i class="fab fa-github icon" aria-hidden="true"></i>从 GitHub
+          安装<span>使用自定义来源</span>
+        </summary>
+        <p id="source-form-hint" class="manual-source-hint">
+          <i class="fas fa-circle-info"></i>
+          输入表情包的仓库与目录。支持兼容结构的表情包，安装时会自动识别。
+        </p>
+        <form id="source-install-form" aria-describedby="source-form-hint">
+          <div class="triple-grid">
+            <div class="field-row">
+              <label for="source-repo-input">GitHub 仓库</label>
+              <input
+                id="source-repo-input"
+                type="text"
+                placeholder="owner/repo"
+                required
+                autocomplete="off"
+                spellcheck="false"
+                aria-describedby="source-repo-hint"
+              />
+              <span id="source-repo-hint" class="field-hint"
+                >填写用户名/仓库名，例如 anka-afk/meme-packs</span
+              >
+            </div>
+            <div class="field-row">
+              <label for="source-ref-input">分支或版本</label>
+              <input
+                id="source-ref-input"
+                type="text"
+                value="main"
+                placeholder="main"
+                required
+                spellcheck="false"
+                aria-describedby="source-ref-hint"
+              />
+              <span id="source-ref-hint" class="field-hint"
+                >填写分支名、标签或提交 ID</span
+              >
+            </div>
+            <div class="field-row">
+              <label for="source-subpath-input">包所在目录</label>
+              <input
+                id="source-subpath-input"
+                type="text"
+                placeholder="packs/official-basic"
+                value="."
+                required
+                spellcheck="false"
+                aria-describedby="source-subpath-hint"
+              />
+              <span id="source-subpath-hint" class="field-hint"
+                >相对于仓库根目录；根目录填写 .</span
+              >
+            </div>
+          </div>
+          <div class="button-row">
+            <button id="install-source-btn" type="submit" disabled>
+              <i class="fas fa-download icon"></i>安装此来源
+            </button>
+          </div>
+        </form>
+      </details>
+
+      <section class="panel log-panel">
+        <div class="panel-header">
+          <h2><i class="fas fa-list-check icon"></i>操作记录</h2>
+          <span class="hint">仅保留本次访问的记录</span>
+        </div>
+        <div id="log-list" class="log-list" role="log" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <div id="install-dialog" class="dialog-mask hidden" aria-hidden="true">
+      <div
+        class="dialog-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="install-dialog-title"
+        aria-describedby="install-dialog-pack-name"
+      >
+        <h3 id="install-dialog-title">
+          <i class="fas fa-download icon"></i>安装选项
+        </h3>
+        <p id="install-dialog-pack-name" class="dialog-meta"></p>
+        <label class="checkbox">
+          <input id="install-overwrite-checkbox" type="checkbox" />
+          <span>覆盖同名表情包</span>
+        </label>
+        <p class="dialog-tip">
+          如有同名包，默认保留原包并为新包追加后缀。勾选覆盖将替换原包文件。
+        </p>
+        <label class="checkbox">
+          <input id="install-default-checkbox" type="checkbox" />
+          <span>安装后设为默认</span>
+        </label>
+        <div class="dialog-actions">
+          <button id="install-dialog-cancel" class="ghost" type="button">
+            取消
+          </button>
+          <button id="install-dialog-confirm" type="button">确认安装</button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      id="install-progress-dialog"
+      class="dialog-mask hidden"
+      aria-hidden="true"
+    >
+      <div
+        class="dialog-card progress-dialog-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="install-progress-title"
+      >
+        <h3 id="install-progress-title">
+          <i class="fas fa-cloud-arrow-down icon"></i>正在安装表情包
+        </h3>
+        <p id="install-progress-pack-name" class="dialog-meta"></p>
+        <div class="progress-summary" aria-live="polite">
+          <span id="install-progress-phase">正在准备安装任务</span>
+          <strong id="install-progress-percent">0%</strong>
+        </div>
+        <div
+          id="install-progress-track"
+          class="progress-track"
+          role="progressbar"
+          aria-label="安装进度"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+        >
+          <div id="install-progress-bar" class="progress-bar"></div>
+        </div>
+        <p id="install-progress-bytes" class="progress-bytes">等待下载开始…</p>
+        <p class="dialog-tip">
+          切换页面后安装仍会继续，返回资源广场可恢复进度。
+        </p>
+        <div class="dialog-actions">
+          <button
+            id="install-progress-cancel"
+            class="ghost danger-text"
+            type="button"
+          >
+            取消安装
+          </button>
+          <button
+            id="install-progress-hide"
+            class="ghost"
+            type="button"
+            data-dialog-dismiss
+          >
+            后台安装
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="../shared/ui.js"></script>
+    <script type="module" src="./script.js"></script>
+  </body>
+</html>
