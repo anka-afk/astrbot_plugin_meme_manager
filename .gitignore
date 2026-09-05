@@ -179,4 +179,4 @@ cython_debug/
 # This directory is for local development files, test scripts, notes, etc.
 # These files should never be committed to Git
 local/
-data/plugin_data/
+/data/
