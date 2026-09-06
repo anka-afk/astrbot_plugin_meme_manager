@@ -36,7 +36,11 @@ async function initPluginConfig() {
       category: "sending",
       title: "出现时机",
       description: "少一点打扰，多一点恰好。",
-      prefixes: ["generation.trigger.", "generation.emotion.probability"],
+      prefixes: [
+        "generation.trigger.",
+        "generation.emotion.probability",
+        "generation.emotion.max_memes_per_message",
+      ],
     },
     {
       id: "delivery",
@@ -126,8 +130,20 @@ async function initPluginConfig() {
       id: "prompts",
       category: "prompts",
       title: "分类提示词",
-      description: "用于分类标签模式。模板按“前缀 → 分类列表 → 后缀”组合。",
+      description:
+        "前缀定义能力与发送格式，后缀规定内部资料边界和图片理解；中间自动插入分类列表。",
       prefixes: ["generation.prompt.head", "generation.prompt.tail"],
+    },
+    {
+      id: "quantity-guidance",
+      category: "prompts",
+      title: "表情回复数量",
+      description:
+        "控制何时配图和单条回复选多少张，适用于分类、语义和情感辅助选图，与发送阶段的硬上限独立。",
+      prefixes: [
+        "generation.prompt.quantity_guidance_enabled",
+        "generation.prompt.quantity_guidance",
+      ],
     },
     {
       id: "category-example",
@@ -420,8 +436,10 @@ async function initPluginConfig() {
         control.value = field.value;
         if (["int", "float"].includes(field.type)) {
           control.required = true;
-          control.min =
-            field.bounds.min ?? (/(top_k|\.timeout)$/.test(field.path) ? 1 : 0);
+          if (field.path !== "generation.emotion.max_memes_per_message") {
+            control.min =
+              field.bounds.min ?? (/(top_k|\.timeout)$/.test(field.path) ? 1 : 0);
+          }
           const max =
             field.bounds.max ??
             (/(min_score|min_meme_confidence|min_category_confidence)$/.test(

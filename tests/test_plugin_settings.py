@@ -382,3 +382,85 @@ async def test_stale_plugin_instance_never_triggers_a_reload(settings_api):
         _, status = await WebAPIMixin._api_settings_config(settings_api)
     assert status == 409
     settings_api.context._star_manager.reload.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [-100, -1, 0, 2])
+async def test_meme_limit_shared_between_both_settings_pages(
+    shared_config, settings_api, start_plugin, limit
+):
+    snapshot, _ = describe_settings(shared_config)
+    field = next(
+        field
+        for field in snapshot["fields"]
+        if field["path"] == "generation.emotion.max_memes_per_message"
+    )
+    assert field["default"] == field["value"] == -1
+    app = Quart(__name__)
+    async with app.test_request_context(
+        "/",
+        method="POST",
+        json={"revision": snapshot["revision"], "changes": {field["path"]: limit}},
+    ):
+        _, status = await WebAPIMixin._api_settings_config(settings_api)
+    assert status == 200
+    reloaded = AstrBotConfig(shared_config.config_path, schema=shared_config.schema)
+    assert start_plugin(reloaded).max_memes_per_message == limit
+    reloaded["generation"]["emotion"]["max_memes_per_message"] = limit - 1
+    reloaded.save_config()
+    snapshot, _ = describe_settings(shared_config)
+    field = next(
+        field
+        for field in snapshot["fields"]
+        if field["path"] == "generation.emotion.max_memes_per_message"
+    )
+    assert field["value"] == limit - 1
+
+
+@pytest.mark.parametrize("value", [True, 1.5, "2"])
+def test_meme_limit_requires_integer(shared_config, value):
+    snapshot, values = describe_settings(shared_config)
+    with pytest.raises(ValueError):
+        validate_settings_changes(
+            values,
+            snapshot["fields"],
+            {"generation.emotion.max_memes_per_message": value},
+            shared_config.schema,
+        )
+
+
+@pytest.mark.asyncio
+async def test_custom_quantity_template_is_shared_without_changing_hard_limit(
+    shared_config, settings_api, start_plugin
+):
+    custom = "## My quantity rules\nPrefer 3 distinct images. Preserve {literal} placeholders."
+    shared_config["generation"]["emotion"]["max_memes_per_message"] = 1
+    shared_config.save_config()
+    snapshot, _ = describe_settings(shared_config)
+    app = Quart(__name__)
+    async with app.test_request_context(
+        "/",
+        method="POST",
+        json={
+            "revision": snapshot["revision"],
+            "changes": {
+                "generation.prompt.quantity_guidance_enabled": True,
+                "generation.prompt.quantity_guidance": custom,
+            },
+        },
+    ):
+        _, status = await WebAPIMixin._api_settings_config(settings_api)
+    assert status == 200
+    reloaded = AstrBotConfig(shared_config.config_path, schema=shared_config.schema)
+    sender = start_plugin(reloaded)
+    assert sender.max_memes_per_message == 1
+    assert sender._build_meme_quantity_prompt() == "\n\n" + custom + "\n"
+    reloaded["generation"]["prompt"]["quantity_guidance"] = "AstrBot edited template"
+    reloaded.save_config()
+    snapshot, _ = describe_settings(shared_config)
+    fields = {field["path"]: field for field in snapshot["fields"]}
+    assert (
+        fields["generation.prompt.quantity_guidance"]["value"]
+        == "AstrBot edited template"
+    )
+    assert fields["generation.prompt.quantity_guidance_enabled"]["default"] is False
