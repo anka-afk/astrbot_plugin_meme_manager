@@ -159,10 +159,26 @@
                 >
               </p>
             </div>
-            <p id="img-host-sync-progress" class="sync-progress-message hidden">
+            <details id="img-host-conflicts" class="manage-maintenance hidden">
+              <summary>
+                同名冲突或待确认：<span id="conflict-count">0</span> 个
+              </summary>
+              <p class="hint">
+                增量同步会保留这些图片。检查后，可在高级同步中选择以本地或云端为准。首次升级时，没有内容校验记录的同名图片也会列在这里。
+              </p>
+              <ul id="img-host-conflict-files"></ul>
+            </details>
+            <p
+              id="img-host-sync-progress"
+              class="sync-progress-message hidden"
+              role="status"
+            >
               <i class="fas fa-spinner fa-spin icon"></i>
               <span id="img-host-sync-progress-text">同步准备中...</span>
             </p>
+            <button id="cancel-img-host-sync-btn" class="hidden" type="button">
+              <i class="fas fa-stop icon"></i>停止同步
+            </button>
             <button id="upload-sync-btn">
               <i class="fas fa-cloud-arrow-up icon"></i>同步到云端
             </button>
@@ -171,9 +187,14 @@
             </button>
             <details class="manage-maintenance">
               <summary>高级同步</summary>
-              <p class="hint">强制同步会覆盖云端内容，请先检查差异。</p>
+              <p class="hint">
+                强制同步会覆盖同名图片并删除目标端多出的图片，请先检查差异。
+              </p>
               <button id="force-upload-sync-btn" class="danger">
                 <i class="fas fa-triangle-exclamation icon"></i>强制同步云端
+              </button>
+              <button id="force-download-sync-btn" class="danger">
+                <i class="fas fa-triangle-exclamation icon"></i>从云端覆盖本地
               </button>
             </details>
           </div>

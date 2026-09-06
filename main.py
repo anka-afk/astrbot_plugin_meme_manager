@@ -115,6 +115,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         self.img_sync_provider_type = None
         self._img_sync_pack_id = ""
         self._last_img_host_sync_task_status = None
+        self._img_host_sync_monitor = None
         self._community_install_jobs = {}
         self._community_install_tasks = set()
         image_host_type = self._get_image_host_type()
@@ -127,7 +128,6 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                     "key": stardots_config["key"],
                     "secret": stardots_config["secret"],
                     "space": stardots_config.get("space", "memes"),
-                    "list_cache_ttl": stardots_config.get("list_cache_ttl", 60),
                     "provider": "stardots",
                 }
                 self.img_sync_provider_type = "stardots"
@@ -393,15 +393,16 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         if not (self.img_sync_config and self.img_sync_provider_type):
             return None
 
+        target_pack_id, target_memes_dir = self._resolve_sync_pack_target(
+            preferred_pack_id
+        )
         running_process = (
             getattr(self.img_sync, "sync_process", None) if self.img_sync else None
         )
         if running_process and running_process.is_alive():
+            if target_memes_dir.resolve() != Path(self.img_sync.local_dir).resolve():
+                raise RuntimeError("已有同步任务正在运行，请等待完成后再切换同步表情包")
             return self.img_sync
-
-        target_pack_id, target_memes_dir = self._resolve_sync_pack_target(
-            preferred_pack_id
-        )
 
         current_dir = None
         if self.img_sync and getattr(self.img_sync, "local_dir", None):
@@ -411,14 +412,16 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 current_dir = None
 
         if current_dir != target_memes_dir.resolve():
-            # Provider construction may fail during remote probes, such as an
-            # R2 head_bucket call, so degrade without blocking plugin startup.
+            # Adapter construction validates configuration without network probes.
             try:
+                previous_sync = self.img_sync
                 self.img_sync = ImageSync(
                     config=self.img_sync_config,
                     local_dir=target_memes_dir,
                     provider_type=self.img_sync_provider_type,
                 )
+                if previous_sync:
+                    previous_sync.close()
             except Exception as exc:
                 logger.error(
                     "Image host %s initialization failed; sync is unavailable: %s",
@@ -974,6 +977,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         if initial_task and not initial_task.done():
             initial_task.cancel()
             await asyncio.gather(initial_task, return_exceptions=True)
+        if self.img_sync:
+            await asyncio.to_thread(self.img_sync.close)
+        sync_monitor = getattr(self, "_img_host_sync_monitor", None)
+        if sync_monitor:
+            await asyncio.gather(sync_monitor, return_exceptions=True)
         if getattr(self, "semantic_task_manager", None):
             await self.semantic_task_manager.close()
         personas = self.context.provider_manager.personas
@@ -981,5 +989,3 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         for index, persona in enumerate(personas):
             key = self._get_persona_key(persona, index)
             persona["prompt"] = self.persona_base_prompts[key]
-        if self.img_sync:
-            self.img_sync.stop_sync()

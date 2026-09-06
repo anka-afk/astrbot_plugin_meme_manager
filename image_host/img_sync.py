@@ -1,10 +1,17 @@
+"""Process lifecycle and durable progress for image synchronization."""
+
 import asyncio
+import hashlib
+import json
 import logging
 import multiprocessing
-import sys
+import os
+import threading
+import uuid
 from pathlib import Path
 
-from .core.sync_manager import SyncManager
+from .core.file_handler import write_json_atomic
+from .core.sync_manager import SYNC_TASKS, SyncManager
 from .core.upload_tracker import UploadTracker
 from .providers import CloudflareR2Provider, StarDotsProvider, WebDAVProvider
 
@@ -12,292 +19,347 @@ logger = logging.getLogger(__name__)
 
 
 class ImageSync:
-    """图片同步客户端
-
-    用于在本地目录和远程图床之间同步图片文件。支持目录结构，
-    可以保持本地目录分类在远程图床中。
-
-    基本用法:
-        sync = ImageSync(config={
-            "key": "your_key",
-            "secret": "your_secret",
-            "space": "your_space"
-        }, local_dir="path/to/images")
-
-        # 检查同步状态
-        status = sync.check_status()
-
-        # 上传本地新文件到远程
-        sync.upload_to_remote()
-
-        # 下载远程新文件到本地
-        sync.download_to_local()
-
-        # 完全同步（双向）
-        sync.sync_all()
-    """
+    """Bind one local image library to one explicitly selected remote destination."""
 
     def __init__(
-        self,
-        config: dict[str, str],
-        local_dir: str | Path,
-        provider_type: str = "stardots",
+        self, config: dict, local_dir: str | Path, provider_type: str = "stardots"
     ):
-        """
-        初始化同步客户端
-
-        Args:
-            config: 包含图床配置信息的字典
-            local_dir: 本地图片目录的路径
-            provider_type: 图床提供者类型，可选 "stardots"、"cloudflare_r2" 或 "webdav"
-        """
-        self.config = config
-        self.local_dir = Path(local_dir)
+        self.config = dict(config)
+        self.local_dir = Path(local_dir).resolve()
         self.provider_type = provider_type
-
-        # 根据 provider_type 初始化对应的 provider
-        if provider_type == "stardots":
-            self.provider = StarDotsProvider(
-                {
-                    "key": config["key"],
-                    "secret": config["secret"],
-                    "space": config["space"],
-                    "local_dir": str(local_dir),
-                }
-            )
-        elif provider_type == "cloudflare_r2":
-            self.provider = CloudflareR2Provider(config)
-        elif provider_type == "webdav":
-            self.provider = WebDAVProvider({**config, "local_dir": str(local_dir)})
-        else:
-            raise ValueError(f"不支持的图床提供者类型: {provider_type}")
-
-        # 初始化上传追踪器（仅用于记录已上传文件）
-        tracker_file = Path(local_dir) / ".upload_tracker.json"
-        self.upload_tracker = UploadTracker(tracker_file)
-
-        self.sync_manager = SyncManager(
-            image_host=self.provider,
-            local_dir=self.local_dir,
-            upload_tracker=self.upload_tracker,
+        providers = {
+            "stardots": StarDotsProvider,
+            "cloudflare_r2": CloudflareR2Provider,
+            "webdav": WebDAVProvider,
+        }
+        if provider_type not in providers:
+            raise ValueError(f"Unsupported image host provider: {provider_type}")
+        self.provider = providers[provider_type](
+            {**config, "local_dir": str(self.local_dir)}
         )
-
+        if provider_type == "cloudflare_r2":
+            identity = [
+                provider_type,
+                config.get("account_id"),
+                config.get("bucket_name"),
+                str(config.get("prefix") or "memes").strip("/"),
+            ]
+        elif provider_type == "webdav":
+            identity = [
+                provider_type,
+                str(config.get("url") or "").rstrip("/"),
+                config.get("username"),
+                str(config.get("base_path", "memes")).strip("/"),
+            ]
+        else:
+            identity = [provider_type, config.get("key"), config.get("space")]
+        self.scope = hashlib.sha256(
+            json.dumps(identity, ensure_ascii=False).encode()
+        ).hexdigest()[:24]
+        self._state_dir = self.local_dir / ".sync-state"
+        if (
+            self._state_dir.is_symlink()
+            or getattr(self._state_dir, "is_junction", lambda: False)()
+        ):
+            self.provider.close()
+            raise ValueError("Sync state directory cannot be a filesystem link")
+        self.upload_tracker = UploadTracker(self._state_dir / f"{self.scope}.json")
+        self.sync_manager = SyncManager(
+            self.provider, self.local_dir, self.upload_tracker
+        )
         self.sync_process = None
         self._sync_task = None
+        self._process_lock = threading.Lock()
+        self._cancel_event = None
+        self._progress_path = self._state_dir / f"{self.scope}.task.json"
+        self._task_id = ""
+        self._last_progress: dict = {}
 
-    def check_status(self) -> dict[str, list[dict[str, str]]]:
-        """
-        检查同步状态
+    def check_status(self) -> dict:
+        """Return a complete content comparison for the current destination.
 
         Returns:
-            包含需要上传和下载的文件信息的字典:
-            {
-                "to_upload": [{"filename": "1.jpg", "category": "cats"}],
-                "to_download": [{"filename": "2.jpg", "category": "dogs"}]
-            }
+            Planned incremental transfers, conflicts and mirror candidates.
         """
         return self.sync_manager.check_sync_status()
 
     async def start_sync(self, task: str) -> bool:
-        """
-        启动同步任务并异步等待完成
+        """Start a guarded worker and await the captured process outside the event loop.
 
         Args:
-            task: 同步任务类型 ('upload', 'download', 'sync_all')
+            task: Sync operation.
 
         Returns:
-            同步是否成功
+            Whether the worker completed successfully.
+
+        Raises:
+            RuntimeError: Another operation is already running.
+            asyncio.CancelledError: The caller cancelled the task.
         """
-        # 不能为了启动新任务而悄悄杀掉已有任务。
-        if self.sync_process and self.sync_process.is_alive():
-            raise RuntimeError("已有同步任务正在运行，请等待完成后再试")
-
-        # 检查是否需要同步
-        status = await asyncio.to_thread(self.check_status)
-        if task == "upload" and not status.get("to_upload"):
-            logger.info("没有文件需要上传")
-            return True
-        elif task == "download" and not status.get("to_download"):
-            logger.info("没有文件需要下载")
-            return True
-        elif task == "overwrite_to_remote" and not (
-            status.get("to_upload") or status.get("to_delete_remote")
-        ):
-            logger.info("云端已是最新且完全一致，无需覆盖")
-            return True
-        elif task == "overwrite_from_remote" and not (
-            status.get("to_download") or status.get("to_delete_local")
-        ):
-            logger.info("本地已是最新且完全一致，无需覆盖")
-            return True
-
-        # 创建并启动进程
-        self.sync_process = multiprocessing.Process(
-            target=run_sync_process,
-            args=(self.config, str(self.local_dir), task, self.provider_type),
-        )
-        self.sync_process.start()
-
-        # 创建异步任务来等待进程完成
-        loop = asyncio.get_event_loop()
-        self._sync_task = loop.run_in_executor(None, self.sync_process.join)
-
+        process = self._start_sync_process(task)
+        waiter = asyncio.create_task(asyncio.to_thread(process.join))
+        self._sync_task = waiter
         try:
-            # 等待进程完成
-            await self._sync_task
-            exit_code = self.sync_process.exitcode
-            if exit_code == 0:
-                logger.info("同步任务完成成功")
-                return True
-            else:
-                logger.error(f"同步任务失败，进程退出码: {exit_code}")
-                return False
-        except Exception as e:
-            logger.error(f"同步任务异常: {str(e)}")
-            self.stop_sync()
-            return False
+            await asyncio.shield(waiter)
+            self.upload_tracker.load()
+            return process.exitcode == 0
+        except asyncio.CancelledError:
+            await asyncio.to_thread(self.stop_sync, process)
+            raise
+        finally:
+            if self._sync_task is waiter:
+                self._sync_task = None
 
-    def stop_sync(self):
-        """停止当前正在运行的同步任务"""
-        if self.sync_process and self.sync_process.is_alive():
-            self.sync_process.terminate()
-            self.sync_process.join(timeout=5)
-            if self.sync_process.is_alive():
-                self.sync_process.kill()
-            self.sync_process = None
-        if self._sync_task and not self._sync_task.done():
-            self._sync_task.cancel()
-            self._sync_task = None
+    def stop_sync(self, expected_process=None) -> None:
+        """Request cooperative cancellation, then reap an unresponsive worker.
+
+        Args:
+            expected_process: Optional captured worker; an old waiter must not
+                cancel a newer task that has already started.
+        """
+        with self._process_lock:
+            process = self.sync_process
+            if expected_process is not None and process is not expected_process:
+                return
+            if self._cancel_event:
+                self._cancel_event.set()
+            if process is not None and process.is_alive():
+                process.join(timeout=2)
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=2)
+                if process.is_alive():
+                    process.kill()
+                    process.join(timeout=2)
+            if process is not None and not process.is_alive():
+                self.get_task_status()
+                self.sync_process = None
 
     def upload_to_remote(self) -> multiprocessing.Process:
-        """
-        在独立进程中将本地新文件上传到远程
+        """Start an incremental upload task.
 
         Returns:
-            同步进程对象
+            The guarded worker process.
         """
-        # 总是返回进程对象，让进程内部处理是否需要同步
-        self.sync_process = self._start_sync_process("upload")
-        return self.sync_process
+        return self._start_sync_process("upload")
 
     def download_to_local(self) -> multiprocessing.Process:
-        """
-        在独立进程中将远程新文件下载到本地
+        """Start an incremental download task.
 
         Returns:
-            同步进程对象
+            The guarded worker process.
         """
-        # 总是返回进程对象，让进程内部处理是否需要同步
-        self.sync_process = self._start_sync_process("download")
-        return self.sync_process
+        return self._start_sync_process("download")
 
     def sync_all(self) -> bool:
-        """
-        执行完整的双向同步
-
-        先上传本地新文件，再下载远程新文件
+        """Merge nonconflicting changes using one inventory and one worker.
 
         Returns:
-            同步是否成功
+            Whether the operation succeeded.
         """
-        self.sync_process = self._start_sync_process("sync_all")
-        self.sync_process.join()
-        return self.sync_process.exitcode == 0
+        process = self._start_sync_process("sync_all")
+        process.join()
+        self.upload_tracker.load()
+        return process.exitcode == 0
 
-    def get_remote_files(self) -> list[dict[str, str]]:
-        """
-        获取远程文件列表
-
-        Returns:
-            远程文件信息列表:
-            [
-                {
-                    "filename": "1.jpg",
-                    "category": "cats",
-                    "url": "https://..."
-                }
-            ]
-        """
+    def get_remote_files(self) -> list[dict]:
+        """Return the complete remote image inventory."""
         return self.provider.get_image_list()
 
-    def delete_remote_file(self, filename: str) -> bool:
-        """
-        删除远程文件
+    def delete_remote_file(self, image_id: str) -> bool:
+        """Delete an opaque remote ID when no sync worker is running.
 
         Args:
-            filename: 要删除的文件名
+            image_id: Provider ID returned by the remote inventory.
 
         Returns:
-            删除是否成功
+            Whether deletion succeeded.
         """
-        return self.provider.delete_image(filename)
+        with self._process_lock:
+            if self.sync_process and self.sync_process.is_alive():
+                raise RuntimeError("已有同步任务正在运行，请等待完成后再试")
+            return self.provider.delete_image(image_id)
 
     def _start_sync_process(self, task: str) -> multiprocessing.Process:
-        """
-        在独立进程中运行同步任务
-        """
-        # 创建进程对象
-        process = multiprocessing.Process(
-            target=run_sync_process,
-            args=(self.config, str(self.local_dir), task, self.provider_type),
-        )
+        """Serialize all worker entry points, including WebUI and chat commands.
 
-        # 启动进程
-        process.start()
-        return process
+        Args:
+            task: Supported sync operation.
+
+        Returns:
+            Started worker process.
+
+        Raises:
+            ValueError: Unsupported operation.
+            RuntimeError: A task is already running.
+        """
+        if task not in SYNC_TASKS:
+            raise ValueError(f"Unsupported sync task: {task}")
+        with self._process_lock:
+            if self.sync_process and self.sync_process.is_alive():
+                raise RuntimeError("已有同步任务正在运行，请等待完成后再试")
+            if self.sync_process is not None:
+                self.sync_process.join(timeout=0)
+            self._task_id = uuid.uuid4().hex
+            self._last_progress = {
+                "task_id": self._task_id,
+                "task": task,
+                "phase": "starting",
+                "total": 0,
+                "processed": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "conflicts": 0,
+                "errors": [],
+                "current_file": "",
+            }
+            write_json_atomic(self._progress_path, self._last_progress)
+            context = multiprocessing.get_context("spawn")
+            self._cancel_event = context.Event()
+            process = context.Process(
+                target=run_sync_process,
+                args=(
+                    self.config,
+                    str(self.local_dir),
+                    task,
+                    self.provider_type,
+                    str(self._progress_path),
+                    self._task_id,
+                    self._cancel_event,
+                ),
+            )
+            process.start()
+            self.sync_process = process
+            return process
+
+    def get_task_status(self) -> dict:
+        """Read bounded progress and derive completion from the real process.
+
+        Returns:
+            Progress compatible with the WebUI task-status and SSE endpoints.
+        """
+        if self._task_id and not (
+            self.sync_process is None and self._last_progress.get("completed")
+        ):
+            try:
+                data = json.loads(self._progress_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data.get("task_id") == self._task_id:
+                    self._last_progress = data
+            except (ValueError, OSError):
+                pass
+        progress = dict(self._last_progress)
+        process = self.sync_process
+        running = process is not None and process.is_alive()
+        exit_code = (
+            process.exitcode if process is not None else progress.get("exit_code")
+        )
+        progress.update(
+            available=True,
+            running=running,
+            completed=not running,
+            pid=process.pid if process is not None else progress.get("pid"),
+            exit_code=exit_code,
+            success=None if running or exit_code is None else exit_code == 0,
+        )
+        if not running and process is not None:
+            process.join(timeout=0)
+            if exit_code != 0 and progress.get("phase") not in {"failed", "cancelled"}:
+                progress.update(
+                    phase="failed", message="Sync worker exited before completion"
+                )
+            if (
+                exit_code != 0
+                and self._cancel_event is not None
+                and self._cancel_event.is_set()
+            ):
+                progress.update(phase="cancelled", message="Sync cancelled")
+            self._last_progress = dict(progress)
+        progress.setdefault(
+            "message", "同步任务运行中" if running else "当前没有同步任务"
+        )
+        return progress
+
+    def close(self) -> None:
+        """Stop workers and release the provider's connection pools."""
+        self.stop_sync()
+        self.provider.close()
 
 
 def run_sync_process(
-    config: dict[str, str], local_dir: str, task: str, provider_type: str
+    config: dict,
+    local_dir: str,
+    task: str,
+    provider_type: str,
+    progress_path: str = "",
+    task_id: str = "",
+    cancel_event=None,
 ):
-    """Run a sync task in a separate process using the selected provider.
+    """Run one locked sync job and persist failures even when planning fails.
 
     Args:
-        config: The selected provider's configuration.
-        local_dir: The local image directory.
-        task: The upload, download, or sync_all operation to perform.
-        provider_type: The provider explicitly selected by the parent process.
+        config: Provider configuration.
+        local_dir: Local image library.
+        task: Sync operation.
+        provider_type: Explicit provider selection.
+        progress_path: Durable task-progress file.
+        task_id: Parent-generated task identifier.
+        cancel_event: Cooperative cancellation signal.
     """
+    sync = None
+    lock_stream = None
+    success = False
     try:
-        logger.info(f"启动同步进程，任务类型: {task}, 本地目录: {local_dir}")
-
-        if provider_type not in {"cloudflare_r2", "stardots", "webdav"}:
-            logger.error("Unsupported sync provider: %s", provider_type)
-            sys.exit(1)
-
+        if task not in SYNC_TASKS:
+            raise ValueError(f"Unsupported sync task: {task}")
         sync = ImageSync(config, local_dir, provider_type)
+        lock_path = sync._state_dir / "worker.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_stream = lock_path.open("a+b")
+        if lock_path.stat().st_size == 0:
+            lock_stream.write(b"0")
+            lock_stream.flush()
+        lock_stream.seek(0)
+        if os.name == "nt":
+            import msvcrt
 
-        if task == "upload":
-            logger.info("开始上传任务")
-            success = sync.sync_manager.sync_to_remote()
-            logger.info(f"上传任务完成，成功: {success}")
-            sys.exit(0 if success else 1)
-        elif task == "download":
-            logger.info("开始下载任务")
-            success = sync.sync_manager.sync_from_remote()
-            logger.info(f"下载任务完成，成功: {success}")
-            sys.exit(0 if success else 1)
-        elif task == "sync_all":
-            logger.info("开始完整同步任务")
-            upload_success = sync.sync_manager.sync_to_remote()
-            download_success = sync.sync_manager.sync_from_remote()
-            logger.info(
-                f"完整同步完成，上传成功: {upload_success}, 下载成功: {download_success}"
-            )
-            sys.exit(0 if upload_success and download_success else 1)
-        elif task == "overwrite_to_remote":
-            logger.info("开始覆盖到云端任务")
-            success = sync.sync_manager.overwrite_to_remote()
-            logger.info(f"覆盖到云端完成，成功: {success}")
-            sys.exit(0 if success else 1)
-        elif task == "overwrite_from_remote":
-            logger.info("开始从云端覆盖任务")
-            success = sync.sync_manager.overwrite_from_remote()
-            logger.info(f"从云端覆盖完成，成功: {success}")
-            sys.exit(0 if success else 1)
+            msvcrt.locking(lock_stream.fileno(), msvcrt.LK_NBLCK, 1)
         else:
-            logger.error(f"未知的任务类型: {task}")
-            sys.exit(1)
-    except Exception as e:
-        logger.exception(f"同步进程发生异常: {str(e)}")
-        sys.exit(1)
+            import fcntl
+
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        if progress_path:
+
+            def publish(progress: dict) -> None:
+                """Write worker progress for the parent's active task.
+
+                Args:
+                    progress: Current sync execution counters and errors.
+                """
+                write_json_atomic(
+                    Path(progress_path), {**progress, "task_id": task_id, "task": task}
+                )
+
+            sync.sync_manager.progress_callback = publish
+        if cancel_event is not None:
+            sync.sync_manager.cancel_requested = cancel_event.is_set
+        success = sync.sync_manager.run(task)
+    except Exception as exc:
+        logger.warning("Image sync worker failed: %s", exc)
+        if progress_path:
+            write_json_atomic(
+                Path(progress_path),
+                {
+                    "task_id": task_id,
+                    "task": task,
+                    "phase": "failed",
+                    "success": False,
+                    "message": str(exc),
+                },
+            )
+    finally:
+        if lock_stream is not None:
+            lock_stream.close()
+        if sync is not None:
+            sync.provider.close()
+    raise SystemExit(0 if success else 1)

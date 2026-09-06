@@ -518,6 +518,16 @@
   background: rgba(37, 99, 235, 0.08);
   color: #1d4ed8;
   line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+#img-host-conflict-files {
+  max-height: 180px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .sync-progress-success {

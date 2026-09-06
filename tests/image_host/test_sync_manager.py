@@ -1,342 +1,370 @@
-import tempfile
-import unittest
-from pathlib import Path
-from unittest.mock import patch
+import hashlib
+import os
 
 import pytest
-from image_host.core.file_handler import FileHandler
+from image_host.core.file_handler import (
+    FileHandler,
+    file_fingerprint,
+    save_image_stream,
+)
 from image_host.core.sync_manager import SyncManager
 from image_host.core.upload_tracker import UploadTracker
-from image_host.providers import stardots_provider
 
 
-class FakeImageHost:
-    def __init__(self):
-        self.deleted_ids = []
-
-    def upload_image(self, file_path):
-        raise OSError(f"无法上传 {file_path.name}")
-
-    def download_image(self, image_info, save_path):
-        return False
-
-    def delete_image(self, image_id):
-        self.deleted_ids.append(image_id)
-        return True
+@pytest.fixture
+def manager(tmp_path, host):
+    return SyncManager(
+        host, tmp_path, UploadTracker(tmp_path / ".sync-state/tracker.json")
+    )
 
 
-class SyncFailureReportingTests(unittest.TestCase):
-    def test_upload_failure_makes_sync_fail(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            image_path = Path(temp_dir) / "failed.png"
-            image_path.write_bytes(b"image")
-            manager = SyncManager(FakeImageHost(), Path(temp_dir))
-            manager.check_sync_status = lambda: {
-                "is_synced": False,
-                "to_upload": [
-                    {
-                        "path": str(image_path),
-                        "filename": image_path.name,
-                        "category": "",
-                    }
-                ],
-            }
-
-            self.assertFalse(manager.sync_to_remote())
-
-    def test_download_failure_makes_sync_fail(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = SyncManager(FakeImageHost(), Path(temp_dir))
-            manager.check_sync_status = lambda: {
-                "is_synced": False,
-                "to_download": [
-                    {
-                        "id": "happy/failed.png",
-                        "filename": "failed.png",
-                        "category": "happy",
-                    }
-                ],
-            }
-
-            self.assertFalse(manager.sync_from_remote())
-
-    def test_overwrite_to_remote_does_not_delete_after_upload_failure(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            image_host = FakeImageHost()
-            manager = SyncManager(image_host, Path(temp_dir))
-            manager.check_sync_status = lambda: {
-                "to_delete_remote": [{"id": "remote.png", "filename": "remote.png"}]
-            }
-            manager.sync_to_remote = lambda: False
-
-            self.assertFalse(manager.overwrite_to_remote())
-            self.assertEqual(image_host.deleted_ids, [])
-
-    def test_overwrite_from_remote_does_not_delete_after_download_failure(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            local_path = Path(temp_dir) / "local.png"
-            local_path.write_bytes(b"image")
-            manager = SyncManager(FakeImageHost(), Path(temp_dir))
-            manager.check_sync_status = lambda: {
-                "to_delete_local": [
-                    {
-                        "path": str(local_path),
-                        "filename": local_path.name,
-                        "category": "",
-                    }
-                ]
-            }
-            manager.sync_from_remote = lambda: False
-
-            self.assertFalse(manager.overwrite_from_remote())
-            self.assertTrue(local_path.exists())
+def test_scan_preserves_nested_categories_and_hashes_content(tmp_path, make_image):
+    path = make_image("animals/cats/meme.PNG")
+    (tmp_path / "ignored.txt").write_text("ignored")
+    images = FileHandler(tmp_path).scan_local_images()
+    assert len(images) == 1
+    assert images[0]["id"] == "animals/cats/meme.PNG"
+    assert images[0]["category"] == "animals/cats"
+    assert images[0]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-class StarDotsFilenameRegressionTests(unittest.TestCase):
-    def test_download_uses_the_same_category_encoding_as_upload(self):
-        class TicketResponse:
-            status_code = 200
-
-            @staticmethod
-            def json():
-                return {"success": True, "data": {"ticket": "ticket-value"}}
-
-        class DownloadResponse:
-            status_code = 200
-            headers = {"Content-Type": "image/png", "Content-Length": "1001"}
-            text = ""
-
-            @staticmethod
-            def iter_content(chunk_size):
-                yield b"x" * 1001
-
-        cases = (
-            ("", "meme.png"),
-            ("default", "default@@CAT@@meme.png"),
-            ("animals/cats", "animals@@DIR@@cats@@CAT@@meme.png"),
-        )
-        for category, expected_remote_name in cases:
-            with (
-                self.subTest(category=category),
-                tempfile.TemporaryDirectory() as temp_dir,
-            ):
-                provider = object.__new__(stardots_provider.StarDotsProvider)
-                provider.space = "test-space"
-                provider.base_url = "https://api.stardots.io"
-                provider._sync_server_time = lambda: None
-                provider._generate_headers = lambda: {}
-                requested_filenames = []
-
-                def make_request(method, url, **kwargs):
-                    requested_filenames.append(kwargs["json"]["filename"])
-                    return TicketResponse()
-
-                provider._make_request = make_request
-                save_path = Path(temp_dir) / "meme.png"
-
-                with patch.object(
-                    stardots_provider.requests,
-                    "get",
-                    return_value=DownloadResponse(),
-                ):
-                    downloaded = provider.download_image(
-                        {"category": category, "filename": "meme.png"}, save_path
-                    )
-
-                self.assertTrue(downloaded)
-                self.assertEqual(requested_filenames, [expected_remote_name])
-                self.assertEqual(save_path.stat().st_size, 1001)
+def test_same_size_edit_with_restored_timestamp_is_uploaded(
+    manager, host, make_image, image_bytes
+):
+    path = make_image()
+    assert manager.sync_to_remote()
+    previous = path.stat()
+    path.write_bytes(image_bytes(96))
+    assert path.stat().st_size == previous.st_size
+    os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+    status = manager.check_sync_status()
+    assert [image["id"] for image in status["to_upload"]] == ["happy/meme.png"]
+    assert not status["conflicts"]
+    assert manager.sync_to_remote()
+    assert host.objects["happy/meme.png"] == path.read_bytes()
+    assert manager.check_sync_status()["is_synced"]
 
 
-class SyncStatusTests(unittest.TestCase):
-    def test_file_handler_scans_supported_images_with_relative_categories(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            (root / "animals" / "cats").mkdir(parents=True)
-            (root / "animals" / "cats" / "meme.PNG").write_bytes(b"image")
-            (root / "ignore.txt").write_bytes(b"ignore")
-            images = FileHandler(root).scan_local_images()
-            self.assertEqual(
-                images,
-                [
-                    {
-                        "path": str(root / "animals" / "cats" / "meme.PNG"),
-                        "id": "animals/cats/meme.PNG",
-                        "filename": "meme.PNG",
-                        "category": "animals/cats",
-                    }
-                ],
-            )
+def test_new_tracker_does_not_blindly_overwrite_existing_remote(
+    manager, host, make_image, image_bytes
+):
+    path = make_image()
+    host.objects["happy/meme.png"] = image_bytes(96)
+    status = manager.check_sync_status()
+    assert status["to_upload"] == []
+    assert status["conflicts"] == [
+        {"relative_path": "happy/meme.png", "reason": "unverified"}
+    ]
+    assert not manager.sync_to_remote()
+    assert host.calls == []
+    assert path.read_bytes() != host.objects["happy/meme.png"]
 
-    def test_remote_id_normalization_supports_all_providers(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = SyncManager(FakeImageHost(), Path(temp_dir))
-            self.assertEqual(
-                manager._normalize_remote_id("/memes/happy/meme.png", "cloudflare_r2"),
-                "happy/meme.png",
-            )
-            manager.image_host.config = {"base_path": "remote/memes"}
-            self.assertEqual(
-                manager._normalize_remote_id("remote/memes/happy/meme.png", "webdav"),
-                "happy/meme.png",
-            )
-            self.assertEqual(
-                manager._normalize_remote_id(
-                    "animals@@DIR@@cats@@CAT@@meme.png", "stardots"
-                ),
-                "animals/cats/meme.png",
-            )
-            self.assertEqual(
-                manager._normalize_remote_id("@@CAT@@meme.png", "unknown"),
-                "meme.png",
-            )
 
-    def test_sync_status_classifies_local_and_remote_differences(self):
-        class ListedImageHost(FakeImageHost):
-            config = {"provider": "cloudflare_r2"}
+def test_remote_checksum_proves_equality_without_tracker(manager, host, make_image):
+    path = make_image()
+    host.objects["happy/meme.png"] = path.read_bytes()
+    host.expose_checksum = True
+    assert manager.check_sync_status()["is_synced"]
+    assert manager.sync_to_remote()
+    assert host.calls == []
 
-            @staticmethod
-            def get_image_list():
-                return [
-                    {
-                        "id": "memes/common.png",
-                        "filename": "common.png",
-                        "category": "",
-                        "size": "6",
-                    },
-                    {
-                        "id": "memes/remote.png",
-                        "filename": "remote.png",
-                        "category": "",
-                        "fileSize": 10,
-                    },
-                ]
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            (root / "common.png").write_bytes(b"common")
-            (root / "local.png").write_bytes(b"only")
-            manager = SyncManager(ListedImageHost(), root)
-            status = manager.check_sync_status()
-            self.assertEqual(
-                [item["filename"] for item in status["to_upload"]], ["local.png"]
-            )
-            self.assertEqual(
-                [item["filename"] for item in status["to_download"]], ["remote.png"]
-            )
-            self.assertEqual(status["to_delete_remote"], status["to_download"])
-            self.assertEqual(
-                [item["filename"] for item in status["to_delete_local"]],
-                ["local.png"],
-            )
-            self.assertFalse(status["is_synced"])
-            self.assertEqual(status["remote_image_count"], 2)
-            self.assertEqual(status["remote_total_bytes"], 16)
-            self.assertEqual(status["local_total_bytes"], 10)
+def test_legacy_filename_record_is_not_content_proof(manager, host, make_image):
+    path = make_image()
+    host.objects["happy/meme.png"] = path.read_bytes()
+    manager.upload_tracker.uploaded_files = {
+        "happy/meme.png": {"file_size": path.stat().st_size}
+    }
+    manager.upload_tracker.save()
+    assert manager.check_sync_status()["conflict_count"] == 1
 
-    def test_sync_status_uses_tracker_and_estimates_missing_remote_sizes(self):
-        class ListedImageHost(FakeImageHost):
-            config = {"provider": "webdav"}
 
-            @staticmethod
-            def get_image_list():
-                return [
-                    {
-                        "id": "common.png",
-                        "filename": "common.png",
-                        "category": "",
-                    }
-                ]
+def test_remote_edit_downloads_and_refreshes_baseline(
+    manager, host, make_image, image_bytes
+):
+    path = make_image()
+    assert manager.sync_to_remote()
+    host.objects["happy/meme.png"] = image_bytes(96)
+    assert (
+        manager.check_sync_status()["to_download"][0]["relative_path"]
+        == "happy/meme.png"
+    )
+    assert manager.sync_from_remote()
+    assert path.read_bytes() == host.objects["happy/meme.png"]
+    assert manager.upload_tracker.is_uploaded(path, "happy")
+    assert manager.check_sync_status()["is_synced"]
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            image_path = root / "common.png"
-            image_path.write_bytes(b"common")
-            tracker = UploadTracker(root / ".tracker.json")
-            manager = SyncManager(ListedImageHost(), root, tracker)
-            status = manager.check_sync_status()
-            self.assertEqual(status["to_upload"][0]["filename"], "common.png")
-            self.assertEqual(status["remote_size_source"], "local_estimate")
-            self.assertEqual(status["remote_total_bytes_estimated"], 6)
 
-    def test_sync_success_uploads_downloads_and_updates_tracker(self):
-        class SuccessfulImageHost(FakeImageHost):
-            def __init__(self):
-                super().__init__()
-                self.uploaded = []
+def test_both_sides_changed_remain_conflicted(manager, host, make_image, image_bytes):
+    path = make_image()
+    assert manager.sync_to_remote()
+    path.write_bytes(image_bytes(96))
+    host.objects["happy/meme.png"] = image_bytes(128)
+    status = manager.check_sync_status()
+    assert status["conflicts"][0]["reason"] == "both_changed"
+    assert not manager.run("sync_all")
+    assert path.read_bytes() == image_bytes(96)
+    assert host.objects["happy/meme.png"] == image_bytes(128)
 
-            def upload_image(self, file_path):
-                self.uploaded.append(file_path.name)
-                return {"url": f"https://example/{file_path.name}"}
 
-            def download_image(self, image_info, save_path):
-                save_path.write_bytes(b"downloaded")
-                return True
+@pytest.mark.parametrize("direction", ["remote", "local"])
+def test_mirror_replaces_same_name_content_and_cleans_only_extras(
+    manager, host, make_image, image_bytes, tmp_path, direction
+):
+    common = make_image()
+    extra = make_image("local.png")
+    host.objects = {"happy/meme.png": image_bytes(96), "remote.png": image_bytes(128)}
+    local_content = common.read_bytes()
+    if direction == "remote":
+        assert manager.overwrite_to_remote()
+        assert host.objects == {
+            "happy/meme.png": local_content,
+            "local.png": extra.read_bytes(),
+        }
+        assert ("delete", "opaque:remote.png") in host.calls
+    else:
+        assert manager.overwrite_from_remote()
+        assert common.read_bytes() == image_bytes(96)
+        assert (tmp_path / "remote.png").read_bytes() == image_bytes(128)
+        assert not extra.exists()
+    assert manager.check_sync_status()["is_synced"]
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            upload_path = root / "upload.png"
-            upload_path.write_bytes(b"upload")
-            tracker = UploadTracker(root / ".tracker.json")
-            image_host = SuccessfulImageHost()
-            manager = SyncManager(image_host, root, tracker)
-            manager.check_sync_status = lambda: {
-                "is_synced": False,
-                "to_upload": [
-                    {
-                        "path": str(upload_path),
-                        "filename": upload_path.name,
-                        "category": "",
-                    }
-                ],
-            }
-            self.assertTrue(manager.sync_to_remote())
-            self.assertEqual(image_host.uploaded, ["upload.png"])
-            self.assertTrue(tracker.is_uploaded(upload_path))
 
-            manager.check_sync_status = lambda: {
-                "is_synced": False,
-                "to_download": [
-                    {
-                        "id": "happy/download.png",
-                        "filename": "download.png",
-                        "category": "happy",
-                    }
-                ],
-            }
-            self.assertTrue(manager.sync_from_remote())
-            self.assertEqual(
-                (root / "happy" / "download.png").read_bytes(), b"downloaded"
-            )
+@pytest.mark.parametrize("direction", ["remote", "local"])
+def test_failed_transfer_preserves_destination_extras(
+    manager, host, make_image, image_bytes, direction
+):
+    path = make_image()
+    host.objects["remote.png"] = image_bytes(96)
+    host.fail_upload = host.fail_download = True
+    operation = (
+        manager.overwrite_to_remote
+        if direction == "remote"
+        else manager.overwrite_from_remote
+    )
+    assert not operation()
+    assert path.exists()
+    assert "remote.png" in host.objects
+    assert not any(action == "delete" for action, _ in host.calls)
 
-    def test_overwrite_reports_delete_failures(self):
-        class FailedDeleteHost(FakeImageHost):
-            def delete_image(self, image_id):
-                return False
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = SyncManager(FailedDeleteHost(), Path(temp_dir))
-            manager.check_sync_status = lambda: {
-                "to_delete_remote": [{"id": "remote.png", "filename": "remote.png"}]
-            }
-            manager.sync_to_remote = lambda: True
-            self.assertFalse(manager.overwrite_to_remote())
+def test_incomplete_initial_listing_never_mutates_either_side(
+    manager, host, make_image
+):
+    make_image()
+    host.fail_list_at = 1
+    assert not manager.overwrite_from_remote()
+    assert host.calls == []
+    assert manager.progress["phase"] == "failed"
+
+
+def test_failed_verification_listing_prevents_cleanup(
+    manager, host, make_image, image_bytes
+):
+    make_image()
+    host.objects["remote.png"] = image_bytes(96)
+    host.fail_list_at = 2
+    assert not manager.overwrite_to_remote()
+    assert "remote.png" in host.objects
+    assert not any(action == "delete" for action, _ in host.calls)
+
+
+def test_source_edit_during_transfer_prevents_mirror_cleanup(
+    manager, host, make_image, image_bytes
+):
+    make_image()
+    host.objects["remote.png"] = image_bytes(96)
+    host.after_upload = lambda: make_image("new.png")
+    assert not manager.overwrite_to_remote()
+    assert "remote.png" in host.objects
+
+
+def test_partial_download_never_replaces_existing_image(
+    manager, host, make_image, image_bytes, tmp_path
+):
+    path = make_image()
+    before = path.read_bytes()
+    host.objects["happy/meme.png"] = image_bytes(96)
+    host.fail_download = True
+    assert not manager.overwrite_from_remote()
+    assert path.read_bytes() == before
+    assert not list(tmp_path.rglob("*.tmp"))
+
+
+def test_edit_during_download_is_retained(manager, host, make_image, image_bytes):
+    path = make_image()
+    host.objects["happy/meme.png"] = image_bytes(96)
+    host.after_download = lambda: path.write_bytes(image_bytes(128))
+    assert not manager.overwrite_from_remote()
+    assert path.read_bytes() == image_bytes(128)
+
+
+def test_changed_upload_is_not_recorded(manager, host, make_image, image_bytes):
+    path = make_image()
+    host.after_upload = lambda: path.write_bytes(image_bytes(128))
+    assert not manager.sync_to_remote()
+    assert manager.upload_tracker.get_uploaded_count() == 0
+
+
+def test_union_uses_one_inventory_and_retains_extras(
+    manager, host, make_image, image_bytes, tmp_path
+):
+    make_image("local.png")
+    host.objects["remote.png"] = image_bytes(96)
+    assert manager.run("sync_all")
+    assert host.list_calls == 1
+    assert (tmp_path / "remote.png").exists()
+    assert set(host.objects) == {"local.png", "remote.png"}
+
+
+def test_cancellation_preserves_completed_work_and_reports_counts(
+    manager, host, make_image
+):
+    make_image("first.png")
+    make_image("second.png")
+    manager.cancel_requested = lambda: manager.progress.get("succeeded", 0) >= 1
+    assert not manager.sync_to_remote()
+    assert manager.progress["phase"] == "cancelled"
+    assert manager.progress["succeeded"] == 1
+    assert len(host.objects) == 1
+
+
+def test_progress_is_real_and_failed_files_are_identified(manager, host, make_image):
+    make_image()
+    host.fail_upload = True
+    snapshots = []
+    manager.progress_callback = lambda data: snapshots.append(dict(data))
+    assert not manager.sync_to_remote()
+    assert snapshots[-1]["total"] == 1
+    assert snapshots[-1]["processed"] == 1
+    assert snapshots[-1]["failed"] == 1
+    assert snapshots[-1]["errors"][0]["path"] == "happy/meme.png"
 
 
 @pytest.mark.parametrize(
-    ("image_info", "expected"),
+    "relative",
+    [
+        "../escape.png",
+        "C:/escape.png",
+        "safe/../escape.png",
+        "name.png:stream",
+        "CON.png",
+        "unsafe./file.png",
+        ".sync-state/file.png",
+        ".SYNC-STATE/file.png",
+    ],
+)
+def test_unsafe_remote_paths_fail_before_any_transfer(
+    manager, host, image_bytes, relative
+):
+    host.objects[relative] = image_bytes()
+    assert not manager.overwrite_from_remote()
+    assert host.calls == []
+
+
+def test_duplicate_remote_paths_fail_closed(manager, host, image_bytes):
+    host.objects["happy/meme.png"] = image_bytes()
+    info = host.metadata("happy/meme.png")
+    host.get_image_list = lambda: [info, {**info, "id": "other-object"}]
+    with pytest.raises(ValueError, match="Duplicate"):
+        manager.check_sync_status()
+
+
+def test_legitimate_memes_category_is_not_stripped(manager, host, make_image):
+    path = make_image("memes/happy/meme.png")
+    host.objects["memes/happy/meme.png"] = path.read_bytes()
+    host.expose_checksum = True
+    assert manager.check_sync_status()["is_synced"]
+
+
+def test_case_alias_between_local_and_remote_is_rejected(manager, host, make_image):
+    path = make_image("meme.png")
+    host.objects["Meme.png"] = path.read_bytes()
+    with pytest.raises(ValueError, match="casing"):
+        manager.check_sync_status()
+
+
+def test_small_valid_image_is_accepted_by_atomic_writer(tmp_path, image_bytes):
+    data = image_bytes()
+    assert len(data) < 1000
+    target = tmp_path / "meme.png"
+    save_image_stream([data], target, len(data))
+    assert target.read_bytes() == data
+
+
+@pytest.mark.parametrize("damage", ["truncated", "html", "checksum", "stream_error"])
+def test_atomic_writer_retains_existing_image_on_failure(tmp_path, image_bytes, damage):
+    target = tmp_path / "meme.png"
+    original = image_bytes()
+    target.write_bytes(original)
+    data = image_bytes(96)
+
+    def chunks():
+        yield data[:5]
+        raise OSError("connection lost")
+
+    values = (
+        chunks()
+        if damage == "stream_error"
+        else [
+            data[:-3]
+            if damage == "truncated"
+            else b"<html>error</html>"
+            if damage == "html"
+            else data
+        ]
+    )
+    with pytest.raises((ValueError, OSError)):
+        save_image_stream(
+            values,
+            target,
+            len(data) if damage == "truncated" else None,
+            "incorrect" if damage == "checksum" else "",
+        )
+    assert target.read_bytes() == original
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_fingerprint_is_content_based(make_image):
+    path = make_image()
+    assert (
+        file_fingerprint(path)["sha256"]
+        == hashlib.sha256(path.read_bytes()).hexdigest()
+    )
+
+
+def test_remote_size_statistics_are_exact_when_available(manager, host, image_bytes):
+    host.objects["remote.png"] = image_bytes()
+    status = manager.check_sync_status()
+    assert status["remote_total_bytes"] == len(image_bytes())
+    assert status["remote_size_source"] == "exact"
+
+
+@pytest.mark.parametrize(
+    ("info", "expected"),
     [
         ({"size": 12}, 12),
         ({"file_size": 3.8}, 3),
         ({"bytes": "9"}, 9),
-        ({"length": "bad"}, None),
-        ({}, None),
+        ({"size": -1}, None),
+        ({"size": "unknown"}, None),
     ],
 )
-def test_extract_remote_size(image_info, expected):
-    manager = object.__new__(SyncManager)
-    assert manager._extract_remote_size(image_info) == expected
+def test_extract_remote_size(info, expected):
+    assert SyncManager._extract_remote_size(info) == expected
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_remote_root_disappearing_before_cleanup_preserves_local(
+    manager, host, make_image
+):
+    local = make_image()
+    inventories = iter([True, False])
+
+    def list_images():
+        host.listing_exists = next(inventories)
+        return []
+
+    host.get_image_list = list_images
+    assert not manager.overwrite_from_remote()
+    assert local.is_file()
+    assert "disappeared" in manager.progress["message"]

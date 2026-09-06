@@ -1,4 +1,4 @@
-"""图床提供者模块"""
+"""Storage adapters available to the image synchronization client."""
 
 from .cloudflare_r2_provider import CloudflareR2Provider
 from .provider_template import ProviderTemplate as ImageHostProvider

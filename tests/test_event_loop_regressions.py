@@ -3,6 +3,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from backend.semantic.task import SemanticTaskManager
 from image_host.img_sync import ImageSync
@@ -64,7 +65,7 @@ class EventLoopBlockingTests(unittest.IsolatedAsyncioTestCase):
             await task
         self.assertFalse(lock.locked())
 
-    async def test_sync_status_check_runs_outside_event_loop_thread(self):
+    async def test_sync_worker_wait_runs_outside_event_loop_thread(self):
         client = object.__new__(ImageSync)
         client.sync_process = None
         client._sync_task = None
@@ -72,13 +73,13 @@ class EventLoopBlockingTests(unittest.IsolatedAsyncioTestCase):
         status_thread = None
         loop_progressed = False
 
-        def check_status():
+        def join():
             nonlocal status_thread
             status_thread = threading.get_ident()
             time.sleep(0.05)
-            return {"to_upload": [], "to_download": []}
 
-        client.check_status = check_status
+        client._start_sync_process = lambda task: SimpleNamespace(join=join, exitcode=0)
+        client.upload_tracker = SimpleNamespace(load=lambda: None)
 
         async def heartbeat():
             nonlocal loop_progressed
@@ -122,6 +123,7 @@ class FullSyncSequenceTests(unittest.TestCase):
 
         client = object.__new__(ImageSync)
         process = FakeProcess()
+        client.upload_tracker = SimpleNamespace(load=lambda: None)
         started_tasks = []
 
         def start_sync_process(task):
@@ -144,6 +146,7 @@ class FullSyncSequenceTests(unittest.TestCase):
 
         client = object.__new__(ImageSync)
         client._start_sync_process = lambda task: FakeProcess()
+        client.upload_tracker = SimpleNamespace(load=lambda: None)
 
         self.assertFalse(client.sync_all())
 

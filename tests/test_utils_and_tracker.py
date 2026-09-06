@@ -117,14 +117,15 @@ def test_upload_tracker_persists_marks_removals_and_clear(tmp_path):
     assert tracker.is_uploaded(image_path, "happy")
     assert tracker.get_uploaded_count() == 1
     saved = json.loads(tracker_path.read_text(encoding="utf-8"))
-    assert saved[str(Path("happy") / "meme.png")]["file_size"] == 5
+    assert saved["happy/meme.png"]["file_size"] == 5
+    assert len(saved["happy/meme.png"]["sha256"]) == 64
 
     reloaded = UploadTracker(tracker_path)
     assert reloaded.is_uploaded(image_path, "happy")
     reloaded.remove_record(image_path, "happy")
     assert not reloaded.is_uploaded(image_path, "happy")
-    reloaded.mark_uploaded(tmp_path / "missing.png")
-    assert reloaded.uploaded_files["missing.png"]["file_size"] == 0
+    with pytest.raises(FileNotFoundError):
+        reloaded.mark_uploaded(tmp_path / "missing.png")
     reloaded.clear_record()
     assert reloaded.get_uploaded_count() == 0
 
@@ -136,12 +137,18 @@ def test_upload_tracker_recovers_from_corrupt_file(tmp_path):
     assert tracker.uploaded_files == {}
 
 
-def test_upload_tracker_swallows_save_errors(tmp_path, monkeypatch):
+def test_upload_tracker_preserves_previous_snapshot_on_save_failure(
+    tmp_path, monkeypatch
+):
     tracker = UploadTracker(tmp_path / "tracker.json")
+    tracker.uploaded_files = {"old.png": {"file_size": 5}}
+    tracker.save()
 
-    def fail_open(*args, **kwargs):
+    def fail_replace(*args, **kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr("builtins.open", fail_open)
+    monkeypatch.setattr(Path, "replace", fail_replace)
     tracker.uploaded_files = {"meme.png": {}}
-    tracker.save()
+    with pytest.raises(OSError):
+        tracker.save()
+    assert json.loads(tracker.tracker_file.read_text()) == {"old.png": {"file_size": 5}}
