@@ -1,307 +1,232 @@
+import asyncio
+import json
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
-from astrbot_plugin_meme_manager.image_host import img_sync as sync_module
-from astrbot_plugin_meme_manager.image_host.img_sync import ImageSync
+from image_host import img_sync as sync_module
+from image_host.core.file_handler import write_json_atomic
+from image_host.img_sync import ImageSync
 
 
-@pytest.mark.parametrize(
-    ("provider_type", "config", "expected"),
-    [
-        (
-            "stardots",
-            {"key": "key", "secret": "secret", "space": "space"},
-            {
-                "key": "key",
-                "secret": "secret",
-                "space": "space",
-                "local_dir": "images",
-            },
-        ),
-        ("cloudflare_r2", {"account_id": "account"}, {"account_id": "account"}),
-        (
-            "webdav",
-            {"url": "https://dav.example"},
-            {"url": "https://dav.example", "local_dir": "images"},
-        ),
-    ],
-)
-def test_init_selects_provider_and_wires_dependencies(
-    monkeypatch, provider_type, config, expected
-):
-    provider_calls = []
-    tracker_calls = []
-    manager_calls = []
-
-    def provider_factory(value):
-        provider_calls.append(value)
-        return "provider"
-
-    monkeypatch.setattr(sync_module, "StarDotsProvider", provider_factory)
-    monkeypatch.setattr(sync_module, "CloudflareR2Provider", provider_factory)
-    monkeypatch.setattr(sync_module, "WebDAVProvider", provider_factory)
-    monkeypatch.setattr(
-        sync_module,
-        "UploadTracker",
-        lambda path: tracker_calls.append(path) or "tracker",
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    provider = SimpleNamespace(
+        close=lambda: None,
+        get_image_list=lambda: [],
+        delete_image=lambda image_id: True,
     )
-    monkeypatch.setattr(
-        sync_module,
-        "SyncManager",
-        lambda **kwargs: manager_calls.append(kwargs) or "manager",
+    monkeypatch.setattr(sync_module, "WebDAVProvider", lambda config: provider)
+    return ImageSync(
+        {"url": "https://dav.example", "username": "user", "password": "secret"},
+        tmp_path,
+        "webdav",
     )
 
-    client = ImageSync(config, "images", provider_type)
-    assert provider_calls == [expected]
-    assert tracker_calls[0].name == ".upload_tracker.json"
-    assert manager_calls == [
-        {
-            "image_host": "provider",
-            "local_dir": client.local_dir,
-            "upload_tracker": "tracker",
-        }
-    ]
-    assert client.sync_process is None
-    assert client._sync_task is None
 
+@pytest.fixture
+def process_context(monkeypatch):
+    processes = []
 
-def test_init_rejects_unknown_provider(tmp_path):
-    with pytest.raises(ValueError):
-        ImageSync({}, tmp_path, "unknown")
-
-
-def make_client(status=None):
-    client = object.__new__(ImageSync)
-    client.config = {"key": "key"}
-    client.provider_type = "stardots"
-    client.local_dir = sync_module.Path("images")
-    client.provider = SimpleNamespace()
-    client.sync_manager = SimpleNamespace(
-        check_sync_status=lambda: status or {"to_upload": [], "to_download": []}
-    )
-    client.sync_process = None
-    client._sync_task = None
-    return client
-
-
-def test_status_and_remote_operations_delegate_to_collaborators():
-    status = {"to_upload": [{"filename": "a.png"}]}
-    client = make_client(status)
-    calls = []
-    client.provider = SimpleNamespace(
-        get_image_list=lambda: [{"filename": "remote.png"}],
-        delete_image=lambda filename: calls.append(filename) or True,
-    )
-    assert client.check_status() == status
-    assert client.get_remote_files() == [{"filename": "remote.png"}]
-    assert client.delete_remote_file("remote.png")
-    assert calls == ["remote.png"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("task", "status"),
-    [
-        ("upload", {"to_upload": []}),
-        ("download", {"to_download": []}),
-        ("overwrite_to_remote", {"to_upload": [], "to_delete_remote": []}),
-        (
-            "overwrite_from_remote",
-            {"to_download": [], "to_delete_local": []},
-        ),
-    ],
-)
-async def test_start_sync_skips_tasks_without_work(task, status):
-    client = make_client(status)
-    assert await client.start_sync(task)
-    assert client.sync_process is None
-
-
-@pytest.mark.asyncio
-async def test_start_sync_rejects_concurrent_process():
-    client = make_client()
-    client.sync_process = SimpleNamespace(is_alive=lambda: True)
-    with pytest.raises(RuntimeError):
-        await client.start_sync("upload")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("exitcode", "expected"), [(0, True), (2, False)])
-async def test_start_sync_waits_for_worker_exit(monkeypatch, exitcode, expected):
-    client = make_client({"to_upload": [{"filename": "a.png"}]})
-
-    class FakeProcess:
+    class Process:
         def __init__(self, target, args):
-            self.target = target
-            self.args = args
-            self.exitcode = exitcode
-            self.started = False
-            self.joined = False
+            self.target, self.args = target, args
+            self.pid = 123
+            self.exitcode = None
+            self.alive = False
+            self.terminated = False
+            self.killed = False
+            self.join_delay = 0
+            processes.append(self)
 
         def start(self):
-            self.started = True
-
-        def join(self):
-            self.joined = True
-
-        def is_alive(self):
-            return False
-
-    monkeypatch.setattr(sync_module.multiprocessing, "Process", FakeProcess)
-    assert await client.start_sync("upload") is expected
-    assert client.sync_process.started
-    assert client.sync_process.joined
-    assert client.sync_process.args[-1] == client.provider_type
-
-
-def test_stop_sync_terminates_stubborn_process_and_cancels_waiter():
-    class FakeProcess:
-        alive = True
-        terminated = False
-        killed = False
+            self.alive = True
 
         def is_alive(self):
             return self.alive
 
+        def join(self, timeout=None):
+            if timeout is None:
+                time.sleep(self.join_delay)
+                self.alive = False
+                self.exitcode = 0
+
         def terminate(self):
             self.terminated = True
-
-        def join(self, timeout=None):
-            return None
+            self.alive = False
+            self.exitcode = -15
 
         def kill(self):
             self.killed = True
             self.alive = False
+            self.exitcode = -9
 
-    class FakeTask:
-        cancelled = False
+    context = SimpleNamespace(Event=threading.Event, Process=Process)
+    monkeypatch.setattr(
+        sync_module.multiprocessing, "get_context", lambda method: context
+    )
+    return processes
 
-        def done(self):
-            return False
 
-        def cancel(self):
-            self.cancelled = True
+def test_all_providers_receive_local_root_without_network_probe(tmp_path, monkeypatch):
+    calls = []
 
-    client = make_client()
-    process = FakeProcess()
-    task = FakeTask()
-    client.sync_process = process
-    client._sync_task = task
+    def provider(config):
+        calls.append(config)
+        return SimpleNamespace(close=lambda: None)
+
+    for name in ("StarDotsProvider", "CloudflareR2Provider", "WebDAVProvider"):
+        monkeypatch.setattr(sync_module, name, provider)
+    for name in ("stardots", "cloudflare_r2", "webdav"):
+        sync = ImageSync({"list_cache_ttl": 33}, tmp_path, name)
+        assert calls[-1]["local_dir"] == str(tmp_path.resolve())
+        assert sync.sync_process is None
+        assert sync._state_dir == tmp_path / ".sync-state"
+
+
+def test_destination_scopes_change_for_storage_but_not_password_rotation(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(sync_module, "WebDAVProvider", lambda config: None)
+    base = {"url": "https://dav.example/root", "username": "user", "password": "one"}
+    first = ImageSync(base, tmp_path, "webdav")
+    rotated = ImageSync({**base, "password": "two", "timeout": 60}, tmp_path, "webdav")
+    other = ImageSync({**base, "base_path": "other"}, tmp_path, "webdav")
+    other_user = ImageSync({**base, "username": "someone"}, tmp_path, "webdav")
+    assert first.upload_tracker.tracker_file == rotated.upload_tracker.tracker_file
+    assert first.scope != other.scope != other_user.scope
+    assert "one" not in str(first.upload_tracker.tracker_file)
+
+
+@pytest.mark.parametrize(
+    "task",
+    ["upload", "download", "sync_all", "overwrite_to_remote", "overwrite_from_remote"],
+)
+def test_every_start_uses_guarded_worker(client, process_context, task):
+    process = client._start_sync_process(task)
+    assert process.target is sync_module.run_sync_process
+    assert process.args[2:4] == (task, "webdav")
+    assert process.is_alive()
+    assert client.get_task_status()["phase"] == "starting"
+    with pytest.raises(RuntimeError):
+        client._start_sync_process("download")
+    with pytest.raises(RuntimeError):
+        client.upload_to_remote()
+    with pytest.raises(RuntimeError):
+        client.delete_remote_file("a.png")
     client.stop_sync()
-    assert process.terminated
-    assert process.killed
-    assert task.cancelled
-    assert client.sync_process is None
+
+
+def test_invalid_task_and_provider_fail_before_start(client, tmp_path, process_context):
+    with pytest.raises(ValueError):
+        client._start_sync_process("unknown")
+    with pytest.raises(ValueError):
+        ImageSync({}, tmp_path, "unknown")
+    assert process_context == []
+
+
+@pytest.mark.asyncio
+async def test_async_wait_keeps_event_loop_responsive(
+    client, process_context, monkeypatch
+):
+    original = client._start_sync_process
+
+    def start(task):
+        process = original(task)
+        process.join_delay = 0.05
+        return process
+
+    monkeypatch.setattr(client, "_start_sync_process", start)
+    progressed = False
+
+    async def heartbeat():
+        nonlocal progressed
+        await asyncio.sleep(0.01)
+        progressed = True
+
+    success, _ = await asyncio.gather(client.start_sync("upload"), heartbeat())
+    assert success
+    assert progressed
     assert client._sync_task is None
 
 
-def test_upload_and_download_start_expected_worker():
-    client = make_client()
-    calls = []
-    client._start_sync_process = lambda task: calls.append(task) or f"process-{task}"
-    assert client.upload_to_remote() == "process-upload"
-    assert client.download_to_local() == "process-download"
-    assert calls == ["upload", "download"]
+@pytest.mark.asyncio
+async def test_concurrent_async_starts_cannot_race_preflight(client, process_context):
+    results = await asyncio.gather(
+        client.start_sync("upload"),
+        client.start_sync("download"),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(result, RuntimeError) for result in results) == 1
+    assert len(process_context) == 1
 
 
-def test_start_sync_process_constructs_and_starts_process(monkeypatch):
-    client = make_client()
+def test_progress_is_task_scoped_and_completion_uses_exit_code(client, process_context):
+    process = client.upload_to_remote()
+    write_json_atomic(client._progress_path, {"task_id": "old", "total": 999})
+    assert client.get_task_status()["total"] == 0
+    write_json_atomic(
+        client._progress_path,
+        {
+            "task_id": client._task_id,
+            "total": 3,
+            "processed": 2,
+            "phase": "upload",
+            "success": True,
+        },
+    )
+    assert client.get_task_status()["success"] is None
+    process.alive = False
+    process.exitcode = 1
+    status = client.get_task_status()
+    assert status["completed"]
+    assert status["success"] is False
+    assert status["processed"] == 2
+    assert status["phase"] == "failed"
 
-    class FakeProcess:
-        def __init__(self, target, args):
-            self.target = target
-            self.args = args
-            self.started = False
 
-        def start(self):
-            self.started = True
-
-    monkeypatch.setattr(sync_module.multiprocessing, "Process", FakeProcess)
-    process = client._start_sync_process("download")
-    assert process.target is sync_module.run_sync_process
-    assert process.args == (client.config, "images", "download", client.provider_type)
-    assert process.started
+def test_stop_requests_cancellation_and_reaps_worker(client, process_context):
+    process = client.upload_to_remote()
+    client.stop_sync()
+    assert client._cancel_event.is_set()
+    assert process.terminated
+    assert client.sync_process is None
+    assert client.get_task_status()["phase"] == "cancelled"
 
 
-@pytest.mark.parametrize(
-    ("config", "expected_type"),
-    [
-        ({"account_id": "a"}, "cloudflare_r2"),
-        ({"key": "k"}, "stardots"),
-        ({"url": "u"}, "webdav"),
-        ({"key": "k", "account_id": "a", "url": "u"}, "webdav"),
-    ],
-)
-def test_run_sync_process_uses_explicit_provider(monkeypatch, config, expected_type):
+def test_old_waiter_cannot_cancel_a_new_worker(client, process_context):
+    old = client.upload_to_remote()
+    old.alive = False
+    old.exitcode = 0
+    new = client.download_to_local()
+    client.stop_sync(old)
+    assert new.is_alive()
+    assert not client._cancel_event.is_set()
+    client.stop_sync()
+
+
+def test_worker_dispatches_through_one_plan_and_closes_provider(tmp_path, monkeypatch):
     calls = []
     sync = SimpleNamespace(
-        sync_manager=SimpleNamespace(
-            sync_to_remote=lambda: calls.append("upload") or True
+        _state_dir=tmp_path / ".sync-state",
+        provider=SimpleNamespace(close=lambda: calls.append("close")),
+        sync_manager=SimpleNamespace(run=lambda task: calls.append(task) or True),
+    )
+    monkeypatch.setattr(sync_module, "ImageSync", lambda *args: sync)
+    with pytest.raises(SystemExit) as result:
+        sync_module.run_sync_process({}, str(tmp_path), "sync_all", "webdav")
+    assert result.value.code == 0
+    assert calls == ["sync_all", "close"]
+
+
+def test_worker_persists_initialization_failure(tmp_path):
+    progress_path = tmp_path / "progress.json"
+    with pytest.raises(SystemExit) as result:
+        sync_module.run_sync_process(
+            {}, str(tmp_path), "upload", "unknown", str(progress_path), "task-id"
         )
-    )
-    monkeypatch.setattr(
-        sync_module,
-        "ImageSync",
-        lambda provider_config, local_dir, provider_type: (
-            calls.append((provider_config, local_dir, provider_type)) or sync
-        ),
-    )
-    with pytest.raises(SystemExit) as exc_info:
-        sync_module.run_sync_process(config, "images", "upload", expected_type)
-    assert exc_info.value.code == 0
-    assert calls == [(config, "images", expected_type), "upload"]
-
-
-@pytest.mark.parametrize(
-    ("task", "method", "success", "exitcode"),
-    [
-        ("upload", "sync_to_remote", False, 1),
-        ("download", "sync_from_remote", True, 0),
-        ("overwrite_to_remote", "overwrite_to_remote", True, 0),
-        ("overwrite_from_remote", "overwrite_from_remote", False, 1),
-    ],
-)
-def test_run_sync_process_dispatches_task(monkeypatch, task, method, success, exitcode):
-    calls = []
-    manager = SimpleNamespace(**{method: lambda: calls.append(method) or success})
-    monkeypatch.setattr(
-        sync_module,
-        "ImageSync",
-        lambda *args: SimpleNamespace(sync_manager=manager),
-    )
-    with pytest.raises(SystemExit) as exc_info:
-        sync_module.run_sync_process({"key": "key"}, "images", task, "stardots")
-    assert exc_info.value.code == exitcode
-    assert calls == [method]
-
-
-def test_run_sync_process_runs_full_sync_in_order(monkeypatch):
-    calls = []
-    manager = SimpleNamespace(
-        sync_to_remote=lambda: calls.append("upload") or True,
-        sync_from_remote=lambda: calls.append("download") or True,
-    )
-    monkeypatch.setattr(
-        sync_module,
-        "ImageSync",
-        lambda *args: SimpleNamespace(sync_manager=manager),
-    )
-    with pytest.raises(SystemExit) as exc_info:
-        sync_module.run_sync_process({"key": "key"}, "images", "sync_all", "stardots")
-    assert exc_info.value.code == 0
-    assert calls == ["upload", "download"]
-
-
-@pytest.mark.parametrize(
-    ("provider", "task"),
-    [("unknown", "upload"), ("stardots", "unknown")],
-)
-def test_run_sync_process_rejects_unknown_provider_or_task(monkeypatch, provider, task):
-    monkeypatch.setattr(
-        sync_module,
-        "ImageSync",
-        lambda *args: SimpleNamespace(sync_manager=SimpleNamespace()),
-    )
-    with pytest.raises(SystemExit) as exc_info:
-        sync_module.run_sync_process({"key": "key"}, "images", task, provider)
-    assert exc_info.value.code == 1
+    assert result.value.code == 1
+    status = json.loads(progress_path.read_text())
+    assert status["task_id"] == "task-id"
+    assert status["phase"] == "failed"

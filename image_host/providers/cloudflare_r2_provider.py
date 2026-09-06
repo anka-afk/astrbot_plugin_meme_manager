@@ -1,336 +1,226 @@
-import logging
+"""Cloudflare R2 storage with portable object paths and bounded S3 requests."""
+
 import mimetypes
-import time
 from pathlib import Path
-from typing import TypedDict
+from urllib.parse import quote
 
 import boto3
-import urllib3
 from botocore.config import Config
-from botocore.exceptions import ClientError
 
-from ..interfaces.image_host import ImageHostInterface
-
-logger = logging.getLogger(__name__)
+from ..core.file_handler import (
+    SUPPORTED_FORMATS,
+    file_fingerprint,
+    normalize_relative_path,
+    save_image_stream,
+)
+from ..interfaces.image_host import ImageHostInterface, ImageInfo
 
 
 class CloudflareR2Error(Exception):
-    """Cloudflare R2 相关错误的基类"""
-
-    pass
-
-
-class AuthenticationError(CloudflareR2Error):
-    """认证错误"""
-
-    pass
-
-
-class NetworkError(CloudflareR2Error):
-    """网络错误"""
-
-    pass
-
-
-class InvalidResponseError(CloudflareR2Error):
-    """响应格式错误"""
-
-    pass
-
-
-class ImageInfo(TypedDict):
-    url: str
-    id: str
-    filename: str
-    category: str
-    size: int
+    """R2 adapter error."""
 
 
 class CloudflareR2Provider(ImageHostInterface):
-    """Cloudflare R2图床提供者实现"""
+    """Preserve full paths relative to the selected local image library."""
 
-    def __init__(self, config: dict[str, str]):
-        """
-        初始化Cloudflare R2图床
-
-        Args:
-            config: {
-                'account_id': 'your_account_id',
-                'access_key_id': 'your_access_key_id',
-                'secret_access_key': 'your_secret_access_key',
-                'bucket_name': 'your_bucket_name',
-                'public_url': 'https://your-domain.com'  # 可选，CDN域名
-            }
-        """
-        required_fields = {
-            "account_id",
-            "access_key_id",
-            "secret_access_key",
-            "bucket_name",
-        }
-        missing_fields = required_fields - set(config.keys())
-        if missing_fields:
-            raise ValueError(f"Missing required config fields: {missing_fields}")
-
-        self.config = config
-        self.account_id = config["account_id"]
-        self.access_key_id = config["access_key_id"]
-        self.secret_access_key = config["secret_access_key"]
-        self.bucket_name = config["bucket_name"]
-        self.public_url = config.get("public_url")
-
-        logger.info(
-            f"初始化 Cloudflare R2 图床: account_id={self.account_id}, bucket={self.bucket_name}"
+    def __init__(self, config: dict):
+        required = {"account_id", "access_key_id", "secret_access_key", "bucket_name"}
+        missing = sorted(
+            field for field in required if not str(config.get(field) or "").strip()
         )
-        if self.public_url:
-            logger.info(f"使用自定义公共URL: {self.public_url}")
-        else:
-            logger.info(
-                f"使用R2.dev默认公共URL: https://{self.bucket_name}.{self.account_id}.r2.dev"
-            )
-
-        # 初始化S3客户端
-        endpoint_url = f"https://{self.account_id}.r2.cloudflarestorage.com"
-        logger.info(f"R2 S3端点: {endpoint_url}")
-
+        if missing:
+            raise ValueError(f"Missing R2 configuration: {', '.join(missing)}")
+        self.config = dict(config)
+        self.account_id = config["account_id"]
+        self.bucket_name = config["bucket_name"]
+        self.local_dir = Path(config["local_dir"]).resolve()
+        self.prefix = normalize_relative_path(
+            str(config.get("prefix") or "memes").strip("/")
+        )
+        self.public_url = str(config.get("public_url") or "").rstrip("/")
         self.s3_client = boto3.client(
             "s3",
-            endpoint_url=endpoint_url,
-            aws_access_key_id=self.access_key_id,
-            aws_secret_access_key=self.secret_access_key,
-            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+            endpoint_url=f"https://{self.account_id}.r2.cloudflarestorage.com",
+            aws_access_key_id=config["access_key_id"],
+            aws_secret_access_key=config["secret_access_key"],
+            region_name="auto",
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                connect_timeout=10,
+                read_timeout=60,
+                retries={"mode": "standard", "total_max_attempts": 3},
+            ),
         )
 
-        # 测试连接
-        try:
-            self.s3_client.head_bucket(Bucket=self.bucket_name)
-            logger.info(f"成功连接到R2存储桶: {self.bucket_name}")
-        except ClientError as e:
-            logger.error(f"无法访问R2存储桶 {self.bucket_name}: {e}")
-            raise
-
-        # 禁用SSL警告
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
     def upload_image(self, file_path: Path) -> ImageInfo:
-        """上传图片到Cloudflare R2"""
-        max_retries = 3
-        retry_delay = 2
+        """Stream an image to R2 with a content fingerprint.
 
-        for attempt in range(max_retries):
-            try:
-                # 获取文件信息
-                if not file_path.exists():
-                    raise FileNotFoundError(f"File not found: {file_path}")
+        Args:
+            file_path: Local image under the configured root.
 
-                mime_type, _ = mimetypes.guess_type(str(file_path))
-                if not mime_type:
-                    # 默认使用jpeg类型
-                    mime_type = "image/jpeg"
-
-                logger.debug(f"上传文件: {file_path}")
-                logger.info(f"开始上传: {file_path.name}")
-
-                # 生成S3键名（保持分类结构）
-                s3_key = self._generate_s3_key(file_path)
-                logger.info(f"生成的S3键名: {s3_key}")
-
-                # 读取文件内容
-                with open(file_path, "rb") as f:
-                    file_content = f.read()
-
-                logger.info(
-                    f"准备上传到存储桶 {self.bucket_name}, 文件大小: {len(file_content)} bytes"
-                )
-
-                # 上传到R2（Cloudflare R2不支持ACL，默认通过R2.dev或自定义域名公开访问）
-                self.s3_client.put_object(
-                    Bucket=self.bucket_name,
-                    Key=s3_key,
-                    Body=file_content,
-                    ContentType=mime_type,
-                )
-
-                logger.info(f"上传成功: {s3_key}")
-
-                # 获取公共URL
-                public_url = self._get_public_url(s3_key)
-
-                logger.info(f"上传成功 URL: {public_url}")
-                return {
-                    "url": public_url,
-                    "id": s3_key,
-                    "filename": file_path.name,
-                    "category": self._get_category_from_path(file_path),
-                }
-
-            except ClientError as e:
-                error_code = e.response["Error"]["Code"]
-                error_message = e.response["Error"]["Message"]
-                logger.error(f"AWS错误 ({error_code}): {error_message}")
-
-                if attempt < max_retries - 1:
-                    logger.warning(f"AWS错误，重试中: {error_message}")
-                    time.sleep(retry_delay)
-                    continue
-                raise CloudflareR2Error(f"AWS错误: {error_message}")
-
-            except Exception as e:
-                logger.error(f"上传异常: {str(e)}")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-                raise CloudflareR2Error(f"上传失败: {str(e)}")
-
-        raise Exception(f"Upload failed after {max_retries} retries")
+        Returns:
+            Confirmed object metadata, including its ETag and SHA-256.
+        """
+        relative = normalize_relative_path(
+            file_path.resolve().relative_to(self.local_dir).as_posix()
+        )
+        key = f"{self.prefix}/{relative}"
+        fingerprint = file_fingerprint(file_path)
+        with file_path.open("rb") as stream:
+            response = self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=key,
+                Body=stream,
+                ContentLength=fingerprint["size"],
+                ContentType=mimetypes.guess_type(file_path.name)[0]
+                or "application/octet-stream",
+                Metadata={"sha256": fingerprint["sha256"]},
+            )
+        category, _, filename = relative.rpartition("/")
+        return {
+            "id": key,
+            "relative_path": relative,
+            "filename": filename,
+            "category": category,
+            "url": self._get_public_url(key),
+            "size": fingerprint["size"],
+            "sha256": fingerprint["sha256"],
+            "etag": response.get("ETag", ""),
+        }
 
     def delete_image(self, image_id: str) -> bool:
-        """从Cloudflare R2删除图片"""
-        try:
-            self.s3_client.delete_object(Bucket=self.bucket_name, Key=image_id)
-            return True
-        except ClientError as e:
-            logger.error(f"删除失败: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"删除异常: {str(e)}")
-            return False
+        """Delete a validated object ID inside the configured prefix.
+
+        Args:
+            image_id: Full R2 object key returned by this adapter.
+
+        Returns:
+            Whether the S3 delete request completed.
+        """
+        self._parse_s3_key(image_id)
+        self.s3_client.delete_object(Bucket=self.bucket_name, Key=image_id)
+        return True
 
     def get_image_list(self) -> list[ImageInfo]:
-        """获取Cloudflare R2中 memes/ 文件夹内的所有图片"""
-        all_images = []
+        """List all pages; propagate failures instead of returning a partial result.
 
+        Returns:
+            Complete image metadata from the selected prefix.
+        """
+        images = []
+        paginator = self.s3_client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(
+            Bucket=self.bucket_name, Prefix=f"{self.prefix}/"
+        ):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                if (
+                    key.endswith("/")
+                    or Path(key).suffix.lower() not in SUPPORTED_FORMATS
+                ):
+                    continue
+                category, filename = self._parse_s3_key(key)
+                relative = f"{category}/{filename}" if category else filename
+                images.append(
+                    {
+                        "id": key,
+                        "relative_path": relative,
+                        "filename": filename,
+                        "category": category,
+                        "url": self._get_public_url(key),
+                        "size": int(obj["Size"]) if "Size" in obj else None,
+                        "etag": obj.get("ETag", ""),
+                    }
+                )
+        return images
+
+    def download_image(self, image_info: ImageInfo, save_path: Path) -> bool:
+        """Download a specific object version and validate before replacement.
+
+        Args:
+            image_info: R2 object metadata.
+            save_path: Local destination.
+
+        Returns:
+            True once the complete image has been published.
+        """
+        key = image_info["id"]
+        self._parse_s3_key(key)
+        params = {"Bucket": self.bucket_name, "Key": key}
+        if image_info.get("etag"):
+            params["IfMatch"] = image_info["etag"]
+        response = self.s3_client.get_object(**params)
+        body = response["Body"]
         try:
-            paginator = self.s3_client.get_paginator("list_objects_v2")
-
-            # 只列出 memes/ 前缀的文件
-            for page in paginator.paginate(Bucket=self.bucket_name, Prefix="memes/"):
-                if "Contents" in page:
-                    for obj in page["Contents"]:
-                        s3_key = obj["Key"]
-
-                        # 跳过目录
-                        if s3_key.endswith("/"):
-                            continue
-
-                        # 只处理 memes/ 下的文件
-                        if not s3_key.startswith("memes/"):
-                            continue
-
-                        # 解析分类和文件名
-                        category, filename = self._parse_s3_key(s3_key)
-
-                        # 获取公共URL
-                        public_url = self._get_public_url(s3_key)
-
-                        all_images.append(
-                            {
-                                "url": public_url,
-                                "id": s3_key,
-                                "filename": filename,
-                                "category": category,
-                                "size": int(obj.get("Size", 0)),
-                            }
-                        )
-
-        except ClientError as e:
-            logger.error(f"获取文件列表失败: {e}")
-            raise CloudflareR2Error(f"获取文件列表失败: {e}")
-
-        return all_images
-
-    def download_image(self, image_info: dict[str, str], save_path: Path) -> bool:
-        """从Cloudflare R2下载图片"""
-        max_retries = 3
-        retry_delay = 1
-
-        s3_key = image_info["id"]
-
-        for attempt in range(max_retries):
-            try:
-                # 确保目标目录存在
-                save_path.parent.mkdir(parents=True, exist_ok=True)
-
-                # 从R2下载文件
-                self.s3_client.download_file(self.bucket_name, s3_key, str(save_path))
-
-                # 验证文件是否成功下载
-                if save_path.exists() and save_path.stat().st_size > 0:
-                    logger.info(f"下载成功: {s3_key}")
-                    return True
-                else:
-                    logger.error(f"下载的文件无效: {s3_key}")
-
-            except ClientError as e:
-                logger.error(f"下载失败: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-                return False
-
-            except Exception as e:
-                logger.error(f"下载异常: {str(e)}")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-                return False
-
-        return False
+            save_image_stream(
+                body.iter_chunks(chunk_size=1024 * 1024),
+                Path(save_path),
+                response.get("ContentLength"),
+                response.get("Metadata", {}).get("sha256", ""),
+            )
+        finally:
+            body.close()
+        return True
 
     def _generate_s3_key(self, file_path: Path) -> str:
-        """生成S3键名，保持分类结构，所有文件放在memes文件夹中"""
-        # 从文件路径中提取分类信息
-        category = self._get_category_from_path(file_path)
-        filename = file_path.name
+        """Build an object key preserving nested categories.
 
-        if category:
-            return f"memes/{category}/{filename}"
-        else:
-            return f"memes/{filename}"
+        Args:
+            file_path: Image inside the local root.
+
+        Returns:
+            A key inside the configured prefix.
+        """
+        relative = normalize_relative_path(
+            file_path.resolve().relative_to(self.local_dir).as_posix()
+        )
+        return f"{self.prefix}/{relative}"
 
     def _get_category_from_path(self, file_path: Path) -> str:
-        """从文件路径获取分类"""
-        # 从文件路径中提取相对于表情包目录的分类
-        # 假设 file_path 是完整的本地路径，如 /path/to/memes/category/filename.jpg
+        """Resolve the full category relative to the selected image library.
 
-        # 获取父目录
-        parent = file_path.parent
+        Args:
+            file_path: Local image.
 
-        # 如果文件在子目录中，返回子目录名作为分类
-        if (
-            parent.name
-            and parent.name != "."
-            and parent.name != str(file_path.parents[-2])
-        ):
-            # 尝试获取相对于memes目录的路径
-            # 这里简化处理，返回直接父目录名
-            return parent.name
+        Returns:
+            Relative category, or an empty string for root images.
+        """
+        relative = normalize_relative_path(
+            file_path.resolve().relative_to(self.local_dir).as_posix()
+        )
+        return relative.rpartition("/")[0]
 
-        return ""
+    def _parse_s3_key(self, s3_key: str) -> tuple[str, str]:
+        """Check object namespace boundaries and decode its portable path.
 
-    def _parse_s3_key(self, s3_key: str) -> tuple:
-        """解析S3键名获取分类和文件名"""
-        # 移除 memes/ 前缀
-        if s3_key.startswith("memes/"):
-            s3_key = s3_key[6:]
+        Args:
+            s3_key: Full object key.
 
-        filename = s3_key.split("/")[-1]
-        category = ""
+        Returns:
+            Category and filename.
 
-        # 如果S3键包含路径，提取分类
-        if "/" in s3_key:
-            path_parts = s3_key.split("/")
-            if len(path_parts) > 1:
-                category = "/".join(path_parts[:-1])
-
+        Raises:
+            ValueError: The key falls outside the configured namespace.
+        """
+        prefix = f"{self.prefix}/"
+        if not s3_key.startswith(prefix):
+            raise ValueError("R2 object is outside the configured prefix")
+        relative = normalize_relative_path(s3_key[len(prefix) :])
+        category, _, filename = relative.rpartition("/")
         return category, filename
 
     def _get_public_url(self, s3_key: str) -> str:
-        """获取文件的公共URL"""
-        if self.public_url:
-            # 如果配置了自定义CDN域名（确保不以斜杠结尾）
-            base_url = self.public_url.rstrip("/")
-            return f"{base_url}/{s3_key}"
-        else:
-            # 使用R2默认的公共访问URL（R2.dev子域名）
-            return f"https://{self.bucket_name}.{self.account_id}.r2.dev/{s3_key}"
+        """Build an encoded URL only when a real public endpoint is configured.
+
+        Args:
+            s3_key: Full R2 object key.
+
+        Returns:
+            Public URL, or an empty string for private buckets.
+        """
+        return f"{self.public_url}/{quote(s3_key, safe='/')}" if self.public_url else ""
+
+    def close(self) -> None:
+        """Release the S3 connection pool."""
+        self.s3_client.close()

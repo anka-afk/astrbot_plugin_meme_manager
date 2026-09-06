@@ -76,6 +76,16 @@
   let polls = 0;
   let taskStatus = "idle";
   let configSnapshot = null;
+  let imageSyncTask = null;
+  let imageSyncStarted = 0;
+  let imageSyncConflicts =
+    params.get("sync") === "conflicts"
+      ? [
+          { relative_path: "happy/开心.png", reason: "both_changed" },
+          { relative_path: "surprise/意外.png", reason: "unverified" },
+        ]
+      : [];
+  const subscriptions = new Map();
   const imageData = (category, filename = "") => {
     const faces = { happy: "😊", sad: "🥺", surprise: "😮" };
     return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
@@ -316,9 +326,71 @@
           provider_label: "预览图床",
           remote_image_count: 18,
           remote_total_bytes: 1800000,
-          upload_count: 0,
-          download_count: 0,
+          upload_count: 2,
+          download_count: 1,
+          conflicts: imageSyncConflicts,
+          to_overwrite_remote: [{}, {}, {}],
+          to_overwrite_local: [{}, {}, {}],
+          to_delete_remote: [{}],
+          to_delete_local: [{}],
         };
+      case "img_host/sync/upload":
+      case "img_host/sync/download":
+      case "img_host/sync/overwrite_to_remote":
+      case "img_host/sync/overwrite_from_remote":
+        imageSyncStarted = Date.now();
+        imageSyncTask = {
+          task_id: "fixture-sync",
+          task: endpoint.split("/").pop(),
+          running: true,
+          completed: false,
+          success: null,
+          phase: "planning",
+          total: 3,
+          processed: 0,
+          succeeded: 0,
+          failed: 0,
+          conflicts: 0,
+          errors: [],
+          managed_pack_id: "official-basic",
+        };
+        return { success: true, task: imageSyncTask };
+      case "img_host/sync/task_status":
+        if (!imageSyncTask)
+          return { running: false, completed: true, success: null };
+        if (imageSyncTask.running) {
+          const processed = Math.min(
+            3,
+            Math.floor((Date.now() - imageSyncStarted) / 1500),
+          );
+          const mirror = imageSyncTask.task.startsWith("overwrite");
+          const conflicts = mirror ? 0 : imageSyncConflicts.length;
+          imageSyncTask = {
+            ...imageSyncTask,
+            processed,
+            succeeded: processed,
+            current_file: "happy/开心.png",
+            phase: imageSyncTask.task.includes("download")
+              ? "download"
+              : "upload",
+            running: processed < 3,
+            completed: processed >= 3,
+            conflicts,
+            success: processed < 3 ? null : !conflicts,
+          };
+          if (processed >= 3 && mirror) imageSyncConflicts = [];
+        }
+        return imageSyncTask;
+      case "img_host/sync/cancel":
+        imageSyncTask = {
+          ...imageSyncTask,
+          running: false,
+          completed: true,
+          success: false,
+          phase: "cancelled",
+          message: "Sync cancelled",
+        };
+        return imageSyncTask;
       default:
         return { status: "success", message: "预览操作已完成" };
     }
@@ -332,5 +404,22 @@
       throw new Error("预览不处理真实文件");
     },
     download: async () => {},
+    subscribeSSE: async (endpoint, handlers) => {
+      const id = String(Date.now());
+      handlers.onOpen?.();
+      subscriptions.set(
+        id,
+        setInterval(async () => {
+          handlers.onMessage?.({
+            parsed: await request("img_host/sync/task_status"),
+          });
+        }, 500),
+      );
+      return id;
+    },
+    unsubscribeSSE: async (id) => {
+      clearInterval(subscriptions.get(id));
+      subscriptions.delete(id);
+    },
   };
 })();

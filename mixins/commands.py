@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import time
+from pathlib import Path
 
 from astrbot.api import logger
 from astrbot.api.all import *
@@ -13,6 +14,7 @@ from ..backend.packs.images import (
     get_emoji_by_category,
 )
 from ..backend.packs.storage import install_first_official_pack_from_index
+from ..backend.semantic.storage import invalidate_semantic_metadata
 from ..config import COMMUNITY_INDEX_URL
 
 
@@ -423,6 +425,7 @@ class CommandMixin:
                 "📈 文件统计:",
                 f"  • 需要上传: {len(to_upload)} 个文件",
                 f"  • 需要下载: {len(to_download)} 个文件",
+                f"  • 同名冲突或待确认: {status.get('conflict_count', 0)} 个文件",
                 "",
             ]
 
@@ -478,7 +481,7 @@ class CommandMixin:
                 result.append("")
 
             # 同步状态总结
-            if not to_upload and not to_download:
+            if status.get("is_synced"):
                 result.append("✅ 云端与本地图库已经完全同步啦！")
 
                 # 如果用户要求详细信息，显示更多内容
@@ -553,6 +556,12 @@ class CommandMixin:
                         result.append("📂 本地无文件")
             else:
                 result.append("⏳ 需要同步以保持云端与本地图库一致")
+                if status.get("conflicts"):
+                    result.append(
+                        "⚠️ 同名冲突会保留，请检查后选择“覆盖到云端”或“从云端覆盖”。"
+                    )
+                    for item in status["conflicts"][:5]:
+                        result.append(f"  • {item['relative_path']}")
                 result.append(
                     "💡 使用 '/表情管理 同步到云端' 或 '/表情管理 从云端同步' 进行同步"
                 )
@@ -639,7 +648,16 @@ class CommandMixin:
             logger.error(f"从云端同步失败: {str(e)}")
             yield event.plain_result(f"从云端同步失败: {str(e)}")
         finally:
-            self.semantic_task_manager.end_external_pack_operation(pack_id)
+            try:
+                pack_dir = Path(sync_client.local_dir).parent
+                if (pack_dir / "semantic_metadata.json").is_file():
+                    await asyncio.to_thread(invalidate_semantic_metadata, pack_dir)
+            except Exception as exc:
+                logger.warning(
+                    "Could not invalidate semantic metadata after image sync: %s", exc
+                )
+            finally:
+                self.semantic_task_manager.end_external_pack_operation(pack_id)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @meme_manager.command("覆盖到云端")
@@ -704,7 +722,16 @@ class CommandMixin:
             logger.error(f"从云端覆盖失败: {str(e)}")
             yield event.plain_result(f"从云端覆盖失败: {str(e)}")
         finally:
-            self.semantic_task_manager.end_external_pack_operation(pack_id)
+            try:
+                pack_dir = Path(sync_client.local_dir).parent
+                if (pack_dir / "semantic_metadata.json").is_file():
+                    await asyncio.to_thread(invalidate_semantic_metadata, pack_dir)
+            except Exception as exc:
+                logger.warning(
+                    "Could not invalidate semantic metadata after image sync: %s", exc
+                )
+            finally:
+                self.semantic_task_manager.end_external_pack_operation(pack_id)
 
     @meme_manager.command("图库统计")
     async def show_library_stats(self, event: AstrMessageEvent):

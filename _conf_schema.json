@@ -50,6 +50,12 @@
                 "type": "string",
                 "default": "",
                 "hint": "例如：https://cdn.yourdomain.com"
+              },
+              "prefix": {
+                "description": "远端目录",
+                "type": "string",
+                "default": "memes",
+                "hint": "仅同步此目录内的图片，默认 memes；修改后会连接新的云端目录，不会搬迁旧文件"
               }
             }
           },
@@ -117,17 +123,6 @@
                 "type": "string",
                 "default": "memes",
                 "hint": "请输入 StarDots 的空间名称"
-              },
-              "list_cache_ttl": {
-                "description": "远端列表缓存时长（秒）",
-                "type": "int",
-                "default": 60,
-                "hint": "用于减少状态轮询时的 API 调用次数；0 表示关闭缓存",
-                "slider": {
-                  "min": 0,
-                  "max": 300,
-                  "step": 5
-                }
               }
             }
           }

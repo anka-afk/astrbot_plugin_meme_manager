@@ -1,87 +1,240 @@
-from pathlib import Path, PurePosixPath, PureWindowsPath
+"""Portable paths, fingerprints and atomic writes shared by storage adapters."""
+
+import hashlib
+import json
+import os
+import tempfile
+from collections.abc import Iterable
+from pathlib import Path, PureWindowsPath
+
+from PIL import Image
+
+SUPPORTED_FORMATS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+MAX_IMAGE_BYTES = 1024 * 1024 * 1024
+
+
+def normalize_relative_path(value: str) -> str:
+    """Validate a path without silently changing its meaning.
+
+    Args:
+        value: Relative image path using either platform's separators.
+
+    Returns:
+        A portable POSIX path.
+
+    Raises:
+        ValueError: The path escapes its namespace or aliases a Windows filename.
+    """
+    value = str(value).replace("\\", "/")
+    parts = value.split("/")
+    if (
+        not value
+        or PureWindowsPath(value).drive
+        or any(
+            part.casefold() in {"", ".", "..", ".sync-state"}
+            or part.rstrip(" .") != part
+            or any(ord(char) < 32 or char in '<>:"|?*' for char in part)
+            or PureWindowsPath(part).is_reserved()
+            for part in parts
+        )
+    ):
+        raise ValueError(f"Unsafe image path: {value!r}")
+    return "/".join(parts)
+
+
+def file_fingerprint(file_path: Path) -> dict:
+    """Hash a stable file using bounded memory.
+
+    Args:
+        file_path: File to read.
+
+    Returns:
+        Its size, SHA-256 digest and nanosecond modification timestamp.
+
+    Raises:
+        OSError: The file changed during reading or could not be read.
+    """
+    before = file_path.stat()
+    digest = hashlib.sha256()
+    with file_path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    after = file_path.stat()
+    if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    ):
+        raise OSError(f"Image changed while reading: {file_path.name}")
+    return {
+        "size": after.st_size,
+        "sha256": digest.hexdigest(),
+        "mtime_ns": after.st_mtime_ns,
+    }
+
+
+def write_json_atomic(target: Path, data: dict) -> None:
+    """Persist state without exposing partially written JSON.
+
+    Args:
+        target: State file to replace.
+        data: Serializable state.
+
+    Raises:
+        OSError: The new state could not be durably written.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            json.dump(data, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def save_image_stream(
+    chunks: Iterable[bytes],
+    save_path: Path,
+    expected_size: int | None = None,
+    expected_sha256: str = "",
+) -> None:
+    """Validate a streamed image before atomically publishing it.
+
+    Args:
+        chunks: Downloaded byte chunks.
+        save_path: Final destination.
+        expected_size: Exact byte length, if supplied by the provider.
+        expected_sha256: Content checksum, if supplied by the provider.
+
+    Raises:
+        ValueError: The transfer is truncated, too large or not an image.
+        OSError: Reading or saving fails; the existing target remains intact.
+    """
+    if expected_size is not None and not 0 < expected_size <= MAX_IMAGE_BYTES:
+        raise ValueError("Remote image size is outside the supported range")
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=save_path.parent, prefix=".image-download-", suffix=".tmp", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            for chunk in chunks:
+                size += len(chunk)
+                if size > MAX_IMAGE_BYTES or (
+                    expected_size is not None and size > expected_size
+                ):
+                    raise ValueError("Downloaded image exceeds the expected size")
+                digest.update(chunk)
+                stream.write(chunk)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if not size or (expected_size is not None and size != expected_size):
+            raise ValueError("Incomplete image download")
+        if expected_sha256 and digest.hexdigest() != expected_sha256:
+            raise ValueError("Downloaded image checksum mismatch")
+        with Image.open(temporary) as image:
+            if image.format not in {"JPEG", "PNG", "GIF", "WEBP"}:
+                raise ValueError("Unsupported image content")
+            image.verify()
+        temporary.replace(save_path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 class FileHandler:
-    """文件处理类"""
+    """Scan complete local inventories and resolve safe image destinations."""
 
-    SUPPORTED_FORMATS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+    SUPPORTED_FORMATS = SUPPORTED_FORMATS
 
     def __init__(self, base_dir: Path):
-        self.base_dir = Path(base_dir)
+        self.base_dir = Path(base_dir).resolve()
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-    def scan_local_images(self) -> list[dict[str, str]]:
-        """扫描本地图片"""
-        images = []
-        for file_path in self.base_dir.rglob("*"):
-            if (
-                file_path.is_file()
-                and file_path.suffix.lower() in self.SUPPORTED_FORMATS
-            ):
-                # 计算相对路径
-                rel_path = file_path.relative_to(self.base_dir)
-                category = str(rel_path.parent).replace("\\", "/")
-                if category == ".":
-                    category = ""
-
-                # 构建文件信息
-                filename = rel_path.name
-                file_id = str(rel_path).replace("\\", "/")
-
-                images.append(
-                    {
-                        "path": str(file_path),
-                        "id": file_id,  # 使用文件名作为标识
-                        "filename": filename,
-                        "category": category,  # 保留分类信息
-                    }
-                )
-        return images
-
-    def get_file_path(self, category: str, filename: str) -> Path:
-        """为远程图片名称生成安全的本地路径。
-
-        Args:
-            category: 远程存储返回的可选相对分类路径。
-            filename: 远程存储返回的图片文件名。
+    def scan_local_images(self) -> list[dict]:
+        """Return a complete, deterministic inventory with content fingerprints.
 
         Returns:
-            解析后且位于配置基础目录内的文件路径。
+            Local images and their paths, categories, sizes and checksums.
 
         Raises:
-            ValueError: 分类或文件名可能逃逸基础目录时抛出。
+            OSError: Any directory or image cannot be read.
+            ValueError: A symlink or ambiguous path makes mirroring unsafe.
         """
-        normalized_category = str(category or "").replace("\\", "/")
-        normalized_filename = str(filename or "").replace("\\", "/")
+        images = []
+        directories = [self.base_dir]
+        seen = set()
+        while directories:
+            for path in sorted(directories.pop().iterdir()):
+                if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+                    raise ValueError(f"Image directory contains a link: {path.name}")
+                if path.name == ".sync-state":
+                    continue
+                if path.is_dir():
+                    directories.append(path)
+                elif path.is_file() and path.suffix.lower() in SUPPORTED_FORMATS:
+                    relative = normalize_relative_path(
+                        path.relative_to(self.base_dir).as_posix()
+                    )
+                    if relative.casefold() in seen:
+                        raise ValueError(f"Ambiguous image path: {relative}")
+                    seen.add(relative.casefold())
+                    category, _, filename = relative.rpartition("/")
+                    images.append(
+                        {
+                            "path": str(path),
+                            "id": relative,
+                            "filename": filename,
+                            "category": category,
+                            **file_fingerprint(path),
+                        }
+                    )
+        return sorted(images, key=lambda item: item["id"])
 
-        category_parts = (
-            PurePosixPath(normalized_category).parts if normalized_category else ()
-        )
-        if (
-            (normalized_category and normalized_category.startswith("/"))
-            or PureWindowsPath(normalized_category).drive
-            or any(part in {"", ".", ".."} for part in category_parts)
-        ):
-            raise ValueError(f"Unsafe remote category path: {category!r}")
+    def get_file_path(
+        self, category: str, filename: str, *, create_parent: bool = True
+    ) -> Path:
+        """Resolve a remote name inside the local root.
 
-        filename_parts = PurePosixPath(normalized_filename).parts
-        if (
-            not normalized_filename
-            or normalized_filename.startswith("/")
-            or PureWindowsPath(normalized_filename).drive
-            or len(filename_parts) != 1
-            or filename_parts[0] in {"", ".", ".."}
-        ):
+        Args:
+            category: Relative category, optionally nested.
+            filename: Single filename.
+            create_parent: Whether to create the destination directory.
+
+        Returns:
+            A safe absolute destination.
+
+        Raises:
+            ValueError: A name or existing filesystem link escapes the root.
+        """
+        filename = normalize_relative_path(filename)
+        if "/" in filename:
             raise ValueError(f"Unsafe remote filename: {filename!r}")
-
-        base_dir = self.base_dir.resolve()
-        target_path = base_dir.joinpath(*category_parts, filename_parts[0]).resolve()
-        try:
-            target_path.relative_to(base_dir)
-        except ValueError as exc:
-            raise ValueError(
-                f"Remote image path escapes the local directory: {target_path}"
-            ) from exc
-
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        return target_path
+        relative = normalize_relative_path(
+            f"{category}/{filename}" if category else filename
+        )
+        target = self.base_dir.joinpath(*relative.split("/"))
+        current = target
+        while current != self.base_dir:
+            if current.is_symlink() or getattr(current, "is_junction", lambda: False)():
+                raise ValueError(f"Image path contains a link: {relative}")
+            current = current.parent
+        target.resolve().relative_to(self.base_dir)
+        if create_parent:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        return target

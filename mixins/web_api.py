@@ -213,6 +213,12 @@ class WebAPIMixin:
             ["GET"],
             "当前同步任务状态",
         )
+        self._register_webui_api(
+            "img_host/sync/cancel",
+            self._api_img_host_sync_cancel,
+            ["POST"],
+            "停止图床同步任务",
+        )
 
         self._register_webui_api(
             "meme_image", self._api_serve_meme_image, ["GET"], "直接返回表情图片文件"
@@ -1383,6 +1389,8 @@ class WebAPIMixin:
             return "Cloudflare R2"
         if self.img_sync_provider_type == "stardots":
             return "StarDots"
+        if self.img_sync_provider_type == "webdav":
+            return "WebDAV"
         if self.img_sync and hasattr(self.img_sync, "provider"):
             return self.img_sync.provider.__class__.__name__
         return "未知图床"
@@ -1400,6 +1408,11 @@ class WebAPIMixin:
         return ""
 
     def _get_img_host_sync_task_status(self) -> dict:
+        """Expose worker progress and release pack locks only after the worker exits.
+
+        Returns:
+            Current or last completed synchronization status.
+        """
         if not self.img_sync:
             self._finish_img_host_local_operation()
             return {
@@ -1409,54 +1422,16 @@ class WebAPIMixin:
                 "success": False,
                 "message": "图床服务未配置",
             }
-
-        process = getattr(self.img_sync, "sync_process", None)
-        if not process:
+        status = self.img_sync.get_task_status()
+        status["managed_pack_id"] = getattr(self, "_img_sync_pack_id", "")
+        if not status["running"]:
+            previous = self._last_img_host_sync_task_status or {}
+            if status.get("task_id") and (
+                previous.get("task_id") != status["task_id"] or previous.get("running")
+            ):
+                self._invalidate_img_host_status_cache()
             self._finish_img_host_local_operation()
-            if self._last_img_host_sync_task_status:
-                return self._last_img_host_sync_task_status.copy()
-            return {
-                "available": True,
-                "running": False,
-                "completed": True,
-                "success": None,
-                "message": "当前没有同步任务",
-            }
-
-        status = {
-            "available": True,
-            "pid": process.pid,
-            "exit_code": process.exitcode,
-        }
-        if process.is_alive():
-            status.update(
-                {
-                    "running": True,
-                    "completed": False,
-                    "success": None,
-                    "message": "同步任务运行中",
-                }
-            )
-            return status
-
-        exit_code = process.exitcode
-        try:
-            process.join(timeout=0)
-        except Exception as exc:
-            logger.warning(f"回收图床同步进程失败: {exc}")
-        self.img_sync.sync_process = None
-        self._finish_img_host_local_operation()
-
-        status.update(
-            {
-                "running": False,
-                "completed": True,
-                "success": exit_code == 0,
-                "exit_code": exit_code,
-                "message": "同步任务已完成" if exit_code == 0 else "同步任务失败",
-            }
-        )
-        self._last_img_host_sync_task_status = status.copy()
+            self._last_img_host_sync_task_status = dict(status)
         return status
 
     def _ensure_img_host_status_cache(self) -> dict[str, dict]:
@@ -1527,6 +1502,18 @@ class WebAPIMixin:
             }
         try:
             sync_client.sync_process = sync_client._start_sync_process(task)
+            # Reap and release the pack operation even if the browser disconnects.
+            monitor = asyncio.create_task(
+                asyncio.to_thread(sync_client.sync_process.join)
+            )
+            self._img_host_sync_monitor = monitor
+            monitor.add_done_callback(
+                lambda completed: (
+                    None
+                    if completed.cancelled() or completed.exception()
+                    else self._get_img_host_sync_task_status()
+                )
+            )
         except Exception:
             if changes_local_files:
                 self._finish_img_host_local_operation()
@@ -1682,6 +1669,16 @@ class WebAPIMixin:
             return jsonify({"message": str(e)}), status_code
 
     async def _api_img_host_sync_task_status(self):
+        return jsonify(self._get_img_host_sync_task_status())
+
+    async def _api_img_host_sync_cancel(self):
+        """Cancel the active image transfer without blocking the event loop."""
+        payload = await request.get_json(silent=True)
+        pack_id = self._resolve_requested_sync_pack_id(payload)
+        if pack_id and pack_id != getattr(self, "_img_sync_pack_id", ""):
+            return jsonify({"message": "当前同步任务属于其他表情包"}), 409
+        if self.img_sync:
+            await asyncio.to_thread(self.img_sync.stop_sync)
         return jsonify(self._get_img_host_sync_task_status())
 
     async def _api_img_host_sync_progress(self):

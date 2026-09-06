@@ -1,63 +1,72 @@
+"""Storage adapters expose complete listings and opaque remote identifiers."""
+
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import TypedDict
+
+
+class ImageInfo(TypedDict, total=False):
+    """Portable image metadata; ETags are version tokens, never assumed hashes."""
+
+    id: str
+    relative_path: str
+    filename: str
+    category: str
+    url: str
+    size: int | None
+    sha256: str
+    etag: str
+    modified: str
 
 
 class ImageHostInterface(ABC):
-    """图床接口抽象基类"""
+    """Keep provider-specific paths and HTTP behavior outside the sync engine."""
 
     @abstractmethod
-    def upload_image(self, file_path: Path) -> dict[str, str]:
-        """
-        上传图片到图床
+    def upload_image(self, file_path: Path) -> ImageInfo:
+        """Upload an image, returning metadata only after confirmed success.
 
         Args:
-            file_path: 图片文件路径
+            file_path: Image inside the configured local directory.
 
         Returns:
-            Dict: {
-                'url': '图片URL',
-                'hash': '图片哈希值'
-            }
+            Metadata including its opaque ID and portable relative path.
         """
-        pass
 
     @abstractmethod
-    def delete_image(self, image_hash: str) -> bool:
-        """
-        从图床删除图片
+    def delete_image(self, image_id: str) -> bool:
+        """Delete the exact opaque ID returned by this adapter.
 
         Args:
-            image_hash: 图片哈希值
+            image_id: Remote identifier, distinct from the relative path.
 
         Returns:
-            bool: 删除是否成功
+            Whether the object was deleted or already absent.
         """
-        pass
 
     @abstractmethod
-    def get_image_list(self) -> list[dict[str, str]]:
-        """
-        获取图床上的所有图片信息
+    def get_image_list(self) -> list[ImageInfo]:
+        """List every image in the configured remote namespace.
 
         Returns:
-            List[Dict]: [{
-                'url': '图片URL',
-                'hash': '图片哈希值',
-                'filename': '文件名'
-            }]
+            A complete listing, including sizes and version tokens when available.
+
+        Raises:
+            Exception: Any page or directory could not be listed. Returning a
+                partial listing could cause mirror operations to delete data.
         """
-        pass
 
     @abstractmethod
-    def download_image(self, image_info: dict[str, str], save_path: Path) -> bool:
-        """
-        下载图片到本地
+    def download_image(self, image_info: ImageInfo, save_path: Path) -> bool:
+        """Download and validate an image before atomically replacing its target.
 
         Args:
-            image_info: 图片信息
-            save_path: 保存路径
+            image_info: Metadata returned by this adapter.
+            save_path: Destination chosen by the sync engine.
 
         Returns:
-            bool: 下载是否成功
+            Whether the complete image was saved successfully.
         """
-        pass
+
+    def close(self) -> None:
+        """Release connections owned by this adapter."""

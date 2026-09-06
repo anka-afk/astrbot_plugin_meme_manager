@@ -4272,6 +4272,15 @@ async function initApp() {
     } else if (state === "warning") {
       imgHostSyncProgress.classList.add("sync-progress-warning");
     }
+    const icon = imgHostSyncProgress.querySelector("i");
+    if (icon) {
+      icon.className =
+        state === "success"
+          ? "fas fa-check icon"
+          : state === "error"
+          ? "fas fa-circle-exclamation icon"
+          : "fas fa-spinner fa-spin icon";
+    }
     imgHostSyncProgressText.textContent = message;
   }
 
@@ -4322,9 +4331,27 @@ async function initApp() {
 
       const handleStatus = (status) => {
         if (!status || done) return;
+        document
+          .getElementById("cancel-img-host-sync-btn")
+          ?.classList.toggle("hidden", !status.running);
 
         if (status.running) {
-          setImgHostSyncProgress(`${actionLabel}进行中...`, "info");
+          const phase =
+            {
+              starting: "启动中",
+              planning: "检查差异",
+              upload: "上传",
+              download: "下载",
+              verifying: "复核差异",
+              delete: "清理目标端",
+            }[status.phase] || "处理中";
+          const count = status.total
+            ? ` · ${status.processed || 0}/${status.total}`
+            : "";
+          const current = status.current_file
+            ? ` · ${status.current_file}`
+            : "";
+          setImgHostSyncProgress(`${phase}${count}${current}`, "info");
           return;
         }
 
@@ -4333,10 +4360,25 @@ async function initApp() {
         }
 
         if (status.success === false) {
+          const firstError = status.errors?.[0];
+          const detail = firstError
+            ? ` · ${firstError.path}: ${firstError.message}`
+            : "";
           const message =
-            status.exit_code != null
-              ? `${actionLabel}失败，进程退出码：${status.exit_code}`
-              : `${actionLabel}失败`;
+            status.phase === "cancelled"
+              ? "同步已停止，已完成的文件会保留。"
+              : status.conflicts
+              ? `已处理 ${status.succeeded || 0} 个文件；还有 ${
+                  status.conflicts
+                } 个同名冲突，请检查后选择覆盖方向。`
+              : `${actionLabel}失败：${
+                  status.message || "请查看日志"
+                }${detail}`;
+          void refreshUi({
+            emojis: true,
+            syncStatus: true,
+            imgHostStatus: true,
+          });
           finish(new Error(message));
           return;
         }
@@ -5942,31 +5984,47 @@ async function initApp() {
     }
   }
 
-  async function forceSyncToRemote() {
-    const confirmed = await showDangerConfirm({
-      title: "强制同步云端",
-      description:
-        "该操作会让云端图库与当前本地图库完全一致：上传本地缺失文件，并删除云端多出的文件。本地已经删除的图片会从云端删除。",
-      actionLabel: "确认强制同步云端",
-      countdown: 5,
-    });
-    if (!confirmed) {
-      return;
-    }
-
-    const btn = document.getElementById("force-upload-sync-btn");
+  async function forceSync(direction) {
+    const toRemote = direction === "remote";
+    const label = toRemote ? "强制同步云端" : "从云端覆盖本地";
+    const btn = document.getElementById(
+      toRemote ? "force-upload-sync-btn" : "force-download-sync-btn",
+    );
     try {
+      const plan = await apiGet("img_host/sync/status");
+      const transfers =
+        (toRemote ? plan.to_overwrite_remote : plan.to_overwrite_local)
+          ?.length || 0;
+      const deletes =
+        (toRemote ? plan.to_delete_remote : plan.to_delete_local)?.length || 0;
+      const confirmed = await showDangerConfirm({
+        title: label,
+        description: `以${
+          toRemote ? "当前本地表情包" : "云端图库"
+        }为准：写入或覆盖 ${transfers} 张图片，删除${
+          toRemote ? "云端" : "本地"
+        }多出的 ${deletes} 张图片。同名冲突将按此方向覆盖。`,
+        actionLabel: `确认${label}`,
+        countdown: 5,
+      });
+      if (!confirmed) return;
       setButtonBusy(btn, "强制同步中...");
-      setImgHostSyncProgress("正在启动强制同步云端...", "warning");
+      setImgHostSyncProgress(`正在启动${label}...`, "warning");
 
-      await apiPost("img_host/sync/overwrite_to_remote");
-      await waitForSyncCompletion("强制同步云端");
-      await refreshUi({ syncStatus: true, imgHostStatus: true });
-      setImgHostSyncProgress("强制同步云端已完成。", "success");
+      await apiPost(
+        `img_host/sync/overwrite_${toRemote ? "to" : "from"}_remote`,
+      );
+      await waitForSyncCompletion(label);
+      await refreshUi({
+        emojis: !toRemote,
+        syncStatus: true,
+        imgHostStatus: true,
+      });
+      setImgHostSyncProgress(`${label}已完成。`, "success");
       hideImgHostSyncProgress(3000);
-      showToast("强制同步云端已完成。", "success", "同步成功");
+      showToast(`${label}已完成。`, "success", "同步成功");
     } catch (error) {
-      console.error("强制同步云端失败:", error);
+      console.error("Image host overwrite failed:", error);
       setImgHostSyncProgress(error.message, "error");
       showToast(error.message, "error", "同步失败");
     } finally {
@@ -6004,7 +6062,23 @@ async function initApp() {
     .addEventListener("click", syncToRemote);
   document
     .getElementById("force-upload-sync-btn")
-    .addEventListener("click", forceSyncToRemote);
+    .addEventListener("click", () => forceSync("remote"));
+  document
+    .getElementById("force-download-sync-btn")
+    .addEventListener("click", () => forceSync("local"));
+  document
+    .getElementById("cancel-img-host-sync-btn")
+    .addEventListener("click", async () => {
+      const btn = document.getElementById("cancel-img-host-sync-btn");
+      try {
+        setButtonBusy(btn, "正在停止...");
+        await apiPost("img_host/sync/cancel");
+      } catch (error) {
+        showToast(error.message, "error", "停止失败");
+      } finally {
+        restoreButton(btn);
+      }
+    });
   document
     .getElementById("download-sync-btn")
     .addEventListener("click", syncFromRemote);
@@ -6286,6 +6360,32 @@ async function initApp() {
     initialStatusTimerId = null;
     void checkSyncStatus(false);
     void checkImgHostSyncStatus(false);
+    void apiGet("img_host/sync/task_status")
+      .then(async (status) => {
+        if (!status.running) return;
+        const selectedPack =
+          activeManagePackId || managePackSelect?.value || "";
+        if (
+          status.managed_pack_id &&
+          selectedPack &&
+          status.managed_pack_id !== selectedPack
+        )
+          return;
+        try {
+          await waitForSyncCompletion("图床同步");
+          await refreshUi({
+            emojis: true,
+            syncStatus: true,
+            imgHostStatus: true,
+          });
+          setImgHostSyncProgress("图床同步已完成。", "success");
+        } catch (error) {
+          setImgHostSyncProgress(error.message, "error");
+        }
+      })
+      .catch((error) =>
+        console.warn("Could not restore image sync progress:", error),
+      );
   }, 180);
 
   // 检查图床同步状态
@@ -6304,6 +6404,27 @@ async function initApp() {
 
     try {
       const data = await apiGet("img_host/sync/status");
+      const conflicts = data.conflicts || [];
+      document.getElementById("conflict-count").textContent = conflicts.length;
+      document
+        .getElementById("img-host-conflicts")
+        .classList.toggle("hidden", !conflicts.length);
+      const conflictFiles = document.getElementById("img-host-conflict-files");
+      conflictFiles.replaceChildren();
+      for (const item of conflicts.slice(0, 20)) {
+        const row = document.createElement("li");
+        row.textContent = `${item.relative_path} · ${
+          item.reason === "both_changed"
+            ? "两端都已修改"
+            : "尚未建立内容校验记录"
+        }`;
+        conflictFiles.append(row);
+      }
+      if (conflicts.length > 20) {
+        const row = document.createElement("li");
+        row.textContent = `另有 ${conflicts.length - 20} 个文件`;
+        conflictFiles.append(row);
+      }
 
       const uploadCount = data.upload_count ?? data.to_upload?.length ?? 0;
       const downloadCount =
@@ -6352,7 +6473,9 @@ async function initApp() {
         showToast(
           `${
             data.provider_label || "图床"
-          }：云端 ${remoteImageCount} 张，待上传 ${uploadCount} 个，待下载 ${downloadCount} 个，云端多出 ${remoteExtraCount} 个。`,
+          }：云端 ${remoteImageCount} 张，待上传 ${uploadCount} 个，待下载 ${downloadCount} 个，同名待确认 ${
+            conflicts.length
+          } 个，云端多出 ${remoteExtraCount} 个。`,
           "info",
           "图床状态已刷新",
         );
