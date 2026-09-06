@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -506,3 +507,75 @@ async def test_semantic_search_exposes_candidates_without_preselecting(
     second = json.loads(await sender.search_memes_tool(event, "换一个关键词"))
     assert second["ok"] is False
     search.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "limit,expected", [(-10, 3), (-1, 3), (0, 0), (1, 1), (2, 2), (5, 3)]
+)
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("mixed", [False, True])
+@pytest.mark.parametrize("semantic", [False, True])
+@pytest.mark.parametrize("text", ["", "Hello"])
+async def test_reply_meme_limit_preserves_text_and_selection_order(
+    reply_context, monkeypatch, limit, expected, streaming, mixed, semantic, text
+):
+    sender, event, state, root = reply_context
+    sender.max_memes_per_message = limit
+    sender.emotions_probability = 100
+    sender.enable_mixed_message = mixed
+    tags = ["happy", "sad", "angry"]
+    if semantic:
+        sender._semantic_mode_active = lambda event: True
+        paths = {
+            f"meme:{index:012x}": root / tag / "meme.png"
+            for index, tag in enumerate(tags, 1)
+        }
+        monkeypatch.setattr(
+            event_handlers,
+            "validate_selected_id",
+            lambda event, value, pack: paths.get(value),
+        )
+        markers = " ".join(f"&&{value}&&" for value in paths)
+    else:
+        markers = " ".join(f"&&{tag}&&" for tag in tags)
+    response = LLMResponse(role="assistant", completion_text=f"{text} {markers}")
+    if semantic:
+        await sender._resp_semantic_impl(event, response, response.completion_text)
+    else:
+        await sender._resp_impl(event, response)
+    assert response.completion_text == text
+    state["result"] = MessageEventResult(
+        chain=[Plain(text)],
+        result_content_type=ResultContentType.STREAMING_FINISH
+        if streaming
+        else ResultContentType.LLM_RESULT,
+    )
+    await sender._on_decorating_result_impl(event)
+    await sender._after_message_sent_impl(event)
+    images = [part for part in state["result"].chain if isinstance(part, Image)]
+    images.extend(call.args[1] for call in sender._send_meme_image.await_args_list)
+    assert len(images) == expected
+    assert [
+        Path(image.file.removeprefix("file:///")).parent.name for image in images
+    ] == tags[:expected]
+    assert (
+        "".join(part.text for part in state["result"].chain if isinstance(part, Plain))
+        == text
+    )
+    await sender._on_decorating_result_impl(event)
+    await sender._after_message_sent_impl(event)
+    assert sender._send_meme_image.await_count <= expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit,expected", [(-2, 3), (0, 0), (1, 1)])
+async def test_compat_preparation_respects_meme_limit(reply_context, limit, expected):
+    sender, event, _, _ = reply_context
+    sender.max_memes_per_message = limit
+    sender.emotions_probability = 100
+    prepared = await sender.compat_prepare_message(
+        event, "Hello &&happy&& &&sad&& &&angry&&"
+    )
+    assert len(prepared["images"]) == expected
+    assert prepared["cleaned_chain"].chain[0].text == "Hello"

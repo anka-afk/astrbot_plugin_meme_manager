@@ -143,7 +143,11 @@ def validate_settings_changes(
             raise ValueError(f"请为「{label}」选择有效选项。")
         if kind in {"int", "float"}:
             bounds = field["bounds"]
-            minimum = bounds.get("min", 0)
+            minimum = (
+                None
+                if path == "generation.emotion.max_memes_per_message"
+                else bounds.get("min", 0)
+            )
             maximum = bounds.get("max")
             if path.endswith(
                 ("min_score", "min_meme_confidence", "min_category_confidence")
@@ -151,7 +155,9 @@ def validate_settings_changes(
                 maximum = 1
             if path.endswith(("top_k", ".timeout")):
                 minimum = 1
-            if value < minimum or (maximum is not None and value > maximum):
+            if (minimum is not None and value < minimum) or (
+                maximum is not None and value > maximum
+            ):
                 raise ValueError(f"「{label}」超出允许范围。")
         if kind in {"string", "text"} and len(value) > 65536:
             raise ValueError(f"「{label}」内容过长。")

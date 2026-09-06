@@ -308,3 +308,56 @@ def test_main_manageable_categories_and_default_description_updates():
     sender._ensure_default_category_descriptions(["happy", "sad", "unknown"])
     assert sender.category_manager.descriptions["sad"]
     assert reloads == [True]
+
+
+@pytest.mark.parametrize(
+    "enabled,template", [(False, "Choose 2"), (True, ""), (True, "   ")]
+)
+def test_quantity_prompt_disabled_or_blank_adds_nothing(enabled, template):
+    sender = make_sender(
+        {
+            "generation": {
+                "prompt": {
+                    "quantity_guidance_enabled": enabled,
+                    "quantity_guidance": template,
+                }
+            }
+        }
+    )
+    assert sender._build_meme_quantity_prompt() == ""
+
+
+@pytest.mark.parametrize("limit", [-3, -1, 0, 1, 5])
+def test_custom_quantity_prompt_is_independent_of_hard_limit(limit):
+    custom = (
+        "## Custom preference\nChoose 3 distinct memes when appropriate. {user_text}"
+    )
+    sender = make_sender(
+        {
+            "generation": {
+                "prompt": {
+                    "quantity_guidance_enabled": True,
+                    "quantity_guidance": custom,
+                }
+            }
+        }
+    )
+    sender.max_memes_per_message = limit
+    sender.prompt_head = "Head"
+    sender.prompt_tail = "Tail"
+    sender.category_mapping_string = "happy"
+    sender.sys_prompt_add = ""
+    sender.prompt_examples = [(True, "Category example"), (False, "Disabled example")]
+    block = "\n\n" + custom + "\n"
+    assert sender._build_meme_quantity_prompt() == block
+    category = sender._build_meme_prompt()
+    semantic = sender._semantic_system_prompt()
+    assert category.endswith(block)
+    assert "Category example" in category
+    assert "Disabled example" not in category
+    assert category.count(custom) == semantic.count(custom) == 1
+    assert (
+        sender._strip_meme_prompt("Persona" + sender._wrap_meme_prompt(category))
+        == "Persona"
+    )
+    assert sender._strip_meme_prompt("Persona" + semantic) == "Persona"
