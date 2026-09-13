@@ -74,6 +74,14 @@ async function initPluginConfig() {
       prefixes: ["generation.emotion.llm."],
     },
     {
+      id: "meme-tool",
+      category: "sending",
+      title: "工具发送",
+      description:
+        "向对话模型注册 send_meme 工具，按分类标签直接发图。与语义检索、情感辅助互斥；相比语义检索更省 token，但情绪精细度较低。",
+      prefixes: ["generation.emotion.enable_meme_tool"],
+    },
+    {
       id: "collect",
       category: "collect",
       title: "收集偏好",
@@ -186,6 +194,7 @@ async function initPluginConfig() {
     "generation.trigger.scope": "应用范围",
     "generation.emotion.probability": "表情出现概率（%）",
     "generation.emotion.llm.provider_id": "情感辅助模型",
+    "generation.emotion.enable_meme_tool": "启用 send_meme 工具发送表情",
     "semantic.top_k": "每次检索候选数",
     "semantic.min_score": "最低相似度",
     "semantic.vision_provider_id": "图片描述模型",
