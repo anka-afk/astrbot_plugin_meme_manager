@@ -478,7 +478,9 @@ def list_installed_packs() -> list[dict]:
                 has_semantic_metadata and not is_legacy_pack
             ),
         }
-        pack_data.update(get_pack_semantic_summary(pack_dir, image_count))
+        pack_data.update(
+            get_pack_semantic_summary(pack_dir, image_count, verify_files=False)
+        )
         packs.append(pack_data)
     return packs
 
@@ -521,7 +523,9 @@ def get_pack_detail(pack_id: str) -> dict:
         "total_images": _count_images(memes_dir),
         "has_semantic_metadata": (pack_dir / "semantic_metadata.json").is_file(),
     }
-    result.update(get_pack_semantic_summary(pack_dir, result["total_images"]))
+    result.update(
+        get_pack_semantic_summary(pack_dir, result["total_images"], verify_files=False)
+    )
     return result
 
 

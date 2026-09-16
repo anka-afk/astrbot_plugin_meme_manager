@@ -275,7 +275,7 @@ def test_metadata_items_filters_and_sorts(monkeypatch):
             },
         }
     }
-    monkeypatch.setattr(storage, "load_metadata", lambda pack_dir: data)
+    monkeypatch.setattr(storage, "load_metadata", lambda pack_dir, **kwargs: data)
     assert [item["relative_path"] for item in storage.metadata_items("pack")] == [
         "a.png",
         "b.png",

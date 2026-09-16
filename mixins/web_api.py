@@ -2092,14 +2092,14 @@ class WebAPIMixin:
 
     async def _api_list_packs(self):
         try:
-            return jsonify({"packs": list_installed_packs()})
+            return jsonify({"packs": await asyncio.to_thread(list_installed_packs)})
         except Exception as e:
             logger.error(f"获取已安装表情包列表失败: {e}", exc_info=True)
             return jsonify({"message": f"获取已安装表情包列表失败: {str(e)}"}), 500
 
     async def _api_get_pack_detail(self, pack_id: str):
         try:
-            return jsonify(get_pack_detail(pack_id))
+            return jsonify(await asyncio.to_thread(get_pack_detail, pack_id))
         except FileNotFoundError as e:
             return jsonify({"message": str(e)}), 404
         except RuntimeError as e:
@@ -2115,7 +2115,9 @@ class WebAPIMixin:
             pack_id = await self._semantic_request_pack_id()
             self._get_img_host_sync_task_status()
             result = self.semantic_task_manager.status(pack_id)
-            metadata = load_metadata(PACKS_DIR / pack_id)
+            metadata = await asyncio.to_thread(
+                load_metadata, PACKS_DIR / pack_id, scan_legacy=False
+            )
             provider = EmbeddingAdapter(
                 self.semantic_task_manager._resolve_embedding_provider(pack_id),
                 str(getattr(self, "semantic_embedding_provider_id", "") or ""),
@@ -2159,7 +2161,9 @@ class WebAPIMixin:
             except (TypeError, ValueError):
                 page_size = 20
             page_size = min(100, max(10, page_size))
-            all_items = metadata_items(PACKS_DIR / pack_id, request.args.get("status"))
+            all_items = await asyncio.to_thread(
+                metadata_items, PACKS_DIR / pack_id, request.args.get("status")
+            )
             total = len(all_items)
             total_pages = max(1, (total + page_size - 1) // page_size)
             page = min(page, total_pages)

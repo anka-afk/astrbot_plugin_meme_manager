@@ -734,7 +734,7 @@ class SemanticTaskManager:
         self, pack_id: str, *, embedding_provider: Any = None
     ) -> dict[str, Any]:
         pack_dir = self._pack_dir(pack_id)
-        metadata = load_metadata(pack_dir)
+        metadata = load_metadata(pack_dir, scan_legacy=False)
         state = self._load_state(pack_id)
         provider = (
             embedding_provider
@@ -924,17 +924,10 @@ class SemanticTaskManager:
         pack_id = self._validate_pack_id(pack_id)
         pack_dir = self._pack_dir(pack_id)
         state = self._load_state(pack_id)
-        data = load_metadata(pack_dir)
+        data = load_metadata(pack_dir, scan_legacy=False)
         metadata_read_only = bool(data.get("metadata_read_only"))
         metadata_migration_required = bool(data.get("metadata_migration_required"))
         queue_cleared = bool(state.get("queue_cleared"))
-        if (
-            not data.get("images")
-            and pack_dir.is_dir()
-            and not queue_cleared
-            and not metadata_read_only
-        ):
-            data = reconcile_metadata(pack_dir)
         task_status = str(state.get("task_status") or "idle")
         worker_alive = self._semantic_operation_is_alive(pack_id)
         if (
@@ -1092,8 +1085,8 @@ class SemanticTaskManager:
         elif metadata_migration_required:
             queue_status = "migration_required"
             status_message = (
-                "检测到旧版语义数据，描述和人工内容已在内存中保留；"
-                "开始明确任务后才会备份并原子升级文件。"
+                "检测到旧版语义数据；开始任务后才会扫描图片、"
+                "保留已有描述和人工内容，并备份升级文件。"
             )
         elif external_operation:
             queue_status = "external_operation"
@@ -1140,7 +1133,7 @@ class SemanticTaskManager:
             status_message = "当前没有排队或执行中的图片任务。"
         else:
             queue_status = "empty"
-            status_message = "当前资源包没有可处理的图片。"
+            status_message = "尚无语义记录；点击开始任务后扫描图片并建立队列。"
         can_pause = bool(
             task_status == "running" and worker_alive and task_phase != "indexing"
         )
@@ -1350,7 +1343,9 @@ class SemanticTaskManager:
             if mode in {"full", "retry_failed"}:
                 embedding = self._require_embedding_provider(pack_id, "开始完整语义化")
                 selection = await self._verify_embedding_dimension(pack_id, embedding)
-            metadata = reconcile_metadata(pack_dir, external_data=external_data)
+            metadata = await self._run_blocking(
+                reconcile_metadata, pack_dir, external_data=external_data
+            )
             if force:
                 for item in metadata.get("images", {}).values():
                     if item.get("manual_override") or item.get("provenance") in {
