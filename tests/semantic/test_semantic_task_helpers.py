@@ -297,7 +297,9 @@ def test_status_reports_primary_queue_states(
         dimension=0,
         provider=None,
     )
-    monkeypatch.setattr(task_module, "load_metadata", lambda pack_dir: metadata)
+    monkeypatch.setattr(
+        task_module, "load_metadata", lambda pack_dir, **kwargs: metadata
+    )
     monkeypatch.setattr(task_module, "load_index_manifest", lambda *args: {})
     monkeypatch.setattr(manager, "_load_state", lambda pack_id: state)
     monkeypatch.setattr(manager, "_embedding_adapter", lambda pack_id: adapter)
@@ -411,7 +413,9 @@ def test_status_allows_index_rebuild_for_completed_old_prompt_caption(
         dimension=8,
         provider=object(),
     )
-    monkeypatch.setattr(task_module, "load_metadata", lambda pack_dir: metadata)
+    monkeypatch.setattr(
+        task_module, "load_metadata", lambda pack_dir, **kwargs: metadata
+    )
     monkeypatch.setattr(task_module, "load_index_manifest", lambda *args: {})
     monkeypatch.setattr(task_module, "index_is_ready", lambda *args, **kwargs: False)
     monkeypatch.setattr(manager, "_load_state", lambda pack_id: {})

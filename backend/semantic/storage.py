@@ -671,7 +671,18 @@ def _normalize_image_records(
     return normalized
 
 
-def load_metadata(pack_dir: Path | str) -> dict[str, Any]:
+def load_metadata(pack_dir: Path | str, *, scan_legacy: bool = True) -> dict[str, Any]:
+    """Load metadata, optionally deferring legacy image reconciliation.
+
+    Args:
+        pack_dir: Pack directory.
+        scan_legacy: Whether to read image contents to map legacy records.
+            Disable for page queries; explicit tasks perform the migration.
+
+    Returns:
+        Normalized metadata or a migration-required snapshot without image
+        records when legacy scanning is disabled.
+    """
     path = metadata_path(pack_dir)
     if not path.is_file():
         return {
@@ -697,7 +708,7 @@ def load_metadata(pack_dir: Path | str) -> dict[str, Any]:
         try:
             return migrate_legacy_metadata(
                 data,
-                scan_images(pack_dir),
+                scan_images(pack_dir) if scan_legacy else [],
                 load_category_descriptions(pack_dir),
                 Path(pack_dir).name,
             )
@@ -794,13 +805,18 @@ def semantic_metadata_is_complete(
 
 
 def get_pack_semantic_summary(
-    pack_dir: Path | str, image_count: int | None = None
+    pack_dir: Path | str, image_count: int | None = None, *, verify_files: bool = True
 ) -> dict[str, Any]:
-    """返回适合 WebUI 展示的图包语义化进度摘要。
+    """Summarize semantic progress from the saved metadata.
 
-    语义任务按具体文件路径保留独立记录，因此同内容图片也能被逐张人工修改。
-    完成状态同时校验上次语义扫描时的文件数，避免在完整语义化后新增图片，
-    主页仍错误显示为“已完成语义化”。
+    Args:
+        pack_dir: Pack directory.
+        image_count: Known image count, or None to count directory entries.
+        verify_files: Whether to hash images and verify the saved snapshot.
+            Page queries disable this and report saved progress only.
+
+    Returns:
+        Progress and snapshot status for the pack.
     """
     root = Path(pack_dir).resolve()
     if image_count is None:
@@ -830,7 +846,7 @@ def get_pack_semantic_summary(
             "semantic_files_changed": False,
         }
 
-    metadata = load_metadata(root)
+    metadata = load_metadata(root, scan_legacy=verify_files)
     if metadata.get("metadata_read_only"):
         return {
             "semantic_status": "error",
@@ -896,7 +912,8 @@ def get_pack_semantic_summary(
         and caption_done >= semantic_total
     )
     strictly_complete = bool(
-        completion_candidate and semantic_metadata_is_complete(root, metadata)
+        completion_candidate
+        and (not verify_files or semantic_metadata_is_complete(root, metadata))
     )
     if strictly_complete:
         semantic_status = "complete"
@@ -2152,7 +2169,7 @@ def import_metadata_file(path: Path | str) -> dict[str, Any]:
 def metadata_items(
     pack_dir: Path | str, status: str | None = None
 ) -> list[dict[str, Any]]:
-    data = load_metadata(pack_dir)
+    data = load_metadata(pack_dir, scan_legacy=False)
     items = list(data.get("images", {}).values())
     if status:
         status = str(status).strip().lower()
