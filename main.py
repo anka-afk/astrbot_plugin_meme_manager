@@ -147,6 +147,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 self.img_sync_config = dict(r2_config)
                 self.img_sync_provider_type = "cloudflare_r2"
                 self._r2_bucket_name = r2_config.get("bucket_name")
+        elif image_host_type == "lsky":
+            lsky_config = self._get_provider_config("lsky")
+            if lsky_config.get("url") and lsky_config.get("token"):
+                self.img_sync_config = dict(lsky_config)
+                self.img_sync_provider_type = "lsky"
         elif image_host_type == "webdav":
             webdav_config = self._get_provider_config("webdav")
             required_fields = ["url", "username", "password"]

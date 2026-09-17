@@ -123,6 +123,13 @@ async function initPluginConfig() {
       provider: "stardots",
     },
     {
+      id: "lsky",
+      category: "storage",
+      title: "兰空图床（开源版 2.x）",
+      prefixes: ["storage.providers.lsky."],
+      provider: "lsky",
+    },
+    {
       id: "downloads",
       category: "storage",
       title: "同步与下载",
@@ -216,6 +223,7 @@ async function initPluginConfig() {
     cloudflare_r2: "Cloudflare R2",
     stardots: "StarDots",
     webdav: "WebDAV",
+    lsky: "兰空图床（开源版 2.x）",
     only_chat_llm: "仅普通聊天回复",
     chat_and_plugin_llm: "普通聊天与插件触发的回复",
   };
@@ -440,7 +448,8 @@ async function initPluginConfig() {
           control.required = true;
           if (field.path !== "generation.emotion.max_memes_per_message") {
             control.min =
-              field.bounds.min ?? (/(top_k|\.timeout)$/.test(field.path) ? 1 : 0);
+              field.bounds.min ??
+              (/(top_k|\.timeout)$/.test(field.path) ? 1 : 0);
           }
           const max =
             field.bounds.max ??

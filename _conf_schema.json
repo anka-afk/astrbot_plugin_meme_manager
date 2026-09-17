@@ -14,13 +14,43 @@
         "description": "图床服务",
         "type": "string",
         "default": "cloudflare_r2",
-        "options": ["stardots", "cloudflare_r2", "webdav"],
+        "options": ["stardots", "cloudflare_r2", "webdav", "lsky"],
         "hint": "请选择要使用的图床服务"
       },
       "providers": {
         "description": "图床参数",
         "type": "object",
         "items": {
+          "lsky": {
+            "description": "兰空图床（开源版 2.x）",
+            "type": "object",
+            "items": {
+              "url": {
+                "description": "兰空站点地址",
+                "type": "string",
+                "default": "",
+                "hint": "例如 https://img.example.com，不要填写 /api/v1；仅支持开源版 2.x"
+              },
+              "token": {
+                "description": "API Token",
+                "type": "string",
+                "default": "",
+                "hint": "在兰空站点 API 页面获取，支持带或不带 Bearer 前缀"
+              },
+              "namespace": {
+                "description": "远端同步空间标识",
+                "type": "string",
+                "default": "memes",
+                "hint": "1–32 位英文字母、数字、下划线或连字符。仅管理此标识下由插件上传的图片，修改后连接新的空间，不搬迁旧图；不同表情包共用此配置"
+              },
+              "strategy_id": {
+                "description": "存储策略 ID（可选）",
+                "type": "int",
+                "default": 0,
+                "hint": "0 使用兰空默认策略。上传沿用账号默认相册；请关闭图片压缩、格式转换和覆盖式水印，以保持原图内容"
+              }
+            }
+          },
           "cloudflare_r2": {
             "description": "Cloudflare R2 配置",
             "type": "object",

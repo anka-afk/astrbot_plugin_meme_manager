@@ -43,6 +43,7 @@ const server = createServer(async (request, response) => {
             "key",
             "secret",
             "password",
+            "token",
             "access_key_id",
             "secret_access_key",
           ].includes(key);

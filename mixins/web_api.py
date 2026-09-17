@@ -1399,6 +1399,8 @@ class WebAPIMixin:
             return jsonify({"message": f"配置同步失败: {str(e)}"}), 500
 
     def _get_provider_label(self) -> str:
+        if self.img_sync_provider_type == "lsky":
+            return "兰空图床（开源版 2.x）"
         if self.img_sync_provider_type == "cloudflare_r2":
             return "Cloudflare R2"
         if self.img_sync_provider_type == "stardots":
