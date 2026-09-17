@@ -13,6 +13,7 @@ from astrbot.api.star import Context, Star
 
 from .backend.auto_collect import AutoCollectManager
 from .backend.packs.categories import CategoryManager
+from .backend.packs.images import IMAGE_EXTENSIONS
 from .backend.semantic.index import EmbeddingAdapter, index_is_ready
 from .backend.semantic.models import runtime_category_mapping
 from .backend.semantic.query import (
@@ -241,6 +242,9 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         self.remove_invalid_alternative_markup = self._read_config_value(
             ("generation", "markup", "remove_invalid_alternative"),
             default=False,
+        )
+        self.filter_all_tags = self._read_config_value(
+            ("generation", "markup", "filter_all_tags"), default=False
         )
         self.convert_static_to_gif = self._read_config_value(
             ("generation", "message", "convert_static_to_gif"),
@@ -875,6 +879,18 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             if isinstance(context_mapping, dict)
             else runtime_category_mapping(self.category_mapping)
         )
+        # Descriptions can exist on a fresh install without any usable images.
+        memes_dir = Path(pack_context["memes_dir"])
+        category_mapping = {
+            key: description
+            for key, description in category_mapping.items()
+            if (memes_dir / key).is_dir()
+            and any(
+                image.is_file() and image.suffix.lower() in IMAGE_EXTENSIONS
+                for image in (memes_dir / key).iterdir()
+            )
+        }
+        req.system_prompt = self._strip_meme_prompt(req.system_prompt)
         if not category_mapping:
             return
         category_mapping_string = dict_to_string(category_mapping)

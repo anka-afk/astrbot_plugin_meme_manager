@@ -4,6 +4,24 @@ import pytest
 from astrbot_plugin_meme_manager.backend.meme_parser import MemeParser
 
 
+@pytest.mark.parametrize("chunk_size", [1, 2, 7, 1000])
+@pytest.mark.parametrize("categories", [(), ("happy",)])
+def test_final_filter_strips_unknown_and_protected_tags(categories, chunk_size):
+    text = "Hello &&happy&& [unknown] (unknown) :unknown: `&&unknown&&` meme:abcdef123456"
+    parser = MemeParser(categories, filter_all=True)
+    visible = "".join(
+        parser.feed(text[index : index + chunk_size])
+        for index in range(0, len(text), chunk_size)
+    ) + parser.finish()
+    assert visible == "Hello     `` "
+    assert parser.selections == (["happy"] if categories else [])
+
+
+def test_final_filter_does_not_leak_after_line_limit():
+    text = "x" * (MemeParser.MAX_LINE + 1) + " &&unknown&&"
+    assert MemeParser.parse(text, filter_all=True).text == text.split(" ")[0] + " "
+
+
 @pytest.mark.parametrize(
     ("text", "visible", "selected"),
     [

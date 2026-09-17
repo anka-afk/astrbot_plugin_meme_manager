@@ -420,6 +420,12 @@
         "description": "标记解析策略",
         "type": "object",
         "items": {
+          "filter_all_tags": {
+            "description": "过滤所有标签",
+            "type": "bool",
+            "default": false,
+            "hint": "在正常选图和匹配完成后最终兜底清理所有 &&标签&&、:标签:、[标签]、(标签) 和 meme:图片ID，不论是否匹配或安装图包，流式回复同样生效。此强制清理也会影响代码、链接和普通括号内容；默认关闭。"
+          },
           "enable_alternative": {
             "description": "启用备用标记",
             "type": "bool",
