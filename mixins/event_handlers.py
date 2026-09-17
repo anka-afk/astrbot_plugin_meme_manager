@@ -439,15 +439,20 @@ class EventHandlerMixin:
             ]
             for start, end in reversed(edits):
                 cleaned = cleaned[:start] + cleaned[end:]
+        if getattr(self, "filter_all_tags", False):
+            cleaned = MemeParser.parse(cleaned, filter_all=True).text
         return cleaned
 
-    def _make_meme_parser(self, categories, *, semantic=False, fallbacks=True):
+    def _make_meme_parser(
+        self, categories, *, semantic=False, fallbacks=True, final_cleanup=False
+    ):
         """Build an isolated parser from the current plugin settings.
 
         Args:
             categories: Allowed keys from the request's resource pack.
             semantic: Whether to accept semantic IDs instead of categories.
             fallbacks: Whether standalone and repeated categories are permitted.
+            final_cleanup: Whether this parser handles final delivery text.
 
         Returns:
             A new parser with no shared mutable request state.
@@ -468,6 +473,7 @@ class EventHandlerMixin:
             ),
             remove_invalid=self.remove_invalid_alternative_markup,
             strip_references=True,
+            filter_all=final_cleanup and getattr(self, "filter_all_tags", False),
         )
 
     def _extract_marked_emotions_from_text(
@@ -518,7 +524,9 @@ class EventHandlerMixin:
                         mapping if isinstance(mapping, dict) else self.category_mapping
                     )
                     parser = self._make_meme_parser(
-                        categories, semantic=self._semantic_mode_active(event)
+                        categories,
+                        semantic=self._semantic_mode_active(event),
+                        final_cleanup=True,
                     )
                 last_text_chunk = chunk
                 components = []
@@ -534,7 +542,9 @@ class EventHandlerMixin:
                             components.append(Plain(visible))
                         components.append(component)
                         parser = self._make_meme_parser(
-                            categories, semantic=self._semantic_mode_active(event)
+                            categories,
+                            semantic=self._semantic_mode_active(event),
+                            final_cleanup=True,
                         )
                 if components:
                     filtered = copy.copy(chunk)
@@ -642,6 +652,8 @@ class EventHandlerMixin:
                     valid_emoticons,
                 )
                 found_emotions.extend(extracted)
+                if getattr(self, "filter_all_tags", False):
+                    cleaned_text = self._clean_outgoing_plain_text(cleaned_text)
                 if cleaned_text.strip():
                     cleaned_components.append(Plain(cleaned_text.strip()))
             else:
@@ -1126,6 +1138,8 @@ class EventHandlerMixin:
         event.set_extra("found_emotions", filtered_emotions)
         logger.info(f"[meme_manager] 去重后的最终表情列表: {filtered_emotions}")
 
+        if getattr(self, "filter_all_tags", False):
+            clean_text = self._clean_outgoing_plain_text(clean_text)
         response.completion_text = clean_text.strip()
         if filtered_emotions and not response.completion_text:
             # Keep a message chain so AstrBot reaches decoration with an empty
@@ -1175,6 +1189,8 @@ class EventHandlerMixin:
             logger.debug("[meme_manager] No semantic meme selected for this reply")
         event.set_extra("meme_manager_semantic_selected_ids", selected_ids)
         event.set_extra("found_emotions", None)
+        if getattr(self, "filter_all_tags", False):
+            clean_text = self._clean_outgoing_plain_text(clean_text)
         response.completion_text = clean_text.strip()
         if selected_ids and not response.completion_text:
             if response.result_chain is None:

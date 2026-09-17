@@ -77,9 +77,11 @@ async function initPluginConfig() {
       id: "collect",
       category: "collect",
       title: "收集偏好",
-      description: "收集开关、视觉模型和收集范围。",
+      description: "收集开关、人工审核、待审核容量、视觉模型和收集范围。",
       prefixes: [
         "auto_collect.enabled",
+        "auto_collect.manual_review",
+        "auto_collect.pending_limit",
         "auto_collect.vision_provider_id",
         "auto_collect.scope",
         "auto_collect.target_pack_id",
@@ -119,6 +121,13 @@ async function initPluginConfig() {
       title: "StarDots",
       prefixes: ["storage.providers.stardots."],
       provider: "stardots",
+    },
+    {
+      id: "lsky",
+      category: "storage",
+      title: "兰空图床（开源版 2.x）",
+      prefixes: ["storage.providers.lsky."],
+      provider: "lsky",
     },
     {
       id: "downloads",
@@ -214,6 +223,7 @@ async function initPluginConfig() {
     cloudflare_r2: "Cloudflare R2",
     stardots: "StarDots",
     webdav: "WebDAV",
+    lsky: "兰空图床（开源版 2.x）",
     only_chat_llm: "仅普通聊天回复",
     chat_and_plugin_llm: "普通聊天与插件触发的回复",
   };
@@ -438,7 +448,8 @@ async function initPluginConfig() {
           control.required = true;
           if (field.path !== "generation.emotion.max_memes_per_message") {
             control.min =
-              field.bounds.min ?? (/(top_k|\.timeout)$/.test(field.path) ? 1 : 0);
+              field.bounds.min ??
+              (/(top_k|\.timeout)$/.test(field.path) ? 1 : 0);
           }
           const max =
             field.bounds.max ??

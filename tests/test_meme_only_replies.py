@@ -68,6 +68,56 @@ def reply_context(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("empty_pack", [False, True])
+async def test_final_filter_runs_after_selection(reply_context, enabled, empty_pack):
+    sender, event, state, _ = reply_context
+    sender.filter_all_tags = enabled
+    sender.emotions_probability = 100
+    if empty_pack:
+        sender.category_mapping.clear()
+    response = LLMResponse(
+        role="assistant", completion_text="Hello &&happy&& :unknown: [unknown]"
+    )
+    await sender._resp_impl(event, response)
+    assert state["found_emotions"] == ([] if empty_pack else ["happy"])
+    state["result"] = MessageEventResult(
+        chain=[Plain(response.completion_text)],
+        result_content_type=ResultContentType.LLM_RESULT,
+    )
+    await sender._on_decorating_result_impl(event)
+    visible = "".join(
+        component.text for component in state["result"].chain
+        if isinstance(component, Plain)
+    )
+    assert visible == ("Hello" if enabled else "Hello  :unknown: [unknown]")
+    assert bool(state.get("meme_manager_pending_images")) is not empty_pack
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunk_size", [1, 3, 1000])
+async def test_empty_pack_stream_final_filter(reply_context, chunk_size):
+    sender, event, _, _ = reply_context
+    sender.filter_all_tags = True
+    sender.category_mapping.clear()
+    text = "Hello &&missing&& :missing: [missing] (missing)"
+
+    async def source():
+        for index in range(0, len(text), chunk_size):
+            yield MessageChain([Plain(text[index:index + chunk_size])])
+
+    visible = "".join(
+        [
+            component.text
+            async for chunk in sender._filter_meme_stream(event, source())
+            for component in chunk.chain
+            if isinstance(component, Plain)
+        ]
+    )
+    assert visible == "Hello    "
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("mixed", [False, True])
 @pytest.mark.parametrize("chain_response", [False, True])

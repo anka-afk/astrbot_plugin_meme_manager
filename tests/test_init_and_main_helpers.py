@@ -13,6 +13,36 @@ def make_sender(config=None):
     return sender
 
 
+@pytest.mark.parametrize("has_image", [False, True])
+def test_request_prompt_only_advertises_available_images(tmp_path, has_image):
+    sender = make_sender()
+    sender.emotion_llm_enabled = False
+    sender._semantic_pack_ready = lambda **kwargs: False
+    sender._remove_semantic_tool = lambda req: None
+    sender.prompt_head = "Head"
+    sender.prompt_tail = "Tail"
+    sender.sys_prompt_add = ""
+    sender.prompt_examples = []
+    sender._resolve_runtime_pack_context = lambda **kwargs: {
+        "category_mapping": {"happy": "Joy", "sad": "Sad"},
+        "memes_dir": tmp_path,
+    }
+    (tmp_path / "happy").mkdir()
+    (tmp_path / "happy" / "notes.txt").write_text("not an image")
+    if has_image:
+        (tmp_path / "happy" / "image.PNG").write_bytes(b"image")
+    req = SimpleNamespace(
+        system_prompt="Persona" + sender._wrap_meme_prompt("obsolete categories")
+    )
+    sender._apply_request_prompt(req)
+    assert "obsolete categories" not in req.system_prompt
+    assert "sad" not in req.system_prompt
+    if has_image:
+        assert "happy" in req.system_prompt
+    else:
+        assert req.system_prompt == "Persona"
+
+
 def test_main_config_reading_uses_only_current_paths():
     sender = make_sender(
         {

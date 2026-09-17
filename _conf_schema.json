@@ -14,13 +14,43 @@
         "description": "图床服务",
         "type": "string",
         "default": "cloudflare_r2",
-        "options": ["stardots", "cloudflare_r2", "webdav"],
+        "options": ["stardots", "cloudflare_r2", "webdav", "lsky"],
         "hint": "请选择要使用的图床服务"
       },
       "providers": {
         "description": "图床参数",
         "type": "object",
         "items": {
+          "lsky": {
+            "description": "兰空图床（开源版 2.x）",
+            "type": "object",
+            "items": {
+              "url": {
+                "description": "兰空站点地址",
+                "type": "string",
+                "default": "",
+                "hint": "例如 https://img.example.com，不要填写 /api/v1；仅支持开源版 2.x"
+              },
+              "token": {
+                "description": "API Token",
+                "type": "string",
+                "default": "",
+                "hint": "在兰空站点 API 页面获取，支持带或不带 Bearer 前缀"
+              },
+              "namespace": {
+                "description": "远端同步空间标识",
+                "type": "string",
+                "default": "memes",
+                "hint": "1–32 位英文字母、数字、下划线或连字符。仅管理此标识下由插件上传的图片，修改后连接新的空间，不搬迁旧图；不同表情包共用此配置"
+              },
+              "strategy_id": {
+                "description": "存储策略 ID（可选）",
+                "type": "int",
+                "default": 0,
+                "hint": "0 使用兰空默认策略。上传沿用账号默认相册；请关闭图片压缩、格式转换和覆盖式水印，以保持原图内容"
+              }
+            }
+          },
           "cloudflare_r2": {
             "description": "Cloudflare R2 配置",
             "type": "object",
@@ -201,7 +231,7 @@
   "auto_collect": {
     "description": "自动收集表情包",
     "type": "object",
-    "hint": "收到图片后在后台调用视觉模型判断是否为表情包并分类。语义检索开启时，图片会先进入独立的待语义化桶，不会立即改变正在使用的语义包",
+    "hint": "收到图片后在后台识别和分类，默认进入对应表情包的待审核列表。人工接收后才会入包，语义索引仍需手动生成",
     "items": {
       "enabled": {
         "description": "启用自动收集",
@@ -216,6 +246,19 @@
         "_special": "select_provider",
         "hint": "必须选择支持图片输入的聊天模型；未选择或模型明确不支持 image 模态时不会启动自动收集"
       },
+      "manual_review": {
+        "description": "人工审核表情包",
+        "type": "bool",
+        "default": true,
+        "hint": "默认开启。收集后在表情包管理页切换到对应包，点击右侧待审核按钮预览、修改分类并接收。关闭后新收集图片自动入包，已有待审核图片仍需处理；语义索引始终手动生成"
+      },
+      "pending_limit": {
+        "description": "每个表情包的待审核容量",
+        "type": "int",
+        "default": 200,
+        "hint": "每个表情包独立计算，默认 200 张，可设置为 1–2000 张。达到容量后暂停向该包提交新候选图片；不会自动删除已收集图片",
+        "slider": { "min": 1, "max": 2000, "step": 1 }
+      },
       "scope": {
         "description": "允许收集的群聊或个人 ID",
         "type": "list",
@@ -229,7 +272,7 @@
         "description": "目标表情包 ID",
         "type": "string",
         "default": "",
-        "hint": "留空时使用当前会话按 session/persona/default 规则选中的表情包；填写后固定以该包的分类进行识别。语义检索开启时仍先进入待语义化桶"
+        "hint": "留空时使用当前会话按 session/persona/default 规则选中的表情包；填写后固定以该包的分类进行识别，待审核图片也归属该包"
       },
       "sampling_probability": {
         "description": "图片识别抽样概率（%）",
@@ -269,7 +312,7 @@
         "description": "最低分类置信度",
         "type": "float",
         "default": 0.65,
-        "hint": "确认是表情包但分类置信度不足时进入 needs_review，等待人工整理"
+        "hint": "关闭人工审核时，分类置信度不足的图片进入 needs_review；开启人工审核时保留模型建议分类，供你在预览中判断和修正"
       }
     }
   },
@@ -420,6 +463,12 @@
         "description": "标记解析策略",
         "type": "object",
         "items": {
+          "filter_all_tags": {
+            "description": "过滤所有标签",
+            "type": "bool",
+            "default": false,
+            "hint": "在正常选图和匹配完成后最终兜底清理所有 &&标签&&、:标签:、[标签]、(标签) 和 meme:图片ID，不论是否匹配或安装图包，流式回复同样生效。此强制清理也会影响代码、链接和普通括号内容；默认关闭。"
+          },
           "enable_alternative": {
             "description": "启用备用标记",
             "type": "bool",

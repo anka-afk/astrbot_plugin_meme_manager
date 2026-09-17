@@ -18,6 +18,7 @@ class MemeParser:
         remove_invalid: Consume invalid bracket and parenthesis markers.
         semantic: Accept semantic IDs instead of category keys.
         strip_references: Remove standalone internal image references.
+        filter_all: Finally strip all marker forms without changing selections.
 
     Notes:
         Ambiguous Markdown is buffered until a line boundary. Oversized lines
@@ -44,6 +45,7 @@ class MemeParser:
         remove_invalid=False,
         semantic=False,
         strip_references=False,
+        filter_all=False,
     ):
         self.categories = frozenset(categories)
         self.alternative = alternative
@@ -52,6 +54,7 @@ class MemeParser:
         self.remove_invalid = remove_invalid
         self.semantic = semantic
         self.strip_references = strip_references
+        self.filter_all = filter_all
         self.tokens: list[MemeToken] = []
         self._line = ""
         self._emitted = 0
@@ -105,7 +108,7 @@ class MemeParser:
                 self._offset += len(part)
                 continue
             self._line += part
-            if len(self._line) > self.MAX_LINE:
+            if len(self._line) > self.MAX_LINE and not self.filter_all:
                 output.append(self._line[self._emitted :])
                 self._offset += len(self._line)
                 self._line = ""
@@ -120,7 +123,7 @@ class MemeParser:
                 # Keep indentation and potential standalone fallback tokens.
                 syntax = re.search(r"[&`~\[\]()<>:\\\n]", self._line)
                 prefix = self._line[: syntax.start()] if syntax else self._line
-                if self.semantic:
+                if self.semantic or self.filter_all:
                     pending_id = re.search(r"(?i)\bm(?:e(?:m(?:e)?)?)?$", prefix)
                     if pending_id:
                         prefix = prefix[: pending_id.start()]
@@ -165,7 +168,7 @@ class MemeParser:
         line = self._line
         continued_context = self._context.active
         protected = self._context.scan(line)
-        if self._context.overflow:
+        if self._context.overflow and not self.filter_all:
             self._passthrough = True
             self.diagnostics.append("context_limit_exceeded")
 
@@ -284,4 +287,8 @@ class MemeParser:
         self._offset += len(line)
         self._line = ""
         self._emitted = 0
-        return "".join(parts)
+        visible = "".join(parts)
+        # Run after normal selection so cleanup cannot suppress valid images.
+        if self.filter_all:
+            visible = self._markers.sub("", visible)
+        return visible

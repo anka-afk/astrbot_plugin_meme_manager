@@ -13,7 +13,12 @@ from pathlib import Path
 from .core.file_handler import write_json_atomic
 from .core.sync_manager import SYNC_TASKS, SyncManager
 from .core.upload_tracker import UploadTracker
-from .providers import CloudflareR2Provider, StarDotsProvider, WebDAVProvider
+from .providers import (
+    CloudflareR2Provider,
+    LskyProvider,
+    StarDotsProvider,
+    WebDAVProvider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +33,7 @@ class ImageSync:
         self.local_dir = Path(local_dir).resolve()
         self.provider_type = provider_type
         providers = {
+            "lsky": LskyProvider,
             "stardots": StarDotsProvider,
             "cloudflare_r2": CloudflareR2Provider,
             "webdav": WebDAVProvider,
@@ -50,6 +56,13 @@ class ImageSync:
                 str(config.get("url") or "").rstrip("/"),
                 config.get("username"),
                 str(config.get("base_path", "memes")).strip("/"),
+            ]
+        elif provider_type == "lsky":
+            identity = [
+                provider_type,
+                self.provider.base_url,
+                self.provider.namespace,
+                hashlib.sha256(str(config.get("token") or "").encode()).hexdigest(),
             ]
         else:
             identity = [provider_type, config.get("key"), config.get("space")]

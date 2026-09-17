@@ -61,6 +61,38 @@ def start_plugin(monkeypatch):
     return lambda config: plugin_main.MemeSender(SimpleNamespace(), config)
 
 
+def test_filter_all_tags_shared_config_roundtrip(shared_config, start_plugin):
+    snapshot, values = describe_settings(shared_config)
+    field = next(
+        item
+        for item in snapshot["fields"]
+        if item["path"] == "generation.markup.filter_all_tags"
+    )
+    assert field["label"] == "过滤所有标签"
+    assert field["default"] is False
+    assert start_plugin(shared_config).filter_all_tags is False
+    updated = validate_settings_changes(
+        values, snapshot["fields"], {field["path"]: True}, shared_config.schema
+    )
+    assert start_plugin(updated).filter_all_tags is True
+
+
+def test_lsky_configuration_and_token_redaction(shared_config, start_plugin):
+    shared_config["storage"]["provider"] = "lsky"
+    shared_config["storage"]["providers"]["lsky"].update(
+        url="https://lsky.example", token="private-lsky-token", namespace="memes"
+    )
+    shared_config.save_config()
+    snapshot, values = describe_settings(shared_config)
+    fields = {field["path"]: field for field in snapshot["fields"]}
+    assert "private-lsky-token" not in json.dumps(snapshot)
+    assert fields["storage.providers.lsky.token"]["secret"] is True
+    assert fields["storage.providers.lsky.token"]["configured"] is True
+    plugin = start_plugin(values)
+    assert plugin.img_sync_provider_type == "lsky"
+    assert plugin.img_sync_config["token"] == "private-lsky-token"
+
+
 def test_startup_cleans_persisted_config_without_changing_current_values(
     shared_config, start_plugin, monkeypatch
 ):

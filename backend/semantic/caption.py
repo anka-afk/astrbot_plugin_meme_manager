@@ -14,7 +14,7 @@ from .models import (
     parse_caption_result_with_review,
 )
 
-CAPTION_PROMPT = """你是中文互联网表情包语义分析员。你的任务不是给图片写普通图注，而是还原这张图作为聊天回复时真正传达的意思，让人能够按对话情境准确搜索到它。
+CAPTION_ANALYSIS_PROMPT = """你是中文互联网表情包语义分析员。你的任务不是给图片写普通图注，而是还原这张图作为聊天回复时真正传达的意思，让人能够按对话情境准确搜索到它。
 
 请在内部完成以下分析，不要输出分析过程：
 
@@ -51,7 +51,11 @@ CAPTION_PROMPT = """你是中文互联网表情包语义分析员。你的任务
 - 是否误把后期贴图当成原图内容，误把角色身份当成表情含义，或套用了与图片无关的固定场景。
 - 是否明确了事情是谁做的、谁在装傻或被调侃；有没有凭空改变原文标点，导致说话方向反转。
 
-最后只返回严格 JSON，不要使用 Markdown，不要增加字段：
+"""
+
+CAPTION_PROMPT = (
+    CAPTION_ANALYSIS_PROMPT
+    + """最后只返回严格 JSON，不要使用 Markdown，不要增加字段：
 - caption：一到两句自然中文；先概括核心梗义和复合语气，再说明典型触发语境或用法；身份仅在已可靠核实时提及。
 - tags：6 到 10 个细粒度中文标签，覆盖核心梗义、说话视角、行为归属、言语功能、复合语气、触发场景及关键视觉/文字线索。
 - visible_text：图片中清晰可见的原始文字，没有则为空字符串。
@@ -62,6 +66,7 @@ CAPTION_PROMPT = """你是中文互联网表情包语义分析员。你的任务
 格式必须为：
 {"caption":"……","tags":["……","……"],"visible_text":"……","category_fit":"match","category_review_reason":"","suggested_category":""}
 """
+)
 
 CATEGORY_CONTEXT_PROMPT = """【高优先级但可被明确证据推翻的现有分类前提】
 当前分类名称：{category}

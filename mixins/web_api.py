@@ -411,6 +411,20 @@ class WebAPIMixin:
             ["GET"],
             "获取当前会话 Bearer Token（用于插件页安全跳转）",
         )
+        for endpoint, handler, methods in (
+            ("auto-collect/inbox", self._api_auto_collect_inbox, ["GET"]),
+            ("auto-collect/inbox/image", self._api_auto_collect_image, ["GET"]),
+            (
+                "auto-collect/inbox/image_data",
+                self._api_auto_collect_image_data,
+                ["GET"],
+            ),
+            ("auto-collect/inbox/accept", self._api_auto_collect_accept, ["POST"]),
+            ("auto-collect/inbox/discard", self._api_auto_collect_discard, ["POST"]),
+        ):
+            self._register_webui_api(
+                endpoint, handler, methods, "Review collected images"
+            )
         self._register_webui_api(
             "semantic/status", self._api_semantic_status, ["GET"], "获取语义化任务状态"
         )
@@ -1385,6 +1399,8 @@ class WebAPIMixin:
             return jsonify({"message": f"配置同步失败: {str(e)}"}), 500
 
     def _get_provider_label(self) -> str:
+        if self.img_sync_provider_type == "lsky":
+            return "兰空图床（开源版 2.x）"
         if self.img_sync_provider_type == "cloudflare_r2":
             return "Cloudflare R2"
         if self.img_sync_provider_type == "stardots":
@@ -2220,6 +2236,118 @@ class WebAPIMixin:
         except Exception as exc:
             logger.error("启动语义任务失败: %s", exc, exc_info=True)
             return jsonify({"message": "启动语义任务失败"}), 500
+
+    async def _api_auto_collect_inbox(self):
+        """Return all pending images for the selected pack.
+
+        Returns:
+            JSON review state or a validation error response.
+        """
+        try:
+            pack_id = await self._semantic_request_pack_id()
+            return jsonify(await self.auto_collect_manager.pending_status(pack_id)), 200
+        except (ValueError, FileNotFoundError) as exc:
+            return jsonify({"message": str(exc)}), 400
+
+    async def _api_auto_collect_image(self):
+        """Serve an authenticated, pack-scoped pending image.
+
+        Returns:
+            Image response or a validation error response.
+        """
+        try:
+            pack_id = await self._semantic_request_pack_id()
+            path = self.auto_collect_manager.pending_image_path(
+                pack_id, str(request.args.get("id") or "")
+            )
+            content = await asyncio.to_thread(path.read_bytes)
+            extension = await asyncio.to_thread(
+                self.auto_collect_manager._validate_image, content
+            )
+            mime = {
+                ".jpg": "image/jpeg",
+                ".png": "image/png",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+            }[extension]
+            response = await send_file(
+                io.BytesIO(content),
+                mimetype=mime,
+                attachment_filename=f"candidate{extension}",
+            )
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            return response
+        except (ValueError, FileNotFoundError) as exc:
+            return jsonify({"message": str(exc)}), 404
+
+    async def _api_auto_collect_image_data(self):
+        """Return an authenticated image data URL for embedded dashboards.
+
+        Returns:
+            Original image bytes encoded as a data URL.
+        """
+        try:
+            pack_id = await self._semantic_request_pack_id()
+            path = self.auto_collect_manager.pending_image_path(
+                pack_id, str(request.args.get("id") or "")
+            )
+            content = await asyncio.to_thread(path.read_bytes)
+            extension = await asyncio.to_thread(
+                self.auto_collect_manager._validate_image, content
+            )
+            mime = {
+                ".jpg": "image/jpeg",
+                ".png": "image/png",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+            }[extension]
+            return jsonify(
+                {
+                    "data_url": f"data:{mime};base64,{base64.b64encode(content).decode('ascii')}"
+                }
+            ), 200
+        except (ValueError, FileNotFoundError) as exc:
+            return jsonify({"message": str(exc)}), 404
+
+    async def _api_auto_collect_accept(self):
+        """Accept only explicitly selected collected images.
+
+        Returns:
+            Import counts or a validation/conflict response.
+        """
+        try:
+            data = await request.get_json() or {}
+            if not isinstance(data, dict):
+                raise ValueError("请求格式无效")
+            pack_id = await self._semantic_request_pack_id(data)
+            result = await self.auto_collect_manager.accept_pending(
+                pack_id, data.get("items")
+            )
+            return jsonify(result), 200
+        except (ValueError, FileNotFoundError) as exc:
+            return jsonify({"message": str(exc)}), 400
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+
+    async def _api_auto_collect_discard(self):
+        """Discard selected collected images with optional rejection memory.
+
+        Returns:
+            Discard count or a validation response.
+        """
+        try:
+            data = await request.get_json() or {}
+            if not isinstance(data, dict) or not isinstance(
+                data.get("remember_rejection", False), bool
+            ):
+                raise ValueError("请求格式无效")
+            pack_id = await self._semantic_request_pack_id(data)
+            result = await self.auto_collect_manager.discard_pending(
+                pack_id, data.get("ids"), data.get("remember_rejection", False)
+            )
+            return jsonify(result), 200
+        except (ValueError, FileNotFoundError) as exc:
+            return jsonify({"message": str(exc)}), 400
 
     async def _api_semantic_import_auto_inbox(self):
         """导入当前表情包对应的自动收集待整理图片。

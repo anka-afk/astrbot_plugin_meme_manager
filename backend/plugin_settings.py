@@ -58,6 +58,7 @@ def describe_settings(config) -> tuple[dict, dict]:
                 "key",
                 "secret",
                 "password",
+                "token",
                 "access_key_id",
                 "secret_access_key",
             }
