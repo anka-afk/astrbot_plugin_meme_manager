@@ -77,10 +77,11 @@ async function initPluginConfig() {
       id: "collect",
       category: "collect",
       title: "收集偏好",
-      description: "收集开关、人工审核、视觉模型和收集范围。",
+      description: "收集开关、人工审核、待审核容量、视觉模型和收集范围。",
       prefixes: [
         "auto_collect.enabled",
         "auto_collect.manual_review",
+        "auto_collect.pending_limit",
         "auto_collect.vision_provider_id",
         "auto_collect.scope",
         "auto_collect.target_pack_id",
