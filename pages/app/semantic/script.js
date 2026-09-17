@@ -882,61 +882,16 @@ async function initSemanticPage() {
     }
   }
 
-  async function importAutoInboxAndStart(apiPost, apiGet) {
-    if (!packSelect.value || requestRunning || pendingAutoInboxCount <= 0)
-      return;
-    const requestedPackId = packSelect.value;
-    const confirmed = await window.MemeUI.confirm({
-      title: "确认合入并语义化",
-      message: `将 ${pendingAutoInboxCount} 张自动收集图片按建议分类合入「${
-        packSelect.selectedOptions[0]?.textContent || requestedPackId
-      }」，并立即启动完整语义化。`,
-      confirmText: "合入并语义化",
-    });
-    if (!confirmed) return;
-    if (requestedPackId !== packSelect.value || requestRunning) return;
-    lastActionError = "";
-    let importedCount = 0;
-    setBusy(true);
-    showNotice("正在合入自动收集待整理桶……");
-    try {
-      const imported = await apiPost("semantic/auto-inbox/import", {
-        pack_id: packSelect.value,
-      });
-      importedCount = Number(imported?.imported || 0);
-      if (importedCount > 0) {
-        const started = await apiPost("semantic/start", {
-          pack_id: packSelect.value,
-          mode: "full",
-          force: false,
-          concurrency: Math.max(
-            1,
-            Math.min(16, Math.floor(Number(concurrencyInput.value)) || 1),
-          ),
-        });
-        showToast(started?.message || imported?.message || "语义化任务已启动");
-        showNotice(started?.message || "图片已合入，语义化任务已启动");
-      } else {
-        showToast(imported?.message || "没有需要合入的新图片");
-        showNotice(imported?.message || "没有需要合入的新图片");
-      }
-    } catch (error) {
-      lastActionError =
-        importedCount > 0
-          ? `${importedCount} 张图片已合入，但启动语义化失败：${errorMessage(
-              error,
-            )}。可点击“一键完整语义化”重试。`
-          : `合入待整理桶失败：${errorMessage(error)}`;
-      showNotice(lastActionError, true);
-      showToast(lastActionError, true);
-    } finally {
-      setBusy(false);
-      try {
-        await loadStatus(apiGet);
-      } catch (error) {
-        await reportError("读取状态失败", error);
-      }
-    }
+  async function openCollectionReview() {
+    const token = await window.MemeUI.ensureNavAuthToken();
+    window.location.href = window.MemeUI.withCurrentAuthParams(
+      "../a_manage/index.html",
+      {
+        managed_pack_id: packSelect.value,
+        review_collection: "1",
+        asset_token: token || null,
+      },
+    ).toString();
   }
 
   imagePreviewClose.addEventListener("click", closeImagePreview);
@@ -998,7 +953,7 @@ async function initSemanticPage() {
     ),
   );
   autoInboxSemanticize.addEventListener("click", () =>
-    importAutoInboxAndStart(apiPost, apiGet),
+    openCollectionReview(),
   );
   recordsPrev.addEventListener("click", async () => {
     if (recordsCurrentPage <= 1 || requestRunning) return;

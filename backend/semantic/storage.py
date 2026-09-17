@@ -13,6 +13,7 @@ from typing import Any
 
 from .models import (
     IMAGE_EXTENSIONS,
+    PROMPT_VERSION,
     REVIEW_CATEGORY,
     REVIEW_CATEGORY_DESCRIPTION,
     SCHEMA_VERSION,
@@ -1289,6 +1290,97 @@ def _apply_manual_semantic_inputs(
     item.error = None
     item.updated_at = utc_now()
     return item
+
+
+def save_collected_image_semantic(
+    pack_dir: Path | str,
+    image_path: Path | str,
+    decision: dict[str, Any],
+    *,
+    manual_confirmed: bool = False,
+) -> None:
+    """Preserve collection analysis without starting a model or index task.
+
+    Args:
+        pack_dir: Destination pack protected by its external-operation lock.
+        image_path: Newly accepted image inside the destination pack.
+        decision: Collection analysis with its semantic prompt and category.
+        manual_confirmed: Whether the user explicitly accepted this category.
+
+    Raises:
+        ValueError: The image or metadata is invalid for the destination pack.
+        RuntimeError: The image changes before metadata can be saved.
+    """
+    root = Path(pack_dir).resolve()
+    requested = Path(image_path)
+    source = requested.resolve()
+    if (
+        requested.is_symlink()
+        or not source.is_relative_to(root / "memes")
+        or source.suffix.lower() not in IMAGE_EXTENSIONS
+        or not source.is_file()
+    ):
+        raise ValueError("Collected image must be inside the destination pack")
+    digest = file_sha256(source)
+    relative_path = source.relative_to(root).as_posix()
+    category = source.parent.name
+    entry_id = semantic_entry_id(digest, category, relative_path)
+    # Adding one accepted image must not rehash the entire existing library.
+    metadata = load_metadata(root)
+    if metadata.get("metadata_read_only"):
+        raise SemanticMetadataCompatibilityError(str(metadata.get("metadata_error")))
+    images = metadata.setdefault("images", {})
+    item = SemanticImage(
+        content_sha256=digest,
+        relative_path=relative_path,
+        category=category,
+        category_description=load_category_descriptions(root).get(category, ""),
+    )
+    caption = str(decision.get("caption") or "").strip()[:4000]
+    tags = [
+        tag for tag in normalize_tags(decision.get("tags")) if not is_category_tag(tag)
+    ]
+    visible_text = str(decision.get("visible_text") or "").strip()[:4000]
+    reusable = bool(
+        caption
+        and tags
+        and decision.get("semantic_prompt_version") == PROMPT_VERSION
+        and decision.get("semantic_category") == item.category
+        and item.category != REVIEW_CATEGORY
+    )
+    # Older or reclassified analyses remain drafts, never completed captions.
+    item.auto_caption = caption
+    item.auto_tags = tags
+    item.auto_visible_text = visible_text
+    if reusable:
+        item.caption = caption
+        item.tags = ensure_category_tag(tags, item.category)
+        item.visible_text = visible_text
+        item.caption_status = "done"
+        item.prompt_version = PROMPT_VERSION
+        item.category_fit = "match"
+        item.category_review_status = "auto_match"
+        item.category_review_context_hash = item.category_context_hash
+        item.auto_category_fit = "match"
+        item.auto_category_review_status = "auto_match"
+    else:
+        item.caption = ""
+        item.tags = ensure_category_tag([], item.category)
+        item.visible_text = ""
+        item.caption_status = "pending"
+    if manual_confirmed and item.category != REVIEW_CATEGORY:
+        item.category_fit = "match"
+        item.category_review_status = "manual_confirmed"
+        item.category_review_context_hash = item.category_context_hash
+        item.manual_confirmation_context_hash = item.category_context_hash
+    item.vision_model = str(decision.get("vision_model") or "")
+    item.embedding_status = "pending"
+    item.text_hash = text_hash(item.vector_text) if reusable else ""
+    item.updated_at = utc_now()
+    _assert_image_snapshot_unchanged(root, source, digest, entry_id)
+    images[entry_id] = item.to_dict()
+    metadata["requires_local_index_rebuild"] = True
+    save_metadata(root, metadata)
 
 
 def save_manual_image_semantic(

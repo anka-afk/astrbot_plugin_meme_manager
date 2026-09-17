@@ -136,6 +136,17 @@
       },
     ],
   };
+  let collected = Array.from({ length: 7 }, (_, index) => ({
+    id: `collected-${index}`,
+    suggested_category: ["happy", "sad", "surprise"][index % 3],
+    category_confidence: [0.98, 0.92, 0.87, 0.73, 0.6, 0.45, 0.28][index],
+    meme_confidence: 0.95,
+    caption: ["好耶，今天也要开心！", "不想上班，想躺平。", "这也太突然了吧！"][
+      index % 3
+    ],
+    near_duplicate: index === 5 ? "surprise/震惊.png" : "",
+    received_at: new Date().toISOString(),
+  }));
   async function request(endpoint, body = {}) {
     await new Promise((done) => setTimeout(done, 90));
     if (
@@ -144,6 +155,28 @@
     )
       throw new Error("预览中的模拟连接失败");
     switch (endpoint) {
+      case "auto-collect/inbox":
+        return {
+          count: body.pack_id === "weekend" ? 0 : collected.length,
+          items: body.pack_id === "weekend" ? [] : collected,
+          categories: descriptions,
+        };
+      case "auto-collect/inbox/image_data": {
+        const item = collected.find((entry) => entry.id === body.id);
+        return { data_url: imageData(item?.suggested_category, item?.caption) };
+      }
+      case "auto-collect/inbox/accept": {
+        const ids = new Set(body.items.map((item) => item.id));
+        const imported = collected.filter((item) => ids.has(item.id)).length;
+        collected = collected.filter((item) => !ids.has(item.id));
+        return { imported, duplicates: 0, failed: 0 };
+      }
+      case "auto-collect/inbox/discard": {
+        const ids = new Set(body.ids);
+        const discarded = collected.filter((item) => ids.has(item.id)).length;
+        collected = collected.filter((item) => !ids.has(item.id));
+        return { discarded };
+      }
       case "bridge/auth_token":
         return { token: "fixture-token" };
       case "packs":

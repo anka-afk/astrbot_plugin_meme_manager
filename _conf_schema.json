@@ -201,7 +201,7 @@
   "auto_collect": {
     "description": "自动收集表情包",
     "type": "object",
-    "hint": "收到图片后在后台调用视觉模型判断是否为表情包并分类。语义检索开启时，图片会先进入独立的待语义化桶，不会立即改变正在使用的语义包",
+    "hint": "收到图片后在后台识别和分类，默认进入对应表情包的待审核列表。人工接收后才会入包，语义索引仍需手动生成",
     "items": {
       "enabled": {
         "description": "启用自动收集",
@@ -216,6 +216,19 @@
         "_special": "select_provider",
         "hint": "必须选择支持图片输入的聊天模型；未选择或模型明确不支持 image 模态时不会启动自动收集"
       },
+      "manual_review": {
+        "description": "人工审核表情包",
+        "type": "bool",
+        "default": true,
+        "hint": "默认开启。收集后在表情包管理页切换到对应包，点击右侧待审核按钮预览、修改分类并接收。关闭后新收集图片自动入包，已有待审核图片仍需处理；语义索引始终手动生成"
+      },
+      "pending_limit": {
+        "description": "每个表情包的待审核容量",
+        "type": "int",
+        "default": 200,
+        "hint": "达到容量后暂停向该包提交新候选图片，避免持续积累；不会自动删除已收集图片",
+        "slider": { "min": 1, "max": 2000, "step": 1 }
+      },
       "scope": {
         "description": "允许收集的群聊或个人 ID",
         "type": "list",
@@ -229,7 +242,7 @@
         "description": "目标表情包 ID",
         "type": "string",
         "default": "",
-        "hint": "留空时使用当前会话按 session/persona/default 规则选中的表情包；填写后固定以该包的分类进行识别。语义检索开启时仍先进入待语义化桶"
+        "hint": "留空时使用当前会话按 session/persona/default 规则选中的表情包；填写后固定以该包的分类进行识别，待审核图片也归属该包"
       },
       "sampling_probability": {
         "description": "图片识别抽样概率（%）",
@@ -269,7 +282,7 @@
         "description": "最低分类置信度",
         "type": "float",
         "default": 0.65,
-        "hint": "确认是表情包但分类置信度不足时进入 needs_review，等待人工整理"
+        "hint": "关闭人工审核时，分类置信度不足的图片进入 needs_review；开启人工审核时保留模型建议分类，供你在预览中判断和修正"
       }
     }
   },

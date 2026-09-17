@@ -106,8 +106,7 @@ class AutoCollectConfigurationTests(unittest.TestCase):
         self.assertIn('id="auto-inbox-panel"', html)
         self.assertIn("auto-inbox-panel hidden", html)
         self.assertIn("data?.visible", script)
-        self.assertIn("semantic/auto-inbox/import", script)
-        self.assertIn("semantic/start", script)
+        self.assertNotIn("semantic/auto-inbox/import", script)
 
 
 class AutoCollectImageTests(unittest.TestCase):
@@ -416,7 +415,6 @@ class AutoCollectInboxTests(unittest.IsolatedAsyncioTestCase):
                     "load_pack_category_mapping",
                     return_value={"happy": "positive reaction"},
                 ),
-                patch.object(auto_collect, "invalidate_semantic_metadata"),
             ):
                 manager = auto_collect.AutoCollectManager(
                     plugin,
@@ -443,7 +441,9 @@ class AutoCollectInboxTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(pending["visible"])
                 self.assertEqual(pending["count"], 1)
 
-                result = await manager.import_pending("pack-a")
+                with self.assertRaises(RuntimeError):
+                    await manager.import_pending("pack-a")
+                result = await manager.accept_pending("pack-a", [{"id": f"pack-a:{digest}"}])
 
                 self.assertEqual(result["imported"], 1)
                 self.assertEqual(plugin.reload_count, 1)

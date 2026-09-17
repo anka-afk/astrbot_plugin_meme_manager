@@ -44,6 +44,15 @@
       </div>
       <label for="manage-pack-select">管理表情包</label>
       <select id="manage-pack-select" aria-label="选择管理的表情包"></select>
+      <button
+        id="collection-review-open"
+        type="button"
+        class="secondary"
+        hidden
+        aria-haspopup="dialog"
+      >
+        待审核表情 (0)
+      </button>
       <span
         id="pack-semantic-status"
         class="pack-semantic-status semantic-none"
@@ -64,6 +73,106 @@
       </button>
     </div>
 
+    <dialog
+      id="collection-review-dialog"
+      class="collection-review-dialog"
+      aria-labelledby="collection-review-title"
+    >
+      <div class="collection-review-heading">
+        <div>
+          <p class="eyebrow">Collection Review</p>
+          <h2 id="collection-review-title" class="text-h3 pa-4 pb-0 pl-6">
+            审核收集到的表情包
+          </h2>
+          <p id="collection-review-pack"></p>
+        </div>
+        <button
+          id="collection-review-close"
+          variant="text"
+          type="button"
+          class="secondary"
+          aria-label="关闭审核"
+        >
+          关闭
+        </button>
+      </div>
+      <p class="collection-review-hint">
+        预览后选择接收，图片才会加入当前表情包。分类可逐张调整；默认优先展示把握较高的图片。
+      </p>
+      <div class="collection-review-toolbar">
+        <label
+          >分类
+          <select id="collection-review-filter">
+            <option value="">全部分类</option>
+          </select></label
+        >
+        <label
+          >排序
+          <select id="collection-review-sort">
+            <option value="desc">把握度从高到低</option>
+            <option value="asc">把握度从低到高</option>
+          </select></label
+        >
+        <label
+          ><input
+            id="collection-review-select-all"
+            type="checkbox"
+          />选择当前筛选结果</label
+        >
+        <button
+          id="collection-review-refresh"
+          type="button"
+          class="secondary"
+          variant="tonal"
+        >
+          刷新
+        </button>
+      </div>
+      <details id="collection-review-stats" class="collection-review-stats">
+        <summary>最近收集状态</summary>
+        <p class="collection-review-hint">
+          当前运行期间的全局统计，包含其他表情包；重启后重新计数。
+        </p>
+        <dl id="collection-review-counters"></dl>
+      </details>
+      <p id="collection-review-status" role="status" aria-live="polite"></p>
+      <div id="collection-review-grid" class="collection-review-grid"></div>
+      <button
+        id="collection-review-more"
+        variant="tonal"
+        type="button"
+        class="secondary"
+        hidden
+      >
+        显示更多
+      </button>
+      <div class="collection-review-footer">
+        <span id="collection-review-selection">已选 0 张</span>
+        <label
+          ><input
+            id="collection-review-remember"
+            type="checkbox"
+          />丢弃时不再收集这些图片</label
+        >
+        <button
+          id="collection-review-discard"
+          variant="tonal"
+          type="button"
+          class="secondary"
+          disabled
+        >
+          丢弃所选
+        </button>
+        <button
+          id="collection-review-accept"
+          type="button"
+          variant="tonal"
+          disabled
+        >
+          接收所选
+        </button>
+      </div>
+    </dialog>
     <div
       id="sidebar-backdrop"
       class="sidebar-backdrop hidden"
