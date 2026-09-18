@@ -1,14 +1,13 @@
 import json
-import logging
 import os
 import shutil
 from pathlib import Path
 
+from astrbot.api import logger
+
 from ...utils import ensure_dir_exists, load_json, save_json
 from ..semantic.storage import invalidate_semantic_metadata
 from .resolver import resolve_pack_context
-
-logger = logging.getLogger(__name__)
 
 
 def is_safe_category_name(category: str) -> bool:
