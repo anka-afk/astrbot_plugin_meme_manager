@@ -3,12 +3,13 @@
 import asyncio
 import hashlib
 import json
-import logging
 import multiprocessing
 import os
 import threading
 import uuid
 from pathlib import Path
+
+from astrbot.api import logger
 
 from .core.file_handler import write_json_atomic
 from .core.sync_manager import SYNC_TASKS, SyncManager
@@ -19,8 +20,6 @@ from .providers import (
     StarDotsProvider,
     WebDAVProvider,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class ImageSync:

@@ -1,17 +1,17 @@
 """Plan and execute conservative image synchronization across storage adapters."""
 
-import logging
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
 from PIL import Image
 
+from astrbot.api import logger
+
 from ..interfaces.image_host import ImageHostInterface
 from .file_handler import FileHandler, file_fingerprint, normalize_relative_path
 from .upload_tracker import UploadTracker
 
-logger = logging.getLogger(__name__)
 SYNC_TASKS = {
     "upload",
     "download",

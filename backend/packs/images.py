@@ -1,16 +1,16 @@
 import asyncio
 import hashlib
-import logging
 import os
 import shutil
 from pathlib import Path
 
 from werkzeug.utils import secure_filename
 
+from astrbot.api import logger
+
 from .categories import is_safe_category_name
 from .resolver import resolve_pack_context
 
-logger = logging.getLogger(__name__)
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
 

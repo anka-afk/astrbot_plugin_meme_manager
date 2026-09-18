@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import random
 import re
@@ -8,7 +7,7 @@ from typing import Any
 
 import aiohttp
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 def ensure_dir_exists(path: str) -> None:

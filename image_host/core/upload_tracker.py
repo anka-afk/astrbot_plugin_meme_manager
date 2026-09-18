@@ -1,14 +1,13 @@
 """Durable per-destination baselines for conflict-aware synchronization."""
 
 import json
-import logging
 import threading
 import time
 from pathlib import Path
 
-from .file_handler import file_fingerprint, normalize_relative_path, write_json_atomic
+from astrbot.api import logger
 
-logger = logging.getLogger(__name__)
+from .file_handler import file_fingerprint, normalize_relative_path, write_json_atomic
 
 
 class UploadTracker:
