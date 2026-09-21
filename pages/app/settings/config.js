@@ -32,6 +32,13 @@ async function initPluginConfig() {
   };
   const groups = [
     {
+      id: "preview",
+      category: "storage",
+      title: "页面预览",
+      description: "控制图片加载并发；已浏览的图片由浏览器自动缓存。",
+      prefixes: ["webui."],
+    },
+    {
       id: "appearance",
       category: "sending",
       title: "出现时机",

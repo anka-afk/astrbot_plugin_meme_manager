@@ -196,6 +196,12 @@
           data_url: imageData(body.category, body.filename || body.emoji),
           mime_type: "image/svg+xml",
         };
+      case "preview/manifest":
+        return {
+          pack_id: body.managed_pack_id || "builtin-default",
+          concurrency: 2,
+          versions: {},
+        };
       case "meme_image_semantic":
         return {
           caption: "表达轻松和开心的心情。",

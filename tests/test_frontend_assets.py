@@ -62,7 +62,7 @@ async def test_shared_assets_resolve_through_astrbot_page_service(monkeypatch):
             assert resolved.is_relative_to(APP)
             if asset.startswith("shared/"):
                 shared_urls.setdefault(asset, set()).add(url)
-    assert len(shared_urls) == 7
+    assert len(shared_urls) == 8
     assert all(len(urls) == 1 for urls in shared_urls.values())
     with pytest.raises(ValueError):
         await service.resolve_plugin_page_file(plugin, "app", "../_conf_schema.json")

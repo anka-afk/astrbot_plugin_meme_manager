@@ -5,6 +5,19 @@
     "hint": "配置有点多？在插件页面打开「设置中心」，按分类调整会更方便。",
     "items": {}
   },
+  "webui": {
+    "description": "页面预览",
+    "type": "object",
+    "items": {
+      "preview_concurrency": {
+        "description": "预览加载并发数",
+        "type": "int",
+        "default": 2,
+        "slider": { "min": 1, "max": 8, "step": 1 },
+        "hint": "每个插件页面同时加载的图片数量。低带宽建议 1–2，保存后刷新页面生效。"
+      }
+    }
+  },
   "storage": {
     "description": "存储与图床",
     "type": "object",
