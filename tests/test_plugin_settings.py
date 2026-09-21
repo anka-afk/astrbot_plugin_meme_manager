@@ -45,6 +45,32 @@ def settings_api(shared_config):
     return subject
 
 
+def test_preview_concurrency_shared_configuration(shared_config):
+    snapshot, values = describe_settings(shared_config)
+    field = next(
+        f for f in snapshot["fields"] if f["path"] == "webui.preview_concurrency"
+    )
+    assert field["value"] == 2
+    for value in (1, 4, 8):
+        updated = validate_settings_changes(
+            values,
+            snapshot["fields"],
+            {"webui.preview_concurrency": value},
+            shared_config.schema,
+        )
+        shared_config.save_config(updated)
+        reloaded = AstrBotConfig(shared_config.config_path, schema=shared_config.schema)
+        assert reloaded["webui"]["preview_concurrency"] == value
+    for value in (0, 9, True, 2.5):
+        with pytest.raises(ValueError):
+            validate_settings_changes(
+                values,
+                snapshot["fields"],
+                {"webui.preview_concurrency": value},
+                shared_config.schema,
+            )
+
+
 @pytest.fixture
 def start_plugin(monkeypatch):
     for name in ("SemanticTaskManager", "CategoryManager", "AutoCollectManager"):

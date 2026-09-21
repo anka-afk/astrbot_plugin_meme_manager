@@ -1,3 +1,5 @@
+import { PreviewClient } from "../shared/preview.js";
+
 async function initSemanticPage() {
   const toastContainer = document.querySelector("#toast-container");
   const notice = document.querySelector("#notice");
@@ -55,12 +57,11 @@ async function initSemanticPage() {
   let statusRequestSequence = 0;
   const previewCache = new Map();
   const previewRequests = new Map();
+  let visibleRecordPaths = new Set();
   let activePreviewKey = "";
   let activePreviewItem = null;
   let previewVersion = 0;
-  let activePreviewRequests = 0;
   let pendingAutoInboxCount = 0;
-  const previewQueue = [];
 
   function showToast(message, isError = false) {
     toastContainer.replaceChildren();
@@ -504,29 +505,6 @@ async function initSemanticPage() {
     }
   }
 
-  function pumpPreviewQueue() {
-    while (activePreviewRequests < 4 && previewQueue.length) {
-      const job = previewQueue.shift();
-      activePreviewRequests += 1;
-      Promise.resolve()
-        .then(job.task)
-        .then(job.resolve, job.reject)
-        .finally(() => {
-          activePreviewRequests -= 1;
-          pumpPreviewQueue();
-        });
-    }
-  }
-
-  function schedulePreviewRequest(task, priority = false) {
-    return new Promise((resolve, reject) => {
-      const job = { task, resolve, reject };
-      if (priority) previewQueue.unshift(job);
-      else previewQueue.push(job);
-      pumpPreviewQueue();
-    });
-  }
-
   async function loadRecordImage(item, size = "preview") {
     const requestedPackId = packSelect.value;
     const key = `${previewKey(item)}:${size}`;
@@ -535,16 +513,22 @@ async function initSemanticPage() {
     if (previewRequests.has(key)) return await previewRequests.get(key);
     const { category, filename } = imageLocation(item);
     if (!category || !filename) throw new Error("图片路径不可用");
-    const requestPromise = schedulePreviewRequest(
-      () =>
-        apiGet("meme_image_data", {
+    const requestPromise = previews
+      .get(
+        "meme_image_data",
+        {
           managed_pack_id: requestedPackId,
           category,
           filename,
           size,
-        }),
-      size === "original",
-    )
+        },
+        {
+          priority: size === "original",
+          isCurrent: () =>
+            requestedPackId === packSelect.value &&
+            (size === "original" || visibleRecordPaths.has(item.relative_path)),
+        },
+      )
       .then((data) => {
         if (!data?.data_url) throw new Error("图片接口未返回预览数据");
         if (size === "preview") rememberPreview(key, data.data_url);
@@ -598,6 +582,7 @@ async function initSemanticPage() {
   function renderRecords(data) {
     recordsBox.classList.remove("empty");
     const records = Array.isArray(data.items) ? data.items : [];
+    visibleRecordPaths = new Set(records.map((item) => item.relative_path));
     recordsCurrentPage = Number(data.page || recordsCurrentPage || 1);
     recordsTotalPages = Math.max(1, Number(data.total_pages || 1));
     recordCount.textContent = `共 ${Number(data.total || 0)} 条`;
@@ -927,6 +912,7 @@ async function initSemanticPage() {
     return;
   }
   const apiGet = (path, params = {}) => pageApi.apiGet(path, params);
+  const previews = new PreviewClient(pageApi);
   const apiPost = (path, body = {}) => pageApi.apiPost(path, body);
   statusRetry.addEventListener("click", async () => {
     if (requestRunning || statusLoading) return;
@@ -952,9 +938,7 @@ async function initSemanticPage() {
       runAction(apiPost, button.dataset.action),
     ),
   );
-  autoInboxSemanticize.addEventListener("click", () =>
-    openCollectionReview(),
-  );
+  autoInboxSemanticize.addEventListener("click", () => openCollectionReview());
   recordsPrev.addEventListener("click", async () => {
     if (recordsCurrentPage <= 1 || requestRunning) return;
     recordsCurrentPage -= 1;

@@ -1,6 +1,9 @@
+import { PreviewClient } from "../shared/preview.js";
+
 async function initApp() {
   await window.AstrBotPluginPage.ready();
   window.AstrBotPluginPage.getContext();
+  const previews = new PreviewClient(window.AstrBotPluginPage);
 
   const { withCurrentAuthParams, ensureNavAuthToken, applySecureNavLinks } =
     window.MemeUI;
@@ -11,7 +14,7 @@ async function initApp() {
     new URLSearchParams(window.location.search).get("managed_pack_id") || "",
   ).trim();
 
-  async function apiGet(endpoint, params = {}) {
+  async function apiGet(endpoint, params = {}, previewOptions = {}) {
     const mergedParams = { ...params };
     const managedPackId = String(
       activeManagePackId || managePackSelect?.value || "",
@@ -30,6 +33,11 @@ async function initApp() {
       ].includes(endpoint)
     ) {
       mergedParams.managed_pack_id = managedPackId;
+    }
+    if (
+      ["meme_image_data", "auto-collect/inbox/image_data"].includes(endpoint)
+    ) {
+      return previews.get(endpoint, mergedParams, previewOptions);
     }
     return await window.AstrBotPluginPage.apiGet(endpoint, mergedParams);
   }
@@ -55,7 +63,9 @@ async function initApp() {
     if (selectedPackId && endpoint.startsWith("semantic/")) {
       mergedBody.pack_id = selectedPackId;
     }
-    return await window.AstrBotPluginPage.apiPost(endpoint, mergedBody);
+    const result = await window.AstrBotPluginPage.apiPost(endpoint, mergedBody);
+    previews.invalidate();
+    return result;
   }
 
   const collectionReview = {
@@ -228,10 +238,14 @@ async function initApp() {
       image.loading = "lazy";
       const preview =
         review.previews.get(item.id) ||
-        apiGet("auto-collect/inbox/image_data", {
-          pack_id: packId,
-          id: item.id,
-        });
+        apiGet(
+          "auto-collect/inbox/image_data",
+          {
+            pack_id: packId,
+            id: item.id,
+          },
+          { isCurrent: () => packId === review.packId && review.dialog.open },
+        );
       review.previews.set(item.id, preview);
       Promise.resolve(preview)
         .then((data) => {
@@ -299,12 +313,20 @@ async function initApp() {
           try {
             const request =
               review.previews.get(key) ||
-              apiGet("meme_image_data", {
-                managed_pack_id: packId,
-                category: parts.join("/"),
-                filename,
-                size: "preview",
-              });
+              apiGet(
+                "meme_image_data",
+                {
+                  managed_pack_id: packId,
+                  category: parts.join("/"),
+                  filename,
+                  size: "preview",
+                },
+                {
+                  priority: true,
+                  isCurrent: () =>
+                    packId === review.packId && review.dialog.open,
+                },
+              );
             review.previews.set(key, request);
             const data = await request;
             if (packId !== review.packId || !similarImage.isConnected) return;
@@ -1838,6 +1860,7 @@ async function initApp() {
 
   // 获取表情包数据、描述和分类审核状态
   async function fetchEmojis({ propagateError = false } = {}) {
+    previews.invalidate();
     const requestSequence = ++libraryLoadSequence;
     const requestedPackId = activeManagePackId;
     document.getElementById("content").inert = true;
@@ -1979,6 +2002,7 @@ async function initApp() {
   }
 
   function setEmojiPreviewLoaded(emojiItem, dataUrl) {
+    previewObserver?.unobserve(emojiItem);
     emojiItem.style.backgroundImage = `url("${dataUrl}")`;
     emojiItem.dataset.previewDataUrl = dataUrl;
     emojiItem.classList.remove("emoji-loading", "emoji-load-error");
@@ -2018,13 +2042,19 @@ async function initApp() {
       const data = await apiGet(
         "meme_image_data",
         getImageRequestParams(category, emoji, "preview"),
+        {
+          isCurrent: () =>
+            emojiItem.isConnected &&
+            (force || emojiItem.dataset.previewVisible !== "false"),
+        },
       );
       if (!data?.data_url) {
         throw new Error("图片接口未返回预览数据");
       }
       setEmojiPreviewLoaded(emojiItem, data.data_url);
     } catch (error) {
-      console.error("加载表情包预览失败:", error);
+      if (!emojiItem.isConnected || error?.name === "AbortError") return;
+      console.error("Failed to load meme preview:", error);
       setEmojiPreviewError(emojiItem);
     } finally {
       emojiItem.dataset.loading = "false";
@@ -2043,6 +2073,7 @@ async function initApp() {
     const data = await apiGet(
       "meme_image_data",
       getImageRequestParams(category, emoji, size),
+      { priority: true },
     );
     if (!data?.data_url) {
       throw new Error("图片接口未返回预览数据");
@@ -5162,11 +5193,11 @@ async function initApp() {
 
     const lazyBackgrounds = container.querySelectorAll(".emoji-item");
     previewObserver = new IntersectionObserver(
-      (entries, observer) => {
+      (entries) => {
         entries.forEach((entry) => {
+          entry.target.dataset.previewVisible = String(entry.isIntersecting);
           if (entry.isIntersecting) {
             void loadEmojiPreview(entry.target);
-            observer.unobserve(entry.target);
           }
         });
       },

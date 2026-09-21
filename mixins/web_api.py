@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import binascii
+import hashlib
 import inspect
 import io
 import json
@@ -92,6 +93,12 @@ class WebAPIMixin:
         return str(value or "").strip()
 
     def _register_web_apis(self):
+        self._register_webui_api(
+            "preview/manifest",
+            self._api_preview_manifest,
+            ["GET"],
+            "Read preview configuration and file revisions",
+        )
         # 将所有路由委托给 _register_webui_api
         self._register_webui_api(
             "emoji", self._api_get_emojis, ["GET"], "获取所有分类的表情列表"
@@ -476,6 +483,14 @@ class WebAPIMixin:
             logger.info(f"{WEBUI_LOG_PREFIX} {request.method} {route_path} 开始")
             try:
                 response = await handler(*args, **kwargs)
+                if route in {
+                    "meme_image_data",
+                    "preview/manifest",
+                    "auto-collect/inbox/image_data",
+                }:
+                    response = await make_response(response)
+                    if response.status_code >= 400:
+                        response.headers["Cache-Control"] = "no-store"
             except Exception:
                 elapsed_ms = int((time.monotonic() - started_at) * 1000)
                 logger.error(
@@ -1738,11 +1753,75 @@ class WebAPIMixin:
             return jsonify({"status": "error", "message": "文件不存在"}), 404
         return await send_file(str(file_path))
 
+    @staticmethod
+    def _preview_revision(file_path: Path) -> str:
+        """Identify a file and the preview recipe without reading image bytes.
+
+        Args:
+            file_path: Resolved image path.
+
+        Returns:
+            An opaque revision based on file identity, metadata and recipe version.
+        """
+        stat = file_path.stat()
+        identity = (
+            f"{file_path}:{stat.st_mtime_ns}:{stat.st_ctime_ns}:{stat.st_size}:"
+            f"{PREVIEW_IMAGE_MAX_DIMENSION}:webp82-v1"
+        )
+        return hashlib.sha256(identity.encode()).hexdigest()
+
+    async def _api_preview_manifest(self):
+        """Return current file revisions and the shared preview concurrency setting.
+
+        Returns:
+            An uncached, pack-scoped preview manifest.
+        """
+        context = self._resolve_webui_pack_view_context()
+        if request.args.get("managed_pack_id") and context is None:
+            return jsonify({"message": "Pack not found"}), 404
+        context = context or self._resolve_runtime_pack_context()
+        root = Path(context["memes_dir"]).resolve()
+
+        def scan():
+            # Keep directory traversal and stat calls off the event loop.
+            versions = {}
+            for category, filenames in self._scan_pack_emojis(root).items():
+                for filename in filenames:
+                    path = (root / category / filename).resolve()
+                    if not path.is_relative_to(root):
+                        continue
+                    try:
+                        versions[f"{category}/{filename}"] = self._preview_revision(
+                            path
+                        )
+                    except OSError:
+                        continue
+            return versions
+
+        concurrency = self._read_config_value(
+            ("webui", "preview_concurrency"), default=2
+        )
+        if type(concurrency) is not int or not 1 <= concurrency <= 8:
+            concurrency = 2
+        response = jsonify(
+            {
+                "pack_id": context["pack_id"],
+                "concurrency": concurrency,
+                "versions": await asyncio.to_thread(scan),
+            }
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     async def _api_get_meme_image_data(self):
         category = request.args.get("category", "")
         filename = request.args.get("filename", "")
         size = request.args.get("size", "preview")
+        if size not in {"preview", "original"}:
+            return jsonify({"message": "Invalid preview size"}), 400
         view_context = self._resolve_webui_pack_view_context()
+        if request.args.get("managed_pack_id") and view_context is None:
+            return jsonify({"message": "Pack not found"}), 404
         memes_root = (
             view_context["memes_dir"].resolve()
             if view_context
@@ -1757,6 +1836,24 @@ class WebAPIMixin:
 
         if not file_path.exists() or not file_path.is_file():
             return jsonify({"status": "error", "message": "File not found"}), 404
+
+        revision = self._preview_revision(file_path)
+        requested_revision = request.args.get("v", "")
+        if requested_revision and requested_revision != revision:
+            return (
+                jsonify({"message": "Image changed; reload the preview"}),
+                409,
+                {"Cache-Control": "no-store"},
+            )
+        cache_headers = {
+            "Cache-Control": (
+                "private, max-age=86400" if requested_revision else "private, no-cache"
+            ),
+            "Vary": "Authorization",
+            "ETag": f'"{revision}-{size}"',
+        }
+        if request.if_none_match.contains(f"{revision}-{size}"):
+            return "", 304, cache_headers
 
         max_bytes = (
             MAX_ORIGINAL_IMAGE_BYTES if size == "original" else MAX_PREVIEW_IMAGE_BYTES
@@ -1793,7 +1890,14 @@ class WebAPIMixin:
                 self._build_file_data_url, file_path, mime_type
             )
 
-        return jsonify(
+        # Never cache bytes under a revision that changed while they were read.
+        if self._preview_revision(file_path) != revision:
+            return (
+                jsonify({"message": "Image changed; reload the preview"}),
+                409,
+                {"Cache-Control": "no-store"},
+            )
+        response = jsonify(
             {
                 "category": category,
                 "filename": filename,
@@ -1802,6 +1906,8 @@ class WebAPIMixin:
                 "data_url": data_url,
             }
         )
+        response.headers.update(cache_headers)
+        return response
 
     async def _api_get_meme_image_semantic(self):
         category = str(request.args.get("category", "") or "").strip()
@@ -2295,17 +2401,27 @@ class WebAPIMixin:
             extension = await asyncio.to_thread(
                 self.auto_collect_manager._validate_image, content
             )
+            etag = hashlib.sha256(content).hexdigest()
+            headers = {
+                "Cache-Control": "private, no-cache",
+                "Vary": "Authorization",
+                "ETag": f'"{etag}"',
+            }
+            if request.if_none_match.contains(etag):
+                return "", 304, headers
             mime = {
                 ".jpg": "image/jpeg",
                 ".png": "image/png",
                 ".gif": "image/gif",
                 ".webp": "image/webp",
             }[extension]
-            return jsonify(
+            response = jsonify(
                 {
                     "data_url": f"data:{mime};base64,{base64.b64encode(content).decode('ascii')}"
                 }
-            ), 200
+            )
+            response.headers.update(headers)
+            return response, 200
         except (ValueError, FileNotFoundError) as exc:
             return jsonify({"message": str(exc)}), 404
 
