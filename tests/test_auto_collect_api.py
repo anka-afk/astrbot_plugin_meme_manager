@@ -97,6 +97,9 @@ async def test_review_list_and_preview_are_pack_scoped(review_api):
     ):
         response, status = await subject._api_auto_collect_image_data()
         assert status == 404
+        response, status = await subject._api_auto_collect_inbox()
+        assert status == 200
+        assert (await response.get_json())["count"] == 0
 
 
 @pytest.mark.asyncio

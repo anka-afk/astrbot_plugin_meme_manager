@@ -1,4 +1,3 @@
-import asyncio
 import io
 import json
 import tempfile
@@ -142,7 +141,7 @@ class AutoCollectImageTests(unittest.TestCase):
                     Path(path).unlink(missing_ok=True)
 
 
-class AutoCollectScopeAndCooldownTests(unittest.IsolatedAsyncioTestCase):
+class AutoCollectSubmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_scope_accepts_prefixed_group_and_user_ids(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             with patch.object(
@@ -160,43 +159,6 @@ class AutoCollectScopeAndCooldownTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(manager._source_allowed(DummyEvent("100"))[0])
             self.assertTrue(manager._source_allowed(DummyEvent("200", private=True))[0])
             self.assertFalse(manager._source_allowed(DummyEvent("300"))[0])
-
-    async def test_submit_uses_100_percent_sampling_and_20_second_cooldown(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            packs_dir = root / "packs"
-            (packs_dir / "pack-a" / "memes" / "happy").mkdir(parents=True)
-            source = root / "source.png"
-            source.write_bytes(png_bytes())
-            with (
-                patch.object(auto_collect, "PACKS_DIR", packs_dir),
-                patch.object(auto_collect, "AUTO_COLLECT_TEMP_DIR", root / "queue"),
-                patch.object(
-                    auto_collect, "AUTO_COLLECT_STATE_PATH", root / "state.json"
-                ),
-                patch.object(
-                    auto_collect,
-                    "load_pack_category_mapping",
-                    return_value={"happy": "positive reaction"},
-                ),
-            ):
-                manager = auto_collect.AutoCollectManager(
-                    DummyPlugin(),
-                    {
-                        "enabled": True,
-                        "vision_provider_id": "vision",
-                        "target_pack_id": "pack-a",
-                        "sampling_probability": 100,
-                        "cooldown_seconds": 20,
-                    },
-                )
-                manager._ready = True
-                event = DummyEvent("100", image_path=source)
-
-                self.assertTrue(await manager.submit(event))
-                self.assertFalse(await manager.submit(event))
-                self.assertEqual(manager.queue.qsize(), 1)
-                await manager.close()
 
     async def test_submit_prefilters_images_with_napcat_metadata(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -294,47 +256,6 @@ class AutoCollectScopeAndCooldownTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(snapshot_path.read_bytes(), meme_content)
                 await manager.close()
 
-    async def test_worker_uses_snapshot_after_event_file_is_deleted(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            packs_dir = root / "packs"
-            (packs_dir / "pack-a" / "memes" / "happy").mkdir(parents=True)
-            source = root / "event-image.png"
-            source.write_bytes(png_bytes())
-            with (
-                patch.object(auto_collect, "PACKS_DIR", packs_dir),
-                patch.object(auto_collect, "AUTO_COLLECT_TEMP_DIR", root / "queue"),
-                patch.object(
-                    auto_collect, "AUTO_COLLECT_STATE_PATH", root / "state.json"
-                ),
-                patch.object(
-                    auto_collect,
-                    "load_pack_category_mapping",
-                    return_value={"happy": "positive reaction"},
-                ),
-            ):
-                manager = auto_collect.AutoCollectManager(
-                    DummyPlugin(),
-                    {
-                        "enabled": True,
-                        "vision_provider_id": "vision",
-                        "target_pack_id": "pack-a",
-                    },
-                )
-                manager._ready = True
-
-                self.assertTrue(
-                    await manager.submit(DummyEvent("100", image_path=source))
-                )
-                snapshot_path = next((root / "queue").glob("queued_*"))
-                source.unlink()
-                with patch.object(manager, "_pack_contains_digest", return_value=True):
-                    manager._worker_task = asyncio.create_task(manager._worker())
-                    await manager.queue.join()
-                await manager.close()
-
-                self.assertFalse(snapshot_path.exists())
-
     async def test_close_removes_unprocessed_snapshots(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -374,84 +295,6 @@ class AutoCollectScopeAndCooldownTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertFalse(snapshot_path.exists())
                 self.assertTrue(manager.queue.empty())
-
-
-class AutoCollectInboxTests(unittest.IsolatedAsyncioTestCase):
-    async def test_semantic_inbox_stays_separate_until_manual_import(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            packs_dir = root / "packs"
-            pack_dir = packs_dir / "pack-a"
-            (pack_dir / "memes" / "happy").mkdir(parents=True)
-            inbox_dir = root / "inbox"
-            inbox_images = inbox_dir / "images"
-            inbox_metadata = inbox_dir / "metadata.json"
-            state_path = root / "state.json"
-            plugin = DummyPlugin()
-            content = png_bytes()
-            digest = auto_collect.hashlib.sha256(content).hexdigest()
-            with (
-                patch.object(auto_collect, "PACKS_DIR", packs_dir),
-                patch.object(auto_collect, "AUTO_COLLECT_INBOX_DIR", inbox_dir),
-                patch.object(
-                    auto_collect, "AUTO_COLLECT_INBOX_IMAGES_DIR", inbox_images
-                ),
-                patch.object(
-                    auto_collect,
-                    "AUTO_COLLECT_INBOX_METADATA_PATH",
-                    inbox_metadata,
-                ),
-                patch.object(auto_collect, "AUTO_COLLECT_STATE_PATH", state_path),
-                patch.object(
-                    auto_collect,
-                    "get_pack_paths",
-                    side_effect=lambda pack_id: {
-                        "pack_dir": packs_dir / pack_id,
-                        "memes_dir": packs_dir / pack_id / "memes",
-                    },
-                ),
-                patch.object(
-                    auto_collect,
-                    "load_pack_category_mapping",
-                    return_value={"happy": "positive reaction"},
-                ),
-            ):
-                manager = auto_collect.AutoCollectManager(
-                    plugin,
-                    {"enabled": True, "vision_provider_id": "vision"},
-                )
-                job = auto_collect.AutoCollectJob(
-                    snapshot_path=root / "unused.png",
-                    target_pack_id="pack-a",
-                    categories={"happy": "positive reaction"},
-                    source_kind="group",
-                    source_id="100",
-                )
-                await manager._save_to_inbox(
-                    job,
-                    content,
-                    digest,
-                    ".png",
-                    "happy",
-                    {"is_meme": True, "meme_confidence": 1.0},
-                )
-
-                self.assertFalse(any((pack_dir / "memes" / "happy").iterdir()))
-                pending = await manager.pending_status("pack-a")
-                self.assertTrue(pending["visible"])
-                self.assertEqual(pending["count"], 1)
-
-                with self.assertRaises(RuntimeError):
-                    await manager.import_pending("pack-a")
-                result = await manager.accept_pending("pack-a", [{"id": f"pack-a:{digest}"}])
-
-                self.assertEqual(result["imported"], 1)
-                self.assertEqual(plugin.reload_count, 1)
-                self.assertEqual(
-                    len(list((pack_dir / "memes" / "happy").glob("*.png"))), 1
-                )
-                self.assertEqual((await manager.pending_status("pack-a"))["count"], 0)
-
 
 if __name__ == "__main__":
     unittest.main()

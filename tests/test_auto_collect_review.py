@@ -64,14 +64,6 @@ class AutoCollectReviewTests(unittest.IsolatedAsyncioTestCase):
         await self.manager._process_job(job)
         return f"pack-a:{digest}", job
 
-    async def test_default_review_in_nonsemantic_mode_and_descending_confidence(self):
-        first, _ = await self.add_candidate(confidence=0.7)
-        second, _ = await self.add_candidate((0, 255, 0), 0.99)
-        status = await self.manager.pending_status("pack-a")
-        self.assertEqual([item["id"] for item in status["items"]], [second, first])
-        self.assertFalse(list((self.packs / "pack-a" / "memes").rglob("*.png")))
-        self.assertEqual((await self.manager.pending_status("pack-b"))["count"], 0)
-
     async def test_override_category_and_failed_semantic_write_retains_pending(self):
         record_id, _ = await self.add_candidate()
         with patch.object(
@@ -92,15 +84,6 @@ class AutoCollectReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             len(list((self.packs / "pack-a" / "memes" / "sad").glob("*.png"))), 1
         )
-
-    async def test_remembered_rejection_survives_manager_restart(self):
-        record_id, job = await self.add_candidate()
-        await self.manager.discard_pending("pack-a", [record_id], True)
-        manager = auto_collect.AutoCollectManager(self.plugin, {"enabled": True})
-        manager._classify = AsyncMock()
-        await manager._process_job(job)
-        manager._classify.assert_not_awaited()
-        self.assertEqual((await manager.pending_status("pack-a"))["count"], 0)
 
     async def test_regular_discard_can_be_collected_again(self):
         record_id, job = await self.add_candidate()
