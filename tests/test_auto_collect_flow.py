@@ -357,15 +357,30 @@ class AutoCollectFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.vision.await_count, 0)
         self.assertFalse(manager._cooldowns)
         self.vision.side_effect = RuntimeError("temporary provider outage")
-        self.assertTrue(await manager.submit(FlowEvent(self.png)))
+        with patch.object(auto_collect.random, "random", return_value=0.0):
+            self.assertTrue(await manager.submit(FlowEvent(self.png, sub_type=0)))
         await asyncio.wait_for(manager.queue.join(), 5)
         self.assertFalse(manager._state.get("decisions"))
         self.assertFalse(manager._inflight)
         self.assertFalse(manager._worker_task.done())
         self.vision.side_effect = self.vision_response
-        self.assertTrue(await manager.submit(FlowEvent(self.png)))
+        with patch.object(auto_collect.random, "random") as roll:
+            self.assertTrue(await manager.submit(FlowEvent(self.png, sub_type=0)))
+            roll.assert_not_called()
         await asyncio.wait_for(manager.queue.join(), 5)
         self.assertEqual(self.vision.await_count, 2)
         pending = await self.client.get("/inbox", query_string={"pack_id": "pack-a"})
         self.assertEqual((await pending.get_json())["count"], 1)
         self.assertEqual(list((self.root / "queue").iterdir()), [])
+
+    async def test_negative_model_decision_stops_repeated_recognition(self):
+        manager = self.host.auto_collect_manager
+        self.decision["is_meme"] = False
+        self.assertFalse(await manager.submit(FlowEvent(self.png, sub_type=0)))
+        with patch.object(auto_collect.random, "random", return_value=0.0):
+            self.assertTrue(await manager.submit(FlowEvent(self.png, sub_type=0)))
+        await asyncio.wait_for(manager.queue.join(), 5)
+        self.assertEqual(self.vision.await_count, 1)
+        self.assertFalse(await manager.submit(FlowEvent(self.png, sub_type=0)))
+        self.assertEqual(self.vision.await_count, 1)
+        self.assertEqual(manager.counters["model_rejected_cached"], 1)

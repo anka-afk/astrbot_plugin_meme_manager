@@ -6,6 +6,7 @@ import io
 import json
 import math
 import os
+import random
 import re
 import shutil
 import tempfile
@@ -45,6 +46,9 @@ AUTO_COLLECT_PROMPT_VERSION = "auto-collect-v2-review"
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 40_000_000
 MAX_DECISION_CACHE_ITEMS = 2000
+MAX_OBSERVATIONS = 2000
+MAX_OBSERVATION_MESSAGE_IDS = 16
+OBSERVATION_TTL_SECONDS = 7 * 24 * 3600
 QUEUE_SIZE = 20
 _IMAGE_INDEX = AutoCollectImageIndex()
 
@@ -117,6 +121,9 @@ class AutoCollectManager:
         )
         self.daily_recognition_limit = max(
             0, int(config.get("daily_recognition_limit", 100) or 0)
+        )
+        self.max_images_per_message = max(
+            1, min(10, int(config.get("max_images_per_message", 1) or 1))
         )
         self.min_meme_confidence = max(
             0.0, min(1.0, float(config.get("min_meme_confidence", 0.85) or 0))
@@ -258,7 +265,7 @@ class AutoCollectManager:
         return bool(self.scope.intersection(candidates)), source_kind, source_id
 
     async def submit(self, event: Any) -> bool:
-        """过滤消息，并将第一张符合条件的直接图片快照加入队列。
+        """过滤消息，并将符合条件的直接图片按单条消息上限加入队列。
 
         Args:
             event: 当前 AstrBot 消息事件。
@@ -292,14 +299,7 @@ class AutoCollectManager:
                 source_id,
             )
             return False
-        if not probability_hit(self.sampling_probability):
-            self.counters["sampling"] = self.counters.get("sampling", 0) + 1
-            logger.info(
-                "[meme_manager] 自动收集跳过图片：未命中采样概率，来源：%s:%s",
-                source_kind,
-                source_id,
-            )
-            return False
+        candidates = [(image, False) for image in images]
         raw_message = getattr(event.message_obj, "raw_message", None)
         if isinstance(raw_message, Mapping):
             raw_segments = raw_message.get("message")
@@ -314,8 +314,8 @@ class AutoCollectManager:
                 if len(raw_image_data) == len(images):
                     # NapCat 仅在原始 OneBot 消息段中提供图片分类。
                     # AstrBot 的 Image 组件会丢弃这些扩展字段，因此按位置对应图片。
-                    classified_images = []
-                    classifier_metadata_available = False
+                    marked_images = []
+                    uncertain_images = []
                     for image, data in zip(images, raw_image_data, strict=True):
                         summary = str(data.get("summary") or "").strip()
                         explicit_summary = summary in {
@@ -328,32 +328,15 @@ class AutoCollectManager:
                         except (TypeError, ValueError):
                             image_sub_type = None
                         if (
-                            image_sub_type is not None
-                            or data.get("emoji_id")
-                            or data.get("emoji_package_id")
-                            or explicit_summary
-                        ):
-                            classifier_metadata_available = True
-                        if (
-                            image_sub_type is None
-                            or image_sub_type == 1
+                            image_sub_type == 1
                             or bool(data.get("emoji_id"))
                             or bool(data.get("emoji_package_id"))
                             or explicit_summary
                         ):
-                            classified_images.append(image)
-                    if classifier_metadata_available:
-                        images = classified_images
-        if not images:
-            self.counters["platform_filtered"] = (
-                self.counters.get("platform_filtered", 0) + 1
-            )
-            logger.info(
-                "[meme_manager] 自动收集跳过图片：平台图片分类未匹配表情，来源：%s:%s",
-                source_kind,
-                source_id,
-            )
-            return False
+                            marked_images.append((image, True))
+                        else:
+                            uncertain_images.append((image, False))
+                    candidates = marked_images + uncertain_images
         if self.queue.qsize() + len(self._snapshot_tasks) >= QUEUE_SIZE:
             self.counters["queue_full"] = self.counters.get("queue_full", 0) + 1
             logger.info(
@@ -390,12 +373,36 @@ class AutoCollectManager:
             )
             return False
 
-        image = images[0]
-        source = str(image.url or image.file or "")
-        snapshot = self._snapshot_and_enqueue(
-            image, target_pack_id, categories, source_kind, source_id
+        if len(candidates) > self.max_images_per_message:
+            self.counters["message_limit"] = self.counters.get("message_limit", 0) + (
+                len(candidates) - self.max_images_per_message
+            )
+            logger.info(
+                "[meme_manager] 自动收集单条消息图片上限为 %s 张，跳过其余 %s 张，来源：%s:%s",
+                self.max_images_per_message,
+                len(candidates) - self.max_images_per_message,
+                source_kind,
+                source_id,
+            )
+        selected_images = candidates[: self.max_images_per_message]
+        message_id = str(getattr(event.message_obj, "message_id", "") or "").strip()
+        if not message_id and isinstance(raw_message, Mapping):
+            message_id = str(raw_message.get("message_id") or "").strip()
+        origin = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        origin = origin or f"{source_kind}:{source_id}"
+        message_key = f"{origin}:{message_id}" if message_id else ""
+        snapshot = self._snapshot_message_images(
+            selected_images,
+            target_pack_id,
+            categories,
+            source_kind,
+            source_id,
+            message_key,
         )
-        if source.startswith(("https://", "http://")):
+        if any(
+            str(image.url or image.file or "").startswith(("https://", "http://"))
+            for image, _ in selected_images
+        ):
             task = asyncio.create_task(
                 snapshot, name="meme_manager_auto_collect_snapshot"
             )
@@ -404,6 +411,136 @@ class AutoCollectManager:
             return True
         return await snapshot
 
+    async def _snapshot_message_images(
+        self,
+        images: list[tuple[Image, bool]],
+        target_pack_id: str,
+        categories: dict[str, str],
+        source_kind: str,
+        source_id: str,
+        message_key: str,
+    ) -> bool:
+        """依次提交同一消息的候选图片，让来源冷却只拦截后续消息。
+
+        Args:
+            images: 平台标记的图片优先，其余按消息顺序排列的候选图片。
+            target_pack_id: 接收候选图片的表情包 ID。
+            categories: 目标表情包的分类描述。
+            source_kind: 群聊或个人消息来源类型。
+            source_id: 用于冷却检查的来源 ID。
+            message_key: 用于排除平台重复投递的消息标识。
+
+        Returns:
+            至少有一张图片进入识别队列时返回 True。
+        """
+        queued = False
+        message_seen: set[str] = set()
+        for image, marked in images:
+            accepted = await self._snapshot_and_enqueue(
+                image,
+                target_pack_id,
+                categories,
+                source_kind,
+                source_id,
+                same_message=queued,
+                marked=marked,
+                message_key=message_key,
+                message_seen=message_seen,
+            )
+            queued = queued or accepted
+        return queued
+
+    def _sample_observation(self, record_id: str, message_key: str) -> bool:
+        """记录图片在不同消息中的出现次数，并逐次提高识别概率。
+
+        Args:
+            record_id: 目标表情包与图片摘要组成的键。
+            message_key: 有值时用于排除同一平台消息的重复投递。
+
+        Returns:
+            图片已命中采样或此前已经达到处理门槛时返回 True。
+        """
+        now = time.time()
+        observations = self._state.setdefault("observations", {})
+        if not isinstance(observations, dict):
+            observations = {}
+            self._state["observations"] = observations
+        for key, item in list(observations.items()):
+            last_seen = item.get("last_seen") if isinstance(item, dict) else None
+            if (
+                not isinstance(last_seen, (int, float))
+                or now - last_seen > OBSERVATION_TTL_SECONDS
+            ):
+                del observations[key]
+        item = observations.get(record_id)
+        if not isinstance(item, dict):
+            item = {"count": 0, "last_seen": now, "message_ids": [], "triggered": False}
+            observations[record_id] = item
+        message_ids = item.get("message_ids")
+        if not isinstance(message_ids, list):
+            message_ids = []
+        if message_key and message_key in message_ids:
+            self.counters["redelivered"] = self.counters.get("redelivered", 0) + 1
+            logger.info(
+                "[meme_manager] 自动收集跳过图片：平台重复投递同一消息，图片摘要：%s",
+                record_id.rsplit(":", 1)[-1][:12],
+            )
+            return False
+        if message_key:
+            message_ids.append(message_key)
+        item["message_ids"] = message_ids[-MAX_OBSERVATION_MESSAGE_IDS:]
+        count = item.get("count")
+        item["count"] = min(8, max(0, count if isinstance(count, int) else 0) + 1)
+        item["last_seen"] = now
+        digest = record_id.rsplit(":", 1)[-1]
+        if item.get("triggered"):
+            logger.info(
+                "[meme_manager] 自动收集图片此前已命中采样，继续尝试处理；第 %s 次，图片摘要：%s",
+                item["count"],
+                digest[:12],
+            )
+        elif item["count"] == 1:
+            self.counters["first_observation"] = (
+                self.counters.get("first_observation", 0) + 1
+            )
+            logger.info(
+                "[meme_manager] 自动收集首次见到图片：已记录，等待再次出现；图片摘要：%s",
+                digest[:12],
+            )
+        else:
+            probability = (
+                1.0 if item["count"] >= 8 else 1.0 - 0.55 * 0.9 ** (item["count"] - 2)
+            )
+            if item["count"] >= 8 or random.random() < probability:
+                item["triggered"] = True
+                self.counters["progressive_hit"] = (
+                    self.counters.get("progressive_hit", 0) + 1
+                )
+                logger.info(
+                    "[meme_manager] 自动收集重复图片命中采样：第 %s 次，本次概率 %.1f%%，图片摘要：%s",
+                    item["count"],
+                    probability * 100,
+                    digest[:12],
+                )
+            else:
+                self.counters["progressive_miss"] = (
+                    self.counters.get("progressive_miss", 0) + 1
+                )
+                logger.info(
+                    "[meme_manager] 自动收集重复图片未命中采样：第 %s 次，本次概率 %.1f%%，图片摘要：%s",
+                    item["count"],
+                    probability * 100,
+                    digest[:12],
+                )
+        if len(observations) > MAX_OBSERVATIONS:
+            oldest = sorted(
+                observations, key=lambda key: observations[key]["last_seen"]
+            )
+            for key in oldest[: len(observations) - MAX_OBSERVATIONS]:
+                del observations[key]
+        self._save_json(AUTO_COLLECT_STATE_PATH, self._state)
+        return bool(item.get("triggered"))
+
     async def _snapshot_and_enqueue(
         self,
         image: Image,
@@ -411,6 +548,11 @@ class AutoCollectManager:
         categories: dict[str, str],
         source_kind: str,
         source_id: str,
+        *,
+        same_message: bool = False,
+        marked: bool = True,
+        message_key: str = "",
+        message_seen: set[str] | None = None,
     ) -> bool:
         """先为候选图片创建快照并预留摘要，再检查冷却时间。
 
@@ -420,6 +562,10 @@ class AutoCollectManager:
             categories: 目标表情包的分类描述。
             source_kind: 群聊或个人消息来源类型。
             source_id: 用于冷却检查的来源 ID。
+            same_message: 同一消息已有图片入队时跳过来源冷却。
+            marked: 平台是否明确将图片标为表情。
+            message_key: 用于排除平台重复投递的消息标识。
+            message_seen: 同一消息已经处理过的图片摘要。
 
         Returns:
             快照是否成功进入识别队列。
@@ -463,6 +609,18 @@ class AutoCollectManager:
             copy_task = asyncio.create_task(asyncio.to_thread(snapshot_path.read_bytes))
             digest = hashlib.sha256(await asyncio.shield(copy_task)).hexdigest()
             record_id = f"{target_pack_id}:{digest}"
+            if message_seen is not None:
+                if record_id in message_seen:
+                    self.counters["same_message_duplicate"] = (
+                        self.counters.get("same_message_duplicate", 0) + 1
+                    )
+                    logger.info(
+                        "[meme_manager] 自动收集跳过图片：同一消息已有相同图片，表情包：%s，图片摘要：%s",
+                        target_pack_id,
+                        digest[:12],
+                    )
+                    return False
+                message_seen.add(record_id)
             pack_duplicate = await asyncio.to_thread(
                 self._pack_contains_digest, target_pack_id, digest
             )
@@ -491,6 +649,38 @@ class AutoCollectManager:
                     digest[:12],
                 )
                 return False
+            if marked:
+                if not probability_hit(self.sampling_probability):
+                    self.counters["sampling"] = self.counters.get("sampling", 0) + 1
+                    logger.info(
+                        "[meme_manager] 自动收集跳过图片：平台标记的表情未命中抽样概率，来源：%s:%s，图片摘要：%s",
+                        source_kind,
+                        source_id,
+                        digest[:12],
+                    )
+                    return False
+            else:
+                cache_key = self._cache_key(digest, target_pack_id, categories)
+                decisions = self._state.get("decisions", {})
+                decision = (
+                    decisions.get(cache_key) if isinstance(decisions, dict) else None
+                )
+                if isinstance(decision, dict) and (
+                    not bool(decision.get("is_meme"))
+                    or float(decision.get("meme_confidence", 0) or 0)
+                    < self.min_meme_confidence
+                ):
+                    self.counters["model_rejected_cached"] = (
+                        self.counters.get("model_rejected_cached", 0) + 1
+                    )
+                    logger.info(
+                        "[meme_manager] 自动收集跳过图片：视觉模型已有否定判断，表情包：%s，图片摘要：%s",
+                        target_pack_id,
+                        digest[:12],
+                    )
+                    return False
+                if not self._sample_observation(record_id, message_key):
+                    return False
             if not self._ready:
                 self.counters["not_ready"] = self.counters.get("not_ready", 0) + 1
                 logger.info(
@@ -501,7 +691,10 @@ class AutoCollectManager:
                 return False
             cooldown_key = f"{source_kind}:{source_id}"
             now = time.monotonic()
-            if now - self._cooldowns.get(cooldown_key, 0.0) < self.cooldown_seconds:
+            if (
+                not same_message
+                and now - self._cooldowns.get(cooldown_key, 0.0) < self.cooldown_seconds
+            ):
                 self.counters["cooldown"] = self.counters.get("cooldown", 0) + 1
                 logger.info(
                     "[meme_manager] 自动收集跳过图片：来源仍在冷却时间内，来源：%s:%s，表情包：%s",
