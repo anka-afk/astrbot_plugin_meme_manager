@@ -34,9 +34,7 @@ class UploadTracker:
             except FileNotFoundError:
                 self.uploaded_files = {}
             except (ValueError, OSError):
-                logger.warning(
-                    "Could not load sync baseline; existing files require comparison"
-                )
+                logger.warning("无法加载同步基线，需要重新比对现有文件")
                 self.uploaded_files = {}
 
     def save(self) -> None:

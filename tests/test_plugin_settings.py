@@ -301,7 +301,7 @@ def test_invalid_config_is_not_written(shared_config, changes):
 async def test_both_editors_share_the_file_and_stale_edits_are_rejected(settings_api):
     app = Quart(__name__)
     snapshot, _ = describe_settings(settings_api.config)
-    # Simulate a save from AstrBot's existing editor while this page stays open.
+    # 模拟此页面保持打开时，AstrBot 原有编辑器保存配置。
     settings_api.config["generation"]["emotion"]["probability"] = 70
     settings_api.config.save_config()
     async with app.test_request_context(
@@ -335,7 +335,7 @@ async def test_both_editors_share_the_file_and_stale_edits_are_rejected(settings
     assert status == 200
     assert (await response.get_json())["applied"] is True
     settings_api.context._star_manager.reload.assert_awaited_once_with("meme_manager")
-    # A fresh AstrBot config instance sees the settings saved by the plugin UI.
+    # 新的 AstrBot 配置实例应能读取插件界面保存的设置。
     reloaded = AstrBotConfig(
         settings_api.config.config_path, schema=settings_api.config.schema
     )

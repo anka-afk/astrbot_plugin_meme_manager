@@ -1533,7 +1533,7 @@ class WebAPIMixin:
             }
         try:
             sync_client.sync_process = sync_client._start_sync_process(task)
-            # Reap and release the pack operation even if the browser disconnects.
+            # 即使浏览器断开，也要回收并释放表情包操作。
             monitor = asyncio.create_task(
                 asyncio.to_thread(sync_client.sync_process.join)
             )
@@ -1783,7 +1783,7 @@ class WebAPIMixin:
         root = Path(context["memes_dir"]).resolve()
 
         def scan():
-            # Keep directory traversal and stat calls off the event loop.
+            # 目录遍历和文件状态查询不能阻塞事件循环。
             versions = {}
             for category, filenames in self._scan_pack_emojis(root).items():
                 for filename in filenames:
@@ -1890,7 +1890,7 @@ class WebAPIMixin:
                 self._build_file_data_url, file_path, mime_type
             )
 
-        # Never cache bytes under a revision that changed while they were read.
+        # 读取期间版本发生变化时，不能按旧版本缓存字节。
         if self._preview_revision(file_path) != revision:
             return (
                 jsonify({"message": "Image changed; reload the preview"}),
@@ -3377,7 +3377,7 @@ class WebAPIMixin:
                 return jsonify(
                     {"message": "图床正在同步，请等待完成后再保存设置。"}
                 ), 409
-            # Save synchronously before yielding, using AstrBot's atomic config writer.
+            # 在让出执行权之前，使用 AstrBot 的原子配置写入器同步保存。
             try:
                 self.config.clear()
                 self.config.save_config(updated)
@@ -3389,7 +3389,7 @@ class WebAPIMixin:
         except ValueError as error:
             return jsonify({"message": str(error)}), 400
         except Exception:
-            logger.exception("Failed to read or save plugin settings")
+            logger.exception("读取或保存插件设置失败")
             return jsonify(
                 {"message": "读取或保存配置失败，请检查服务日志后重试。"}
             ), 500
@@ -3400,7 +3400,7 @@ class WebAPIMixin:
                     {**snapshot, "applied": True, "message": "设置已保存并生效。"}
                 ), 200
         except Exception:
-            logger.exception("Plugin settings were saved but reload failed")
+            logger.exception("插件设置已保存，但重新加载失败")
         return jsonify(
             {
                 **snapshot,

@@ -101,7 +101,7 @@ class MemeParser:
             raise RuntimeError("Cannot feed a finished meme parser")
         output = []
         for part in text.splitlines(keepends=True):
-            # Only LF terminates protocol lines; other separators stay literal.
+            # 只有 LF 才能结束协议行；其他分隔符按原文保留。
             complete = part.endswith("\n")
             if self._passthrough:
                 output.append(part)
@@ -119,8 +119,8 @@ class MemeParser:
             if complete:
                 output.append(self._consume_line())
             elif not self._context.active:
-                # A completed ordinary word before any syntax is immutable.
-                # Keep indentation and potential standalone fallback tokens.
+                # 任何语法出现之前，已完成的普通词不能再修改。
+                # 保留缩进和可能独立出现的回退标记。
                 syntax = re.search(r"[&`~\[\]()<>:\\\n]", self._line)
                 prefix = self._line[: syntax.start()] if syntax else self._line
                 if self.semantic or self.filter_all:
@@ -288,7 +288,7 @@ class MemeParser:
         self._line = ""
         self._emitted = 0
         visible = "".join(parts)
-        # Run after normal selection so cleanup cannot suppress valid images.
+        # 在常规选择之后执行清理，避免抑制有效图片。
         if self.filter_all:
             visible = self._markers.sub("", visible)
         return visible

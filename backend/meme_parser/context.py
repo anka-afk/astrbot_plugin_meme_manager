@@ -152,8 +152,8 @@ class ContextScanner:
                 cursor = reason.end()
                 continue
             if line[cursor] == "[":
-                # Balanced labels protect nested markers and destinations. A bare
-                # complete [category] stays available to the marker recognizer.
+                # 成对的标签可保护嵌套标记和目标地址；单独且完整的
+                # [category] 仍交由标记识别器处理。
                 end, depth = cursor + 1, 1
                 while end < len(line) and depth:
                     if line[end] == "\\" and end + 1 < len(line):

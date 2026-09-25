@@ -176,9 +176,10 @@ class AutoCollectFlowTests(unittest.IsolatedAsyncioTestCase):
         for source, confidence in ((self.png, 0.72), (self.gif, 0.91)):
             self.decision["category_confidence"] = confidence
             self.assertTrue(await manager.submit(FlowEvent(source)))
-            # Simulate the platform deleting its message attachment after submit.
+            # 模拟平台在提交后删除消息附件。
             source.unlink()
             await asyncio.wait_for(manager.queue.join(), 5)
+        self.assertEqual(list((self.root / "queue").iterdir()), [])
         self.assertEqual(self.vision.await_count, 2)
         self.assertEqual([len(paths) for paths in self.visual_requests], [1, 2])
         self.assertTrue(
@@ -188,6 +189,7 @@ class AutoCollectFlowTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get("/inbox", query_string={"pack_id": "pack-a"})
         self.assertEqual(response.status_code, 200)
         pending = await response.get_json()
+        self.assertTrue(pending["visible"])
         self.assertEqual(pending["count"], 2)
         self.assertEqual(
             [item["category_confidence"] for item in pending["items"]], [0.91, 0.72]
@@ -261,12 +263,40 @@ class AutoCollectFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await manager.submit(FlowEvent(self.png)))
         await asyncio.wait_for(entered.wait(), 5)
         cooldown = dict(manager._cooldowns)
-        self.assertFalse(await manager.submit(FlowEvent(self.png)))
+        with patch.object(auto_collect.logger, "info") as log_info:
+            self.assertFalse(await manager.submit(FlowEvent(self.png)))
+        self.assertTrue(
+            any(
+                len(call.args) > 1 and call.args[1] == "相同图片正在处理"
+                for call in log_info.call_args_list
+            )
+        )
         self.assertEqual(manager._cooldowns, cooldown)
         release.set()
         await asyncio.wait_for(manager.queue.join(), 5)
-        self.assertFalse(await manager.submit(FlowEvent(self.png)))
+        with patch.object(auto_collect.logger, "info") as log_info:
+            self.assertFalse(await manager.submit(FlowEvent(self.png)))
+        self.assertTrue(
+            any(
+                len(call.args) > 1 and call.args[1] == "相同图片已在待审箱"
+                for call in log_info.call_args_list
+            )
+        )
         self.assertEqual(manager._cooldowns, cooldown)
+        with patch.object(auto_collect.logger, "info") as log_info:
+            self.assertFalse(await manager.submit(FlowEvent(self.gif)))
+        self.assertTrue(
+            any("冷却时间内" in call.args[0] for call in log_info.call_args_list)
+        )
+        manager._ready = False
+        with patch.object(auto_collect.logger, "info") as log_info:
+            self.assertFalse(await manager.submit(FlowEvent(self.png)))
+        self.assertTrue(
+            any("后台任务尚未就绪" in call.args[0] for call in log_info.call_args_list)
+        )
+        self.assertEqual(manager.counters["duplicate_or_rejected"], 2)
+        self.assertEqual(manager.counters["cooldown"], 1)
+        self.assertEqual(manager.counters["not_ready"], 1)
         self.assertEqual(self.vision.await_count, 1)
         response = await self.client.get("/inbox", query_string={"pack_id": "pack-a"})
         self.assertEqual((await response.get_json())["count"], 1)
@@ -327,15 +357,30 @@ class AutoCollectFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.vision.await_count, 0)
         self.assertFalse(manager._cooldowns)
         self.vision.side_effect = RuntimeError("temporary provider outage")
-        self.assertTrue(await manager.submit(FlowEvent(self.png)))
+        with patch.object(auto_collect.random, "random", return_value=0.0):
+            self.assertTrue(await manager.submit(FlowEvent(self.png, sub_type=0)))
         await asyncio.wait_for(manager.queue.join(), 5)
         self.assertFalse(manager._state.get("decisions"))
         self.assertFalse(manager._inflight)
         self.assertFalse(manager._worker_task.done())
         self.vision.side_effect = self.vision_response
-        self.assertTrue(await manager.submit(FlowEvent(self.png)))
+        with patch.object(auto_collect.random, "random") as roll:
+            self.assertTrue(await manager.submit(FlowEvent(self.png, sub_type=0)))
+            roll.assert_not_called()
         await asyncio.wait_for(manager.queue.join(), 5)
         self.assertEqual(self.vision.await_count, 2)
         pending = await self.client.get("/inbox", query_string={"pack_id": "pack-a"})
         self.assertEqual((await pending.get_json())["count"], 1)
         self.assertEqual(list((self.root / "queue").iterdir()), [])
+
+    async def test_negative_model_decision_stops_repeated_recognition(self):
+        manager = self.host.auto_collect_manager
+        self.decision["is_meme"] = False
+        self.assertFalse(await manager.submit(FlowEvent(self.png, sub_type=0)))
+        with patch.object(auto_collect.random, "random", return_value=0.0):
+            self.assertTrue(await manager.submit(FlowEvent(self.png, sub_type=0)))
+        await asyncio.wait_for(manager.queue.join(), 5)
+        self.assertEqual(self.vision.await_count, 1)
+        self.assertFalse(await manager.submit(FlowEvent(self.png, sub_type=0)))
+        self.assertEqual(self.vision.await_count, 1)
+        self.assertEqual(manager.counters["model_rejected_cached"], 1)

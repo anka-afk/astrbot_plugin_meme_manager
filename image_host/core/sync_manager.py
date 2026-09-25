@@ -367,15 +367,15 @@ class SyncManager:
                                 }
                             )
                         logger.warning(
-                            "Image %s failed for %s: %s", direction, relative, exc
+                            "图片%s失败，路径：%s，原因：%s", direction, relative, exc
                         )
                     self._publish_progress(processed=self.progress["processed"] + 1)
 
             if deletions and not self.progress["failed"]:
                 if self.cancel_requested():
                     raise InterruptedError("Sync cancelled before cleanup")
-                # Re-list before deleting: a changed or incomplete source must never
-                # turn into permission to clean the destination.
+                # 删除前重新获取列表：来源发生变化或列表不完整时，
+                # 绝不能据此清理目标端。
                 self._publish_progress(phase="verifying", current_file="")
                 fresh = self.check_sync_status()
                 if task == "overwrite_from_remote" and not fresh["remote_exists"]:
@@ -454,7 +454,9 @@ class SyncManager:
                                     "message": str(exc),
                                 }
                             )
-                        logger.warning("Image cleanup failed for %s: %s", relative, exc)
+                        logger.warning(
+                            "清理图片失败，路径：%s，原因：%s", relative, exc
+                        )
                     self._publish_progress(processed=self.progress["processed"] + 1)
             success = not (self.progress["failed"] or conflicts)
             self._publish_progress(
@@ -476,7 +478,7 @@ class SyncManager:
                 success=False,
                 message=str(exc),
             )
-            logger.warning("Image sync stopped: %s", exc)
+            logger.warning("图片同步已停止：%s", exc)
             return False
 
     def sync_to_remote(self) -> bool:

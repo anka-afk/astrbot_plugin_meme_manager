@@ -275,7 +275,7 @@ class StarDotsProvider(ImageHostInterface):
             raise ValueError(
                 "StarDots supports filenames up to 170 characters and files up to 10 MiB"
             )
-        # The API limit bounds the multipart buffer; bytes also make retries replayable.
+        # 接口限制了分段上传缓冲区大小；保留字节也便于重试。
         with file_path.open("rb") as stream:
             content = stream.read(10 * 1024 * 1024 + 1)
         if len(content) > 10 * 1024 * 1024:
@@ -295,7 +295,7 @@ class StarDotsProvider(ImageHostInterface):
         data = result.get("data") or {}
         if data.get("filename") != remote_name:
             raise InvalidResponseError("StarDots changed the uploaded filename")
-        # Public links stay usable; private access tickets must be requested afresh.
+        # 公共链接可继续使用；私有访问凭证必须重新申请。
         url = urlsplit(str(data.get("url") or ""))
         return {
             "id": remote_name,

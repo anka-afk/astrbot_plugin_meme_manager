@@ -1900,7 +1900,7 @@ async function initApp() {
         requestedPackId !== activeManagePackId
       )
         return false;
-      console.error("Failed to load meme library:", error);
+      console.error("加载表情库失败：", error);
       libraryLoadState.classList.add("error");
       libraryLoadMessage.textContent = `表情包加载失败：${
         error?.message || "请检查连接"
@@ -2054,7 +2054,7 @@ async function initApp() {
       setEmojiPreviewLoaded(emojiItem, data.data_url);
     } catch (error) {
       if (!emojiItem.isConnected || error?.name === "AbortError") return;
-      console.error("Failed to load meme preview:", error);
+      console.error("加载表情预览失败：", error);
       setEmojiPreviewError(emojiItem);
     } finally {
       emojiItem.dataset.loading = "false";
@@ -6471,7 +6471,7 @@ async function initApp() {
       hideImgHostSyncProgress(3000);
       showToast(`${label}已完成。`, "success", "同步成功");
     } catch (error) {
-      console.error("Image host overwrite failed:", error);
+      console.error("图床覆盖同步失败：", error);
       setImgHostSyncProgress(error.message, "error");
       showToast(error.message, "error", "同步失败");
     } finally {
@@ -6845,7 +6845,7 @@ async function initApp() {
         }
       })
       .catch((error) =>
-        console.warn("Could not restore image sync progress:", error),
+        console.warn("无法恢复图片同步进度：", error),
       );
   }, 180);
 

@@ -105,7 +105,7 @@ class LskyProvider(ImageHostInterface):
         album_ids = [0]
         seen_keys = set()
         seen_paths = set()
-        # The album pass populates subsequent image queries, including unfiled images.
+        # 遍历相册时也要收集后续图片查询所需的数据，包括未归档图片。
         queries = [("albums", {})]
         for route, filters in queries:
             total = None
@@ -184,7 +184,7 @@ class LskyProvider(ImageHostInterface):
                             "filename": filename,
                             "category": category,
                             "url": (source.get("links") or {}).get("url", ""),
-                            # Lsky stores rounded KiB, not an exact byte count.
+                            # Lsky 保存的是取整后的 KiB，而非精确字节数。
                             "size": None,
                             "etag": f"{identity}:{sha1}",
                             "modified": str(source.get("date") or ""),
@@ -254,7 +254,7 @@ class LskyProvider(ImageHostInterface):
         ):
             raise ValueError("Lsky did not return a new image key")
         if data.get("origin_name") != name or data.get("sha1") != sha1:
-            # Keep old content intact; only roll back the new record returned by upload.
+            # 保留旧内容，仅回滚上传返回的新记录。
             self.delete_image(key)
             raise ValueError(
                 "Lsky changed the image; disable compression, format conversion and overlay watermarks"

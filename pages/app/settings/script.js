@@ -905,7 +905,7 @@ async function initSettingsPage() {
           return;
         }
 
-        // A different scope needs a new target, but the chosen pack remains valid.
+        // 切换范围需要重新选择目标，但已选表情包仍有效。
         const firstSuggestion = getTargetSuggestions(selectedScope)[0] || "";
         rules[index].target = firstSuggestion;
         renderRules();

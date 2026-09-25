@@ -63,7 +63,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                     elif spec.get("options") and current[key] not in spec["options"]:
                         current[key] = copy.deepcopy(spec["default"])
             if self.config != previous:
-                # Persist the schema-only configuration with AstrBot's atomic writer.
+                # 使用 AstrBot 的原子写入器保存仅包含配置结构的设置。
                 try:
                     self.config.save_config()
                 except Exception:
@@ -71,7 +71,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                     self.config.update(previous)
                     raise
 
-        # Models are only required when a semantic operation actually runs.
+        # 只有执行语义操作时才需要模型。
         self.semantic_enabled = bool(
             self._read_config_value(
                 ("semantic", "enabled"),
@@ -421,7 +421,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                 current_dir = None
 
         if current_dir != target_memes_dir.resolve():
-            # Adapter construction validates configuration without network probes.
+            # 构建适配器时仅验证配置，不发起网络探测。
             try:
                 previous_sync = self.img_sync
                 self.img_sync = ImageSync(
@@ -433,7 +433,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
                     previous_sync.close()
             except Exception as exc:
                 logger.error(
-                    "Image host %s initialization failed; sync is unavailable: %s",
+                    "图床 %s 初始化失败，无法同步：%s",
                     self.img_sync_provider_type,
                     exc,
                 )
@@ -620,7 +620,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             )
         except Exception as exc:
             logger.warning(
-                "Semantic search is unavailable; falling back to legacy categories: %s",
+                "语义检索不可用，回退到旧版分类：%s",
                 exc,
             )
             return False
@@ -884,7 +884,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             if isinstance(context_mapping, dict)
             else runtime_category_mapping(self.category_mapping)
         )
-        # Descriptions can exist on a fresh install without any usable images.
+        # 首次安装时即使没有可用图片，也可能已有分类描述。
         memes_dir = Path(pack_context["memes_dir"])
         category_mapping = {
             key: description

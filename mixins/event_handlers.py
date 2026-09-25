@@ -8,7 +8,6 @@ import re
 import ssl
 import tempfile
 import time
-import traceback
 from pathlib import Path
 from typing import Any
 
@@ -81,8 +80,8 @@ class EventHandlerMixin:
         )
         event.set_extra(LLM_REQUEST_ORIGIN_EXTRA_KEY, origin)
 
-        # AstrBot skips decorating hooks for streaming results. Intercept this
-        # event's delivery before the agent starts consuming its response stream.
+        # AstrBot 对流式结果不会执行装饰钩子，因此要在代理开始消费
+        # 响应流之前拦截该事件的发送过程。
         send_streaming = getattr(event, "send_streaming", None)
         if callable(send_streaming) and not event.get_extra(
             "meme_manager_stream_filter_installed"
@@ -298,7 +297,7 @@ class EventHandlerMixin:
 
         if not sections:
             return ""
-        # Keep reference data separate from the selection instructions.
+        # 将参考数据与选择指令分开。
         return "\n参考上下文（JSON 数据，仅用于理解回复）：\n" + json.dumps(
             sections, ensure_ascii=False
         )
@@ -514,8 +513,8 @@ class EventHandlerMixin:
                 if not isinstance(chunk, MessageChain):
                     yield chunk
                     continue
-                # Request hooks run inside the source generator. Resolve the pack
-                # and semantic mode only after those hooks have initialized them.
+                # 请求钩子在源生成器内运行，必须等钩子初始化完成后
+                # 再解析表情包和语义模式。
                 event.set_extra("meme_manager_stream_filtered", True)
                 if parser is None:
                     context = self._resolve_runtime_pack_context(event=event)
@@ -536,7 +535,7 @@ class EventHandlerMixin:
                         if visible:
                             components.append(Plain(visible))
                     else:
-                        # A non-text component terminates the contiguous text segment.
+                        # 非文本组件会结束连续的文本片段。
                         visible = parser.finish()
                         if visible:
                             components.append(Plain(visible))
@@ -659,7 +658,7 @@ class EventHandlerMixin:
             else:
                 cleaned_components.append(component)
 
-        # Keep each selected category once, in model-selected order.
+        # 按模型选择的顺序保留分类，每个分类只保留一次。
         filtered_emotions = self._filter_emotion_selection(found_emotions)
 
         emotion_images, temp_files = await self._build_emotion_images_for_event(
@@ -828,7 +827,7 @@ class EventHandlerMixin:
             return
         event.set_extra("meme_manager_resolved_persona_id", None)
         try:
-            # Match AstrBot's session override and inherited default persona selection.
+            # 与 AstrBot 的会话覆盖和继承默认人格选择保持一致。
             (
                 persona_id,
                 _,
@@ -845,7 +844,7 @@ class EventHandlerMixin:
             event.set_extra("meme_manager_resolved_persona_id", persona_id or "")
         except Exception:
             logger.warning(
-                "Failed to resolve the effective persona for meme selection",
+                "无法解析表情选择使用的当前人格",
                 exc_info=True,
             )
         self._apply_request_prompt(req, event)
@@ -992,7 +991,7 @@ class EventHandlerMixin:
                     selected_id = requested_id
         except Exception as exc:
             logger.error(
-                "[meme_manager] Emotion-assisted semantic search failed: %s",
+                "[meme_manager] 情感辅助语义检索失败：%s",
                 exc,
                 exc_info=True,
             )
@@ -1132,7 +1131,7 @@ class EventHandlerMixin:
             except Exception as e:
                 logger.error(f"[meme_manager] 情感模型调用失败: {e}")
 
-        # Keep each selected category once, in model-selected order.
+        # 按模型选择的顺序保留分类，每个分类只保留一次。
         filtered_emotions = self._filter_emotion_selection(found_emotions)
 
         event.set_extra("found_emotions", filtered_emotions)
@@ -1142,12 +1141,12 @@ class EventHandlerMixin:
             clean_text = self._clean_outgoing_plain_text(clean_text)
         response.completion_text = clean_text.strip()
         if filtered_emotions and not response.completion_text:
-            # Keep a message chain so AstrBot reaches decoration with an empty
-            # body; the selected pictures become the reply at that stage.
+            # 保留消息链，让 AstrBot 在空消息正文下仍进入装饰阶段；
+            # 选中的图片会在该阶段成为回复。
             if response.result_chain is None:
                 response.result_chain = MessageChain([Plain("")])
             event.set_extra("meme_manager_image_only_reply", True)
-            # This image is the reply itself, not an optional text attachment.
+            # 此图片就是回复本身，而不是可选的文本附件。
             event.set_extra("meme_manager_legacy_probability_hit", True)
         logger.debug(
             f"[meme_manager] 清理后的最终文本内容长度: {len(response.completion_text)}"
@@ -1184,9 +1183,9 @@ class EventHandlerMixin:
             else:
                 logger.warning("忽略不在本轮候选中的语义图片 ID: %s", value)
         if selected_ids:
-            logger.info("[meme_manager] Selected semantic memes: %s", selected_ids)
+            logger.info("[meme_manager] 已选择语义表情：%s", selected_ids)
         else:
-            logger.debug("[meme_manager] No semantic meme selected for this reply")
+            logger.debug("[meme_manager] 本次回复未选择语义表情")
         event.set_extra("meme_manager_semantic_selected_ids", selected_ids)
         event.set_extra("found_emotions", None)
         if getattr(self, "filter_all_tags", False):
@@ -1400,8 +1399,7 @@ class EventHandlerMixin:
             logger.debug("[meme_manager] on_decorating_result 处理完成")
 
         except Exception as e:
-            logger.error(f"处理消息装饰失败: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.exception("处理消息装饰失败：%s", e)
 
     @filter.after_message_sent()
     async def _after_message_sent_impl(self, event: AstrMessageEvent):
@@ -1413,8 +1411,7 @@ class EventHandlerMixin:
                 for image in pending_images:
                     await self._send_meme_image(event, image)
         except Exception as e:
-            logger.error(f"发送表情图片失败: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.exception("发送表情图片失败：%s", e)
         finally:
             event.set_extra("meme_manager_pending_images", None)
 
@@ -1566,8 +1563,7 @@ class EventHandlerMixin:
                         except Exception:
                             pass
         except Exception as e:
-            logger.error(f"[meme_manager] 流式模式处理表情失败: {e}")
-            logger.error(traceback.format_exc())
+            logger.exception("[meme_manager] 流式模式处理表情失败：%s", e)
         finally:
             event.set_extra("found_emotions", None)
 

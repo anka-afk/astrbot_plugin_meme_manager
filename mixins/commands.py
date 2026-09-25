@@ -653,9 +653,7 @@ class CommandMixin:
                 if (pack_dir / "semantic_metadata.json").is_file():
                     await asyncio.to_thread(invalidate_semantic_metadata, pack_dir)
             except Exception as exc:
-                logger.warning(
-                    "Could not invalidate semantic metadata after image sync: %s", exc
-                )
+                logger.warning("图片同步后无法使语义元数据失效：%s", exc)
             finally:
                 self.semantic_task_manager.end_external_pack_operation(pack_id)
 
@@ -727,9 +725,7 @@ class CommandMixin:
                 if (pack_dir / "semantic_metadata.json").is_file():
                     await asyncio.to_thread(invalidate_semantic_metadata, pack_dir)
             except Exception as exc:
-                logger.warning(
-                    "Could not invalidate semantic metadata after image sync: %s", exc
-                )
+                logger.warning("图片同步后无法使语义元数据失效：%s", exc)
             finally:
                 self.semantic_task_manager.end_external_pack_operation(pack_id)
 

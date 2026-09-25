@@ -107,7 +107,7 @@ def test_animated_files_are_excluded_from_visual_matches(tmp_path):
     assert index.lookup(pack, animated_digest).exact_path == animated
     animated.unlink()
     Image.new("RGB", (16, 16), "red").save(pack / "static.png")
-    # Animated candidates also skip visual matching against static pack images.
+    # 动图候选也会跳过与表情包静态图片的视觉匹配。
     Image.new("RGB", (16, 16), "red").save(
         animated,
         save_all=True,

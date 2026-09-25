@@ -1,4 +1,4 @@
-// Keep tutorial navigation separate from editable provider settings.
+// 将教程导航与可编辑的提供方设置分开。
 const mask = document.getElementById("storage-guide-mask");
 const panels = [...mask.querySelectorAll("[data-storage-guide]")];
 

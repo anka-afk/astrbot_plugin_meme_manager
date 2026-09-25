@@ -246,6 +246,14 @@ async def test_webchat_pack_rules_use_effective_persona(
 
     manager = object.__new__(persona_mgr.PersonaManager)
     manager.personas_v3 = [{"name": "default"}, {"name": "other"}]
+    manager.acm = SimpleNamespace(
+        get_conf=lambda umo: {
+            "agent_runner": {
+                "runner_type": "local",
+                "config": {"persona": {"persona_id": default_persona}},
+            }
+        }
+    )
     monkeypatch.setattr(
         persona_mgr.sp,
         "get_async",
