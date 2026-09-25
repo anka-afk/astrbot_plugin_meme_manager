@@ -1325,7 +1325,7 @@ def save_collected_image_semantic(
     relative_path = source.relative_to(root).as_posix()
     category = source.parent.name
     entry_id = semantic_entry_id(digest, category, relative_path)
-    # Adding one accepted image must not rehash the entire existing library.
+    # 接收一张图片时不能重新计算整个现有图库的哈希。
     metadata = load_metadata(root)
     if metadata.get("metadata_read_only"):
         raise SemanticMetadataCompatibilityError(str(metadata.get("metadata_error")))
@@ -1348,7 +1348,7 @@ def save_collected_image_semantic(
         and decision.get("semantic_category") == item.category
         and item.category != REVIEW_CATEGORY
     )
-    # Older or reclassified analyses remain drafts, never completed captions.
+    # 旧版或重新分类的分析只能保留为草稿，不能视为已完成的描述。
     item.auto_caption = caption
     item.auto_tags = tags
     item.auto_visible_text = visible_text

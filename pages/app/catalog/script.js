@@ -365,7 +365,7 @@ async function initCatalogPage() {
   }
 
   function readPackFormat(pack) {
-    // Older indexes describe the format with tags instead of explicit features.
+    // 旧版索引用标签描述格式，而没有显式的特征字段。
     const tags = new Set(
       (Array.isArray(pack?.tags) ? pack.tags : []).map((tag) =>
         String(tag || "")
@@ -449,7 +449,7 @@ async function initCatalogPage() {
       candidates.push(`${rootPrefix}/previews/cover.jpg`);
     }
 
-    // Use jsDelivr as a fallback when the raw GitHub host is unavailable.
+    // GitHub 原始文件主机不可用时，回退使用 jsDelivr。
     const jsdelivrPrefix = `https://cdn.jsdelivr.net/gh/${repo}@${ref}`;
     const jsdelivrSubpathPrefix = normalizedSubpath
       ? `${jsdelivrPrefix}/${normalizedSubpath}`

@@ -4099,7 +4099,7 @@ button.danger,
   }
 }
 
-/* Collection review shares the pack manager palette and adapts to narrow screens. */
+/* 收集审核沿用表情包管理器的配色，并适配窄屏。 */
 .collection-review-dialog {
   width: min(1120px, 94vw);
   max-height: 90vh;

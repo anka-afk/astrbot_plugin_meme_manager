@@ -223,5 +223,5 @@ SEMANTIC_INDEXES_DIR = PLUGIN_DATA_DIR / "semantic_indexes"
 
 SEMANTIC_INDEXES_DIR.mkdir(parents=True, exist_ok=True)
 
-print(f"Plugin directory: {PLUGIN_DIR}", file=sys.stderr)
-print(f"Plugin data directory: {PLUGIN_DATA_DIR}", file=sys.stderr)
+print(f"插件目录：{PLUGIN_DIR}", file=sys.stderr)
+print(f"插件数据目录：{PLUGIN_DATA_DIR}", file=sys.stderr)

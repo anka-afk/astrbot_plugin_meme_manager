@@ -357,7 +357,7 @@ def run_sync_process(
             sync.sync_manager.cancel_requested = cancel_event.is_set
         success = sync.sync_manager.run(task)
     except Exception as exc:
-        logger.warning("Image sync worker failed: %s", exc)
+        logger.warning("图片同步后台任务失败：%s", exc)
         if progress_path:
             write_json_atomic(
                 Path(progress_path),

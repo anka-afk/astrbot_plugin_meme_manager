@@ -77,7 +77,7 @@ def resolve_pack_id(
                 and persona_id
                 and (
                     target == persona_id
-                    # Webchat names its built-in default persona differently.
+                    # Webchat 对内置默认人格使用不同的名称。
                     or (target == "default" and persona_id == "_chatui_default_")
                 )
                 and _pack_exists(pack_id)

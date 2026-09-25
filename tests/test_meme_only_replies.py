@@ -193,7 +193,7 @@ async def test_webchat_stream_cleans_tags_without_decorating_hook(
     response = LLMResponse(role="assistant", completion_text=text)
 
     async def source():
-        # Request initialization happens when the platform starts the generator.
+        # 平台启动生成器时才会初始化请求。
         state["meme_manager_stream_filtered"] = False
         for offset in range(0, len(text), chunk_size):
             yield MessageChain([Plain(text[offset : offset + chunk_size])])
@@ -204,7 +204,7 @@ async def test_webchat_stream_cleans_tags_without_decorating_hook(
         result_content_type=ResultContentType.STREAMING_RESULT,
         async_stream=source(),
     )
-    # The real host stage intentionally skips the plugin's decorating hook.
+    # 实际宿主阶段会有意跳过插件的装饰钩子。
     assert [item async for item in ResultDecorateStage().process(event)] == []
     await event.send_streaming(state["result"].async_stream, True)
     payloads = [call.args[1] for call in queue.await_args_list]

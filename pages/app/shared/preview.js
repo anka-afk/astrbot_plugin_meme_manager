@@ -1,4 +1,4 @@
-// HTTP responses provide persistent caching even inside AstrBot's sandboxed iframe.
+// 即使在 AstrBot 的沙箱 iframe 中，HTTP 响应也能提供持久缓存。
 export class PreviewClient {
   constructor(api) {
     this.api = api;
@@ -99,7 +99,7 @@ export class PreviewClient {
         continue;
       }
       this.active += 1;
-      // Keep the slot occupied until the bridge request actually settles.
+      // 桥接请求真正结束前始终占用该位置。
       Promise.resolve()
         .then(() => this.api.apiGet(job.endpoint, job.params))
         .then((data) => {

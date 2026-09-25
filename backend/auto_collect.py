@@ -179,8 +179,8 @@ class AutoCollectManager:
             return
         provider = self.plugin.context.get_provider_by_id(self.vision_provider_id)
         if provider is None:
-            logger.warning(
-                "[meme_manager] 自动收集视觉模型不可用：%s",
+            logger.info(
+                "[meme_manager] 自动收集视觉模型尚未就绪，等待加载后重试：%s",
                 self.vision_provider_id,
             )
             return
@@ -266,7 +266,7 @@ class AutoCollectManager:
         Returns:
             成功加入任务队列时返回 True。
         """
-        if not self.enabled or not self._ready:
+        if not self.enabled:
             return False
         images = [
             component
@@ -276,11 +276,29 @@ class AutoCollectManager:
         if not images:
             return False
         allowed, source_kind, source_id = self._source_allowed(event)
+        if not self._ready:
+            self.counters["not_ready"] = self.counters.get("not_ready", 0) + 1
+            logger.info(
+                "[meme_manager] 自动收集跳过图片：后台任务尚未就绪，来源：%s:%s",
+                source_kind,
+                source_id,
+            )
+            return False
         if not allowed:
             self.counters["scope"] = self.counters.get("scope", 0) + 1
+            logger.info(
+                "[meme_manager] 自动收集跳过图片：消息来源不在收集范围内，来源：%s:%s",
+                source_kind,
+                source_id,
+            )
             return False
         if not probability_hit(self.sampling_probability):
             self.counters["sampling"] = self.counters.get("sampling", 0) + 1
+            logger.info(
+                "[meme_manager] 自动收集跳过图片：未命中采样概率，来源：%s:%s",
+                source_kind,
+                source_id,
+            )
             return False
         raw_message = getattr(event.message_obj, "raw_message", None)
         if isinstance(raw_message, Mapping):
@@ -294,9 +312,8 @@ class AutoCollectManager:
                     and isinstance(segment.get("data"), Mapping)
                 ]
                 if len(raw_image_data) == len(images):
-                    # NapCat exposes image classification only in the raw OneBot
-                    # segment. AstrBot's Image component currently drops these
-                    # extension fields, so preserve positional pairing here.
+                    # NapCat 仅在原始 OneBot 消息段中提供图片分类。
+                    # AstrBot 的 Image 组件会丢弃这些扩展字段，因此按位置对应图片。
                     classified_images = []
                     classifier_metadata_available = False
                     for image, data in zip(images, raw_image_data, strict=True):
@@ -331,9 +348,19 @@ class AutoCollectManager:
             self.counters["platform_filtered"] = (
                 self.counters.get("platform_filtered", 0) + 1
             )
+            logger.info(
+                "[meme_manager] 自动收集跳过图片：平台图片分类未匹配表情，来源：%s:%s",
+                source_kind,
+                source_id,
+            )
             return False
         if self.queue.qsize() + len(self._snapshot_tasks) >= QUEUE_SIZE:
             self.counters["queue_full"] = self.counters.get("queue_full", 0) + 1
+            logger.info(
+                "[meme_manager] 自动收集跳过图片：待处理队列已满，来源：%s:%s",
+                source_kind,
+                source_id,
+            )
             return False
 
         try:
@@ -358,7 +385,7 @@ class AutoCollectManager:
         if not target_pack_id or not categories:
             self.counters["no_categories"] = self.counters.get("no_categories", 0) + 1
             logger.warning(
-                "[meme_manager] 目标表情包没有可用分类，已跳过自动收集：%s",
+                "[meme_manager] 自动收集跳过图片：目标表情包没有可用分类，表情包：%s",
                 target_pack_id,
             )
             return False
@@ -385,17 +412,17 @@ class AutoCollectManager:
         source_kind: str,
         source_id: str,
     ) -> bool:
-        """Snapshot a candidate and reserve its digest before applying cooldown.
+        """先为候选图片创建快照并预留摘要，再检查冷却时间。
 
         Args:
-            image: Selected image component, independent of the message event.
-            target_pack_id: Pack receiving the candidate.
-            categories: Classification labels for the target pack.
-            source_kind: Group or user source kind.
-            source_id: Source identifier used for cooldown.
+            image: 与消息事件独立的候选图片组件。
+            target_pack_id: 接收候选图片的表情包 ID。
+            categories: 目标表情包的分类描述。
+            source_kind: 群聊或个人消息来源类型。
+            source_id: 用于冷却检查的来源 ID。
 
         Returns:
-            Whether the snapshot was queued for recognition.
+            快照是否成功进入识别队列。
         """
         snapshot_path: Path | None = None
         copy_task: asyncio.Task | None = None
@@ -411,7 +438,7 @@ class AutoCollectManager:
                 self.counters["snapshot_failed"] = (
                     self.counters.get("snapshot_failed", 0) + 1
                 )
-                logger.warning("[meme_manager] Auto-collect image exceeds 20 MiB limit")
+                logger.warning("[meme_manager] 自动收集跳过图片：文件超过 20 MiB 限制")
                 return False
             AUTO_COLLECT_TEMP_DIR.mkdir(parents=True, exist_ok=True)
             snapshot_file = tempfile.NamedTemporaryFile(
@@ -425,12 +452,13 @@ class AutoCollectManager:
             copy_task = asyncio.create_task(
                 asyncio.to_thread(shutil.copyfile, local_path, snapshot_path)
             )
-            # A cancelled thread keeps copying; wait for it before deleting its file.
+            # 取消线程任务不会停止复制，删除快照前必须等待复制结束。
             await asyncio.shield(copy_task)
             if (await asyncio.to_thread(snapshot_path.stat)).st_size > MAX_IMAGE_BYTES:
                 self.counters["snapshot_failed"] = (
                     self.counters.get("snapshot_failed", 0) + 1
                 )
+                logger.warning("[meme_manager] 自动收集跳过图片：快照超过 20 MiB 限制")
                 return False
             copy_task = asyncio.create_task(asyncio.to_thread(snapshot_path.read_bytes))
             digest = hashlib.sha256(await asyncio.shield(copy_task)).hexdigest()
@@ -448,13 +476,39 @@ class AutoCollectManager:
                 self.counters["duplicate_or_rejected"] = (
                     self.counters.get("duplicate_or_rejected", 0) + 1
                 )
+                if pack_duplicate:
+                    reason = "表情包中已有相同图片"
+                elif record_id in self._inflight:
+                    reason = "相同图片正在处理"
+                elif record_id in metadata.get("items", {}):
+                    reason = "相同图片已在待审箱"
+                else:
+                    reason = "图片已在拒绝名单"
+                logger.info(
+                    "[meme_manager] 自动收集跳过图片：%s，表情包：%s，图片摘要：%s",
+                    reason,
+                    target_pack_id,
+                    digest[:12],
+                )
                 return False
             if not self._ready:
+                self.counters["not_ready"] = self.counters.get("not_ready", 0) + 1
+                logger.info(
+                    "[meme_manager] 自动收集跳过图片：快照完成后后台任务已停止，表情包：%s，图片摘要：%s",
+                    target_pack_id,
+                    digest[:12],
+                )
                 return False
             cooldown_key = f"{source_kind}:{source_id}"
             now = time.monotonic()
             if now - self._cooldowns.get(cooldown_key, 0.0) < self.cooldown_seconds:
                 self.counters["cooldown"] = self.counters.get("cooldown", 0) + 1
+                logger.info(
+                    "[meme_manager] 自动收集跳过图片：来源仍在冷却时间内，来源：%s:%s，表情包：%s",
+                    source_kind,
+                    source_id,
+                    target_pack_id,
+                )
                 return False
             self._inflight.add(record_id)
             reserved = True
@@ -477,14 +531,16 @@ class AutoCollectManager:
             raise
         except asyncio.QueueFull:
             self.counters["queue_full"] = self.counters.get("queue_full", 0) + 1
+            logger.info(
+                "[meme_manager] 自动收集跳过图片：入队时队列已满，表情包：%s",
+                target_pack_id,
+            )
             return False
         except Exception as exc:
             self.counters["snapshot_failed"] = (
                 self.counters.get("snapshot_failed", 0) + 1
             )
-            logger.warning(
-                "[meme_manager] Failed to snapshot auto-collect image: %s", exc
-            )
+            logger.warning("[meme_manager] 自动收集图片快照失败：%s", exc)
             return False
         finally:
             if not queued:
@@ -504,7 +560,7 @@ class AutoCollectManager:
             except Exception as exc:
                 self.counters["failed"] = self.counters.get("failed", 0) + 1
                 logger.error(
-                    "[meme_manager] Auto-collect processing failed: %s",
+                    "[meme_manager] 自动收集处理图片失败：%s",
                     exc,
                     exc_info=True,
                 )
@@ -794,7 +850,7 @@ class AutoCollectManager:
         category: str,
         decision: dict[str, Any],
     ) -> None:
-        """Save a collected image into its pack's independent review inbox.
+        """将已收集图片保存到所属表情包的独立待审箱。
 
         Args:
             job: 自动收集任务快照。
@@ -815,6 +871,11 @@ class AutoCollectManager:
                 metadata["items"] = items
             record_id = f"{job.target_pack_id}:{digest}"
             if record_id in items:
+                logger.info(
+                    "[meme_manager] 自动收集跳过图片：保存时发现图片已在待审箱，表情包：%s，图片摘要：%s",
+                    job.target_pack_id,
+                    digest[:12],
+                )
                 return
             if (
                 sum(
@@ -825,6 +886,11 @@ class AutoCollectManager:
                 >= self.pending_limit
             ):
                 self.counters["inbox_full"] = self.counters.get("inbox_full", 0) + 1
+                logger.info(
+                    "[meme_manager] 自动收集跳过图片：待审箱已满，表情包：%s，图片摘要：%s",
+                    job.target_pack_id,
+                    digest[:12],
+                )
                 return
             AUTO_COLLECT_INBOX_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
             filename = f"{job.target_pack_id}__{digest}{extension}"
@@ -846,7 +912,7 @@ class AutoCollectManager:
             self._save_json(AUTO_COLLECT_INBOX_METADATA_PATH, metadata)
         self.counters["collected"] = self.counters.get("collected", 0) + 1
         logger.info(
-            "[meme_manager] Collected image awaits review: pack=%s category=%s",
+            "[meme_manager] 已收集图片，等待审核；表情包：%s，分类：%s",
             job.target_pack_id,
             category,
         )
@@ -867,6 +933,17 @@ class AutoCollectManager:
             self.counters["duplicate_or_rejected"] = (
                 self.counters.get("duplicate_or_rejected", 0) + 1
             )
+            reason = (
+                "图片已在待审箱"
+                if f"{job.target_pack_id}:{digest}" in metadata.get("items", {})
+                else "图片已在拒绝名单"
+            )
+            logger.info(
+                "[meme_manager] 自动收集跳过图片：%s，表情包：%s，图片摘要：%s",
+                reason,
+                job.target_pack_id,
+                digest[:12],
+            )
             return
         if (
             sum(
@@ -877,12 +954,22 @@ class AutoCollectManager:
             >= self.pending_limit
         ):
             self.counters["inbox_full"] = self.counters.get("inbox_full", 0) + 1
+            logger.info(
+                "[meme_manager] 自动收集跳过图片：待审箱已满，表情包：%s，图片摘要：%s",
+                job.target_pack_id,
+                digest[:12],
+            )
             return
         if await asyncio.to_thread(
             self._pack_contains_digest, job.target_pack_id, digest
         ):
             self.counters["duplicate_or_rejected"] = (
                 self.counters.get("duplicate_or_rejected", 0) + 1
+            )
+            logger.info(
+                "[meme_manager] 自动收集跳过图片：表情包中已有相同图片，表情包：%s，图片摘要：%s",
+                job.target_pack_id,
+                digest[:12],
             )
             return
 
@@ -893,7 +980,9 @@ class AutoCollectManager:
             if not self._daily_call_available():
                 self.counters["quota"] = self.counters.get("quota", 0) + 1
                 logger.info(
-                    "[meme_manager] Auto-collect daily recognition limit reached"
+                    "[meme_manager] 自动收集跳过图片：已达到每日识别上限，表情包：%s，图片摘要：%s",
+                    job.target_pack_id,
+                    digest[:12],
                 )
                 return
             decision = await self._classify(content, extension, job.categories)
@@ -903,6 +992,17 @@ class AutoCollectManager:
             or float(decision.get("meme_confidence", 0) or 0) < self.min_meme_confidence
         ):
             self.counters["model_rejected"] = self.counters.get("model_rejected", 0) + 1
+            reason = (
+                "视觉模型判定不是表情包"
+                if not bool(decision.get("is_meme"))
+                else "视觉模型的表情包置信度不足"
+            )
+            logger.info(
+                "[meme_manager] 自动收集跳过图片：%s，表情包：%s，图片摘要：%s",
+                reason,
+                job.target_pack_id,
+                digest[:12],
+            )
             return
         category = str(decision.get("category") or "").strip()
         if category not in job.categories or (
@@ -936,9 +1036,7 @@ class AutoCollectManager:
                 )
             except RuntimeError:
                 self.counters["pack_busy"] = self.counters.get("pack_busy", 0) + 1
-                logger.info(
-                    "[meme_manager] Pack is busy; collected image remains pending"
-                )
+                logger.info("[meme_manager] 表情包正在处理，已收集图片保留在待审箱")
 
     async def pending_status(self, pack_id: str) -> dict[str, Any]:
         """List every candidate belonging to a pack, with confident items first.
@@ -1145,7 +1243,7 @@ class AutoCollectManager:
                     except Exception as exc:
                         result["failed"] += 1
                         logger.error(
-                            "[meme_manager] Failed to accept candidate %s: %s",
+                            "[meme_manager] 接收候选图片 %s 失败：%s",
                             record_id,
                             exc,
                         )

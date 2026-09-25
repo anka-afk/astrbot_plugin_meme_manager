@@ -751,7 +751,7 @@
   margin-top: 2px;
 }
 
-/* Keep long filenames within narrow grid and flex columns. */
+/* 在狭窄的网格和弹性布局列中约束长文件名。 */
 .pack-transfer-section summary span,
 .export-mode-option span,
 .pack-import-dropzone span,

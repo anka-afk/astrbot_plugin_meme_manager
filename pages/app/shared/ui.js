@@ -1,4 +1,4 @@
-// Shared page chrome and dialog behavior for all four plugin pages.
+// 四个插件页面共用页面外框和对话框行为。
 const pageNames = [
   ["a_manage", "表情包管理", "fa-face-grin-beam"],
   ["catalog", "资源广场", "fa-store"],
@@ -93,7 +93,7 @@ confirmMask.addEventListener("click", (event) => {
   if (event.target === confirmMask) confirmCancel.click();
 });
 
-// Observe only modal masks, so rendering lists does not repeatedly steal focus.
+// 仅观察模态遮罩，避免渲染列表时反复抢夺焦点。
 const dialogStack = [];
 const dialogObserver = new MutationObserver(() => {
   for (const dialog of document.querySelectorAll('[role="dialog"]')) {
@@ -218,7 +218,7 @@ window.MemeUI = {
     });
   },
   showPageError(error) {
-    console.error("Plugin page initialization failed:", error);
+    console.error("插件页面初始化失败：", error);
     let banner = document.querySelector(".ui-page-error");
     if (banner) return;
     banner = document.createElement("div");

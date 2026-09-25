@@ -93,7 +93,7 @@ class AutoCollectImageIndex:
         with self._lock:
             previous = self._packs.pop(root, {})
             current = {}
-            # Prune links before traversal, including Windows directory junctions.
+            # 遍历前排除符号链接，包括 Windows 目录联接。
             directories = [root]
             visited = set()
             while directories:
@@ -130,14 +130,14 @@ class AutoCollectImageIndex:
                         with path.open("rb") as source:
                             for chunk in iter(lambda: source.read(1024 * 1024), b""):
                                 hasher.update(chunk)
-                        # -1 means not requested yet; None means visual matching
-                        # is unavailable, for example for an animated image.
+                        # -1 表示尚未请求；None 表示无法进行视觉匹配，
+                        # 例如图片是动图。
                         visual_hash = (
                             self._difference_hash(path)
                             if candidate_path is not None
                             else -1
                         )
-                        # A concurrently replaced file must be re-read next time.
+                        # 文件若在并发操作中被替换，下次必须重新读取。
                         after = path.stat()
                         if signature != (after.st_size, after.st_mtime_ns):
                             continue

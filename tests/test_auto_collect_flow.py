@@ -176,7 +176,7 @@ class AutoCollectFlowTests(unittest.IsolatedAsyncioTestCase):
         for source, confidence in ((self.png, 0.72), (self.gif, 0.91)):
             self.decision["category_confidence"] = confidence
             self.assertTrue(await manager.submit(FlowEvent(source)))
-            # Simulate the platform deleting its message attachment after submit.
+            # 模拟平台在提交后删除消息附件。
             source.unlink()
             await asyncio.wait_for(manager.queue.join(), 5)
         self.assertEqual(self.vision.await_count, 2)
@@ -270,6 +270,41 @@ class AutoCollectFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.vision.await_count, 1)
         response = await self.client.get("/inbox", query_string={"pack_id": "pack-a"})
         self.assertEqual((await response.get_json())["count"], 1)
+
+    async def test_skipped_images_report_specific_reasons(self):
+        manager = self.host.auto_collect_manager
+        manager.cooldown_seconds = 20
+        with patch.object(auto_collect.logger, "info") as log_info:
+            self.assertTrue(await manager.submit(FlowEvent(self.png)))
+            self.assertFalse(await manager.submit(FlowEvent(self.png)))
+            self.assertTrue(
+                any(
+                    call.args[1] in ("相同图片正在处理", "相同图片已在待审箱")
+                    for call in log_info.call_args_list
+                    if len(call.args) > 1
+                )
+            )
+            await asyncio.wait_for(manager.queue.join(), 5)
+            self.assertFalse(await manager.submit(FlowEvent(self.png)))
+            self.assertTrue(
+                any(
+                    "相同图片已在待审箱" in call.args[1]
+                    for call in log_info.call_args_list
+                    if len(call.args) > 1
+                )
+            )
+            self.assertFalse(await manager.submit(FlowEvent(self.gif)))
+            self.assertTrue(
+                any("冷却时间内" in call.args[0] for call in log_info.call_args_list)
+            )
+            manager._ready = False
+            self.assertFalse(await manager.submit(FlowEvent(self.png)))
+            self.assertTrue(
+                any("后台任务尚未就绪" in call.args[0] for call in log_info.call_args_list)
+            )
+        self.assertEqual(manager.counters["duplicate_or_rejected"], 2)
+        self.assertEqual(manager.counters["cooldown"], 1)
+        self.assertEqual(manager.counters["not_ready"], 1)
 
     async def test_rejection_survives_manager_restart(self):
         manager = self.host.auto_collect_manager
