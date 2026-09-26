@@ -578,14 +578,16 @@ class EventHandlerMixin:
         self,
         event: AstrMessageEvent,
         emotions: list[str],
+        respect_probability: bool = True,
     ) -> tuple[list[Image], list[str]]:
         """根据表情列表构建待发送图片组件，并返回临时文件列表。"""
         if not emotions:
             return [], []
 
-        random_value = random.randint(1, 100)
-        if random_value > self.emotions_probability:
-            return [], []
+        if respect_probability:
+            random_value = random.randint(1, 100)
+            if random_value > self.emotions_probability:
+                return [], []
 
         memes_root = self._get_runtime_memes_dir_for_event(event)
         emotion_images: list[Image] = []
@@ -1312,10 +1314,26 @@ class EventHandlerMixin:
                 if legacy_probability_hit is None:
                     legacy_probability_hit = probability_hit(self.emotions_probability)
                 if legacy_probability_hit:
+                    # 工具路径已发送的表情不再重复附加，并与标记路径共享硬上限。
+                    tool_sent_emotions = list(
+                        event.get_extra("meme_manager_tool_sent_emotions") or []
+                    )
+                    selected_emotions = self._limit_meme_selection(found_emotions)
+                    if tool_sent_emotions:
+                        selected_emotions = [
+                            emotion
+                            for emotion in selected_emotions
+                            if emotion not in tool_sent_emotions
+                        ]
+                        meme_limit = getattr(self, "max_memes_per_message", -1)
+                        if meme_limit >= 0:
+                            selected_emotions = selected_emotions[
+                                : max(0, meme_limit - len(tool_sent_emotions))
+                            ]
                     # 创建表情图片列表
                     emotion_images = []
                     temp_files = []  # 记录临时文件路径
-                    for emotion in self._limit_meme_selection(found_emotions):
+                    for emotion in selected_emotions:
                         if not emotion or emotion == REVIEW_CATEGORY:
                             continue
 
@@ -1381,11 +1399,41 @@ class EventHandlerMixin:
                                 cleaned_components, emotion_images
                             )
                         else:
+                            existing_pending = (
+                                event.get_extra("meme_manager_pending_images") or []
+                            )
                             event.set_extra(
-                                "meme_manager_pending_images", emotion_images
+                                "meme_manager_pending_images",
+                                existing_pending + emotion_images,
                             )
                     else:
                         pass
+
+            # 第四步：插入工具路径发送的表情图片。
+            # 工具调用是模型的明确发送意图，不参与概率判定；
+            # 开启「回复带图」时插入文本之间，否则按独立消息随回复发送。
+            tool_images = event.get_extra("meme_manager_tool_images") or []
+            if tool_images:
+                if self.enable_mixed_message:
+                    if self.send_image_as_base64:
+                        normalized_images = []
+                        for image in tool_images:
+                            normalized_images.append(
+                                await self._ensure_image_send_format(image)
+                            )
+                        tool_images = normalized_images
+                    cleaned_components = self._merge_components_with_images(
+                        cleaned_components, tool_images
+                    )
+                else:
+                    existing_pending = (
+                        event.get_extra("meme_manager_pending_images") or []
+                    )
+                    event.set_extra(
+                        "meme_manager_pending_images",
+                        existing_pending + tool_images,
+                    )
+                event.set_extra("meme_manager_tool_images", None)
 
             # 清空当前事件已处理的表情列表
             event.set_extra("found_emotions", None)

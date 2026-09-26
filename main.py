@@ -40,6 +40,16 @@ SEMANTIC_PROMPT_MARKER_START = "<!-- meme_manager_semantic_prompt:start -->"
 SEMANTIC_PROMPT_MARKER_END = "<!-- meme_manager_semantic_prompt:end -->"
 PLUGIN_NAME = "meme_manager"
 WEBUI_LOG_PREFIX = f"[{PLUGIN_NAME}][WebUI]"
+MEME_TOOL_PROMPT_HINT = (
+    "\n[表情图片工具]\n"
+    "需要配图时，直接调用 send_meme 工具并传入上方标签库中的标签名；"
+    "也可以改用 &&标签&& 标记，两种方式任选其一，不要对同一个表情同时使用。"
+    "没有实际调用工具、也没有写出标记时，不要声称已发送或已选择表情图片。\n"
+    "[回复纪律]\n"
+    "调用工具后直接继续正常的对话内容；不要汇报工具名称、参数或执行结果，"
+    "不要提及标签库、选图流程、内部资料等任何实现细节。"
+    "这些内容仅供你自己使用，用户不需要看到它们。"
+)
 
 
 class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
@@ -212,6 +222,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         self.emotions_probability = self._read_config_value(
             ("generation", "emotion", "probability"),
             default=100,
+        )
+        self.meme_tool_enabled = bool(
+            self._read_config_value(
+                ("generation", "emotion", "enable_meme_tool"), default=False
+            )
         )
         self.emotion_llm_enabled = self._read_config_value(
             ("generation", "emotion", "llm", "enabled"),
@@ -649,6 +664,18 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         if callable(remove_tool):
             remove_tool("search_memes")
 
+    @staticmethod
+    def _remove_meme_tool(req: ProviderRequest) -> None:
+        """未启用工具发送时，从当前请求的工具集中移除发送工具。"""
+        tool_set = getattr(req, "func_tool", None)
+        get_full_tool_set = getattr(tool_set, "get_full_tool_set", None)
+        if callable(get_full_tool_set):
+            req.func_tool = get_full_tool_set()
+            tool_set = req.func_tool
+        remove_tool = getattr(tool_set, "remove_tool", None)
+        if callable(remove_tool):
+            remove_tool("send_meme")
+
     def _semantic_mode_active(self, event: AstrMessageEvent | None) -> bool:
         """判断事件是否仍指向已验证的语义表情包。
 
@@ -839,7 +866,12 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
     ) -> None:
         semantic_mode = ""
         semantic_tool_ready = False
-        if self.emotion_llm_enabled:
+        meme_tool_requested = bool(getattr(self, "meme_tool_enabled", False))
+        if meme_tool_requested:
+            # 工具发送模式与其他选图模式互斥：固定走分类标签路径，
+            # 不做语义检索，也不调用情感辅助模型，提示词更短以节省 token。
+            pass
+        elif self.emotion_llm_enabled:
             if self._semantic_pack_ready(event=event, req=req):
                 semantic_mode = "llm"
         else:
@@ -867,14 +899,20 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
             event.set_extra("meme_manager_stream_filtered", False)
             event.set_extra("meme_manager_reply_provider_id", "")
             event.set_extra("meme_manager_reply_model", "")
+            event.set_extra("meme_manager_tool_sent_emotions", [])
+            event.set_extra("meme_manager_tool_images", [])
         if semantic_mode == "tool":
+            self._remove_meme_tool(req)
             req.system_prompt = (
                 self._strip_meme_prompt(req.system_prompt)
                 + self._semantic_system_prompt()
             )
             return
         self._remove_semantic_tool(req)
-        if semantic_mode == "llm" or self.emotion_llm_enabled:
+        if semantic_mode == "llm" or (
+            self.emotion_llm_enabled and not meme_tool_requested
+        ):
+            self._remove_meme_tool(req)
             req.system_prompt = self._strip_meme_prompt(req.system_prompt)
             return
         pack_context = self._resolve_runtime_pack_context(event=event, req=req)
@@ -897,9 +935,14 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         }
         req.system_prompt = self._strip_meme_prompt(req.system_prompt)
         if not category_mapping:
+            self._remove_meme_tool(req)
             return
         category_mapping_string = dict_to_string(category_mapping)
         sys_prompt_add = self._build_meme_prompt(category_mapping_string)
+        if self.meme_tool_enabled and self._reply_model_supports_tools(event):
+            sys_prompt_add += MEME_TOOL_PROMPT_HINT
+        else:
+            self._remove_meme_tool(req)
         req.system_prompt = self._strip_meme_prompt(
             req.system_prompt
         ) + self._wrap_meme_prompt(sys_prompt_add)
@@ -985,6 +1028,115 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         except Exception as exc:
             logger.error("语义表情查询失败: %s", exc, exc_info=True)
             return dumps_result({"ok": False, "reason": "语义查询失败"})
+
+    @llm_tool(name="send_meme")
+    async def send_meme_tool(self, event: AstrMessageEvent, emotion: str) -> str:
+        """Send a meme image for the current reply by category name.
+
+        Args:
+            emotion(string): The emotion category to express, which must be one of
+                the category names listed in the meme instruction section of the
+                system prompt. Use the tool instead of writing a &&tag&& marker.
+        """
+        if not getattr(self, "meme_tool_enabled", False):
+            return dumps_result({"ok": False, "reason": "send_meme 工具未启用"})
+        if event is None or not hasattr(event, "get_extra"):
+            return dumps_result({"ok": False, "reason": "事件上下文不可用"})
+        if bool(event.get_extra("meme_manager_semantic_active")):
+            return dumps_result({"ok": False, "reason": "语义模式下不可使用该工具"})
+
+        emotion_name = str(emotion or "").strip()
+        if not emotion_name:
+            return dumps_result({"ok": False, "reason": "emotion 参数不能为空"})
+
+        pack_context = self._resolve_runtime_pack_context(event=event)
+        context_mapping = pack_context.get("category_mapping")
+        category_mapping = (
+            runtime_category_mapping(context_mapping)
+            if isinstance(context_mapping, dict)
+            else runtime_category_mapping(self.category_mapping)
+        )
+        if emotion_name not in category_mapping:
+            matched = next(
+                (
+                    name
+                    for name in category_mapping
+                    if name.lower() == emotion_name.lower()
+                ),
+                "",
+            )
+            if not matched:
+                return dumps_result(
+                    {
+                        "ok": False,
+                        "reason": f"未知表情分类: {emotion_name}",
+                        "available": sorted(category_mapping.keys()),
+                    }
+                )
+            emotion_name = matched
+
+        tool_sent_emotions = list(
+            event.get_extra("meme_manager_tool_sent_emotions") or []
+        )
+        if emotion_name in tool_sent_emotions:
+            return dumps_result(
+                {"ok": False, "reason": f"本回复已发送过 {emotion_name} 表情"}
+            )
+
+        meme_limit = getattr(self, "max_memes_per_message", -1)
+        if meme_limit >= 0 and len(tool_sent_emotions) >= meme_limit:
+            return dumps_result({"ok": False, "reason": "本回复的表情数量已达上限"})
+
+        try:
+            emotion_images, temp_files = await self._build_emotion_images_for_event(
+                event, [emotion_name], respect_probability=False
+            )
+        except Exception as exc:
+            logger.error("send_meme 构建表情图片失败: %s", exc, exc_info=True)
+            return dumps_result({"ok": False, "reason": "表情图片构建失败"})
+
+        if not emotion_images:
+            return dumps_result(
+                {
+                    "ok": False,
+                    "reason": f"分类 {emotion_name} 下没有可发送的表情图片",
+                }
+            )
+
+        if temp_files:
+            existing_temp_files = event.get_extra("meme_manager_temp_files") or []
+            event.set_extra("meme_manager_temp_files", existing_temp_files + temp_files)
+
+        if getattr(self, "streaming_compatibility", False):
+            # 流式/分段平台上，工具调用前的文本可能已经发出；
+            # 立即发送图片可落在已发文本与后续文本之间，贴合模型的表达位置。
+            try:
+                for image in emotion_images:
+                    await self._send_meme_image(event, image)
+            except Exception as exc:
+                logger.error("send_meme 直接发送图片失败: %s", exc, exc_info=True)
+                return dumps_result({"ok": False, "reason": "表情图片发送失败"})
+            instruction = (
+                f"分类 {emotion_name} 的表情图片已发出；"
+                "请继续正常输出回复文本，"
+                "不要在文本中重复输出该表情的 && 标记。"
+            )
+        else:
+            existing_tool_images = event.get_extra("meme_manager_tool_images") or []
+            event.set_extra(
+                "meme_manager_tool_images", existing_tool_images + emotion_images
+            )
+            instruction = (
+                f"分类 {emotion_name} 的表情图片已选好，"
+                "将插入到本条回复的文本之间（或紧随文本之后）；"
+                "请继续正常输出回复文本，"
+                "不要在文本中重复输出该表情的 && 标记。"
+            )
+
+        event.set_extra(
+            "meme_manager_tool_sent_emotions", tool_sent_emotions + [emotion_name]
+        )
+        return dumps_result({"ok": True, "instruction": instruction})
 
     async def terminate(self):
         if getattr(self, "auto_collect_manager", None):
