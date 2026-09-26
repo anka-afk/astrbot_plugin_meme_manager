@@ -32,7 +32,7 @@
         </label>
         <p class="settings-nav-label">偏好设置</p>
         <nav id="settings-nav" aria-label="设置分类导航">
-          <button type="button" data-settings-tab="rules" aria-current="page">
+          <button type="button" data-settings-tab="rules">
             <i class="fas fa-route" aria-hidden="true"></i>使用规则
           </button>
           <button type="button" data-settings-tab="sending">
@@ -41,9 +41,9 @@
               hidden
             ></span>
           </button>
-          <button type="button" data-settings-tab="models">
+          <button type="button" data-settings-tab="models" aria-current="page">
             <i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i
-            >语义与模型<span class="settings-dirty-dot" hidden></span>
+            >选图模式<span class="settings-dirty-dot" hidden></span>
           </button>
           <button type="button" data-settings-tab="collect">
             <i class="fas fa-inbox" aria-hidden="true"></i>自动收集<span
@@ -143,6 +143,197 @@
           <p id="config-load-status" class="config-notice" role="status">
             正在读取配置…
           </p>
+          <section
+            id="mode-workflow"
+            class="panel mode-workflow"
+            aria-labelledby="mode-workflow-title"
+            hidden
+          >
+            <div class="workflow-heading">
+              <h3 id="mode-workflow-title" tabindex="-1">选图工作流</h3>
+              <span
+                id="mode-workflow-state"
+                class="workflow-state"
+                role="status"
+              ></span>
+              <button type="button" class="ghost" data-workflow-choose>
+                选择模式 ↓
+              </button>
+            </div>
+            <p class="hint">
+              沿着流程了解选图方式。带齿轮的步骤可点击，直接定位到对应设置。
+            </p>
+            <ol
+              id="mode-workflow-steps"
+              class="workflow-steps"
+              aria-label="本轮选图流程"
+            ></ol>
+            <details
+              id="mode-workflow-preparation"
+              class="workflow-preparation"
+              hidden
+            >
+              <summary>提前准备图包（展开配置）</summary>
+              <ol class="workflow-steps" aria-label="图包准备流程">
+                <li>
+                  <button
+                    type="button"
+                    class="workflow-node"
+                    data-workflow-target="semantic-models"
+                    data-workflow-field="semantic.vision_provider_id"
+                  >
+                    <strong>图片描述</strong><span>视觉模型理解图片内容</span
+                    ><small
+                      ><i class="fas fa-gear" aria-hidden="true"></i>
+                      配置图片描述模型</small
+                    >
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    class="workflow-node"
+                    data-workflow-target="semantic-models"
+                    data-workflow-field="semantic.embedding_provider_id"
+                  >
+                    <strong>向量索引</strong
+                    ><span>将图片描述转为可检索的索引</span
+                    ><small
+                      ><i class="fas fa-gear" aria-hidden="true"></i>
+                      配置向量模型</small
+                    >
+                  </button>
+                </li>
+                <li>
+                  <div class="workflow-node">
+                    <strong>供语义检索使用</strong
+                    ><span>每轮复用索引，不会重新分析整个图包</span>
+                  </div>
+                </li>
+              </ol>
+              <p class="hint">配置模型后，在「语义化」页面执行图包处理。</p>
+            </details>
+            <p id="mode-workflow-fallback" class="workflow-fallback" hidden></p>
+          </section>
+          <section
+            id="selection-mode-panel"
+            class="panel selection-mode-panel"
+            hidden
+          >
+            <fieldset
+              id="selection-mode-options"
+              aria-describedby="selection-mode-help"
+            >
+              <legend>选择选图方式</legend>
+              <p id="selection-mode-help" class="hint">
+                一次使用一种方式。切换后可调整下方参数，保存并应用后生效。
+              </p>
+              <div class="selection-mode-grid">
+                <label class="selection-mode-card">
+                  <input
+                    type="radio"
+                    name="selection-mode"
+                    value="category-native"
+                  />
+                  <span
+                    ><strong>原生分类标签</strong
+                    ><small
+                      >回复模型输出分类标签，从该分类中随机取图。</small
+                    ></span
+                  >
+                </label>
+                <label class="selection-mode-card">
+                  <input
+                    type="radio"
+                    name="selection-mode"
+                    value="category-auxiliary"
+                  />
+                  <span
+                    ><strong>辅助模型分类标签</strong
+                    ><small
+                      >辅助模型根据回复选择分类，再从分类中随机取图。</small
+                    ></span
+                  >
+                </label>
+                <label class="selection-mode-card">
+                  <input
+                    type="radio"
+                    name="selection-mode"
+                    value="semantic-tool"
+                  />
+                  <span
+                    ><strong>Tool 语义检索</strong
+                    ><small
+                      >回复模型调用搜索工具，从候选中选择具体图片。</small
+                    ></span
+                  >
+                </label>
+                <label class="selection-mode-card">
+                  <input
+                    type="radio"
+                    name="selection-mode"
+                    value="semantic-auxiliary"
+                  />
+                  <span
+                    ><strong>辅助模型语义检索</strong
+                    ><small
+                      >辅助模型根据回复检索并选图，回复模型专注对话。</small
+                    ></span
+                  >
+                </label>
+              </div>
+            </fieldset>
+            <p
+              id="selection-mode-status"
+              class="selection-mode-status"
+              role="status"
+            ></p>
+            <div id="selection-mode-readiness" class="config-notice" hidden>
+              <p id="selection-mode-readiness-text" role="status"></p>
+              <p class="hint">
+                按各会话实际使用的表情包判断；语义数据或索引未就绪时，自动回退到对应的分类标签方式。
+              </p>
+              <a
+                href="../semantic/index.html"
+                data-nav-target="../semantic/index.html"
+                >前往语义化 →</a
+              >
+            </div>
+            <p id="selection-mode-detail" class="hint"></p>
+          </section>
+          <section
+            id="collection-workflow"
+            class="panel mode-workflow"
+            aria-labelledby="collection-workflow-title"
+            hidden
+          >
+            <div class="workflow-heading">
+              <h3 id="collection-workflow-title" tabindex="-1">
+                自动收集流程
+              </h3>
+              <span
+                id="collection-workflow-state"
+                class="workflow-state"
+                role="status"
+              ></span>
+            </div>
+            <p class="hint">
+              按处理顺序查看每项设置在哪一步生效。点击带齿轮的设置可直接定位，下方参数保存后生效。
+            </p>
+            <ol
+              id="collection-workflow-steps"
+              class="workflow-steps"
+              aria-label="自动收集流程"
+            ></ol>
+            <p
+              id="collection-workflow-result"
+              class="workflow-fallback"
+              role="status"
+            ></p>
+            <p class="workflow-fallback">
+              自动检查重复图片；收录后如需用于语义检索，仍需到「语义化」页面手动生成索引。
+            </p>
+          </section>
           <div id="config-sections"></div>
           <p id="config-search-empty" class="rules-placeholder" hidden>
             没有找到相关配置，试试“模型”“概率”或“图床”。
@@ -452,7 +643,7 @@
                 rel="noopener noreferrer"
                 >官方凭证说明 ↗</a
               >
-              ·
+              <br />
               <a
                 href="https://developers.cloudflare.com/r2/buckets/public-buckets/"
                 target="_blank"

@@ -216,7 +216,7 @@ async function initSettingsPage() {
 
     if (transferCurrentPack) {
       transferCurrentPack.textContent = pack
-        ? `当前：${pack.name || pack.id} · ${Number(pack.image_count || 0)} 张`
+        ? `当前：${pack.name || pack.id}（${Number(pack.image_count || 0)} 张）`
         : normalizedPackId
         ? `当前：${normalizedPackId}`
         : "暂无可导出的表情包";
@@ -265,7 +265,7 @@ async function initSettingsPage() {
             : "",
         ]
           .filter(Boolean)
-          .join(" · ");
+          .join("；");
         vectorBackupHint.textContent = available
           ? `包含完整本机向量${
               modelHint ? `（${modelHint}）` : ""
@@ -356,7 +356,7 @@ async function initSettingsPage() {
     const formatLabels = {
       v2: data?.export_mode === "backup" ? "新版带向量备份" : "新版分享包",
       v1: "兼容版资源包",
-      legacy: "旧版无语义包 · 将自动转换",
+      legacy: "旧版无语义包，将自动转换",
     };
     if (packImportPreviewName) {
       packImportPreviewName.textContent = `${

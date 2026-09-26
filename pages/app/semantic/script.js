@@ -281,7 +281,7 @@ async function initSemanticPage() {
       }[data.task_phase] || "尚未开始";
     const total = Math.max(0, Number(data.total_tasks || 0));
     const completed = Math.max(0, Number(data.caption_done || 0));
-    taskState.textContent = `${taskText || "等待开始"} · ${phaseText}`;
+    taskState.textContent = `${taskText || "等待开始"}（${phaseText}）`;
     taskProgress.max = total || 1;
     taskProgress.value = Math.min(completed, total);
     taskProgressLabel.textContent = total
@@ -617,10 +617,10 @@ async function initSemanticPage() {
       copy.className = "record-copy";
       const tags = Array.isArray(item.tags) ? item.tags.join("、") : "";
       copy.textContent = `描述结果：${item.caption || "暂无返回结果"}${
-        tags ? ` · 标签：${tags}` : ""
+        tags ? `；标签：${tags}` : ""
       }`;
       if (item.visible_text)
-        copy.textContent += ` · 图片文字：${item.visible_text}`;
+        copy.textContent += `；图片文字：${item.visible_text}`;
       if (item.reclassification_status) {
         const reclassification = document.createElement("div");
         reclassification.className = "record-reclassification";

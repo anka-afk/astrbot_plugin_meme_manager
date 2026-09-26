@@ -53,6 +53,7 @@ from ..backend.packs.storage import (
     set_default_pack,
     uninstall_pack,
 )
+from ..backend.packs.transfer import transfer_pack_images
 from ..backend.plugin_settings import describe_settings, validate_settings_changes
 from ..backend.semantic.index import EmbeddingAdapter, index_is_ready
 from ..backend.semantic.storage import (
@@ -129,6 +130,12 @@ class WebAPIMixin:
         )
         self._register_webui_api(
             "emoji/batch_move", self._api_batch_move_emojis, ["POST"], "批量移动表情"
+        )
+        self._register_webui_api(
+            "packs/move-images",
+            self._api_transfer_pack_images,
+            ["POST"],
+            "Preview or move selected images between packs",
         )
         self._register_webui_api(
             "emoji/batch_copy", self._api_batch_copy_emojis, ["POST"], "批量复制表情"
@@ -1098,6 +1105,63 @@ class WebAPIMixin:
             ),
             200,
         )
+
+    async def _api_transfer_pack_images(self):
+        """Preview or execute a transfer while holding both pack operation locks.
+
+        Returns:
+            A category plan, per-image outcomes, or a validation/conflict response.
+        """
+        locked = []
+        manager = getattr(self, "semantic_task_manager", None)
+        try:
+            data = await request.get_json()
+            if not isinstance(data, dict):
+                raise ValueError("请求格式无效")
+            installed = {pack["id"] for pack in list_installed_packs()}
+            pack_ids = [data.get("source_pack_id"), data.get("target_pack_id")]
+            if any(
+                not isinstance(pack_id, str) or pack_id not in installed
+                for pack_id in pack_ids
+            ):
+                raise ValueError("请选择已安装的来源和目标表情包")
+            if manager is None:
+                raise RuntimeError("表情包任务管理器尚未就绪，请稍后重试")
+            for pack_id in sorted(set(pack_ids)):
+                manager.begin_external_pack_operation(pack_id, "跨表情包移动")
+                locked.append(pack_id)
+            worker = asyncio.create_task(
+                asyncio.to_thread(transfer_pack_images, PACKS_DIR, data)
+            )
+            try:
+                result = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                try:
+                    await asyncio.shield(worker)
+                except Exception:
+                    pass
+                raise
+            if (
+                result.get("moved")
+                and self._resolve_runtime_pack_context().get("pack_id") in pack_ids
+            ):
+                try:
+                    await self.reload_emotions()
+                except Exception:
+                    result["warnings"].append(
+                        "图片已移动，运行时分类刷新失败，请刷新或重启插件"
+                    )
+            return jsonify(result), 200
+        except (ValueError, FileNotFoundError) as exc:
+            return jsonify({"message": str(exc)}), 400
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except OSError:
+            logger.exception("Failed to prepare cross-pack image transfer")
+            return jsonify({"message": "分类配置无法保存，尚未执行图片移动"}), 500
+        finally:
+            for pack_id in reversed(locked):
+                manager.end_external_pack_operation(pack_id)
 
     async def _api_batch_move_emojis(self):
         data = await request.get_json()

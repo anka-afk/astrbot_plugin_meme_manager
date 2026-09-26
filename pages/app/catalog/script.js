@@ -142,7 +142,7 @@ async function initCatalogPage() {
   async function monitorInstallProgress(jobId, packName) {
     activeInstallJobId = jobId;
     setInstallBusy(true);
-    installTaskName.textContent = `正在安装 · ${packName || "未命名"}`;
+    installTaskName.textContent = `正在安装：${packName || "未命名"}`;
     installTaskStatus.textContent = "正在准备安装任务";
     installTask.classList.remove("hidden");
     installProgressPackName.textContent = `目标: ${packName || "未命名"}`;
@@ -707,7 +707,7 @@ async function initCatalogPage() {
       renderCatalog();
       catalogStatus.textContent = `已同步 ${
         readPacksFromCache().length
-      } 个资源包 · ${new Date().toLocaleTimeString("zh-CN", {
+      } 个资源包，更新于 ${new Date().toLocaleTimeString("zh-CN", {
         hour: "2-digit",
         minute: "2-digit",
       })}`;
@@ -867,7 +867,7 @@ async function initCatalogPage() {
         : "请填写有效目录，根目录填 .，不能包含 .. 或反斜杠",
     );
     if (!sourceInstallForm.reportValidity()) return;
-    openInstallDialog(`${repo}@${ref} · ${subpath}`, async (options) => {
+    openInstallDialog(`${repo}@${ref}（路径：${subpath}）`, async (options) => {
       await installBySource(options);
     });
   });

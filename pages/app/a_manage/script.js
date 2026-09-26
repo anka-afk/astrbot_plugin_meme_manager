@@ -1,4 +1,5 @@
 import { PreviewClient } from "../shared/preview.js";
+import { setupPackTransfer } from "./pack-transfer.js";
 
 async function initApp() {
   await window.AstrBotPluginPage.ready();
@@ -207,9 +208,8 @@ async function initApp() {
       !review.selectAll.checked &&
       items.some((item) => review.selected.has(item.id));
     review.more.hidden = items.length <= review.limit;
-    document.getElementById(
-      "collection-review-selection",
-    ).textContent = `已选 ${review.selected.size} 张 · 当前筛选 ${items.length} 张`;
+    document.getElementById("collection-review-selection").textContent =
+      `当前筛选 ${items.length} 张，已选 ${review.selected.size} 张`;
     review.accept.disabled = review.discard.disabled =
       review.busy || !review.selected.size;
     if (!items.length) {
@@ -272,7 +272,7 @@ async function initApp() {
       confidence.className = "collection-review-confidence";
       confidence.textContent = `分类把握 ${Math.round(
         Number(item.category_confidence || 0) * 100,
-      )}% · 表情把握 ${Math.round(Number(item.meme_confidence || 0) * 100)}%`;
+      )}%，表情把握 ${Math.round(Number(item.meme_confidence || 0) * 100)}%`;
       const description = document.createElement("p");
       description.textContent = item.caption || item.reason || "暂无描述";
       card.append(label, image, category, confidence, description);
@@ -514,13 +514,7 @@ async function initApp() {
   let dangerConfirmTimer = null;
   let dangerConfirmConfig = null;
 
-  const toggleSelectionModeBtn = document.getElementById(
-    "toggle-selection-mode-btn",
-  );
-  const batchMoveBtn = document.getElementById("batch-move-btn");
-  const batchDeleteBtn = document.getElementById("batch-delete-btn");
   const clearAllBtn = document.getElementById("clear-all-btn");
-  const selectionSummary = document.getElementById("selection-summary");
   const toastContainer = document.getElementById("toast-container");
   const batchContextMenu = document.getElementById("batch-context-menu");
   const batchContextMenuTitle = document.getElementById(
@@ -671,6 +665,8 @@ async function initApp() {
     "move-target-modal-description",
   );
   const moveTargetList = document.getElementById("move-target-list");
+  const moveTargetSearch = document.getElementById("move-target-search");
+  let moveTargetRestoreFocus = null;
   const moveTargetCancelBtn = document.getElementById("move-target-cancel-btn");
   const categoryEditModalRoot = document.getElementById("category-edit-modal");
   const categoryEditModalTitle = document.getElementById(
@@ -791,13 +787,86 @@ async function initApp() {
   const MOBILE_LAYOUT_MEDIA = "(max-width: 960px)";
   const DRAG_HUD_OFFSET_X = 18;
   const DRAG_HUD_OFFSET_Y = 88;
-  const LONG_PRESS_DURATION_MS = 2000;
+  const LONG_PRESS_DURATION_MS = 500;
   const LONG_PRESS_TICK_MS = 60;
-  const LONG_PRESS_CANCEL_DISTANCE_PX = 18;
-  const DRAG_READY_TIMEOUT_MS = 15000;
+  const LONG_PRESS_CANCEL_DISTANCE_PX = 10;
+  const MOUSE_DRAG_DISTANCE_PX = 6;
+  let moveBusy = false;
+  let lastMove = null;
+  const dragTargetTray = document.getElementById("drag-target-tray");
+  const dragTargetList = document.getElementById("drag-target-list");
+  const dragHudPreview = document.getElementById("drag-hud-preview");
+  const selectionDock = document.getElementById("selection-dock");
+  const selectionDockSummary = document.getElementById(
+    "selection-dock-summary",
+  );
+  const selectionDockMove = document.getElementById("selection-dock-move");
+  const selectionDockDelete = document.getElementById("selection-dock-delete");
+  const selectionDockPack = document.getElementById("selection-dock-pack");
+  const moveResult = document.getElementById("move-result");
+  const moveResultText = document.getElementById("move-result-text");
+  const moveUndoBtn = document.getElementById("move-undo-btn");
+  let transferPackSelectDisabled = false;
+  const packTransfer = setupPackTransfer({
+    apiGet,
+    apiPost,
+    onBusy(busy) {
+      moveBusy = busy;
+      if (busy) {
+        clearDragMode();
+        transferPackSelectDisabled = managePackSelect.disabled;
+        managePackSelect.disabled = true;
+        lastMove = null;
+        moveResult.classList.add("hidden");
+      } else managePackSelect.disabled = transferPackSelectDisabled;
+      updateSelectionToolbar();
+    },
+    async onComplete(result, sourcePackId) {
+      if (sourcePackId === activeManagePackId) {
+        result.moved.forEach((item) =>
+          selectionState.items.delete(
+            createSelectionKey(item.category, item.emoji),
+          ),
+        );
+        result.failed.forEach((item) =>
+          selectionState.items.set(
+            createSelectionKey(item.category, item.emoji),
+            { category: item.category, emoji: item.emoji },
+          ),
+        );
+      }
+      moveResultText.textContent = `已跨包移动 ${result.moved.length} 张${result.failed.length ? `，${result.failed.length} 张未移动，已保留选择` : ""}`;
+      moveUndoBtn.classList.add("hidden");
+      moveResult.classList.remove("hidden");
+      const details = result.failed
+        .slice(0, 5)
+        .map((item) => `${item.category}/${item.emoji}：${item.reason}`);
+      showToast(
+        [
+          moveResultText.textContent,
+          ...details,
+          ...(result.warnings || []),
+        ].join("\n"),
+        result.failed.length || result.warnings?.length ? "warning" : "success",
+        "跨表情包移动结果",
+        7000,
+      );
+      try {
+        await refreshUi({ emojis: true, imgHostStatus: true });
+      } catch (error) {
+        showToast(
+          `文件操作已完成，但列表刷新失败：${error.message}`,
+          "warning",
+          "请刷新页面",
+        );
+      }
+      updateSelectionUI();
+    },
+  });
   const longPressState = {
     emojiItem: null,
     pointerId: null,
+    pointerType: null,
     startTime: 0,
     startX: 0,
     startY: 0,
@@ -808,7 +877,6 @@ async function initApp() {
   };
   const dragModeState = {
     items: [],
-    timeoutId: null,
     pointerId: null,
     activeCategory: null,
     isPointerDragging: false,
@@ -842,7 +910,7 @@ async function initApp() {
         : semanticStatus === "partial"
         ? "部分语义化"
         : "";
-    return `${name} (${id})${semanticLabel ? ` · ${semanticLabel}` : ""}`;
+    return `${name} (${id})${semanticLabel ? `（${semanticLabel}）` : ""}`;
   }
 
   function setPackTransferResult(element, message = "", type = "") {
@@ -878,7 +946,7 @@ async function initApp() {
     const pack = managePacksById.get(normalizedPackId);
     if (transferCurrentPack) {
       transferCurrentPack.textContent = pack
-        ? `当前：${pack.name || pack.id} · ${Number(pack.image_count || 0)} 张`
+        ? `当前：${pack.name || pack.id}（${Number(pack.image_count || 0)} 张）`
         : normalizedPackId
         ? `当前：${normalizedPackId}`
         : "暂无可导出的表情包";
@@ -924,7 +992,7 @@ async function initApp() {
             : "",
         ]
           .filter(Boolean)
-          .join(" · ");
+          .join("；");
         vectorBackupHint.textContent = available
           ? `包含完整本机向量${
               modelHint ? `（${modelHint}）` : ""
@@ -1066,7 +1134,7 @@ async function initApp() {
       packVectorStatus?.classList.add("vector-unconfigured");
       if (packVectorStatusText) {
         packVectorStatusText.textContent = indexDimension
-          ? `索引 ${indexDimension} 维 · 未配置向量模型`
+          ? `索引 ${indexDimension} 维，未配置向量模型`
           : "未配置向量模型";
       }
       if (packVectorStatus) {
@@ -1088,13 +1156,13 @@ async function initApp() {
       if (packVectorStatusText) {
         packVectorStatusText.textContent =
           taskStatus === "paused"
-            ? `当前 ${currentDimensionLabel} · 任务已暂停`
-            : `当前 ${currentDimensionLabel} · 正在处理`;
+            ? `当前 ${currentDimensionLabel}，任务已暂停`
+            : `当前 ${currentDimensionLabel}，正在处理`;
       }
     } else if (!captionComplete) {
       packVectorStatus?.classList.add("vector-pending");
       if (packVectorStatusText) {
-        packVectorStatusText.textContent = `当前 ${currentDimensionLabel} · 描述未完成`;
+        packVectorStatusText.textContent = `当前 ${currentDimensionLabel}，描述未完成`;
       }
     } else if (indexReady && !rebuildRequired) {
       packVectorStatus?.classList.add("vector-ready");
@@ -1108,9 +1176,9 @@ async function initApp() {
       if (packVectorStatusText) {
         const oldIndexHint =
           indexDimension && indexDimension !== configuredDimension
-            ? ` · 原索引 ${indexDimension} 维`
+            ? `，原索引 ${indexDimension} 维`
             : "";
-        packVectorStatusText.textContent = `当前 ${currentDimensionLabel}${oldIndexHint} · 待重建`;
+        packVectorStatusText.textContent = `当前 ${currentDimensionLabel}${oldIndexHint}，待重建`;
       }
     }
 
@@ -1237,7 +1305,7 @@ async function initApp() {
         : "",
     ]
       .filter(Boolean)
-      .join(" · ");
+      .join("；");
     const alreadyReady = Boolean(status?.index_ready);
     const confirmed = await showConfirm({
       title: importedShare
@@ -1315,7 +1383,7 @@ async function initApp() {
     const formatLabels = {
       v2: data?.export_mode === "backup" ? "新版带向量备份" : "新版分享包",
       v1: "兼容版资源包",
-      legacy: "旧版无语义包 · 将自动转换",
+      legacy: "旧版无语义包，将自动转换",
     };
     if (packImportPreviewName) {
       packImportPreviewName.textContent = `${
@@ -1489,7 +1557,7 @@ async function initApp() {
     const semanticTotal = Number(pack.semantic_caption_total || 0);
     const failedCount = Number(pack.semantic_caption_failed || 0);
     if (status === "complete") {
-      packSemanticStatusText.textContent = `语义已完成 · ${imageCount} 张`;
+      packSemanticStatusText.textContent = `${imageCount} 张图片已完成语义化`;
       packSemanticStatus.title =
         semanticTotal && semanticTotal !== imageCount
           ? `${imageCount} 张图片中有重复内容，共复用 ${semanticTotal} 条语义描述。`
@@ -1499,17 +1567,17 @@ async function initApp() {
     if (status === "partial") {
       const failureHint = failedCount > 0 ? `，${failedCount} 条失败` : "";
       packSemanticStatusText.textContent = pack.semantic_files_changed
-        ? `语义待更新 · 已有 ${completedCount} 条`
+        ? `语义待更新，已有 ${completedCount} 条`
         : semanticTotal
-        ? `部分语义 · ${completedCount}/${semanticTotal}${failureHint}`
-        : "部分语义 · 尚未完成";
+        ? `语义化进度：${completedCount}/${semanticTotal}${failureHint}`
+        : "语义化尚未全部完成";
       packSemanticStatus.title = pack.semantic_files_changed
         ? "图包新增了图片，或原图片内容已被替换，需要继续语义化。"
         : "当前图包仍有图片的语义描述未完成。";
       return;
     }
     packSemanticStatusText.textContent =
-      imageCount > 0 ? "未语义化" : "空图包 · 暂无语义";
+      imageCount > 0 ? "未语义化" : "图包为空，暂无语义数据";
     packSemanticStatus.title =
       imageCount > 0
         ? "当前图包还没有可用的图片语义描述。"
@@ -1695,6 +1763,8 @@ async function initApp() {
 
     managePackSelect.disabled = true;
     closeImagePreview();
+    lastMove = null;
+    moveResult.classList.add("hidden");
     const previousActivePackId = activeManagePackId;
     clearSelections();
     activeManagePackId = targetPackId;
@@ -3349,7 +3419,7 @@ async function initApp() {
   }
 
   function getDragReadyLabel(itemCount) {
-    return itemCount > 1 ? `${itemCount}项` : "拖";
+    return `${itemCount}张`;
   }
 
   function hasActiveDragInteraction() {
@@ -3363,7 +3433,7 @@ async function initApp() {
   function syncInteractionGuardState() {
     document.body.classList.toggle(
       "drag-session-active",
-      hasActiveDragInteraction(),
+      dragModeState.pointerId !== null,
     );
   }
 
@@ -3415,8 +3485,21 @@ async function initApp() {
       );
     }
 
+    const hovered = document.elementFromPoint(
+      dragModeState.lastClientX,
+      dragModeState.lastClientY,
+    );
+    const overTray = hovered?.closest("#drag-target-tray");
+    if (overTray) {
+      const rect = dragTargetList.getBoundingClientRect();
+      const y = dragModeState.lastClientY;
+      deltaY = y < rect.top + 32 ? -10 : y > rect.bottom - 32 ? 10 : 0;
+    }
     if (deltaY !== 0) {
-      window.scrollBy({ top: deltaY, behavior: "auto" });
+      if (overTray) dragTargetList.scrollBy({ top: deltaY, behavior: "auto" });
+      else {
+        window.scrollBy({ top: deltaY, behavior: "auto" });
+      }
       updateActiveDropTarget(
         dragModeState.lastClientX,
         dragModeState.lastClientY,
@@ -3489,12 +3572,10 @@ async function initApp() {
     dragHud.setAttribute("aria-hidden", "true");
 
     if (dragHudLabel) {
-      dragHudLabel.textContent = `${Math.ceil(LONG_PRESS_DURATION_MS / 1000)}s`;
+      dragHudLabel.textContent = "选择";
     }
     if (dragHudCaption) {
-      dragHudCaption.textContent = `长按 ${Math.ceil(
-        LONG_PRESS_DURATION_MS / 1000,
-      )} 秒进入拖拽`;
+      dragHudCaption.textContent = "长按选择，滑动浏览";
     }
   }
 
@@ -3505,7 +3586,7 @@ async function initApp() {
 
     showDragHud({
       label,
-      caption: `长按 ${Math.ceil(LONG_PRESS_DURATION_MS / 1000)} 秒进入拖拽`,
+      caption: "长按选择，滑动浏览",
       progress,
       clientX: longPressState.currentX,
       clientY: longPressState.currentY,
@@ -3557,8 +3638,12 @@ async function initApp() {
     dragModeState.activeCategory = null;
 
     const hoveredElement = document.elementFromPoint(clientX, clientY);
-    const categoryDiv = hoveredElement?.closest(".category");
-    const targetCategory = categoryDiv?.dataset?.category;
+    const categoryDiv = hoveredElement?.closest(
+      "[data-drop-category], .category",
+    );
+    if (categoryDiv?.disabled) return;
+    const targetCategory =
+      categoryDiv?.dataset?.dropCategory || categoryDiv?.dataset?.category;
 
     if (!categoryDiv || !targetCategory) {
       return;
@@ -3570,29 +3655,6 @@ async function initApp() {
 
     dragModeState.activeCategory = targetCategory;
     categoryDiv.classList.add("category-drop-active");
-  }
-
-  function startPointerDrag(event) {
-    if (dragModeState.items.length === 0) {
-      return;
-    }
-
-    dragModeState.pointerId = event.pointerId;
-    dragModeState.isPointerDragging = false;
-    dragModeState.activeCategory = null;
-    dragModeState.captureElement = event.currentTarget;
-    dragModeState.lastClientX = event.clientX;
-    dragModeState.lastClientY = event.clientY;
-    updateActiveDropTarget(event.clientX, event.clientY);
-    ensureDragAutoScroll();
-    showDragHud({
-      label: getDragReadyLabel(dragModeState.items.length),
-      caption: "拖到目标分类，松手即可移动",
-      progress: 1,
-      clientX: event.clientX,
-      clientY: event.clientY,
-      state: "ready",
-    });
   }
 
   function updatePointerDrag(event) {
@@ -3628,9 +3690,9 @@ async function initApp() {
       return;
     }
 
+    updateActiveDropTarget(event.clientX, event.clientY);
     const targetCategory = dragModeState.activeCategory;
     const dragItems = dedupeEmojiItems(dragModeState.items);
-    const wasDragging = dragModeState.isPointerDragging;
 
     dragModeState.pointerId = null;
     dragModeState.activeCategory = null;
@@ -3660,28 +3722,11 @@ async function initApp() {
       return;
     }
 
-    if (wasDragging) {
-      clearDragMode();
-      showToast("未拖到有效分类，已取消本次移动。", "warning", "拖拽未完成");
-      return;
-    }
-
-    if (event.pointerType !== "mouse" && dragItems.length > 0) {
-      showToast(
-        "拖拽模式已开启，继续拖到目标分类即可移动。",
-        "info",
-        "等待拖拽",
-      );
-    }
+    clearDragMode();
   }
 
   function clearDragMode() {
     cancelLongPress({ keepHud: true });
-
-    if (dragModeState.timeoutId) {
-      clearTimeout(dragModeState.timeoutId);
-      dragModeState.timeoutId = null;
-    }
 
     stopDragAutoScroll();
     if (
@@ -3709,6 +3754,9 @@ async function initApp() {
     });
     clearCategoryDropHighlights();
     hideDragHud();
+    dragTargetTray.classList.add("hidden");
+    dragTargetList.replaceChildren();
+    dragHudPreview.removeAttribute("src");
     syncInteractionGuardState();
   }
 
@@ -3720,6 +3768,24 @@ async function initApp() {
 
     clearDragMode();
     dragModeState.items = dragItems;
+    Object.keys(latestEmojiData)
+      .sort((a, b) => a.localeCompare(b, "zh-CN"))
+      .forEach((category) => {
+        const target = document.createElement("button");
+        target.type = "button";
+        target.dataset.dropCategory = category;
+        target.className = "drag-target-option";
+        target.disabled = !hasMoveableItemsForTarget(dragItems, category);
+        target.textContent = `${category}${target.disabled ? "（原分类）" : ""}`;
+        dragTargetList.appendChild(target);
+      });
+    dragTargetTray.classList.remove("hidden");
+    const preview = pointerContext.sourceElement?.querySelector("img");
+    const previewUrl =
+      pointerContext.sourceElement?.dataset.previewDataUrl ||
+      preview?.currentSrc ||
+      preview?.src;
+    if (previewUrl) dragHudPreview.src = previewUrl;
     const armedKeys = new Set(
       dragItems.map(({ category, emoji }) =>
         createSelectionKey(category, emoji),
@@ -3770,44 +3836,20 @@ async function initApp() {
     }
 
     syncInteractionGuardState();
-
-    dragModeState.timeoutId = window.setTimeout(() => {
-      clearDragMode();
-      showToast(
-        "拖拽模式已自动退出，请重新长按进入。",
-        "info",
-        "拖拽模式已结束",
-      );
-    }, DRAG_READY_TIMEOUT_MS);
-
-    showToast(
-      dragItems.length > 1
-        ? `已进入拖拽模式，可拖动这 ${dragItems.length} 个表情包到目标分类。`
-        : "已进入拖拽模式，可将表情包拖到目标分类。",
-      "success",
-      "拖拽模式已开启",
-    );
   }
 
   function startLongPress(emojiItem, category, emoji, event) {
+    emojiItem.dataset.suppressClick = "false";
     if (
+      moveBusy ||
+      event.isPrimary === false ||
+      (event.pointerType === "mouse" &&
+        activeManagePackId &&
+        defaultManagePackId &&
+        activeManagePackId !== defaultManagePackId) ||
       (event.pointerType === "mouse" && event.button !== 0) ||
       event.target.closest(".delete-btn")
     ) {
-      return;
-    }
-
-    if (
-      emojiItem.classList.contains("drag-ready") &&
-      dragModeState.items.length > 0
-    ) {
-      emojiItem.dataset.suppressClick = "true";
-      if (typeof emojiItem.setPointerCapture === "function") {
-        try {
-          emojiItem.setPointerCapture(event.pointerId);
-        } catch {}
-      }
-      startPointerDrag(event);
       return;
     }
 
@@ -3826,15 +3868,17 @@ async function initApp() {
 
     longPressState.emojiItem = emojiItem;
     longPressState.pointerId = event.pointerId;
+    longPressState.pointerType = event.pointerType;
     longPressState.startTime = performance.now();
     longPressState.startX = event.clientX;
     longPressState.startY = event.clientY;
     longPressState.currentX = event.clientX;
     longPressState.currentY = event.clientY;
 
+    if (event.pointerType === "mouse") return;
     emojiItem.classList.add("long-press-active");
     syncInteractionGuardState();
-    setLongPressProgress(0, `${Math.ceil(LONG_PRESS_DURATION_MS / 1000)}s`);
+    setLongPressProgress(0, "选择");
 
     longPressState.intervalId = window.setInterval(() => {
       if (!longPressState.emojiItem) {
@@ -3843,23 +3887,15 @@ async function initApp() {
 
       const elapsed = performance.now() - longPressState.startTime;
       const progress = elapsed / LONG_PRESS_DURATION_MS;
-      const remainingSeconds = Math.max(
-        1,
-        Math.ceil((LONG_PRESS_DURATION_MS - elapsed) / 1000),
-      );
-      setLongPressProgress(progress, `${remainingSeconds}s`);
+      setLongPressProgress(progress, "选择");
     }, LONG_PRESS_TICK_MS);
 
     longPressState.timeoutId = window.setTimeout(() => {
       emojiItem.dataset.suppressClick = "true";
-      const pointerContext = {
-        pointerId: longPressState.pointerId,
-        clientX: longPressState.currentX,
-        clientY: longPressState.currentY,
-        sourceElement: emojiItem,
-      };
-      cancelLongPress({ preserveReady: true, keepHud: true });
-      armDragMode(dragItems, pointerContext);
+      cancelLongPress();
+      if (!selectionState.enabled) setSelectionMode(true);
+      if (!isEmojiSelected(category, emoji))
+        toggleEmojiSelection(category, emoji);
     }, LONG_PRESS_DURATION_MS);
   }
 
@@ -3996,7 +4032,7 @@ async function initApp() {
         uploadBlock.classList.remove("uploading");
         uploadBlock.setAttribute("aria-busy", "false");
         uploadTitle.textContent = "上传表情包";
-        uploadHint.textContent = "点击上传图片，或将表情长按 2 秒后拖到这里";
+        uploadHint.textContent = "点击上传图片；鼠标拖动可移动，触屏长按可多选";
         uploadMeta.textContent = "";
         uploadMeta.classList.add("hidden");
         uploadProgress.classList.add("hidden");
@@ -4213,7 +4249,7 @@ async function initApp() {
 
     const uploadHint = document.createElement("div");
     uploadHint.className = "emoji-upload-hint";
-    uploadHint.textContent = "点击上传图片，或将表情长按 2 秒后拖到这里";
+    uploadHint.textContent = "点击上传图片；鼠标拖动可移动，触屏长按可多选";
 
     const uploadMeta = document.createElement("div");
     uploadMeta.className = "emoji-upload-meta hidden";
@@ -4406,6 +4442,8 @@ async function initApp() {
   }
 
   function closeMoveTargetModal() {
+    const wasOpen =
+      moveTargetModalRoot && !moveTargetModalRoot.classList.contains("hidden");
     if (moveTargetModalRoot) {
       moveTargetModalRoot.classList.add("hidden");
       moveTargetModalRoot.setAttribute("aria-hidden", "true");
@@ -4415,11 +4453,15 @@ async function initApp() {
       moveTargetList.innerHTML = "";
     }
     unlockPageScroll();
+    if (wasOpen && moveTargetRestoreFocus?.isConnected)
+      moveTargetRestoreFocus.focus({ preventScroll: true });
+    moveTargetRestoreFocus = null;
   }
 
   function openMoveTargetModal(
     items = Array.from(selectionState.items.values()),
   ) {
+    if (moveBusy) return;
     const uniqueItems = dedupeEmojiItems(items);
     if (uniqueItems.length === 0) {
       showToast("请先选择要移动的表情包。", "warning", "未选择项目");
@@ -4433,6 +4475,9 @@ async function initApp() {
     }
 
     pendingMoveTargetItems = uniqueItems;
+    moveTargetRestoreFocus = document.activeElement;
+    moveTargetSearch.value = "";
+    document.getElementById("move-target-empty").classList.add("hidden");
     if (moveTargetModalTitle) {
       moveTargetModalTitle.textContent = "选择目标分类";
     }
@@ -4456,6 +4501,7 @@ async function initApp() {
         });
 
         const title = document.createElement("span");
+        optionButton.dataset.category = category;
         title.className = "move-target-option-title";
         title.textContent = category;
 
@@ -4473,10 +4519,20 @@ async function initApp() {
       lockPageScroll();
       moveTargetModalRoot.classList.remove("hidden");
       moveTargetModalRoot.setAttribute("aria-hidden", "false");
+      moveTargetCancelBtn.focus({ preventScroll: true });
     }
   }
 
-  async function moveEmojiItemsToCategory(targetCategory, items) {
+  async function moveEmojiItemsToCategory(targetCategory, items, undo = false) {
+    if (moveBusy) return;
+    const packId = activeManagePackId;
+    if (
+      (packId && defaultManagePackId && packId !== defaultManagePackId) ||
+      (undo && lastMove?.packId !== packId)
+    ) {
+      showToast("请切回执行移动时的默认管理包。", "warning", "无法移动");
+      return;
+    }
     if (!targetCategory) {
       showToast("请先选择目标分类。", "warning", "缺少目标分类");
       return;
@@ -4492,7 +4548,15 @@ async function initApp() {
     }
 
     clearDragMode();
-
+    moveBusy = true;
+    const wasPackSelectDisabled = managePackSelect?.disabled;
+    if (managePackSelect) managePackSelect.disabled = true;
+    moveUndoBtn.disabled = true;
+    updateSelectionToolbar();
+    if (!undo) {
+      lastMove = null;
+      moveResult.classList.add("hidden");
+    }
     const groupedItems = groupEmojiItemsByCategory(moveableItems);
 
     let movedCount = 0;
@@ -4500,65 +4564,123 @@ async function initApp() {
     const conflictFiles = [];
     const missingFiles = [];
     const requestErrors = [];
+    const completedItems = [];
+    try {
+      for (const [sourceCategory, imageFiles] of groupedItems.entries()) {
+        try {
+          if (activeManagePackId !== packId || defaultManagePackId !== packId)
+            throw new Error("管理包已变化，请重新加载后操作");
+          const data = await apiPost("emoji/batch_move", {
+            source_category: undo ? targetCategory : sourceCategory,
+            target_category: undo ? sourceCategory : targetCategory,
+            image_files: imageFiles,
+          });
 
-    for (const [sourceCategory, imageFiles] of groupedItems.entries()) {
-      try {
-        const data = await apiPost("emoji/batch_move", {
-          source_category: sourceCategory,
-          target_category: targetCategory,
-          image_files: imageFiles,
-        });
-
-        movedCount += data.moved_count || 0;
-        (data.moved_files || []).forEach((filename) => {
-          movedKeys.push(createSelectionKey(sourceCategory, filename));
-        });
-        (data.conflicting_files || []).forEach((filename) => {
-          conflictFiles.push(`${sourceCategory}/${filename}`);
-        });
-        (data.missing_files || []).forEach((filename) => {
-          missingFiles.push(`${sourceCategory}/${filename}`);
-        });
-      } catch (error) {
-        console.error("批量移动表情包失败", error);
-        requestErrors.push(`${sourceCategory}: ${error.message}`);
+          movedCount += (data.moved_files || []).length;
+          (data.moved_files || []).forEach((filename) => {
+            movedKeys.push(createSelectionKey(sourceCategory, filename));
+            completedItems.push({ category: sourceCategory, emoji: filename });
+          });
+          (data.conflicting_files || []).forEach((filename) => {
+            conflictFiles.push(`${sourceCategory}/${filename}`);
+          });
+          (data.missing_files || []).forEach((filename) => {
+            missingFiles.push(`${sourceCategory}/${filename}`);
+          });
+        } catch (error) {
+          console.error("Failed to move emoji batch", error);
+          requestErrors.push(`${sourceCategory}: ${error.message}`);
+        }
       }
-    }
 
-    movedKeys.forEach((selectionKey) => {
-      selectionState.items.delete(selectionKey);
-    });
+      const completedKeys = new Set(movedKeys);
+      const remainingItems = moveableItems.filter(
+        (item) =>
+          !completedKeys.has(createSelectionKey(item.category, item.emoji)),
+      );
+      if (undo) {
+        completedItems.forEach(({ emoji }) =>
+          selectionState.items.delete(
+            createSelectionKey(targetCategory, emoji),
+          ),
+        );
+        lastMove = remainingItems.length
+          ? { packId, targetCategory, items: remainingItems }
+          : null;
+      } else {
+        movedKeys.forEach((key) => selectionState.items.delete(key));
+        if (remainingItems.length) {
+          selectionState.enabled = true;
+          remainingItems.forEach((item) =>
+            selectionState.items.set(
+              createSelectionKey(item.category, item.emoji),
+              item,
+            ),
+          );
+        }
+        lastMove = completedItems.length
+          ? { packId, targetCategory, items: completedItems }
+          : null;
+      }
+      moveResultText.textContent = undo
+        ? `已撤销 ${movedCount} 张${remainingItems.length ? `，${remainingItems.length} 张未恢复，可重试` : ""}`
+        : `已移动 ${movedCount} 张到 ${targetCategory}${remainingItems.length ? `，${remainingItems.length} 张未移动` : ""}`;
+      moveUndoBtn.textContent = undo && lastMove ? "重试撤销" : "撤销";
+      moveUndoBtn.classList.toggle("hidden", !lastMove);
+      moveResult.classList.remove("hidden");
 
-    if (movedCount > 0) {
-      await refreshUi({ emojis: true, imgHostStatus: true });
-    } else {
+      if (movedCount > 0) {
+        try {
+          await refreshUi({ emojis: true, imgHostStatus: true });
+        } catch (error) {
+          showToast(
+            `文件操作已完成，但列表刷新失败：${error.message}。请刷新页面。`,
+            "warning",
+            "刷新失败",
+          );
+        }
+      }
       updateSelectionUI();
-    }
 
-    if (
-      requestErrors.length > 0 ||
-      conflictFiles.length > 0 ||
-      missingFiles.length > 0
-    ) {
-      const messageParts = [`已成功移动 ${movedCount} 个表情包。`];
-      if (conflictFiles.length > 0) {
-        messageParts.push(`目标分类已存在：${conflictFiles.join("、")}`);
+      if (
+        requestErrors.length > 0 ||
+        conflictFiles.length > 0 ||
+        missingFiles.length > 0
+      ) {
+        const messageParts = [
+          `已${undo ? "恢复" : "移动"} ${movedCount} 个表情包。`,
+        ];
+        if (conflictFiles.length > 0) {
+          messageParts.push(`目标分类已存在：${conflictFiles.join("、")}`);
+        }
+        if (missingFiles.length > 0) {
+          messageParts.push(`源文件不存在：${missingFiles.join("、")}`);
+        }
+        if (requestErrors.length > 0) {
+          messageParts.push(`请求失败：${requestErrors.join("；")}`);
+        }
+        showToast(
+          messageParts.join("\n"),
+          "warning",
+          undo ? "撤销未全部完成" : "移动未全部完成",
+          5600,
+        );
+        return;
       }
-      if (missingFiles.length > 0) {
-        messageParts.push(`源文件不存在：${missingFiles.join("、")}`);
-      }
-      if (requestErrors.length > 0) {
-        messageParts.push(`请求失败：${requestErrors.join("；")}`);
-      }
-      showToast(messageParts.join("\n"), "warning", "移动部分完成", 5600);
-      return;
-    }
 
-    showToast(
-      `已移动 ${movedCount} 个表情包到 ${targetCategory}`,
-      "success",
-      "移动成功",
-    );
+      showToast(
+        undo
+          ? `已将 ${movedCount} 个表情包恢复到原分类`
+          : `已移动 ${movedCount} 个表情包到 ${targetCategory}`,
+        "success",
+        undo ? "撤销成功" : "移动成功",
+      );
+    } finally {
+      moveBusy = false;
+      if (managePackSelect) managePackSelect.disabled = wasPackSelectDisabled;
+      moveUndoBtn.disabled = false;
+      updateSelectionToolbar();
+    }
   }
 
   async function copyEmojiItemsToCategory(targetCategory, items) {
@@ -4793,10 +4915,10 @@ async function initApp() {
               delete: "清理目标端",
             }[status.phase] || "处理中";
           const count = status.total
-            ? ` · ${status.processed || 0}/${status.total}`
+            ? `，${status.processed || 0}/${status.total}`
             : "";
           const current = status.current_file
-            ? ` · ${status.current_file}`
+            ? `，${status.current_file}`
             : "";
           setImgHostSyncProgress(`${phase}${count}${current}`, "info");
           return;
@@ -4809,7 +4931,7 @@ async function initApp() {
         if (status.success === false) {
           const firstError = status.errors?.[0];
           const detail = firstError
-            ? ` · ${firstError.path}: ${firstError.message}`
+            ? `，${firstError.path}: ${firstError.message}`
             : "";
           const message =
             status.phase === "cancelled"
@@ -4943,9 +5065,8 @@ async function initApp() {
     const totalEmojiCount = categoryEntries.reduce((total, [, emojis]) => {
       return total + (Array.isArray(emojis) ? emojis.length : 0);
     }, 0);
-    document.getElementById(
-      "library-result-count",
-    ).textContent = `${categoryEntries.length} 个分类 · ${totalEmojiCount} 张图片`;
+    document.getElementById("library-result-count").textContent =
+      `共 ${totalEmojiCount} 张图片，分为 ${categoryEntries.length} 个分类`;
 
     if (!categoryEntries.length || totalEmojiCount === 0) {
       const hint = document.createElement("div");
@@ -5135,8 +5256,8 @@ async function initApp() {
             const fixedCategoryTag = String(
               review.category_tag || `category:${category}`,
             );
-            semanticBadge.textContent = `${fixedCategoryTag} · ${
-              reclassificationStatus ? "自动重分类 · " : ""
+            semanticBadge.textContent = `${fixedCategoryTag}，${
+              reclassificationStatus ? "自动重分类，" : ""
             }${semanticReviewLabel(reviewStatus)}`;
             const reviewReason = String(
               review.category_review_reason || "",
@@ -5278,26 +5399,26 @@ async function initApp() {
   function updateSelectionToolbar() {
     const selectedCount = selectionState.items.size;
     const availableMoveTargets = getAvailableMoveTargets();
+    const readOnlyPack =
+      activeManagePackId &&
+      defaultManagePackId &&
+      activeManagePackId !== defaultManagePackId;
 
-    if (selectionSummary) {
-      selectionSummary.textContent = selectionState.enabled
-        ? `已选中 ${selectedCount} 个表情包`
-        : "未开启批量选择";
-    }
-    if (toggleSelectionModeBtn) {
-      toggleSelectionModeBtn.textContent = selectionState.enabled
-        ? "退出批量选择"
-        : "开启批量选择";
-    }
-    if (batchDeleteBtn) {
-      batchDeleteBtn.disabled = !selectionState.enabled || selectedCount === 0;
-    }
-    if (batchMoveBtn) {
-      batchMoveBtn.disabled =
-        !selectionState.enabled ||
-        selectedCount === 0 ||
-        availableMoveTargets.length === 0;
-    }
+    selectionDock.classList.toggle("hidden", !selectionState.enabled);
+    document.body.classList.toggle(
+      "has-selection-dock",
+      selectionState.enabled,
+    );
+    selectionDockSummary.textContent = `已选 ${selectedCount} 张`;
+    selectionDockMove.disabled =
+      moveBusy ||
+      readOnlyPack ||
+      !selectedCount ||
+      !availableMoveTargets.length;
+    selectionDockMove.textContent = moveBusy ? "移动中…" : "移动分类";
+    selectionDockDelete.disabled = moveBusy || readOnlyPack || !selectedCount;
+    selectionDockPack.disabled =
+      moveBusy || !selectedCount || !activeManagePackId;
   }
 
   function updateSelectionDecorations() {
@@ -5785,21 +5906,33 @@ async function initApp() {
     }
   }
 
-  if (toggleSelectionModeBtn) {
-    toggleSelectionModeBtn.addEventListener("click", () => {
-      setSelectionMode(!selectionState.enabled);
+  selectionDockMove.addEventListener("click", () => openMoveTargetModal());
+  selectionDockDelete.addEventListener("click", batchDeleteSelected);
+  selectionDockPack.addEventListener("click", () => {
+    if (!moveBusy)
+      void packTransfer.open(
+        activeManagePackId,
+        dedupeEmojiItems(Array.from(selectionState.items.values())),
+      );
+  });
+  document
+    .getElementById("selection-dock-exit")
+    .addEventListener("click", () => setSelectionMode(false));
+  moveUndoBtn.addEventListener("click", () => {
+    if (lastMove)
+      void moveEmojiItemsToCategory(
+        lastMove.targetCategory,
+        lastMove.items,
+        true,
+      );
+  });
+  document
+    .getElementById("move-result-dismiss")
+    .addEventListener("click", () => {
+      if (moveBusy) return;
+      lastMove = null;
+      moveResult.classList.add("hidden");
     });
-  }
-
-  if (batchDeleteBtn) {
-    batchDeleteBtn.addEventListener("click", batchDeleteSelected);
-  }
-
-  if (batchMoveBtn) {
-    batchMoveBtn.addEventListener("click", () => {
-      openMoveTargetModal(Array.from(selectionState.items.values()));
-    });
-  }
 
   if (clearAllBtn) {
     clearAllBtn.addEventListener("click", clearAllEmojiFiles);
@@ -5968,6 +6101,31 @@ async function initApp() {
   }
 
   if (moveTargetModalRoot) {
+    moveTargetSearch.addEventListener("input", () => {
+      const query = moveTargetSearch.value.trim().toLocaleLowerCase();
+      let visible = 0;
+      moveTargetList.querySelectorAll("button").forEach((button) => {
+        button.hidden = !button.dataset.category
+          .toLocaleLowerCase()
+          .includes(query);
+        if (!button.hidden) visible++;
+      });
+      document
+        .getElementById("move-target-empty")
+        .classList.toggle("hidden", visible > 0);
+    });
+    moveTargetModalRoot.addEventListener("keydown", (event) => {
+      if (event.key !== "Tab") return;
+      const focusable = [
+        ...moveTargetModalRoot.querySelectorAll("input, button"),
+      ].filter((element) => !element.hidden && !element.disabled);
+      const index = focusable.indexOf(document.activeElement);
+      event.preventDefault();
+      focusable[
+        (index + (event.shiftKey ? -1 : 1) + focusable.length) %
+          focusable.length
+      ]?.focus();
+    });
     moveTargetModalRoot.addEventListener("click", (event) => {
       if (event.target === moveTargetModalRoot) {
         closeMoveTargetModal();
@@ -6025,22 +6183,24 @@ async function initApp() {
       const offsetX = event.clientX - longPressState.startX;
       const offsetY = event.clientY - longPressState.startY;
       const movedDistance = Math.hypot(offsetX, offsetY);
-      if (movedDistance > LONG_PRESS_CANCEL_DISTANCE_PX) {
-        cancelLongPress();
+      if (longPressState.pointerType === "mouse") {
+        if (movedDistance < MOUSE_DRAG_DISTANCE_PX) return;
+        const sourceElement = longPressState.emojiItem;
+        const items = getDragItemsForEmoji(
+          sourceElement.dataset.category,
+          sourceElement.dataset.emoji,
+        );
+        sourceElement.dataset.suppressClick = "true";
+        armDragMode(items, {
+          pointerId: event.pointerId,
+          clientX: event.clientX,
+          clientY: event.clientY,
+          sourceElement,
+        });
+      } else {
+        if (movedDistance > LONG_PRESS_CANCEL_DISTANCE_PX) cancelLongPress();
         return;
       }
-
-      longPressState.currentX = event.clientX;
-      longPressState.currentY = event.clientY;
-
-      const elapsed = performance.now() - longPressState.startTime;
-      const progress = Math.min(1, elapsed / LONG_PRESS_DURATION_MS);
-      const remainingSeconds = Math.max(
-        1,
-        Math.ceil((LONG_PRESS_DURATION_MS - elapsed) / 1000),
-      );
-      setLongPressProgress(progress, `${remainingSeconds}s`);
-      event.preventDefault();
     }
 
     if (
@@ -6063,7 +6223,15 @@ async function initApp() {
   });
 
   document.addEventListener("pointercancel", (event) => {
-    void handlePointerRelease(event);
+    if (
+      event.pointerId === longPressState.pointerId ||
+      event.pointerId === dragModeState.pointerId
+    )
+      clearDragMode();
+  });
+  window.addEventListener("blur", () => clearDragMode());
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) clearDragMode();
   });
 
   document.addEventListener(
@@ -6083,6 +6251,15 @@ async function initApp() {
   });
 
   document.addEventListener("contextmenu", (event) => {
+    if (
+      event.target?.closest(".emoji-item") &&
+      (event.pointerType === "touch" ||
+        event.pointerType === "pen" ||
+        event.target.closest(".emoji-item").dataset.suppressClick === "true")
+    ) {
+      event.preventDefault();
+      return;
+    }
     if (shouldOpenBatchContextMenu(event)) {
       event.preventDefault();
       openBatchContextMenu(event);
@@ -6110,6 +6287,7 @@ async function initApp() {
     "scroll",
     () => {
       closeBatchContextMenu();
+      if (longPressState.pointerType !== "mouse") cancelLongPress();
     },
     true,
   );
@@ -6125,7 +6303,7 @@ async function initApp() {
   });
 
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && dragModeState.items.length > 0) {
+    if (event.key === "Escape" && hasActiveDragInteraction()) {
       clearDragMode();
       showToast("已退出拖拽模式。", "info", "拖拽模式已关闭");
       return;
@@ -6844,9 +7022,7 @@ async function initApp() {
           setImgHostSyncProgress(error.message, "error");
         }
       })
-      .catch((error) =>
-        console.warn("无法恢复图片同步进度：", error),
-      );
+      .catch((error) => console.warn("无法恢复图片同步进度：", error));
   }, 180);
 
   // 检查图床同步状态
@@ -6874,7 +7050,7 @@ async function initApp() {
       conflictFiles.replaceChildren();
       for (const item of conflicts.slice(0, 20)) {
         const row = document.createElement("li");
-        row.textContent = `${item.relative_path} · ${
+        row.textContent = `${item.relative_path}：${
           item.reason === "both_changed"
             ? "两端都已修改"
             : "尚未建立内容校验记录"
