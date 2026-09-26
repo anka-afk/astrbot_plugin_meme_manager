@@ -908,8 +908,8 @@ async function initApp() {
       semanticStatus === "complete"
         ? "已语义化"
         : semanticStatus === "partial"
-        ? "部分语义化"
-        : "";
+          ? "部分语义化"
+          : "";
     return `${name} (${id})${semanticLabel ? `（${semanticLabel}）` : ""}`;
   }
 
@@ -948,8 +948,8 @@ async function initApp() {
       transferCurrentPack.textContent = pack
         ? `当前：${pack.name || pack.id}（${Number(pack.image_count || 0)} 张）`
         : normalizedPackId
-        ? `当前：${normalizedPackId}`
-        : "暂无可导出的表情包";
+          ? `当前：${normalizedPackId}`
+          : "暂无可导出的表情包";
     }
     if (!normalizedPackId) {
       if (exportPackDownloadBtn) exportPackDownloadBtn.disabled = true;
@@ -1195,15 +1195,15 @@ async function initApp() {
       rebuildPackVectorsBtn.title = taskBusy
         ? "语义任务进行中，结束后才能重建向量。"
         : !captionComplete
-        ? "请先完成当前包的全部语义描述。"
-        : "使用当前向量模型重新建立本机向量索引。";
+          ? "请先完成当前包的全部语义描述。"
+          : "使用当前向量模型重新建立本机向量索引。";
       rebuildPackVectorsBtn.innerHTML = taskBusy
         ? '<i class="fas fa-spinner fa-spin icon"></i>正在处理'
         : !captionComplete
-        ? '<i class="fas fa-clock icon"></i>等待语义描述'
-        : `<i class="fas fa-arrows-rotate icon"></i>按${
-            configuredDimension ? ` ${configuredDimension} 维` : "当前维度"
-          }重建`;
+          ? '<i class="fas fa-clock icon"></i>等待语义描述'
+          : `<i class="fas fa-arrows-rotate icon"></i>按${
+              configuredDimension ? ` ${configuredDimension} 维` : "当前维度"
+            }重建`;
     }
   }
 
@@ -1311,15 +1311,15 @@ async function initApp() {
       title: importedShare
         ? "分享包需要重建向量"
         : alreadyReady && manual
-        ? "重新建立当前包向量？"
-        : "当前表情包需要重建向量",
+          ? "重新建立当前包向量？"
+          : "当前表情包需要重建向量",
       description:
         `「${packName}」${
           importedShare
             ? "来自无向量分享版，需要在本机补建向量。"
             : alreadyReady && manual
-            ? "已有可用向量，重建后会替换当前本机索引。"
-            : "尚未按当前向量模型建立可用的本机索引。"
+              ? "已有可用向量，重建后会替换当前本机索引。"
+              : "尚未按当前向量模型建立可用的本机索引。"
         }` +
         `本次只会调用向量模型${modelLabel ? `（${modelLabel}）` : ""}，` +
         "不会重新调用视觉模型，也不会覆盖现有语义描述。是否继续？",
@@ -1352,10 +1352,10 @@ async function initApp() {
     }
     const rebuildRequired = Boolean(
       status.semantic_enabled &&
-        status.embedding_provider_ready &&
-        status.semantic_caption_complete &&
-        status.dimension_rebuild_required &&
-        !["running", "paused"].includes(String(status.task_status || "")),
+      status.embedding_provider_ready &&
+      status.semantic_caption_complete &&
+      status.dimension_rebuild_required &&
+      !["running", "paused"].includes(String(status.task_status || "")),
     );
     if (!rebuildRequired) {
       return false;
@@ -1502,8 +1502,8 @@ async function initApp() {
       const vectorHint = data?.vectors_restored
         ? "，向量已恢复"
         : data?.vector_warning
-        ? `；${data.vector_warning}`
-        : "";
+          ? `；${data.vector_warning}`
+          : "";
       resetPackImportPreview({ keepResult: true });
       setPackTransferResult(
         packImportResult,
@@ -1569,8 +1569,8 @@ async function initApp() {
       packSemanticStatusText.textContent = pack.semantic_files_changed
         ? `语义待更新，已有 ${completedCount} 条`
         : semanticTotal
-        ? `语义化进度：${completedCount}/${semanticTotal}${failureHint}`
-        : "语义化尚未全部完成";
+          ? `语义化进度：${completedCount}/${semanticTotal}${failureHint}`
+          : "语义化尚未全部完成";
       packSemanticStatus.title = pack.semantic_files_changed
         ? "图包新增了图片，或原图片内容已被替换，需要继续语义化。"
         : "当前图包仍有图片的语义描述未完成。";
@@ -1678,7 +1678,8 @@ async function initApp() {
         option.value = "";
         option.textContent = "暂无可用表情包";
         managePackSelect.appendChild(option);
-        managePackSelect.disabled = true;
+        managePackSelect.add(new Option("＋ 创建新表情包…", "__create__"));
+        managePackSelect.disabled = false;
         activeManagePackId = "";
         void loadCollectionReview();
         updateManagePackSemanticAppearance("");
@@ -1708,6 +1709,7 @@ async function initApp() {
       if (!defaultManagePackId) {
         defaultManagePackId = selectedPackId;
       }
+      managePackSelect.add(new Option("＋ 创建新表情包…", "__create__"));
 
       managePackSelect.disabled = false;
       if (deleteManagePackBtn) {
@@ -2167,8 +2169,8 @@ async function initApp() {
     const rawStatus = loading
       ? "loading"
       : error
-      ? "failed"
-      : String(semantic?.status || "none");
+        ? "failed"
+        : String(semantic?.status || "none");
     const status = rawStatus === "pending" ? "partial" : rawStatus;
     const normalizedStatus = statuses.includes(status) ? status : "none";
     if (imagePreviewState && !loading && !error) {
@@ -2274,8 +2276,8 @@ async function initApp() {
         embeddingStatus === "done"
           ? "status-done"
           : embeddingStatus === "failed"
-          ? "status-failed"
-          : "status-pending",
+            ? "status-failed"
+            : "status-pending",
       );
     }
     const duplicatePaths = Array.isArray(semantic?.same_content_paths)
@@ -2360,12 +2362,12 @@ async function initApp() {
           ? embeddingStatus === "done"
             ? "语义向量已建立，可用于搜索。"
             : embeddingStatus === "failed"
-            ? `语义已保存，但向量更新失败${
-                semantic?.embedding_error
-                  ? `：${semantic.embedding_error}`
-                  : "。"
-              }`
-            : "语义已保存，向量等待更新。"
+              ? `语义已保存，但向量更新失败${
+                  semantic?.embedding_error
+                    ? `：${semantic.embedding_error}`
+                    : "。"
+                }`
+              : "语义已保存，向量等待更新。"
           : "";
     }
   }
@@ -2393,10 +2395,10 @@ async function initApp() {
         semantic.category_review_status === "manual_confirmed"
           ? "match"
           : semantic.category_review_status === "manual_rejected"
-          ? "mismatch"
-          : semantic.status === "none"
-          ? "match"
-          : "keep";
+            ? "mismatch"
+            : semantic.status === "none"
+              ? "match"
+              : "keep";
     }
     if (imagePreviewFixedTags) {
       imagePreviewFixedTags.replaceChildren();
@@ -2716,8 +2718,8 @@ async function initApp() {
         result?.moved
           ? "保存、移动与向量更新"
           : updateVector
-          ? "保存与向量更新"
-          : "保存成功",
+            ? "保存与向量更新"
+            : "保存成功",
       );
     } catch (error) {
       showToast(error?.message || String(error), "error", "保存失败");
@@ -3406,8 +3408,8 @@ async function initApp() {
 
     return Boolean(
       event.target.closest(".emoji-item") ||
-        event.target.closest(".emoji-upload") ||
-        event.target.closest(".category"),
+      event.target.closest(".emoji-upload") ||
+      event.target.closest(".category"),
     );
   }
 
@@ -3425,8 +3427,8 @@ async function initApp() {
   function hasActiveDragInteraction() {
     return Boolean(
       longPressState.emojiItem ||
-        dragModeState.pointerId !== null ||
-        dragModeState.items.length > 0,
+      dragModeState.pointerId !== null ||
+      dragModeState.items.length > 0,
     );
   }
 
@@ -4847,8 +4849,8 @@ async function initApp() {
         state === "success"
           ? "fas fa-check icon"
           : state === "error"
-          ? "fas fa-circle-exclamation icon"
-          : "fas fa-spinner fa-spin icon";
+            ? "fas fa-circle-exclamation icon"
+            : "fas fa-spinner fa-spin icon";
     }
     imgHostSyncProgressText.textContent = message;
   }
@@ -4917,9 +4919,7 @@ async function initApp() {
           const count = status.total
             ? `，${status.processed || 0}/${status.total}`
             : "";
-          const current = status.current_file
-            ? `，${status.current_file}`
-            : "";
+          const current = status.current_file ? `，${status.current_file}` : "";
           setImgHostSyncProgress(`${phase}${count}${current}`, "info");
           return;
         }
@@ -4937,12 +4937,12 @@ async function initApp() {
             status.phase === "cancelled"
               ? "同步已停止，已完成的文件会保留。"
               : status.conflicts
-              ? `已处理 ${status.succeeded || 0} 个文件；还有 ${
-                  status.conflicts
-                } 个同名冲突，请检查后选择覆盖方向。`
-              : `${actionLabel}失败：${
-                  status.message || "请查看日志"
-                }${detail}`;
+                ? `已处理 ${status.succeeded || 0} 个文件；还有 ${
+                    status.conflicts
+                  } 个同名冲突，请检查后选择覆盖方向。`
+                : `${actionLabel}失败：${
+                    status.message || "请查看日志"
+                  }${detail}`;
           void refreshUi({
             emojis: true,
             syncStatus: true,
@@ -5271,8 +5271,8 @@ async function initApp() {
                   review.reclassification_reason || reviewReason,
                 )}`
               : reviewStatus === "needs_review" && reviewReason
-              ? `${semanticBadge.textContent}；原因：${reviewReason}`
-              : semanticBadge.textContent;
+                ? `${semanticBadge.textContent}；原因：${reviewReason}`
+                : semanticBadge.textContent;
             emojiItem.appendChild(semanticBadge);
           }
 
@@ -5472,11 +5472,11 @@ async function initApp() {
               ? "取消可见项"
               : "取消本类"
             : filtered
-            ? "全选可见项"
-            : "本类全选"
+              ? "全选可见项"
+              : "本类全选"
           : filtered
-          ? "选择可见项"
-          : "本类选择";
+            ? "选择可见项"
+            : "本类选择";
       }
     });
   }
@@ -6981,8 +6981,60 @@ async function initApp() {
   });
   await maybeOfferVectorRebuild(activeManagePackId);
   managePackSelect?.addEventListener("change", () => {
+    if (managePackSelect.value === "__create__") {
+      managePackSelect.value = activeManagePackId;
+      document.getElementById("create-pack-form").reset();
+      document.getElementById("create-pack-error").textContent = "";
+      document.getElementById("create-pack-dialog").showModal();
+      document.querySelector("#create-pack-fields input").focus();
+      return;
+    }
     void switchManagePack();
   });
+  const createPackDialog = document.getElementById("create-pack-dialog");
+  const createPackFields = document.getElementById("create-pack-fields");
+  const createPackSubmit = document.getElementById("create-pack-submit");
+  const createPackCancel = document.getElementById("create-pack-cancel");
+  createPackCancel.addEventListener("click", () => createPackDialog.close());
+  createPackDialog.addEventListener("cancel", (event) => {
+    if (createPackFields.disabled) event.preventDefault();
+  });
+  document
+    .getElementById("create-pack-form")
+    .addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (createPackFields.disabled) return;
+      const data = new FormData(event.currentTarget);
+      createPackFields.disabled =
+        createPackSubmit.disabled =
+        createPackCancel.disabled =
+          true;
+      createPackSubmit.textContent = "正在创建…";
+      const errorLabel = document.getElementById("create-pack-error");
+      errorLabel.textContent = "";
+      try {
+        const result = await apiPost("packs/create", {
+          name: String(data.get("name") || "").trim(),
+          description: data.get("description") || "",
+        });
+        createPackDialog.close();
+        clearSelections();
+        lastMove = null;
+        moveResult.classList.add("hidden");
+        await loadManagePackSwitcher(result.pack_id);
+        await refreshUi({ emojis: true });
+        showToast(`已创建 ${result.name}`, "success", "创建成功");
+      } catch (error) {
+        errorLabel.textContent = error?.message || String(error);
+        showToast(errorLabel.textContent, "error", "创建失败");
+      } finally {
+        createPackFields.disabled =
+          createPackSubmit.disabled =
+          createPackCancel.disabled =
+            false;
+        createPackSubmit.textContent = "创建并打开";
+      }
+    });
   retryManagePacksBtn?.addEventListener("click", async () => {
     retryManagePacksBtn.disabled = true;
     try {

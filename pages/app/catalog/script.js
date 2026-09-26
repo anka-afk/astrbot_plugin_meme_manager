@@ -1,3 +1,5 @@
+import { setupCatalogUpdates } from "./updates.js";
+
 async function initCatalogPage() {
   await window.AstrBotPluginPage.ready();
 
@@ -49,6 +51,9 @@ async function initCatalogPage() {
   );
   const officialGrid = document.getElementById("official-grid");
   const communityGrid = document.getElementById("community-grid");
+  const updatesZone = document.getElementById("updates-zone");
+  const updatesGrid = document.getElementById("updates-grid");
+  const updatesPackCount = document.getElementById("updates-pack-count");
   const officialPackCount = document.getElementById("official-pack-count");
   const communityPackCount = document.getElementById("community-pack-count");
   const logList = document.getElementById("log-list");
@@ -70,6 +75,17 @@ async function initCatalogPage() {
   let installBusy = true;
   let installedStateKnown = false;
   let indexLoading = false;
+  let updateStates = {};
+  let installedRequest = 0;
+  const updates = setupCatalogUpdates({
+    apiGet,
+    apiPost,
+    onBusy: setInstallBusy,
+    async onDone() {
+      await refreshInstalledSet();
+      renderCatalog();
+    },
+  });
 
   async function apiGet(endpoint, params = {}) {
     return window.AstrBotPluginPage.apiGet(endpoint, params);
@@ -113,8 +129,12 @@ async function initCatalogPage() {
   function setInstallBusy(busy) {
     installBusy = busy;
     installSourceBtn.disabled = busy;
+    document.querySelectorAll(".pack-update").forEach((button) => {
+      button.disabled = button.dataset.blocked === "true";
+    });
     document.querySelectorAll(".pack-install").forEach((button) => {
-      button.disabled = busy || button.dataset.installed === "true";
+      button.disabled =
+        busy || !installedStateKnown || button.dataset.installed === "true";
       if (busy && button.dataset.installed !== "true") {
         button.title = "请等待当前安装任务结束";
       } else {
@@ -322,8 +342,10 @@ async function initCatalogPage() {
   }
 
   async function refreshInstalledSet() {
+    const requestId = ++installedRequest;
     try {
       const response = await apiGet("packs");
+      if (requestId !== installedRequest) return;
       const packs = Array.isArray(response?.packs) ? response.packs : [];
       installedPackIds = new Set(
         packs.map((item) => String(item.id || "").trim()),
@@ -331,7 +353,18 @@ async function initCatalogPage() {
       installedStateKnown = true;
       installedStatus.classList.add("hidden");
       catalogFilter.disabled = false;
+      try {
+        const updatesResponse = await apiGet("community/updates");
+        if (requestId !== installedRequest) return;
+        updateStates = updatesResponse.packs || {};
+      } catch (error) {
+        if (requestId !== installedRequest) return;
+        updateStates = {};
+        installedStatus.textContent = "更新状态读取失败，请刷新资源重试。";
+        installedStatus.classList.remove("hidden");
+      }
     } catch (error) {
+      if (requestId !== installedRequest) return;
       installedStateKnown = false;
       catalogFilter.value = "all";
       catalogFilter.disabled = true;
@@ -382,16 +415,16 @@ async function initCatalogPage() {
     );
     const hasSemanticMetadata = Boolean(
       features.semantic_metadata ||
-        pack?.semantic_metadata ||
-        tags.has("semantic") ||
-        tags.has("semantic-v2") ||
-        tags.has("语义包"),
+      pack?.semantic_metadata ||
+      tags.has("semantic") ||
+      tags.has("semantic-v2") ||
+      tags.has("语义包"),
     );
     const isNewFormat = Boolean(
       hasSemanticMetadata ||
-        formatVersion >= 2 ||
-        tags.has("v2") ||
-        tags.has("new-format"),
+      formatVersion >= 2 ||
+      tags.has("v2") ||
+      tags.has("new-format"),
     );
 
     if (isNewFormat) {
@@ -508,6 +541,7 @@ async function initCatalogPage() {
 
     const isInstalled =
       installedStateKnown && installedPackIds.has(String(pack.id || "").trim());
+    const updateState = updateStates[pack.id] || {};
     const tags = Array.isArray(pack.tags) ? pack.tags : [];
 
     const titleRow = document.createElement("div");
@@ -524,19 +558,30 @@ async function initCatalogPage() {
     titleWrap.appendChild(title);
     titleWrap.appendChild(id);
 
+    const canUpdate = isInstalled && updateState.available;
     const installBtn = document.createElement("button");
     installBtn.type = "button";
-    installBtn.textContent = isInstalled ? "已安装" : "安装";
-    installBtn.className = `pack-install${isInstalled ? " ghost" : ""}`;
+    installBtn.textContent = canUpdate
+      ? "更新"
+      : isInstalled
+        ? "已安装"
+        : "安装";
+    installBtn.className = canUpdate
+      ? "pack-update"
+      : `pack-install${isInstalled ? " ghost" : ""}`;
     installBtn.dataset.installed = String(isInstalled);
-    installBtn.disabled = isInstalled || installBusy;
+    installBtn.disabled = canUpdate
+      ? false
+      : isInstalled || installBusy || !installedStateKnown;
     installBtn.setAttribute(
       "aria-label",
-      `${isInstalled ? "已安装" : "安装"} ${
-        pack.name || pack.id || "未命名资源包"
-      }`,
+      `${installBtn.textContent} ${pack.name || pack.id || "未命名资源包"}`,
     );
     installBtn.addEventListener("click", () => {
+      if (canUpdate) {
+        void updates.open(pack, updateState);
+        return;
+      }
       openInstallDialog(pack.name || pack.id || "未命名", async (options) => {
         await installByPack(pack, installBtn, options);
       });
@@ -574,7 +619,9 @@ async function initCatalogPage() {
     if (isInstalled) {
       const installedTag = document.createElement("span");
       installedTag.className = "tag installed";
-      installedTag.textContent = "已安装";
+      installedTag.textContent = updateState.available
+        ? `可更新：${updateState.current_version} → ${updateState.latest_version}`
+        : "已安装";
       tagRow.appendChild(installedTag);
     }
 
@@ -620,6 +667,23 @@ async function initCatalogPage() {
       card.appendChild(formatNote);
     }
     card.appendChild(meta);
+    if (isInstalled) {
+      const actions = document.createElement("div");
+      actions.className = "pack-update-actions";
+      if (updateState.backups?.length) {
+        const restore = document.createElement("button");
+        restore.type = "button";
+        restore.className = "pack-update ghost";
+        restore.textContent = "恢复备份";
+        restore.disabled = installBusy;
+        restore.addEventListener(
+          "click",
+          () => void updates.open(pack, updateState, true),
+        );
+        actions.append(restore);
+      }
+      if (actions.children.length) card.append(actions);
+    }
     return card;
   }
 
@@ -634,6 +698,11 @@ async function initCatalogPage() {
         installedPackIds.has(String(pack.id || "").trim());
       if (filter === "installed" && !isInstalled) return false;
       if (filter === "available" && isInstalled) return false;
+      if (
+        filter === "updates" &&
+        (!isInstalled || !updateStates[pack.id]?.available)
+      )
+        return false;
       const searchable = [
         pack.name,
         pack.id,
@@ -646,6 +715,20 @@ async function initCatalogPage() {
         .toLocaleLowerCase();
       return !query || searchable.includes(query);
     });
+    const updatablePacks = packs.filter(
+      (pack) =>
+        installedStateKnown &&
+        installedPackIds.has(String(pack.id || "").trim()) &&
+        updateStates[pack.id]?.available,
+    );
+    updatesZone.classList.toggle("hidden", !updatablePacks.length);
+    updatesPackCount.textContent = String(updatablePacks.length);
+    updatesGrid.replaceChildren();
+    for (const pack of updatablePacks) {
+      updatesGrid.appendChild(
+        createPackCard(pack, { forceOfficial: isOfficialPack(pack) }),
+      );
+    }
     for (const [grid, count, official] of [
       [officialGrid, officialPackCount, true],
       [communityGrid, communityPackCount, false],
@@ -704,6 +787,7 @@ async function initCatalogPage() {
         index: response.index,
       };
       await installedRefresh;
+      await refreshInstalledSet();
       renderCatalog();
       catalogStatus.textContent = `已同步 ${
         readPacksFromCache().length
@@ -763,6 +847,13 @@ async function initCatalogPage() {
 
   async function installByPack(pack, button, options = {}) {
     if (installBusy) return;
+    await refreshInstalledSet();
+    if (!installedStateKnown) return;
+    if (installedPackIds.has(pack.id) && !options.overwrite) {
+      renderCatalog();
+      addLog("此包已安装，请使用更新功能或明确选择覆盖安装", true);
+      return;
+    }
     const packId = String(pack?.id || "").trim();
     const source =
       pack && typeof pack.source === "object" && pack.source
@@ -877,6 +968,21 @@ async function initCatalogPage() {
   }
 
   catalogSearch.addEventListener("input", renderCatalog);
+  let refreshingVisibility = false;
+  const refreshOnReturn = async () => {
+    if (document.hidden || installBusy || indexLoading || refreshingVisibility)
+      return;
+    refreshingVisibility = true;
+    try {
+      await refreshInstalledSet();
+      renderCatalog();
+    } finally {
+      refreshingVisibility = false;
+    }
+  };
+  window.addEventListener("focus", refreshOnReturn);
+  window.addEventListener("pageshow", refreshOnReturn);
+  document.addEventListener("visibilitychange", refreshOnReturn);
   catalogFilter.addEventListener("change", renderCatalog);
   refreshCatalogBtn.addEventListener("click", () => void fetchIndex());
   document
@@ -924,9 +1030,10 @@ async function initCatalogPage() {
   });
 
   addLog("资源广场已就绪");
-  void restoreActiveInstall();
+  await restoreActiveInstall();
   await loadCachedIndex({ silentOnMissing: true });
   await fetchIndex();
+  await updates.resume();
 }
 
 void initCatalogPage().catch((error) => {

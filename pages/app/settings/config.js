@@ -457,11 +457,8 @@ async function initPluginConfig() {
     const manualReview =
       changes.get("auto_collect.manual_review") ??
       fields.get("auto_collect.manual_review")?.value;
-    const collectionDirty = [...changes.keys()].some((path) =>
-      path.startsWith("auto_collect."),
-    );
     document.getElementById("collection-workflow-state").textContent =
-      `当前选择：${collectionEnabled ? "开启" : "关闭"}${collectionDirty ? "，流程预览，保存后生效" : applicationFailed ? "，尚未应用" : "，已保存"}`;
+      `当前选择：${collectionEnabled ? "开启" : "关闭"}`;
     document.getElementById("collection-workflow-result").textContent =
       `${collectionEnabled ? "" : "自动收集处于关闭状态，以上展示启用后的流程。"}${
         manualReview
@@ -474,12 +471,6 @@ async function initPluginConfig() {
       .querySelector("strong").textContent;
     document.getElementById("mode-workflow-title").textContent =
       `${selectedModeName}流程`;
-    document.getElementById("mode-workflow-state").textContent =
-      mode !== savedMode
-        ? "流程预览，保存后生效"
-        : applicationFailed
-          ? "已保存，但尚未应用"
-          : "已保存模式";
     if (workflowSteps.dataset.mode !== mode) {
       workflowSteps.replaceChildren();
       workflowSteps.dataset.mode = mode;

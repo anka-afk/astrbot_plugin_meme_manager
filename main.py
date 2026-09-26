@@ -990,6 +990,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
         if getattr(self, "auto_collect_manager", None):
             await self.auto_collect_manager.close()
         install_tasks = list(getattr(self, "_community_install_tasks", set()))
+        install_tasks.extend(getattr(self, "_community_update_tasks", set()))
         for task in install_tasks:
             task.cancel()
         if install_tasks:

@@ -442,18 +442,17 @@
         <details class="manage-maintenance library-maintenance">
           <summary>
             <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-            表情包维护（危险操作）
-            <span class="maintenance-danger-label">删除后无法撤销</span>
+            表情包维护
           </summary>
           <div class="maintenance-warning">
             <strong>请先备份，再执行以下操作。</strong>
             <p>清空图片：删除当前包内的全部图片，保留分类。</p>
             <p>删除表情包：移除当前整个包及其内容。</p>
-            <p>这些操作无法通过“撤销”恢复，执行前仍需再次确认。</p>
           </div>
           <div class="button-row">
             <button id="clear-all-btn" class="danger" type="button">
-              <i class="fas fa-broom icon" aria-hidden="true"></i>清空当前包全部图片
+              <i class="fas fa-broom icon" aria-hidden="true"></i
+              >清空当前包全部图片
             </button>
             <button id="delete-manage-pack-btn" class="danger" type="button">
               删除当前表情包
@@ -617,6 +616,7 @@
         <p class="danger-modal-eyebrow">危险操作</p>
         <h2 id="danger-modal-title">请确认操作</h2>
         <p id="danger-modal-description"></p>
+        <p>此操作无法撤销，请确认已备份需要保留的内容。</p>
         <label class="danger-modal-check" for="danger-modal-ack">
           <input type="checkbox" id="danger-modal-ack" />
           <span>我已理解该操作不可恢复</span>
@@ -987,6 +987,41 @@
       </div>
     </div>
 
+    <dialog id="create-pack-dialog" aria-labelledby="create-pack-title">
+      <form id="create-pack-form">
+        <h2 id="create-pack-title" class="text-h3 pa-4 pb-0 pl-6">
+          创建新表情包
+        </h2>
+        <p>创建后会自动切换到新包，可立即上传表情或从其他包移入。</p>
+        <fieldset id="create-pack-fields">
+          <label
+            >表情包名称
+            <input
+              name="name"
+              required
+              maxlength="80"
+              placeholder="例如：我的日常表情"
+              autocomplete="off"
+          /></label>
+          <label
+            >描述（可选）
+            <textarea
+              name="description"
+              maxlength="500"
+              rows="3"
+              placeholder="介绍一下这个表情包"
+            ></textarea>
+          </label>
+        </fieldset>
+        <p id="create-pack-error" role="alert"></p>
+        <div class="confirm-modal-actions">
+          <button id="create-pack-cancel" type="button" class="secondary">
+            取消
+          </button>
+          <button id="create-pack-submit" type="submit">创建并打开</button>
+        </div>
+      </form>
+    </dialog>
     <script type="module" src="../shared/ui.js"></script>
     <script type="module" src="./script.js"></script>
   </body>

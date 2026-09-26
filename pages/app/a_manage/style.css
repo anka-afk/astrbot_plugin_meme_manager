@@ -2985,7 +2985,8 @@ body.page-scroll-locked {
   padding: 22px;
   border: 1px solid rgba(29, 138, 102, 0.18);
   border-radius: 20px;
-  background: radial-gradient(
+  background:
+    radial-gradient(
       circle at top right,
       rgba(46, 204, 113, 0.12),
       transparent 34%
@@ -4492,7 +4493,8 @@ button.danger,
   display: none;
 }
 
-#pack-transfer-dialog {
+#pack-transfer-dialog,
+#create-pack-dialog {
   width: min(620px, calc(100vw - 28px));
   max-height: calc(100dvh - 32px);
   padding: 24px;
@@ -4502,19 +4504,22 @@ button.danger,
   background: var(--bg, #fff);
   overflow-y: auto;
 }
-#pack-transfer-dialog::backdrop {
+#pack-transfer-dialog::backdrop,
+#create-pack-dialog::backdrop {
   background: #102f3980;
 }
 #pack-transfer-dialog h2 {
   margin: 0 0 12px;
 }
-#pack-transfer-fields {
+#pack-transfer-fields,
+#create-pack-fields {
   border: 0;
   padding: 0;
   margin: 20px 0;
   min-width: 0;
 }
-#pack-transfer-fields label {
+#pack-transfer-fields label,
+#create-pack-fields label {
   display: grid;
   gap: 8px;
   margin-bottom: 16px;

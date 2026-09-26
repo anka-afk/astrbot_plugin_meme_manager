@@ -8,6 +8,7 @@ import zipfile
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 
@@ -368,6 +369,8 @@ def _snapshot_single_empty_pack() -> str | None:
         return None
 
     only_pack = pack_dirs[0]
+    if _load_json(only_pack / "manifest.json", {}).get("user_created"):
+        return None
     if _count_images(only_pack / "memes") != 0:
         return None
     return only_pack.name
@@ -441,6 +444,64 @@ def _create_empty_pack(pack_id: str) -> str:
     )
 
     return pack_id
+
+
+def create_local_pack(name: str, description: str = "", operation_guard=None) -> dict:
+    """Create a named local pack without changing the current default.
+
+    Args:
+        name: User-visible name, between one and 80 characters.
+        description: Optional description, at most 500 characters.
+        operation_guard: Optional runtime mutation guard.
+
+    Returns:
+        Identity and name of the newly registered pack.
+
+    Raises:
+        ValueError: The supplied name or description is invalid.
+        OSError: The pack or registry cannot be written.
+    """
+    import secrets
+
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
+        raise ValueError("请输入 1 到 80 个字符的表情包名称")
+    if not isinstance(description, str) or len(description) > 500:
+        raise ValueError("表情包描述不能超过 500 个字符")
+    pack_id = f"local-{secrets.token_hex(8)}"
+    if operation_guard:
+        operation_guard(pack_id, "创建表情包")
+    pack = PACKS_DIR / pack_id
+    pack.mkdir(parents=True, exist_ok=False)
+    registry = _load_registry()
+    try:
+        (pack / "memes" / "默认分类").mkdir(parents=True)
+        _save_json(
+            pack / "manifest.json",
+            {
+                "schema_version": 1,
+                "id": pack_id,
+                "name": name.strip(),
+                "version": "1.0.0",
+                "description": description.strip(),
+                "user_created": True,
+                "categories": {"默认分类": {"description": "请添加描述"}},
+            },
+        )
+        _save_json(pack / "memes_data.json", {"默认分类": "请添加描述"})
+        registry["installed_packs"].append(
+            {
+                "id": pack_id,
+                "name": name.strip(),
+                "version": "1.0.0",
+                "enabled": True,
+                "installed_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        _save_registry(registry)
+    except Exception:
+        shutil.rmtree(pack, ignore_errors=True)
+        raise
+    return {"pack_id": pack_id, "name": name.strip()}
 
 
 def list_installed_packs() -> list[dict]:
@@ -763,7 +824,10 @@ def _prepare_import_pack(
         if Path(directory).resolve() != pack_root.resolve():
             return set()
         return {
-            name for name in names if name in {PACK_TRANSFER_MANIFEST, "semantic_index"}
+            name
+            for name in names
+            if name
+            in {PACK_TRANSFER_MANIFEST, "semantic_index", ".community-origin.json"}
         }
 
     shutil.copytree(pack_root, target_root, ignore=ignore_transfer_files)
@@ -892,6 +956,7 @@ def import_pack_archive(
     embedding_model: str = "",
     embedding_dimension: int = 0,
     preserve_existing_manual: bool = True,
+    community_origin: dict | None = None,
 ) -> dict:
     if not zip_path.is_file():
         raise FileNotFoundError("压缩包不存在")
@@ -919,6 +984,8 @@ def import_pack_archive(
             suggested_pack_id or zip_path.stem,
         )
         original_pack_id = str(normalized_manifest.get("id") or "").strip()
+        if community_origin is not None:
+            _save_json(prepared_pack_dir / ".community-origin.json", community_origin)
         pack_id = original_pack_id if overwrite else _allocate_pack_id(original_pack_id)
         if pack_id != original_pack_id:
             normalized_manifest["id"] = pack_id
@@ -1259,6 +1326,7 @@ def export_pack_archive(
     with tempfile.TemporaryDirectory(dir=TEMP_DIR, prefix="pack_export_") as tmp_dir:
         staging = Path(tmp_dir) / pack_id
         shutil.copytree(pack_dir, staging)
+        (staging / ".community-origin.json").unlink(missing_ok=True)
         semantic_file = staging / "semantic_metadata.json"
         vectors_included = False
         if export_mode == "share" and include_semantic:
@@ -1530,6 +1598,32 @@ def fetch_and_cache_community_index(
         raise ValueError(f"社区索引不是有效 JSON: {exc}") from exc
 
     index_data = validate_community_index(index_data)
+    for entry in index_data["packs"]:
+        if str(entry.get("version") or "").strip():
+            continue
+        source = entry["source"]
+        manifest_url = (
+            f"https://raw.githubusercontent.com/{quote(source['repo'], safe='/')}/"
+            f"{quote(source['ref'], safe='')}/{quote(source['subpath'], safe='/')}/manifest.json"
+        )
+        try:
+            manifest_response = _http_get_with_optional_acceleration(
+                manifest_url, timeout=10, github_accelerator_url=github_accelerator_url
+            )
+            try:
+                if manifest_response.status_code != 200:
+                    raise ValueError("无法读取远端版本")
+                manifest = manifest_response.json()
+                if (
+                    manifest.get("id") != entry["id"]
+                    or not str(manifest.get("version") or "").strip()
+                ):
+                    raise ValueError("远端版本信息无效")
+                entry["version"] = str(manifest["version"]).strip()
+            finally:
+                manifest_response.close()
+        except (requests.RequestException, ValueError, TypeError, AttributeError):
+            entry["version_unavailable"] = True
 
     cache_payload = {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
@@ -1660,11 +1754,14 @@ def install_pack_from_github_source(
             progress_callback("installing", 0, None)
         if cancel_check and cancel_check():
             raise InstallCancelledError("安装已取消")
+        from .updates import snapshot
+
         result = import_pack_archive(
             local_zip,
             overwrite=overwrite,
             set_as_default=set_as_default,
             operation_guard=operation_guard,
+            community_origin={"source": github_source, **snapshot(source_pack_dir)},
         )
         result["source"] = github_source
         return result
