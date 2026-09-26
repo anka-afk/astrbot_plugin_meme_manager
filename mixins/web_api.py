@@ -19,6 +19,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 from astrbot.api import logger
 
+from ..backend.packs import storage as pack_storage
 from ..backend.packs.categories import is_safe_category_name
 from ..backend.packs.images import (
     DuplicateEmojiError,
@@ -33,8 +34,10 @@ from ..backend.packs.images import (
     move_emoji_to_category,
     scan_emoji_folder,
 )
+from ..backend.packs.protocol import validate_pack_id
 from ..backend.packs.storage import (
     InstallCancelledError,
+    create_local_pack,
     export_pack_archive,
     export_runtime_backup,
     fetch_and_cache_community_index,
@@ -52,6 +55,14 @@ from ..backend.packs.storage import (
     save_selection_rules,
     set_default_pack,
     uninstall_pack,
+)
+from ..backend.packs.transfer import transfer_pack_images
+from ..backend.packs.updates import (
+    apply_update,
+    community_update_status,
+    plan_update,
+    prepare_update,
+    restore_update,
 )
 from ..backend.plugin_settings import describe_settings, validate_settings_changes
 from ..backend.semantic.index import EmbeddingAdapter, index_is_ready
@@ -129,6 +140,12 @@ class WebAPIMixin:
         )
         self._register_webui_api(
             "emoji/batch_move", self._api_batch_move_emojis, ["POST"], "批量移动表情"
+        )
+        self._register_webui_api(
+            "packs/move-images",
+            self._api_transfer_pack_images,
+            ["POST"],
+            "Preview or move selected images between packs",
         )
         self._register_webui_api(
             "emoji/batch_copy", self._api_batch_copy_emojis, ["POST"], "批量复制表情"
@@ -339,6 +356,33 @@ class WebAPIMixin:
             self._api_uninstall_pack,
             ["POST"],
             "卸载表情包",
+        )
+        self._register_webui_api(
+            "packs/create", self._api_create_local_pack, ["POST"], "创建本地表情包"
+        )
+        self._register_webui_api(
+            "community/updates",
+            self._api_community_updates,
+            ["GET"],
+            "查询更新与安装状态",
+        )
+        self._register_webui_api(
+            "community/update",
+            self._api_community_update,
+            ["POST"],
+            "预览或执行资源包更新",
+        )
+        self._register_webui_api(
+            "community/update/status",
+            self._api_community_update_status,
+            ["GET"],
+            "查询更新任务",
+        )
+        self._register_webui_api(
+            "community/update/image_data",
+            self._api_community_update_image_data,
+            ["GET"],
+            "预览更新中的表情图片",
         )
         self._register_webui_api(
             "community/index/fetch",
@@ -659,38 +703,41 @@ class WebAPIMixin:
         **kwargs,
     ):
         """在运行时全局文件操作期间持有所有已安装表情包的锁。"""
-        manager = getattr(self, "semantic_task_manager", None)
-        pack_ids = (
-            sorted(path.name for path in PACKS_DIR.iterdir() if path.is_dir())
-            if PACKS_DIR.is_dir()
-            else []
-        )
-        locked_pack_ids = []
-        if manager is not None:
+        if not hasattr(self, "_runtime_file_lock"):
+            self._runtime_file_lock = asyncio.Lock()
+        async with self._runtime_file_lock:
+            manager = getattr(self, "semantic_task_manager", None)
+            pack_ids = (
+                sorted(path.name for path in PACKS_DIR.iterdir() if path.is_dir())
+                if PACKS_DIR.is_dir()
+                else []
+            )
+            locked_pack_ids = []
+            if manager is not None:
+                try:
+                    for pack_id in pack_ids:
+                        manager.begin_external_pack_operation(pack_id, operation)
+                        locked_pack_ids.append(pack_id)
+                except Exception:
+                    for pack_id in reversed(locked_pack_ids):
+                        manager.end_external_pack_operation(pack_id)
+                    raise
+
+            kwargs["operation_guard"] = (
+                None if manager is not None else self._semantic_operation_guard
+            )
+            worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
             try:
-                for pack_id in pack_ids:
-                    manager.begin_external_pack_operation(pack_id, operation)
-                    locked_pack_ids.append(pack_id)
-            except Exception:
+                return await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                try:
+                    await asyncio.shield(worker)
+                except Exception:
+                    pass
+                raise
+            finally:
                 for pack_id in reversed(locked_pack_ids):
                     manager.end_external_pack_operation(pack_id)
-                raise
-
-        kwargs["operation_guard"] = (
-            None if manager is not None else self._semantic_operation_guard
-        )
-        worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-        try:
-            return await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            try:
-                await asyncio.shield(worker)
-            except Exception:
-                pass
-            raise
-        finally:
-            for pack_id in reversed(locked_pack_ids):
-                manager.end_external_pack_operation(pack_id)
 
     @staticmethod
     def _prepare_archive_upload_request() -> None:
@@ -1098,6 +1145,63 @@ class WebAPIMixin:
             ),
             200,
         )
+
+    async def _api_transfer_pack_images(self):
+        """Preview or execute a transfer while holding both pack operation locks.
+
+        Returns:
+            A category plan, per-image outcomes, or a validation/conflict response.
+        """
+        locked = []
+        manager = getattr(self, "semantic_task_manager", None)
+        try:
+            data = await request.get_json()
+            if not isinstance(data, dict):
+                raise ValueError("请求格式无效")
+            installed = {pack["id"] for pack in list_installed_packs()}
+            pack_ids = [data.get("source_pack_id"), data.get("target_pack_id")]
+            if any(
+                not isinstance(pack_id, str) or pack_id not in installed
+                for pack_id in pack_ids
+            ):
+                raise ValueError("请选择已安装的来源和目标表情包")
+            if manager is None:
+                raise RuntimeError("表情包任务管理器尚未就绪，请稍后重试")
+            for pack_id in sorted(set(pack_ids)):
+                manager.begin_external_pack_operation(pack_id, "跨表情包移动")
+                locked.append(pack_id)
+            worker = asyncio.create_task(
+                asyncio.to_thread(transfer_pack_images, PACKS_DIR, data)
+            )
+            try:
+                result = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                try:
+                    await asyncio.shield(worker)
+                except Exception:
+                    pass
+                raise
+            if (
+                result.get("moved")
+                and self._resolve_runtime_pack_context().get("pack_id") in pack_ids
+            ):
+                try:
+                    await self.reload_emotions()
+                except Exception:
+                    result["warnings"].append(
+                        "图片已移动，运行时分类刷新失败，请刷新或重启插件"
+                    )
+            return jsonify(result), 200
+        except (ValueError, FileNotFoundError) as exc:
+            return jsonify({"message": str(exc)}), 400
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except OSError:
+            logger.exception("Failed to prepare cross-pack image transfer")
+            return jsonify({"message": "分类配置无法保存，尚未执行图片移动"}), 500
+        finally:
+            for pack_id in reversed(locked):
+                manager.end_external_pack_operation(pack_id)
 
     async def _api_batch_move_emojis(self):
         data = await request.get_json()
@@ -2966,6 +3070,213 @@ class WebAPIMixin:
             logger.error(f"卸载表情包失败: {e}", exc_info=True)
             return jsonify({"message": f"卸载表情包失败: {str(e)}"}), 500
 
+    async def _api_create_local_pack(self):
+        """Create and register an empty local pack.
+
+        Returns:
+            The created pack identity or a validation error.
+        """
+        try:
+            data = await request.get_json() or {}
+            result = await self._run_guarded_runtime_file_operation(
+                "创建表情包",
+                create_local_pack,
+                data.get("name"),
+                data.get("description", ""),
+            )
+            self._reload_personas()
+            return jsonify(result), 200
+        except (ValueError, RuntimeError) as exc:
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            logger.error("Creating local pack failed: %s", exc, exc_info=True)
+            return jsonify({"message": "创建失败，请重试"}), 500
+
+    async def _api_community_updates(self):
+        """Read fresh catalog installation and update status.
+
+        Returns:
+            Per-pack availability and recovery backups.
+        """
+        try:
+            return jsonify(
+                {"packs": await asyncio.to_thread(community_update_status)}
+            ), 200
+        except FileNotFoundError:
+            return jsonify({"packs": {}}), 200
+        except Exception as exc:
+            logger.error("Reading update status failed: %s", exc, exc_info=True)
+            return jsonify({"message": "读取更新状态失败，请重试"}), 500
+
+    async def _api_community_update(self):
+        """Preview synchronously or start a durable background update operation.
+
+        Returns:
+            A preview or a job ID that can be polled after request completion.
+        """
+        try:
+            data = await request.get_json() or {}
+            if not isinstance(data, dict):
+                raise ValueError("请求必须是对象")
+            action = data.get("action")
+            if action == "cancel":
+                job = getattr(self, "_community_update_jobs", {}).get(
+                    str(data.get("job_id") or "")
+                )
+                if job is None:
+                    raise ValueError("更新任务不存在，请刷新广场检查结果")
+                if job["action"] != "prepare":
+                    raise ValueError("写入或恢复已经开始，不能取消")
+                job["cancel_requested"] = True
+                if job["state"] == "completed":
+                    job["state"] = "cancelled"
+                return jsonify({"message": "已请求取消检查更新"}), 200
+            if action in {"preview", "restore_preview"}:
+                data["preview"] = True
+                result = await self._run_guarded_runtime_file_operation(
+                    "预览资源包更新",
+                    plan_update if action == "preview" else restore_update,
+                    data,
+                )
+                return jsonify(result), 200
+            if action not in {"prepare", "apply", "restore"}:
+                raise ValueError("更新操作无效")
+            jobs = getattr(self, "_community_update_jobs", None)
+            if jobs is None:
+                jobs = self._community_update_jobs = {}
+                self._community_update_tasks = set()
+            if any(job["state"] == "running" for job in jobs.values()):
+                return jsonify({"message": "已有更新任务正在执行，请稍后重试"}), 409
+            for key in list(jobs):
+                if time.time() - jobs[key]["created_at"] > 86400:
+                    del jobs[key]
+            job_id = secrets.token_hex(16)
+            jobs[job_id] = {
+                "id": job_id,
+                "state": "running",
+                "created_at": time.time(),
+                "action": action,
+            }
+            task = asyncio.create_task(self._run_community_update_job(job_id, data))
+            self._community_update_tasks.add(task)
+            task.add_done_callback(self._community_update_tasks.discard)
+            return jsonify({"job_id": job_id}), 202
+        except (ValueError, FileNotFoundError, RuntimeError) as exc:
+            return jsonify({"message": str(exc)}), 409
+        except Exception as exc:
+            logger.error("Preparing update request failed: %s", exc, exc_info=True)
+            return jsonify({"message": "更新预览失败，请刷新重试"}), 500
+
+    async def _run_community_update_job(self, job_id: str, data: dict):
+        """Keep file-operation locks until a background job has finished.
+
+        Args:
+            job_id: Server-generated identifier for polling.
+            data: Validated action and update selections.
+        """
+        job = self._community_update_jobs[job_id]
+        try:
+            if data["action"] == "prepare":
+                pack_id = str(data.get("pack_id") or "")
+                result = await self._run_guarded_pack_file_operation(
+                    pack_id,
+                    "准备资源包更新",
+                    prepare_update,
+                    pack_id,
+                    github_accelerator_url=self._get_github_accelerator_url(),
+                    cancel_check=lambda: bool(job.get("cancel_requested")),
+                )
+            else:
+                data["preview"] = False
+                result = await self._run_guarded_runtime_file_operation(
+                    "更新或恢复资源包",
+                    apply_update if data["action"] == "apply" else restore_update,
+                    data,
+                )
+                self._reload_personas()
+            if job.get("cancel_requested"):
+                job.update(state="cancelled", message="已取消检查更新")
+            else:
+                job.update(state="completed", result=result)
+        except InstallCancelledError:
+            job.update(state="cancelled", message="已取消检查更新")
+        except Exception as exc:
+            logger.error("Community update job failed: %s", exc, exc_info=True)
+            job.update(state="failed", message=str(exc))
+
+    async def _api_community_update_status(self):
+        """Return a running or completed update job.
+
+        Returns:
+            Current job status, or a not-found response after expiry/restart.
+        """
+        job = getattr(self, "_community_update_jobs", {}).get(
+            str(request.args.get("job_id") or "")
+        )
+        if job is None:
+            return jsonify({"message": "更新任务不存在，请刷新广场检查结果"}), 404
+        return jsonify(job), 200
+
+    async def _api_community_update_image_data(self):
+        """Return a bounded preview from an active update session.
+
+        Returns:
+            A preview data URL for one local or upstream image.
+        """
+        token = str(request.args.get("session") or "")
+        side = request.args.get("side")
+        relative = str(request.args.get("path") or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", token) or side not in {
+            "local",
+            "upstream",
+        }:
+            return jsonify({"message": "更新预览参数无效"}), 400
+        parts = Path(relative).parts
+        if (
+            len(parts) != 3
+            or parts[0] != "memes"
+            or not is_safe_category_name(parts[1])
+            or parts[2] in {".", ".."}
+            or Path(parts[2]).suffix.lower() not in pack_storage.IMAGE_EXTENSIONS
+        ):
+            return jsonify({"message": "图片路径无效"}), 400
+        session = pack_storage.TEMP_DIR / "community_updates" / token
+        record = pack_storage._load_json(session / "session.json", {})
+        if not record or time.time() - record.get("created_at", 0) > 14400:
+            return jsonify({"message": "更新预览已过期"}), 404
+        try:
+            pack_id = validate_pack_id(record["pack_id"])
+        except (KeyError, ValueError):
+            return jsonify({"message": "表情包 ID 无效"}), 400
+        root = (
+            pack_storage.PACKS_DIR / pack_id
+            if side == "local"
+            else session / "candidate"
+        ).resolve()
+        if side == "upstream" and relative not in record.get("remote", {}).get(
+            "files", {}
+        ):
+            return jsonify({"message": "图片不存在"}), 404
+        file_path = (root / relative).resolve()
+        if not file_path.is_relative_to(root) or not file_path.is_file():
+            return jsonify({"message": "图片不存在"}), 404
+        if file_path.stat().st_size > MAX_PREVIEW_IMAGE_BYTES:
+            return jsonify({"message": "图片过大，无法预览"}), 413
+        mime_type = (
+            mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        )
+        if mime_type == "image/gif":
+            data_url = await asyncio.to_thread(
+                self._build_file_data_url, file_path, mime_type
+            )
+        else:
+            data_url, mime_type = await asyncio.to_thread(
+                self._build_preview_data_url, file_path
+            )
+        response = jsonify({"data_url": data_url, "mime_type": mime_type})
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
     async def _api_fetch_community_index(self):
         try:
             index_url = COMMUNITY_INDEX_URL
@@ -3357,10 +3668,13 @@ class WebAPIMixin:
                 ), 409
             if any(
                 not task.done()
-                for task in getattr(self, "_community_install_tasks", set())
+                for task in (
+                    *getattr(self, "_community_install_tasks", set()),
+                    *getattr(self, "_community_update_tasks", set()),
+                )
             ):
                 return jsonify(
-                    {"message": "正在安装表情包，请等待完成后再保存设置。"}
+                    {"message": "正在安装或更新表情包，请等待完成后再保存设置。"}
                 ), 409
             task_manager = getattr(self, "semantic_task_manager", None)
             if task_manager:

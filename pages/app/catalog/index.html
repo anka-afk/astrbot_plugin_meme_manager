@@ -36,6 +36,7 @@
               <option value="all">全部资源包</option>
               <option value="available">未安装</option>
               <option value="installed">已安装</option>
+              <option value="updates">可更新</option>
             </select>
           </div>
           <button id="refresh-catalog-btn" type="button" class="ghost" disabled>
@@ -66,6 +67,14 @@
         <button id="show-install-progress" type="button" class="ghost">
           查看进度
         </button>
+      </section>
+
+      <section id="updates-zone" class="panel catalog-list hidden">
+        <div class="panel-header">
+          <h2><i class="fas fa-rotate icon"></i>可更新</h2>
+          <span id="updates-pack-count" class="badge">0</span>
+        </div>
+        <div id="updates-grid" class="catalog-grid"></div>
       </section>
 
       <section class="panel catalog-list official-zone">

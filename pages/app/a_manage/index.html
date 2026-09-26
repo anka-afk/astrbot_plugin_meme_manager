@@ -356,45 +356,24 @@
             重试
           </button>
         </div>
-        <div class="page-toolbar">
-          <div class="selection-toolbar">
-            <div class="selection-toolbar-copy">
-              <h2>批量管理</h2>
-              <p id="selection-summary">未开启批量选择</p>
-            </div>
-            <div class="selection-toolbar-controls">
-              <div class="pack-index-toolbar" aria-label="当前表情包向量状态">
-                <span
-                  id="pack-vector-status"
-                  class="pack-vector-status hidden"
-                  role="status"
-                  aria-live="polite"
-                >
-                  <i class="fas fa-cubes-stacked"></i>
-                  <span id="pack-vector-status-text">正在读取向量维度…</span>
-                </span>
-                <button
-                  id="rebuild-pack-vectors-btn"
-                  type="button"
-                  class="secondary vector-rebuild-btn hidden"
-                  disabled
-                >
-                  <i class="fas fa-arrows-rotate icon"></i>按当前维度重建
-                </button>
-              </div>
-              <div class="selection-toolbar-actions">
-                <button id="batch-move-btn" class="secondary" disabled>
-                  <i class="fas fa-right-left icon"></i>移动已选
-                </button>
-                <button id="toggle-selection-mode-btn" class="secondary">
-                  <i class="fas fa-list-check icon"></i>开启批量选择
-                </button>
-                <button id="batch-delete-btn" class="danger" disabled>
-                  <i class="fas fa-trash-can icon"></i>删除已选
-                </button>
-              </div>
-            </div>
-          </div>
+        <div class="pack-index-toolbar" aria-label="当前表情包向量状态">
+          <span
+            id="pack-vector-status"
+            class="pack-vector-status hidden"
+            role="status"
+            aria-live="polite"
+          >
+            <i class="fas fa-cubes-stacked"></i>
+            <span id="pack-vector-status-text">正在读取向量维度…</span>
+          </span>
+          <button
+            id="rebuild-pack-vectors-btn"
+            type="button"
+            class="secondary vector-rebuild-btn hidden"
+            disabled
+          >
+            <i class="fas fa-arrows-rotate icon"></i>按当前维度重建
+          </button>
         </div>
         <section
           id="semantic-review-toolbar"
@@ -461,13 +440,19 @@
           </button>
         </div>
         <details class="manage-maintenance library-maintenance">
-          <summary>表情包维护</summary>
-          <p class="hint">
-            清空内容会保留分类；删除表情包会同时移除整个包。操作前会再次确认。
-          </p>
+          <summary>
+            <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+            表情包维护
+          </summary>
+          <div class="maintenance-warning">
+            <strong>请先备份，再执行以下操作。</strong>
+            <p>清空图片：删除当前包内的全部图片，保留分类。</p>
+            <p>删除表情包：移除当前整个包及其内容。</p>
+          </div>
           <div class="button-row">
             <button id="clear-all-btn" class="danger" type="button">
-              <i class="fas fa-broom icon"></i>清空全部表情包
+              <i class="fas fa-broom icon" aria-hidden="true"></i
+              >清空当前包全部图片
             </button>
             <button id="delete-manage-pack-btn" class="danger" type="button">
               删除当前表情包
@@ -541,6 +526,15 @@
         <h2 id="move-target-modal-title">选择目标分类</h2>
         <p id="move-target-modal-description">
           选择一个分类，将已选表情包批量移动过去。
+        </p>
+        <input
+          id="move-target-search"
+          type="search"
+          aria-label="搜索目标分类"
+          placeholder="搜索目标分类"
+        />
+        <p id="move-target-empty" class="hidden" role="status">
+          没有匹配的分类
         </p>
         <div id="move-target-list" class="move-target-list"></div>
         <div class="move-target-modal-actions">
@@ -622,6 +616,7 @@
         <p class="danger-modal-eyebrow">危险操作</p>
         <h2 id="danger-modal-title">请确认操作</h2>
         <p id="danger-modal-description"></p>
+        <p>此操作无法撤销，请确认已备份需要保留的内容。</p>
         <label class="danger-modal-check" for="danger-modal-ack">
           <input type="checkbox" id="danger-modal-ack" />
           <span>我已理解该操作不可恢复</span>
@@ -638,13 +633,89 @@
       </div>
     </div>
 
+    <aside
+      id="drag-target-tray"
+      class="drag-target-tray hidden"
+      aria-label="拖动到分类"
+    >
+      <strong>移动到分类</strong>
+      <p>松手即可移动，按 Esc 取消</p>
+      <div id="drag-target-list" class="drag-target-list"></div>
+    </aside>
+    <div class="move-action-dock">
+      <div id="move-result" class="move-result hidden">
+        <span id="move-result-text" role="status"></span>
+        <button id="move-undo-btn" type="button" class="secondary">撤销</button>
+        <button
+          id="move-result-dismiss"
+          type="button"
+          class="secondary"
+          aria-label="关闭移动结果"
+        >
+          ×
+        </button>
+      </div>
+      <div
+        id="selection-dock"
+        class="selection-dock hidden"
+        role="region"
+        aria-label="批量操作"
+      >
+        <span id="selection-dock-summary" role="status">已选 0 张</span>
+        <button id="selection-dock-move" type="button">移动分类</button>
+        <button id="selection-dock-pack" type="button" class="secondary">
+          移到其他表情包
+        </button>
+        <button
+          id="selection-dock-delete"
+          type="button"
+          class="secondary"
+          disabled
+        >
+          删除已选
+        </button>
+        <button id="selection-dock-exit" type="button" class="secondary">
+          取消选择
+        </button>
+      </div>
+    </div>
+    <dialog id="pack-transfer-dialog" aria-labelledby="pack-transfer-title">
+      <h2 id="pack-transfer-title">移到其他表情包</h2>
+      <p>选定目标表情包，再决定这些图片如何归类。</p>
+      <fieldset id="pack-transfer-fields">
+        <label>目标表情包<select id="pack-transfer-pack"></select></label>
+        <label
+          >分类处理方式<select id="pack-transfer-mode">
+            <option value="target">指定目标分类（忽略原分类）</option>
+            <option value="preserve">保留原分类</option>
+          </select></label
+        >
+        <label id="pack-transfer-category-field"
+          >目标分类<select id="pack-transfer-category"></select
+        ></label>
+        <div id="pack-transfer-plan"></div>
+      </fieldset>
+      <p id="pack-transfer-status" role="status"></p>
+      <div class="pack-transfer-actions">
+        <button id="pack-transfer-retry" type="button" class="secondary">
+          重新检查
+        </button>
+        <button id="pack-transfer-cancel" type="button" class="secondary">
+          取消
+        </button>
+        <button id="pack-transfer-confirm" type="button" disabled>
+          确认移动
+        </button>
+      </div>
+    </dialog>
     <div id="drag-hud" class="drag-hud hidden" aria-hidden="true">
       <div class="drag-hud-ring"></div>
       <div class="drag-hud-center">
-        <span id="drag-hud-label">2s</span>
+        <img id="drag-hud-preview" alt="" />
+        <span id="drag-hud-label">选择</span>
       </div>
       <div id="drag-hud-caption" class="drag-hud-caption">
-        长按 2 秒进入拖拽
+        长按选择，滑动浏览
       </div>
     </div>
 
@@ -916,6 +987,41 @@
       </div>
     </div>
 
+    <dialog id="create-pack-dialog" aria-labelledby="create-pack-title">
+      <form id="create-pack-form">
+        <h2 id="create-pack-title" class="text-h3 pa-4 pb-0 pl-6">
+          创建新表情包
+        </h2>
+        <p>创建后会自动切换到新包，可立即上传表情或从其他包移入。</p>
+        <fieldset id="create-pack-fields">
+          <label
+            >表情包名称
+            <input
+              name="name"
+              required
+              maxlength="80"
+              placeholder="例如：我的日常表情"
+              autocomplete="off"
+          /></label>
+          <label
+            >描述（可选）
+            <textarea
+              name="description"
+              maxlength="500"
+              rows="3"
+              placeholder="介绍一下这个表情包"
+            ></textarea>
+          </label>
+        </fieldset>
+        <p id="create-pack-error" role="alert"></p>
+        <div class="confirm-modal-actions">
+          <button id="create-pack-cancel" type="button" class="secondary">
+            取消
+          </button>
+          <button id="create-pack-submit" type="submit">创建并打开</button>
+        </div>
+      </form>
+    </dialog>
     <script type="module" src="../shared/ui.js"></script>
     <script type="module" src="./script.js"></script>
   </body>

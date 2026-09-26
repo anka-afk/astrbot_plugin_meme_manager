@@ -30,9 +30,13 @@
             autocomplete="off"
           />
         </label>
-        <p class="settings-nav-label">偏好设置</p>
+        <p class="settings-nav-label">设置中心</p>
         <nav id="settings-nav" aria-label="设置分类导航">
-          <button type="button" data-settings-tab="rules" aria-current="page">
+          <button type="button" data-settings-tab="models" aria-current="page">
+            <i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i
+            >模式<span class="settings-dirty-dot" hidden></span>
+          </button>
+          <button type="button" data-settings-tab="rules">
             <i class="fas fa-route" aria-hidden="true"></i>使用规则
           </button>
           <button type="button" data-settings-tab="sending">
@@ -40,10 +44,6 @@
               class="settings-dirty-dot"
               hidden
             ></span>
-          </button>
-          <button type="button" data-settings-tab="models">
-            <i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i
-            >语义与模型<span class="settings-dirty-dot" hidden></span>
           </button>
           <button type="button" data-settings-tab="collect">
             <i class="fas fa-inbox" aria-hidden="true"></i>自动收集<span
@@ -71,7 +71,9 @@
             <i class="fas fa-box-archive" aria-hidden="true"></i>导入与备份
           </button>
         </nav>
-        <p class="settings-sidebar-note">设置集中于此，按你的习惯慢慢调整。</p>
+        <p class="settings-sidebar-note">
+          从模式流程打开设置，或按分类查找和修改。
+        </p>
       </aside>
       <div class="settings-content">
         <section class="panel rules-panel" data-settings-panel="rules">
@@ -143,6 +145,180 @@
           <p id="config-load-status" class="config-notice" role="status">
             正在读取配置…
           </p>
+          <section
+            id="selection-mode-panel"
+            class="panel selection-mode-panel"
+            hidden
+          >
+            <fieldset
+              id="selection-mode-options"
+              aria-describedby="selection-mode-help"
+            >
+              <legend>选择模式</legend>
+              <p id="selection-mode-help" class="hint">
+                一次使用一种模式。切换后可调整流程中的设置，保存并应用后生效。
+              </p>
+              <div class="selection-mode-grid">
+                <label class="selection-mode-card">
+                  <input
+                    type="radio"
+                    name="selection-mode"
+                    value="category-native"
+                  />
+                  <span
+                    ><strong>原生分类标签</strong
+                    ><small
+                      >回复模型输出分类标签，从该分类中随机取图。</small
+                    ></span
+                  >
+                </label>
+                <label class="selection-mode-card">
+                  <input
+                    type="radio"
+                    name="selection-mode"
+                    value="category-auxiliary"
+                  />
+                  <span
+                    ><strong>辅助模型分类标签</strong
+                    ><small
+                      >辅助模型根据回复选择分类，再从分类中随机取图。</small
+                    ></span
+                  >
+                </label>
+                <label class="selection-mode-card">
+                  <input
+                    type="radio"
+                    name="selection-mode"
+                    value="semantic-tool"
+                  />
+                  <span
+                    ><strong>Tool 语义检索</strong
+                    ><small
+                      >回复模型调用搜索工具，从候选中选择具体图片。</small
+                    ></span
+                  >
+                </label>
+                <label class="selection-mode-card">
+                  <input
+                    type="radio"
+                    name="selection-mode"
+                    value="semantic-auxiliary"
+                  />
+                  <span
+                    ><strong>辅助模型语义检索</strong
+                    ><small
+                      >辅助模型根据回复检索并选图，回复模型专注对话。</small
+                    ></span
+                  >
+                </label>
+              </div>
+            </fieldset>
+            <p
+              id="selection-mode-status"
+              class="selection-mode-status"
+              role="status"
+            ></p>
+            <div id="selection-mode-readiness" class="config-notice" hidden>
+              <p id="selection-mode-readiness-text" role="status"></p>
+              <p class="hint">
+                按各会话实际使用的表情包判断；语义数据或索引未就绪时，自动回退到对应的分类标签方式。
+              </p>
+              <a
+                href="../semantic/index.html"
+                data-nav-target="../semantic/index.html"
+                >前往语义化 →</a
+              >
+            </div>
+            <p id="selection-mode-detail" class="hint"></p>
+          </section>
+          <section
+            id="mode-workflow"
+            class="panel mode-workflow"
+            aria-labelledby="mode-workflow-title"
+            hidden
+          >
+            <div class="workflow-heading">
+              <h3 id="mode-workflow-title" tabindex="-1">模式流程</h3>
+            </div>
+            <ol
+              id="mode-workflow-steps"
+              class="workflow-steps"
+              aria-label="本轮选图流程"
+            ></ol>
+          </section>
+          <dialog
+            id="config-flow-dialog"
+            aria-labelledby="config-flow-dialog-title"
+          >
+            <div class="flow-dialog-heading">
+              <h3
+                id="config-flow-dialog-title"
+                class="text-h3 pa-4 pb-0 pl-6"
+                tabindex="-1"
+              ></h3>
+              <div class="flow-dialog-heading-actions">
+                <button
+                  id="config-flow-dialog-reset"
+                  type="button"
+                  class="ghost"
+                  hidden
+                >
+                  恢复默认模板
+                </button>
+                <button
+                  type="button"
+                  class="ghost"
+                  data-flow-dialog-close
+                  aria-label="关闭设置"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+            <div id="config-flow-dialog-body"></div>
+            <div class="flow-dialog-actions">
+              <p id="config-flow-dialog-status" role="status"></p>
+              <button type="button" class="ghost" data-flow-dialog-close>
+                关闭
+              </button>
+              <button
+                id="config-flow-dialog-save"
+                type="submit"
+                class="secondary"
+                disabled
+              >
+                保存并应用
+              </button>
+            </div>
+          </dialog>
+          <section
+            id="collection-workflow"
+            class="panel mode-workflow"
+            aria-labelledby="collection-workflow-title"
+            hidden
+          >
+            <div class="workflow-heading">
+              <h3 id="collection-workflow-title" tabindex="-1">自动收集流程</h3>
+              <span
+                id="collection-workflow-state"
+                class="workflow-state"
+                role="status"
+              ></span>
+            </div>
+            <ol
+              id="collection-workflow-steps"
+              class="workflow-steps"
+              aria-label="自动收集流程"
+            ></ol>
+            <p
+              id="collection-workflow-result"
+              class="workflow-fallback"
+              role="status"
+            ></p>
+            <p class="workflow-fallback">
+              自动检查重复图片；收录后如需用于语义检索，仍需到「语义化」页面手动生成索引。
+            </p>
+          </section>
           <div id="config-sections"></div>
           <p id="config-search-empty" class="rules-placeholder" hidden>
             没有找到相关配置，试试“模型”“概率”或“图床”。
@@ -157,6 +333,30 @@
             </button>
           </div>
         </form>
+        <dialog
+          id="rules-flow-dialog"
+          aria-labelledby="rules-flow-dialog-title"
+        >
+          <div class="flow-dialog-heading">
+            <h3 id="rules-flow-dialog-title" class="text-h3 pa-4 pb-0 pl-6">
+              表情包使用规则
+            </h3>
+            <button
+              type="button"
+              class="ghost"
+              data-rules-dialog-close
+              aria-label="关闭规则"
+            >
+              ×
+            </button>
+          </div>
+          <div id="rules-flow-dialog-body"></div>
+          <div class="flow-dialog-actions">
+            <button type="button" class="ghost" data-rules-dialog-close>
+              关闭
+            </button>
+          </div>
+        </dialog>
         <div data-settings-panel="backup" hidden>
           <section class="panel backup-panel">
             <h2><i class="fas fa-box-archive icon"></i>导入与备份</h2>
@@ -452,7 +652,7 @@
                 rel="noopener noreferrer"
                 >官方凭证说明 ↗</a
               >
-              ·
+              <br />
               <a
                 href="https://developers.cloudflare.com/r2/buckets/public-buckets/"
                 target="_blank"

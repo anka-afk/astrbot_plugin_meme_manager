@@ -3,7 +3,7 @@
   const params = new URLSearchParams(location.search);
   document.addEventListener("DOMContentLoaded", () => {
     const label = document.createElement("div");
-    label.textContent = "界面预览 · 模拟数据";
+    label.textContent = "界面预览（模拟数据）";
     label.style.cssText =
       "position:fixed;bottom:10px;left:12px;z-index:15000;padding:4px 9px;border:1px solid #dce8e2;border-radius:6px;background:#fff;color:#657a72;font:11px sans-serif;pointer-events:none";
     document.body.append(label);
@@ -45,9 +45,16 @@
     ],
   };
   const descriptions = {
-    happy: "开心 · 快乐的每一天",
-    sad: "难过 · 偶尔也需要抱抱",
-    surprise: "惊讶 · 意料之外的瞬间",
+    happy: "开心，快乐的每一天",
+    sad: "难过，偶尔也需要抱抱",
+    surprise: "惊讶，意料之外的瞬间",
+  };
+  const transferPacks = {
+    "official-basic": { images: emojis, descriptions },
+    weekend: {
+      images: { happy: [], relax: [] },
+      descriptions: { happy: "周末专属开心分类", relax: "放松休息" },
+    },
   };
   let rules = [
     {
@@ -73,6 +80,11 @@
     },
   ];
   let job = null;
+  let updateJob = null;
+  let updated = false;
+  const updateBackups = [
+    { id: "fixture-backup", created_at: 1789884000, version: "1.0" },
+  ];
   let polls = 0;
   let taskStatus = "idle";
   let configSnapshot = null;
@@ -93,8 +105,8 @@
         category === "sad"
           ? "#eef3fb"
           : category === "surprise"
-          ? "#fff6e9"
-          : "#eef8ef"
+            ? "#fff6e9"
+            : "#eef8ef"
       }"/><text x="128" y="142" font-size="92" text-anchor="middle">${
         faces[category] || "😺"
       }</text><text x="128" y="207" font-size="22" font-family="sans-serif" fill="#415d50" text-anchor="middle">${
@@ -181,10 +193,204 @@
         return { token: "fixture-token" };
       case "packs":
         return { packs: params.has("preview_empty") ? [] : packs };
+      case "packs/create": {
+        const pack_id = `local-${packs.length}`;
+        packs.push({
+          id: pack_id,
+          name: body.name,
+          image_count: 0,
+          category_count: 1,
+        });
+        transferPacks[pack_id] = {
+          images: { 默认分类: [] },
+          descriptions: { 默认分类: "请添加描述" },
+        };
+        return { pack_id, name: body.name };
+      }
+      case "community/updates":
+        return {
+          packs: {
+            "official-basic": {
+              installed: true,
+              available: !updated,
+              current_version: updated ? "2.0" : "1.0",
+              latest_version: "2.0",
+              has_baseline: true,
+              backups: updateBackups,
+            },
+          },
+        };
+      case "community/update": {
+        if (body.action === "restore_preview")
+          return {
+            current_version: "2.0",
+            version: "1.0",
+            current_images: 22,
+            plan_token: "fixture-restore",
+          };
+        if (body.action === "preview") {
+          const conflict = body.strategy !== "replace";
+          return {
+            strategy: body.strategy,
+            current_version: "1.0",
+            latest_version: "2.0",
+            has_baseline: true,
+            counts: {
+              added: 3,
+              changed: 2,
+              upstream_deleted: 1,
+              local_added: 4,
+              conflicts: 1,
+            },
+            local_categories: descriptions,
+            local_images: 22,
+            local_category_count: 3,
+            categories: conflict
+              ? [
+                  {
+                    source: "happy",
+                    local_description: "我的开心分类",
+                    remote_description: "上游开心描述",
+                    target: body.categories?.happy ?? "happy",
+                  },
+                ]
+              : [],
+            ready: !conflict || Boolean(body.categories?.happy ?? "happy"),
+            plan_token: "fixture-plan",
+            rows: [
+              {
+                path: "memes/happy/好耶.png",
+                local_path: "memes/happy/好耶.png",
+                destination: "memes/happy/好耶.png",
+                kind: "conflict",
+                action: "keep",
+                options: ["local", "upstream", "both"],
+              },
+              {
+                path: "memes/sad/哭哭.png",
+                local_path: "memes/sad/哭哭.png",
+                destination: "memes/sad/哭哭.png",
+                kind: "upstream_deleted",
+                action: "keep",
+                options: [],
+              },
+              {
+                path: "memes/happy/新表情.png",
+                local_path: "memes/happy/新表情.png",
+                destination: "memes/happy/新表情.png",
+                kind: "added",
+                action: "add",
+                options: [],
+              },
+            ],
+          };
+        }
+        updateJob = {
+          state: "completed",
+          action: body.action,
+          result:
+            body.action === "prepare"
+              ? { session: "fixture-session", has_baseline: true }
+              : { backup_id: "fixture-backup" },
+        };
+        if (body.action === "apply") updated = true;
+        return { job_id: "fixture-update-job" };
+      }
+      case "community/update/status":
+        return updateJob || { state: "failed", message: "测试任务已过期" };
       case "emoji":
-        return params.has("preview_empty") ? {} : emojis;
+        return params.has("preview_empty")
+          ? {}
+          : transferPacks[body.managed_pack_id]?.images || emojis;
+      case "packs/move-images": {
+        const source = transferPacks[body.source_pack_id],
+          target = transferPacks[body.target_pack_id];
+        const groups = new Map();
+        for (const item of body.items)
+          groups.set(item.category, [
+            ...(groups.get(item.category) || []),
+            item,
+          ]);
+        const plan = [...groups].map(([category, items]) => {
+          const chosen =
+            body.mode === "target"
+              ? body.target_category
+              : body.category_mapping?.[category];
+          const destination =
+            chosen || (body.mode === "preserve" ? category : "");
+          const exists = Object.hasOwn(target.descriptions, destination);
+          const conflict =
+            !destination ||
+            (!chosen &&
+              exists &&
+              source.descriptions[category] !==
+                target.descriptions[destination]);
+          return {
+            source_category: category,
+            target_category: destination,
+            count: items.length,
+            action: conflict ? "choose" : exists ? "existing" : "create",
+            conflict,
+            source_description: source.descriptions[category] || "",
+            target_description: target.descriptions[destination] || "",
+          };
+        });
+        const plan_token = JSON.stringify(plan);
+        if (body.preview)
+          return {
+            plan,
+            ready: plan.every((row) => !row.conflict),
+            plan_token,
+            target_categories: target.descriptions,
+          };
+        if (body.plan_token !== plan_token || plan.some((row) => row.conflict))
+          throw new Error("分类信息已变化，请重新检查");
+        const moved = [],
+          failed = [];
+        for (const row of plan) {
+          if (row.action === "create")
+            target.descriptions[row.target_category] = row.source_description;
+          const images = (target.images[row.target_category] ||= []);
+          for (const item of groups.get(row.source_category)) {
+            if (images.includes(item.emoji))
+              failed.push({ ...item, reason: "目标分类已有同名图片" });
+            else {
+              images.push(item.emoji);
+              source.images[item.category] = source.images[
+                item.category
+              ].filter((name) => name !== item.emoji);
+              moved.push({ ...item, target_category: row.target_category });
+            }
+          }
+        }
+        return { moved, failed, warnings: [] };
+      }
+      case "emoji/batch_move": {
+        const source = emojis[body.source_category] || [];
+        const target = (emojis[body.target_category] ||= []);
+        const moved_files = [],
+          missing_files = [],
+          conflicting_files = [];
+        for (const filename of new Set(body.image_files)) {
+          if (!source.includes(filename)) missing_files.push(filename);
+          else if (target.includes(filename)) conflicting_files.push(filename);
+          else {
+            source.splice(source.indexOf(filename), 1);
+            target.push(filename);
+            moved_files.push(filename);
+          }
+        }
+        return {
+          moved_files,
+          missing_files,
+          conflicting_files,
+          moved_count: moved_files.length,
+        };
+      }
       case "emotions":
-        return descriptions;
+        return (
+          transferPacks[body.managed_pack_id]?.descriptions || descriptions
+        );
       case "semantic/reviews":
         return {
           available: true,
