@@ -17,6 +17,16 @@ async function initPluginConfig() {
   const tabs = [...document.querySelectorAll("[data-settings-tab]")];
   const panels = [...document.querySelectorAll("[data-settings-panel]")];
   const modePanel = document.getElementById("selection-mode-panel");
+  const configDialog = document.getElementById("config-flow-dialog");
+  const configDialogBody = document.getElementById("config-flow-dialog-body");
+  const configDialogSave = document.getElementById("config-flow-dialog-save");
+  const configDialogReset = document.getElementById("config-flow-dialog-reset");
+  const configDialogStatus = document.getElementById(
+    "config-flow-dialog-status",
+  );
+  const rulesDialog = document.getElementById("rules-flow-dialog");
+  const rulesDialogBody = document.getElementById("rules-flow-dialog-body");
+  const rulesPanel = document.querySelector('[data-settings-panel="rules"]');
   const modeInputs = [...form.querySelectorAll('input[name="selection-mode"]')];
   const modePaths = ["semantic.enabled", "generation.emotion.llm.enabled"];
   const workflow = document.getElementById("mode-workflow");
@@ -98,34 +108,85 @@ async function initPluginConfig() {
   }
   const workflows = {
     "category-native": [
-      ["生成回复与分类标签", "回复模型按提示词输出标签", "prompts"],
-      ["匹配分类", "解析标签并匹配图包分类", "category-matching"],
-      ["随机取图", "从对应分类中选取图片"],
-      ["发送表情", "按消息格式发送图片", "delivery"],
+      ["选择表情包", "按使用规则为当前会话选择表情包"],
+      ["决定是否配图", "按触发范围、概率和数量控制"],
+      ["生成分类标签", "回复模型根据提示词和示例输出标签"],
+      ["匹配并取图", "识别标签，匹配当前图包分类并随机取图"],
+      ["发送表情", "按平台消息格式发送图片"],
     ],
     "category-auxiliary": [
-      ["生成回复", "回复模型负责对话"],
-      ["辅助模型选择分类", "根据回复与参考上下文选分类", "emotion-model"],
-      ["随机取图", "从对应分类中选取图片"],
-      ["发送表情", "按消息格式发送图片", "delivery"],
+      ["选择表情包", "按使用规则为当前会话选择表情包"],
+      ["决定是否配图", "按触发范围、概率和数量控制"],
+      ["辅助模型选分类", "根据回复选择分类标签"],
+      ["匹配并取图", "识别标签，匹配当前图包分类并随机取图"],
+      ["发送表情", "按平台消息格式发送图片"],
     ],
     "semantic-tool": [
+      ["选择表情包", "按使用规则为当前会话选择表情包"],
+      ["决定是否配图", "按触发范围、概率和数量控制"],
       ["发起搜索", "回复模型按需调用搜索工具"],
-      ["语义检索", "从索引中寻找相似候选", "semantic"],
-      ["回复模型选择图片", "从候选中选择具体图片"],
-      ["发送表情", "按消息格式发送图片", "delivery"],
+      ["检索并选图", "从索引中查找候选并选择图片"],
+      ["发送表情", "按平台消息格式发送图片"],
     ],
     "semantic-auxiliary": [
-      ["生成回复", "回复模型负责对话"],
-      ["生成检索词", "辅助模型提炼回复的表达意图", "emotion-model"],
-      ["语义检索", "从索引中寻找相似候选", "semantic"],
-      ["辅助模型选择图片", "从候选中选择具体图片", "emotion-model"],
-      ["发送表情", "按消息格式发送图片", "delivery"],
+      ["选择表情包", "按使用规则为当前会话选择表情包"],
+      ["决定是否配图", "按触发范围、概率和数量控制"],
+      ["辅助模型生成检索词", "根据回复提炼选图意图"],
+      ["检索并选图", "从索引中查找候选并选择图片"],
+      ["发送表情", "按平台消息格式发送图片"],
     ],
   };
+  const workspaceModes = {
+    "category-native": {
+      primary: [
+        "prompts",
+        "category-example",
+        "reply-example",
+        "matching",
+        "category-matching",
+      ],
+      fallback: [],
+    },
+    "category-auxiliary": {
+      primary: ["emotion-model", "matching", "category-matching"],
+      fallback: [],
+    },
+    "semantic-tool": {
+      primary: ["semantic", "semantic-models"],
+      fallback: [
+        "prompts",
+        "category-example",
+        "reply-example",
+        "matching",
+        "category-matching",
+      ],
+    },
+    "semantic-auxiliary": {
+      primary: ["semantic", "semantic-models", "emotion-model"],
+      fallback: ["matching", "category-matching"],
+    },
+  };
+  const workspaceCommon = ["quantity-guidance", "appearance", "delivery"];
+  const workspaceCollection = [
+    "collect",
+    "collect-limits",
+    "collect-recognition",
+    "collect-quality",
+    "collect-review",
+  ];
+  const workspaceStorage = [
+    "storage",
+    "r2",
+    "webdav",
+    "stardots",
+    "lsky",
+    "downloads",
+    "sync",
+    "preview",
+  ];
   const categories = {
     sending: ["表情发送", "控制表情何时出现，以及它在聊天中的呈现方式。"],
-    models: ["选图模式", "选择由谁选图、如何选图，再调整对应参数。"],
+    models: ["模式", "选择模式，并从流程图打开相关设置。"],
     collect: ["自动收集", "从聊天中收集表情，用来源范围和频率控制收集节奏。"],
     storage: ["存储与下载", "连接图床、管理同步，并设置资源下载方式。"],
     prompts: [
@@ -403,10 +464,36 @@ async function initPluginConfig() {
   let loaded = false;
   let semanticStatus = null;
   let applicationFailed = false;
-  let highlightedCard = null;
-  let highlightTimer;
-  let workflowOrigin = null;
-  let workflowOriginCategory = "models";
+  let dialogOrigin = null;
+  let dialogCard = null;
+  let dialogPlaceholder = null;
+  let rulesPlaceholder = null;
+
+  function restoreDialogCard() {
+    if (!dialogCard) return;
+    if (configDialog.open) configDialog.close();
+    if (dialogPlaceholder?.isConnected)
+      dialogPlaceholder.replaceWith(dialogCard);
+    dialogCard = null;
+    dialogPlaceholder = null;
+    configDialogBody.replaceChildren();
+  }
+
+  function openConfigDialog(group, origin) {
+    restoreDialogCard();
+    const card = document.getElementById(`config-group-${group.id}`);
+    dialogPlaceholder = document.createComment("");
+    card.before(dialogPlaceholder);
+    configDialogBody.replaceChildren(card);
+    dialogCard = card;
+    const title = document.getElementById("config-flow-dialog-title");
+    title.textContent = group.title;
+    configDialog.showModal();
+    updateView();
+    (controls.get(origin.dataset.workflowField) || title).focus({
+      preventScroll: true,
+    });
+  }
 
   function updateView() {
     const query = search.value.trim().toLocaleLowerCase();
@@ -421,8 +508,8 @@ async function initPluginConfig() {
         ? "semantic-auxiliary"
         : "semantic-tool"
       : auxiliary
-        ? "category-auxiliary"
-        : "category-native";
+      ? "category-auxiliary"
+      : "category-native";
     const savedSemantic = Boolean(fields.get(modePaths[0])?.value);
     const savedAuxiliary = Boolean(fields.get(modePaths[1])?.value);
     const savedMode = savedSemantic
@@ -430,8 +517,9 @@ async function initPluginConfig() {
         ? "semantic-auxiliary"
         : "semantic-tool"
       : savedAuxiliary
-        ? "category-auxiliary"
-        : "category-native";
+      ? "category-auxiliary"
+      : "category-native";
+    if (dialogCard && query) restoreDialogCard();
     modePanel.hidden =
       !loaded ||
       (query
@@ -449,6 +537,7 @@ async function initPluginConfig() {
       input.closest("label").classList.toggle("selected", input.checked);
     }
     workflow.hidden = modePanel.hidden;
+    sections.hidden = !query && active === "models";
     collectionWorkflow.hidden =
       !loaded || Boolean(query) || active !== "collect";
     const collectionEnabled =
@@ -457,56 +546,129 @@ async function initPluginConfig() {
     const manualReview =
       changes.get("auto_collect.manual_review") ??
       fields.get("auto_collect.manual_review")?.value;
-    document.getElementById("collection-workflow-state").textContent =
-      `当前选择：${collectionEnabled ? "开启" : "关闭"}`;
-    document.getElementById("collection-workflow-result").textContent =
-      `${collectionEnabled ? "" : "自动收集处于关闭状态，以上展示启用后的流程。"}${
-        manualReview
-          ? "当前选择：进入目标包的待审核列表 → 在表情包管理页预览、修正分类并接收。分类置信度不足时保留建议供你判断。"
-          : "当前选择：新收集图片自动入包；分类置信度不足时归入 needs_review（待分类）。已有待审核图片仍需处理，目标包忙碌时新图片也会暂留待审核。"
-      }`;
+    document.getElementById(
+      "collection-workflow-state",
+    ).textContent = `当前选择：${collectionEnabled ? "开启" : "关闭"}`;
+    document.getElementById("collection-workflow-result").textContent = `${
+      collectionEnabled ? "" : "自动收集处于关闭状态，以上展示启用后的流程。"
+    }${
+      manualReview
+        ? "当前选择：进入目标包的待审核列表 → 在表情包管理页预览、修正分类并接收。分类置信度不足时保留建议供你判断。"
+        : "当前选择：新收集图片自动入包；分类置信度不足时归入 needs_review（待分类）。已有待审核图片仍需处理，目标包忙碌时新图片也会暂留待审核。"
+    }`;
     const selectedModeName = modeInputs
       .find((input) => input.checked)
       .closest("label")
       .querySelector("strong").textContent;
-    document.getElementById("mode-workflow-title").textContent =
-      `${selectedModeName}流程`;
+    document.getElementById(
+      "mode-workflow-title",
+    ).textContent = `${selectedModeName}流程`;
     if (workflowSteps.dataset.mode !== mode) {
       workflowSteps.replaceChildren();
       workflowSteps.dataset.mode = mode;
-      for (const [title, description, target] of workflows[mode]) {
+      const selectionGroups = workspaceModes[mode].primary.filter(
+        (id) =>
+          ![
+            "matching",
+            "category-matching",
+            "semantic",
+            "semantic-models",
+          ].includes(id),
+      );
+      const retrievalGroups = workspaceModes[mode].primary.filter((id) =>
+        [
+          "matching",
+          "category-matching",
+          "semantic",
+          "semantic-models",
+        ].includes(id),
+      );
+      const linkedGroups = new Set([
+        ...workspaceModes[mode].primary,
+        ...workspaceModes[mode].fallback,
+        ...workspaceCommon,
+        ...workspaceCollection,
+        ...workspaceStorage,
+      ]);
+      const otherGroups = groups
+        .filter((group) => !linkedGroups.has(group.id))
+        .map((group) => group.id);
+      const branches = [
+        [
+          ["自动收集", workspaceCollection],
+          ["表情包使用规则", ["@rules"]],
+        ],
+        [["触发与数量", ["appearance", "quantity-guidance"]]],
+        [
+          ["当前模式", selectionGroups],
+          ["其他模式的设置", otherGroups],
+        ],
+        [
+          ["匹配与检索", retrievalGroups],
+          ["不可用时的回退", workspaceModes[mode].fallback],
+          ["图片来源与存储", workspaceStorage],
+        ],
+        [["发送方式", ["delivery"]]],
+      ];
+      for (const [index, [title, description]] of workflows[mode].entries()) {
         const item = document.createElement("li");
-        const node = document.createElement(target ? "button" : "div");
+        const row = document.createElement("div");
+        row.className = "mode-workflow-row";
+        const node = document.createElement("div");
         node.className = "workflow-node";
         const label = document.createElement("strong");
         label.textContent = title;
         const detail = document.createElement("span");
         detail.textContent = description;
         node.append(label, detail);
-        if (target) {
-          node.type = "button";
-          node.dataset.workflowTarget = target;
-          const hint = document.createElement("small");
-          hint.innerHTML =
-            '<i class="fas fa-gear" aria-hidden="true"></i> 配置';
-          node.append(hint);
+        const branchList = document.createElement("div");
+        branchList.className = "mode-workflow-branches";
+        for (const [headingText, targetIds] of branches[index]) {
+          if (!targetIds.length) continue;
+          const branch = document.createElement("details");
+          branch.className = "mode-workflow-branch";
+          branch.open = [
+            "触发与数量",
+            "当前模式",
+            "匹配与检索",
+            "不可用时的回退",
+            "发送方式",
+            "表情包使用规则",
+          ].includes(headingText);
+          const heading = document.createElement("summary");
+          heading.textContent = headingText;
+          const links = document.createElement("div");
+          links.className = "collection-workflow-links";
+          for (const target of targetIds) {
+            const extra = target.startsWith("@");
+            const group = extra
+              ? { title: "编辑使用规则" }
+              : groups.find((item) => item.id === target);
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "ghost";
+            if (extra) button.dataset.workflowExtra = target.slice(1);
+            else button.dataset.workflowTarget = target;
+            button.textContent = group.title;
+            links.append(button);
+          }
+          branch.append(heading, links);
+          branchList.append(branch);
         }
-        item.append(node);
+        row.append(node, branchList);
+        item.append(row);
         workflowSteps.append(item);
       }
     }
-    document.getElementById("mode-workflow-preparation").hidden = !semantic;
-    const fallback = document.getElementById("mode-workflow-fallback");
-    fallback.hidden = !semantic;
-    fallback.textContent = auxiliary
-      ? "回退路径：语义数据或索引未就绪 → 辅助模型选择分类 → 随机取图 → 发送。"
-      : "回退路径：语义数据、索引或 Tool 不可用 → 回复模型输出分类标签 → 随机取图 → 发送。";
     const modeName = modeInputs
       .find((input) => input.value === savedMode)
       .closest("label")
       .querySelector("strong").textContent;
-    document.getElementById("selection-mode-status").textContent =
-      `已保存：${modeName}${mode !== savedMode ? "，已选择新模式，待保存" : ""}${applicationFailed ? "，应用失败，请重新加载插件" : ""}`;
+    document.getElementById(
+      "selection-mode-status",
+    ).textContent = `已保存：${modeName}${
+      mode !== savedMode ? "，已选择新模式，待保存" : ""
+    }${applicationFailed ? "，应用失败，请重新加载插件" : ""}`;
     document.getElementById("selection-mode-readiness").hidden = !semantic;
     const defaultPack = packs.find((pack) => pack.is_default);
     let readiness = "暂未获取到默认表情包的就绪状态，可前往语义化页面检查。";
@@ -515,7 +677,9 @@ async function initPluginConfig() {
       readiness =
         semanticStatus.semantic_caption_complete && semanticStatus.index_ready
           ? `默认表情包「${name}」的语义数据与索引已就绪。`
-          : `默认表情包「${name}」的语义数据或索引未就绪，使用该包的会话将回退到${auxiliary ? "辅助模型分类标签" : "原生分类标签"}。`;
+          : `默认表情包「${name}」的语义数据或索引未就绪，使用该包的会话将回退到${
+              auxiliary ? "辅助模型分类标签" : "原生分类标签"
+            }。`;
     }
     if (changes.has("semantic.embedding_provider_id"))
       readiness = "向量模型已修改，保存后将重新检查默认表情包的索引状态。";
@@ -524,15 +688,29 @@ async function initPluginConfig() {
     document.getElementById("selection-mode-detail").textContent = auxiliary
       ? "选图会额外调用辅助模型，默认复用当前对话的回复模型。切换模式会保留已填写的参数。"
       : semantic
-        ? "需要回复模型支持 Tool 调用；工具不可用时回退到原生分类标签。"
-        : "无需额外选图模型。可在「提示词模板」与「标签与匹配」中调整分类选图，在「表情发送」中调整公共发送设置。";
+      ? "需要回复模型支持 Tool 调用；工具不可用时回退到原生分类标签。"
+      : "无需额外选图模型。可在「提示词模板」与「标签与匹配」中调整分类选图，在「表情发送」中调整公共发送设置。";
     resetPrompts.hidden =
-      active !== "prompts" || Boolean(query) || mode !== "category-native";
+      Boolean(query) ||
+      !(
+        active === "prompts" ||
+        (active === "models" &&
+          ["prompts", "category-example", "reply-example"].includes(
+            dialogCard?.id?.replace("config-group-", ""),
+          ))
+      );
+    configDialogReset.hidden = !(
+      dialogCard &&
+      ["prompts", "category-example", "reply-example"].includes(
+        dialogCard.id.replace("config-group-", ""),
+      )
+    );
     const configVisible = Boolean(query) || Boolean(categories[active]);
     for (const panel of panels) {
       panel.hidden = configVisible
         ? panel.dataset.settingsPanel !== "config"
         : panel.dataset.settingsPanel !== active;
+      if (panel === rulesPanel && rulesDialog.open) panel.hidden = false;
     }
     for (const tab of tabs) {
       if (!query && tab.dataset.settingsTab === active)
@@ -567,11 +745,14 @@ async function initPluginConfig() {
           Boolean(group.provider && group.provider !== selectedProvider);
       if (!query && group.modes && !group.modes.includes(mode))
         card.hidden = true;
+      if (card === dialogCard) card.hidden = false;
       card.querySelector(".config-mode-inactive")?.remove();
       if (!card.hidden && group.modes && !group.modes.includes(mode)) {
         const inactive = document.createElement("p");
         inactive.className = "config-mode-inactive config-card-description";
-        inactive.textContent = "当前选图模式不使用这些设置；参数会保留。";
+        inactive.textContent = workspaceModes[mode].fallback.includes(group.id)
+          ? "当前模式仅在回退到分类选图时使用这些设置。"
+          : "当前选图模式不使用这些设置；参数会保留。";
         card.querySelector("header").append(inactive);
       }
       if (!card.hidden) visibleCount += matches;
@@ -581,15 +762,6 @@ async function initPluginConfig() {
     }
     document.getElementById("config-search-empty").hidden =
       !loaded || visibleCount > 0;
-    if (highlightedCard && (highlightedCard.hidden || !configVisible)) {
-      clearTimeout(highlightTimer);
-      highlightedCard.classList.remove("config-workflow-highlight");
-      highlightedCard
-        .querySelector(".config-workflow-field-highlight")
-        ?.classList.remove("config-workflow-field-highlight");
-      highlightedCard.querySelector(".config-workflow-context").hidden = true;
-      highlightedCard = null;
-    }
   }
 
   function updateState(message = "", error = false) {
@@ -597,9 +769,12 @@ async function initPluginConfig() {
     save.disabled = !loaded || !changes.size || configState.busy;
     reload.disabled = configState.busy;
     resetPrompts.disabled = !loaded || configState.busy;
+    configDialogReset.disabled = !loaded || configState.busy;
+    configDialogSave.disabled = !loaded || !changes.size || configState.busy;
     sections.inert = configState.busy;
     modePanel.inert = !loaded || configState.busy;
     workflow.inert = !loaded || configState.busy;
+    configDialogBody.inert = !loaded || configState.busy;
     collectionWorkflow.inert = !loaded || configState.busy;
     form.setAttribute("aria-busy", String(configState.busy));
     save.textContent = configState.busy ? "正在处理…" : "保存并应用";
@@ -608,22 +783,24 @@ async function initPluginConfig() {
       (changes.size
         ? `有 ${changes.size} 项更改未保存`
         : loaded
-          ? "所有更改已保存"
-          : "尚未读取配置");
+        ? "所有更改已保存"
+        : "尚未读取配置");
     status.classList.toggle("error", error);
+    configDialogStatus.textContent = status.textContent;
+    configDialogStatus.classList.toggle("error", error);
     for (const tab of tabs) {
       const dot = tab.querySelector(".settings-dirty-dot");
       if (dot)
         dot.hidden = ![...changes.keys()].some(
-          (path) => fields.get(path)?.category === tab.dataset.settingsTab,
+          (path) =>
+            fields.get(path)?.category === tab.dataset.settingsTab ||
+            tab.dataset.settingsTab === "models",
         );
     }
   }
 
   function renderFields(snapshot) {
-    const workflowTargetId = highlightedCard?.id;
-    clearTimeout(highlightTimer);
-    highlightedCard = null;
+    restoreDialogCard();
     fields.clear();
     controls.clear();
     sections.replaceChildren();
@@ -666,17 +843,6 @@ async function initPluginConfig() {
         header.append(description);
       }
       const body = document.createElement("div");
-      const context = document.createElement("div");
-      context.className = "config-workflow-context";
-      context.hidden = true;
-      context.innerHTML =
-        '<p role="status"></p><button type="button" class="ghost" data-workflow-return>返回流程图 ↑</button>';
-      if (card.id === workflowTargetId) {
-        context.hidden = false;
-        context.querySelector("p").textContent = `流程图对应设置：${group.title}`;
-        highlightedCard = card;
-      }
-      header.append(context);
       body.className = "config-card-body";
       card.append(header, body);
       if (group.category === "storage") {
@@ -748,7 +914,9 @@ async function initPluginConfig() {
         } else {
           let emptyLabel = "请选择模型";
           let options = providers.chat.map((provider) => [
-            provider.model ? `${provider.id}（${provider.model}）` : provider.id,
+            provider.model
+              ? `${provider.id}（${provider.model}）`
+              : provider.id,
             provider.id,
           ]);
           if (field.special === "select_provider_embedding") {
@@ -789,8 +957,8 @@ async function initPluginConfig() {
         control.type = field.secret
           ? "password"
           : ["int", "float"].includes(field.type)
-            ? "number"
-            : "text";
+          ? "number"
+          : "text";
         control.value = field.value;
         if (["int", "float"].includes(field.type)) {
           control.required = true;
@@ -910,94 +1078,46 @@ async function initPluginConfig() {
   search.addEventListener("input", updateView);
   form.addEventListener("click", (event) => {
     const trigger = event.target.closest(
-      "[data-workflow-target], [data-workflow-return], [data-workflow-choose]",
+      "[data-workflow-target], [data-workflow-extra]",
     );
     if (!trigger || !loaded || configState.busy) return;
-    if (trigger.hasAttribute("data-workflow-choose")) {
-      modeInputs.find((input) => input.checked).focus({ preventScroll: true });
-      modePanel.scrollIntoView({
-        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-          ? "instant"
-          : "smooth",
-        block: "start",
-      });
+    dialogOrigin = trigger;
+    if (trigger.dataset.workflowExtra === "rules") {
+      rulesPlaceholder = document.createComment("");
+      rulesPanel.before(rulesPlaceholder);
+      rulesDialogBody.replaceChildren(rulesPanel);
+      rulesDialog.showModal();
+      updateView();
       return;
     }
-    clearTimeout(highlightTimer);
-    sections
-      .querySelector(".config-workflow-field-highlight")
-      ?.classList.remove("config-workflow-field-highlight");
-    if (highlightedCard) {
-      highlightedCard.classList.remove("config-workflow-highlight");
-      highlightedCard.querySelector(".config-workflow-context").hidden = true;
-      highlightedCard = null;
-    }
-    const returning = trigger.hasAttribute("data-workflow-return");
     const group = groups.find(
       (item) => item.id === trigger.dataset.workflowTarget,
     );
-    if (!returning && !group) return;
-    active = returning ? workflowOriginCategory : group.category;
-    search.value = "";
-    history.replaceState(
-      null,
-      "",
-      `${location.pathname}${location.search}#${active}`,
-    );
+    if (group) openConfigDialog(group, trigger);
+  });
+  configDialog.addEventListener("click", (event) => {
+    if (event.target.closest("[data-flow-dialog-close]")) configDialog.close();
+  });
+  configDialogReset.addEventListener("click", () => resetPrompts.click());
+  configDialog.addEventListener("close", () => {
+    restoreDialogCard();
     updateView();
-    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)")
-      .matches
-      ? "instant"
-      : "smooth";
-    if (returning) {
-      const origin = workflowOrigin?.isConnected
-        ? workflowOrigin
-        : document.getElementById(
-            workflowOriginCategory === "collect"
-              ? "collection-workflow-title"
-              : "mode-workflow-title",
-          );
-      origin.focus({ preventScroll: true });
-      origin.scrollIntoView({ behavior, block: "center" });
-      return;
-    }
-    workflowOrigin = trigger;
-    workflowOriginCategory = trigger.closest("#collection-workflow")
-      ? "collect"
-      : "models";
-    const card = document.getElementById(`config-group-${group.id}`);
-    highlightedCard = card;
-    const context = card.querySelector(".config-workflow-context");
-    context.hidden = false;
-    const targetName = trigger.dataset.workflowField
-      ? labels[trigger.dataset.workflowField] ||
-        fields.get(trigger.dataset.workflowField)?.label ||
-        group.title
-      : group.title;
-    context.querySelector("p").textContent = `正在配置：${targetName}`;
-    card.classList.add("config-workflow-highlight");
-    const destination =
-      controls.get(trigger.dataset.workflowField) || card.querySelector("h3");
-    destination.focus({ preventScroll: true });
-    const fieldRow = destination.closest(".config-field");
-    fieldRow?.classList.add("config-workflow-field-highlight");
-    const scrollTarget =
-      fieldRow &&
-      fieldRow.getBoundingClientRect().bottom -
-        card.getBoundingClientRect().top >
-        window.innerHeight - 120
-        ? fieldRow
-        : card;
-    scrollTarget.scrollIntoView({ behavior, block: "start" });
-    highlightTimer = setTimeout(() => {
-      card.classList.remove("config-workflow-highlight");
-      fieldRow?.classList.remove("config-workflow-field-highlight");
-      context.querySelector("p").textContent = `流程图对应设置：${targetName}`;
-    }, 2400);
+    if (dialogOrigin?.isConnected) dialogOrigin.focus({ preventScroll: true });
+  });
+  rulesDialog.addEventListener("click", (event) => {
+    if (event.target.closest("[data-rules-dialog-close]")) rulesDialog.close();
+  });
+  rulesDialog.addEventListener("close", () => {
+    if (rulesPlaceholder?.isConnected) rulesPlaceholder.replaceWith(rulesPanel);
+    rulesPlaceholder = null;
+    rulesDialogBody.replaceChildren();
+    updateView();
+    if (dialogOrigin?.isConnected) dialogOrigin.focus({ preventScroll: true });
   });
   for (const input of modeInputs) {
     input.addEventListener("change", () => {
       if (!loaded || configState.busy || !input.checked) return;
+      restoreDialogCard();
       const values = [
         input.value.startsWith("semantic-"),
         input.value.endsWith("-auxiliary"),
@@ -1045,7 +1165,9 @@ async function initPluginConfig() {
       const clear = control.parentElement.querySelector("button");
       clear.textContent = "清除";
       clear.setAttribute("aria-label", `清除${labels[path] || field.label}`);
-      control.placeholder = field.configured ? "已保存，输入新值可替换" : "请输入";
+      control.placeholder = field.configured
+        ? "已保存，输入新值可替换"
+        : "请输入";
     }
     updateState();
     if (
@@ -1091,9 +1213,12 @@ async function initPluginConfig() {
     for (const path of changes.keys()) {
       const control = controls.get(path);
       if (!control.checkValidity()) {
-        active = fields.get(path).category;
-        search.value = labels[path] || fields.get(path).label;
-        updateView();
+        if (!configDialog.contains(control)) {
+          restoreDialogCard();
+          active = fields.get(path).category;
+          search.value = labels[path] || fields.get(path).label;
+          updateView();
+        }
         control.focus();
         control.reportValidity();
         updateState(

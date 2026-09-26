@@ -30,8 +30,12 @@
             autocomplete="off"
           />
         </label>
-        <p class="settings-nav-label">偏好设置</p>
+        <p class="settings-nav-label">设置中心</p>
         <nav id="settings-nav" aria-label="设置分类导航">
+          <button type="button" data-settings-tab="models" aria-current="page">
+            <i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i
+            >模式<span class="settings-dirty-dot" hidden></span>
+          </button>
           <button type="button" data-settings-tab="rules">
             <i class="fas fa-route" aria-hidden="true"></i>使用规则
           </button>
@@ -40,10 +44,6 @@
               class="settings-dirty-dot"
               hidden
             ></span>
-          </button>
-          <button type="button" data-settings-tab="models" aria-current="page">
-            <i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i
-            >选图模式<span class="settings-dirty-dot" hidden></span>
           </button>
           <button type="button" data-settings-tab="collect">
             <i class="fas fa-inbox" aria-hidden="true"></i>自动收集<span
@@ -71,7 +71,9 @@
             <i class="fas fa-box-archive" aria-hidden="true"></i>导入与备份
           </button>
         </nav>
-        <p class="settings-sidebar-note">设置集中于此，按你的习惯慢慢调整。</p>
+        <p class="settings-sidebar-note">
+          从模式流程打开设置，或按分类查找和修改。
+        </p>
       </aside>
       <div class="settings-content">
         <section class="panel rules-panel" data-settings-panel="rules">
@@ -144,70 +146,6 @@
             正在读取配置…
           </p>
           <section
-            id="mode-workflow"
-            class="panel mode-workflow"
-            aria-labelledby="mode-workflow-title"
-            hidden
-          >
-            <div class="workflow-heading">
-              <h3 id="mode-workflow-title" tabindex="-1">选图工作流</h3>
-              <button type="button" class="ghost" data-workflow-choose>
-                选择模式 ↓
-              </button>
-            </div>
-            <ol
-              id="mode-workflow-steps"
-              class="workflow-steps"
-              aria-label="本轮选图流程"
-            ></ol>
-            <details
-              id="mode-workflow-preparation"
-              class="workflow-preparation"
-              hidden
-            >
-              <summary>提前准备图包（展开配置）</summary>
-              <ol class="workflow-steps" aria-label="图包准备流程">
-                <li>
-                  <button
-                    type="button"
-                    class="workflow-node"
-                    data-workflow-target="semantic-models"
-                    data-workflow-field="semantic.vision_provider_id"
-                  >
-                    <strong>图片描述</strong><span>视觉模型理解图片内容</span
-                    ><small
-                      ><i class="fas fa-gear" aria-hidden="true"></i>
-                      配置图片描述模型</small
-                    >
-                  </button>
-                </li>
-                <li>
-                  <button
-                    type="button"
-                    class="workflow-node"
-                    data-workflow-target="semantic-models"
-                    data-workflow-field="semantic.embedding_provider_id"
-                  >
-                    <strong>向量索引</strong
-                    ><span>将图片描述转为可检索的索引</span
-                    ><small
-                      ><i class="fas fa-gear" aria-hidden="true"></i>
-                      配置向量模型</small
-                    >
-                  </button>
-                </li>
-                <li>
-                  <div class="workflow-node">
-                    <strong>供语义检索使用</strong
-                    ><span>每轮复用索引，不会重新分析整个图包</span>
-                  </div>
-                </li>
-              </ol>
-              <p class="hint">配置模型后，在「语义化」页面执行图包处理。</p>
-            </details>
-            <p id="mode-workflow-fallback" class="workflow-fallback" hidden></p>
-          </section>
-          <section
             id="selection-mode-panel"
             class="panel selection-mode-panel"
             hidden
@@ -216,9 +154,9 @@
               id="selection-mode-options"
               aria-describedby="selection-mode-help"
             >
-              <legend>选择选图方式</legend>
+              <legend>选择模式</legend>
               <p id="selection-mode-help" class="hint">
-                一次使用一种方式。切换后可调整下方参数，保存并应用后生效。
+                一次使用一种模式。切换后可调整流程中的设置，保存并应用后生效。
               </p>
               <div class="selection-mode-grid">
                 <label class="selection-mode-card">
@@ -294,15 +232,73 @@
             <p id="selection-mode-detail" class="hint"></p>
           </section>
           <section
+            id="mode-workflow"
+            class="panel mode-workflow"
+            aria-labelledby="mode-workflow-title"
+            hidden
+          >
+            <div class="workflow-heading">
+              <h3 id="mode-workflow-title" tabindex="-1">模式流程</h3>
+            </div>
+            <ol
+              id="mode-workflow-steps"
+              class="workflow-steps"
+              aria-label="本轮选图流程"
+            ></ol>
+          </section>
+          <dialog
+            id="config-flow-dialog"
+            aria-labelledby="config-flow-dialog-title"
+          >
+            <div class="flow-dialog-heading">
+              <h3
+                id="config-flow-dialog-title"
+                class="text-h3 pa-4 pb-0 pl-6"
+                tabindex="-1"
+              ></h3>
+              <div class="flow-dialog-heading-actions">
+                <button
+                  id="config-flow-dialog-reset"
+                  type="button"
+                  class="ghost"
+                  hidden
+                >
+                  恢复默认模板
+                </button>
+                <button
+                  type="button"
+                  class="ghost"
+                  data-flow-dialog-close
+                  aria-label="关闭设置"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+            <div id="config-flow-dialog-body"></div>
+            <div class="flow-dialog-actions">
+              <p id="config-flow-dialog-status" role="status"></p>
+              <button type="button" class="ghost" data-flow-dialog-close>
+                关闭
+              </button>
+              <button
+                id="config-flow-dialog-save"
+                type="submit"
+                class="secondary"
+                disabled
+              >
+                保存并应用
+              </button>
+            </div>
+          </dialog>
+          <section
             id="collection-workflow"
             class="panel mode-workflow"
             aria-labelledby="collection-workflow-title"
             hidden
           >
             <div class="workflow-heading">
-              <h3 id="collection-workflow-title" tabindex="-1">
-                自动收集流程
-              </h3>
+              <h3 id="collection-workflow-title" tabindex="-1">自动收集流程</h3>
               <span
                 id="collection-workflow-state"
                 class="workflow-state"
@@ -337,6 +333,30 @@
             </button>
           </div>
         </form>
+        <dialog
+          id="rules-flow-dialog"
+          aria-labelledby="rules-flow-dialog-title"
+        >
+          <div class="flow-dialog-heading">
+            <h3 id="rules-flow-dialog-title" class="text-h3 pa-4 pb-0 pl-6">
+              表情包使用规则
+            </h3>
+            <button
+              type="button"
+              class="ghost"
+              data-rules-dialog-close
+              aria-label="关闭规则"
+            >
+              ×
+            </button>
+          </div>
+          <div id="rules-flow-dialog-body"></div>
+          <div class="flow-dialog-actions">
+            <button type="button" class="ghost" data-rules-dialog-close>
+              关闭
+            </button>
+          </div>
+        </dialog>
         <div data-settings-panel="backup" hidden>
           <section class="panel backup-panel">
             <h2><i class="fas fa-box-archive icon"></i>导入与备份</h2>
