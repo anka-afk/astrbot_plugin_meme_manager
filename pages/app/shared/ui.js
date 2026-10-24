@@ -218,6 +218,53 @@ document.addEventListener(
   true,
 );
 
+// 压缩包分片上传：宿主对单次请求体有上限，大压缩包必须分片传输。
+const PACK_ARCHIVE_CHUNK_SIZE = 8 * 1024 * 1024;
+
+function randomImportSessionId() {
+  const bytes = new Uint8Array(16);
+  const cryptoApi = window.crypto || {};
+  if (typeof cryptoApi.getRandomValues === "function") {
+    cryptoApi.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join(
+    "",
+  );
+}
+
+async function uploadPackArchiveInChunks(file, { onProgress } = {}) {
+  const pageApi = window.AstrBotPluginPage;
+  if (!pageApi) {
+    throw new Error("页面无法连接 AstrBot");
+  }
+  const totalChunks = Math.max(
+    1,
+    Math.ceil((file?.size || 0) / PACK_ARCHIVE_CHUNK_SIZE),
+  );
+  const sessionId = randomImportSessionId();
+  await pageApi.apiPost("packs/import/session", {
+    session_id: sessionId,
+    filename: String(file?.name || "pack.zip"),
+    total_chunks: totalChunks,
+  });
+  let result = null;
+  for (let index = 0; index < totalChunks; index += 1) {
+    const start = index * PACK_ARCHIVE_CHUNK_SIZE;
+    const end = Math.min(start + PACK_ARCHIVE_CHUNK_SIZE, file.size);
+    const chunk = file.slice(start, end);
+    result = await pageApi.upload(
+      `packs/import/session/chunk/${sessionId}/${index}/${totalChunks}`,
+      chunk,
+    );
+    onProgress?.(index + 1, totalChunks);
+  }
+  return result;
+}
+
 window.MemeUI = {
   get navAuthToken() {
     return navAuthToken;
@@ -225,6 +272,7 @@ window.MemeUI = {
   withCurrentAuthParams,
   ensureNavAuthToken,
   applySecureNavLinks,
+  uploadPackArchiveInChunks,
   toast(message, type = "info") {
     let container = document.getElementById("toast-container");
     if (!container) {

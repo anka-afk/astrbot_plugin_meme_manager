@@ -7,7 +7,7 @@ from astrbot.api import logger
 
 from ...utils import ensure_dir_exists, load_json, save_json
 from ..semantic.storage import invalidate_semantic_metadata
-from .resolver import resolve_pack_context
+from .resolver import resolve_pack_context, resolve_pack_paths
 
 
 def is_safe_category_name(category: str) -> bool:
@@ -47,15 +47,30 @@ def resolve_safe_category_directory(memes_root: str | Path, category: str) -> Pa
 
 
 class CategoryManager:
-    def __init__(self):
-        """初始化类别管理器"""
-        ensure_dir_exists(self._paths()["memes_dir"])
-        self._ensure_data_file()
+    def __init__(self, pack_id: str | None = None, ensure_files: bool = True):
+        """初始化类别管理器
+
+        Args:
+            pack_id: 绑定的资源包 ID；为空时跟随当前默认资源包。
+            ensure_files: 是否补齐表情目录与描述文件；只读场景可关闭以避免写盘。
+        """
+        self.pack_id = str(pack_id or "").strip()
+        self.ensure_files = bool(ensure_files)
+        if self.ensure_files:
+            ensure_dir_exists(self._paths()["memes_dir"])
+            self._ensure_data_file()
         self.descriptions = self._load_descriptions()
 
-    @staticmethod
-    def _paths() -> dict[str, Path]:
-        """动态返回当前默认资源包的管理路径。"""
+    def _paths(self) -> dict[str, Path]:
+        """返回当前管理目标资源包的管理路径。"""
+        if self.pack_id:
+            paths = resolve_pack_paths(self.pack_id)
+            return {
+                "pack_dir": Path(paths["pack_dir"]),
+                "memes_dir": Path(paths["memes_dir"]),
+                "metadata_path": Path(paths["metadata_path"]),
+                "manifest_path": Path(paths["manifest_path"]),
+            }
         context = resolve_pack_context()
         return {
             "pack_dir": Path(context["pack_dir"]),
@@ -130,6 +145,8 @@ class CategoryManager:
         """加载类别描述配置"""
         metadata_path = self._paths()["metadata_path"]
         if not metadata_path.exists():
+            if not self.ensure_files:
+                return {}
             self._ensure_data_file()
         return load_json(metadata_path, {})
 

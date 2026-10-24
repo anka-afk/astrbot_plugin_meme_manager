@@ -13,7 +13,7 @@ from werkzeug.utils import secure_filename
 from astrbot.api import logger
 
 from .categories import is_safe_category_name, resolve_safe_category_directory
-from .resolver import resolve_pack_context
+from .resolver import resolve_pack_context, resolve_pack_paths
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 CHAT_UPLOAD_EXTENSIONS = {
@@ -24,8 +24,17 @@ CHAT_UPLOAD_EXTENSIONS = {
 }
 
 
-def _get_memes_root() -> Path:
-    """动态解析当前默认资源包的表情目录。"""
+def _get_memes_root(pack_id: str | None = None) -> Path:
+    """解析目标资源包的表情目录。
+
+    Args:
+        pack_id: 目标资源包 ID；为空时沿用当前默认资源包。
+
+    Returns:
+        目标资源包的表情目录绝对路径。
+    """
+    if pack_id:
+        return Path(resolve_pack_paths(pack_id)["memes_dir"]).resolve()
     return Path(resolve_pack_context()["memes_dir"]).resolve()
 
 
@@ -41,11 +50,12 @@ def _is_supported_image(filename: str) -> bool:
     return filename.lower().endswith(IMAGE_EXTENSIONS)
 
 
-def _get_category_path(category: str) -> Path:
+def _get_category_path(category: str, pack_id: str | None = None) -> Path:
     """解析分类目录，并禁止目录穿越。
 
     Args:
         category: 只能包含单个目录段的分类名称。
+        pack_id: 目标资源包 ID；为空时沿用当前默认资源包。
 
     Returns:
         位于当前表情目录内的分类绝对路径。
@@ -57,7 +67,7 @@ def _get_category_path(category: str) -> Path:
     if not is_safe_category_name(normalized):
         raise ValueError("分类名称非法")
 
-    memes_root = _get_memes_root()
+    memes_root = _get_memes_root(pack_id)
     category_path = (memes_root / normalized).resolve()
     try:
         category_path.relative_to(memes_root)
@@ -215,15 +225,15 @@ def save_chat_upload_image(
             created_target.unlink(missing_ok=True)
 
 
-async def scan_emoji_folder():
+async def scan_emoji_folder(pack_id: str | None = None):
     """扫描表情包目录，返回所有分类及其表情文件。"""
 
     def scan() -> dict[str, list[str]]:
         emoji_data = {}
-        memes_root = _get_memes_root()
+        memes_root = _get_memes_root(pack_id)
         memes_root.mkdir(parents=True, exist_ok=True)
         for category in os.listdir(memes_root):
-            category_path = _get_category_path(category)
+            category_path = _get_category_path(category, pack_id)
             if not category_path.is_dir():
                 continue
             emoji_data[category] = [
@@ -234,21 +244,22 @@ async def scan_emoji_folder():
     return await asyncio.to_thread(scan)
 
 
-def get_emoji_by_category(category):
+def get_emoji_by_category(category, pack_id: str | None = None):
     """获取指定类别下的所有表情包"""
-    category_path = _get_category_path(category)
+    category_path = _get_category_path(category, pack_id)
     if not category_path.is_dir():
         return []
     return [path.name for path in _iter_category_image_paths(category_path)]
 
 
-def add_emoji_to_category(category, image_file):
+def add_emoji_to_category(category, image_file, pack_id: str | None = None):
     """
     添加表情包到指定类别
 
     Args:
         category: 类别名
         image_file: 上传的文件对象
+        pack_id: 目标资源包 ID；为空时沿用当前默认资源包
 
     Returns:
         dict[str, str]: 保存后的文件路径和最终文件名
@@ -267,7 +278,7 @@ def add_emoji_to_category(category, image_file):
         raise ValueError("表情文件扩展名非法")
 
     # 确保类别目录存在
-    category_path = _get_category_path(category)
+    category_path = _get_category_path(category, pack_id)
     category_path.mkdir(parents=True, exist_ok=True)
 
     # 保存文件
@@ -355,9 +366,9 @@ def add_emoji_to_category(category, image_file):
         raise OSError(f"保存文件时出错: {str(e)}")
 
 
-def delete_emoji_from_category(category, image_file):
+def delete_emoji_from_category(category, image_file, pack_id: str | None = None):
     """删除指定类别下的表情包"""
-    category_path = _get_category_path(category)
+    category_path = _get_category_path(category, pack_id)
     if not category_path.is_dir():
         return False
 
@@ -369,9 +380,11 @@ def delete_emoji_from_category(category, image_file):
     return False
 
 
-def batch_delete_emojis(category: str, image_files: list[str]) -> dict[str, object]:
+def batch_delete_emojis(
+    category: str, image_files: list[str], pack_id: str | None = None
+) -> dict[str, object]:
     """批量删除指定类别下的表情包。"""
-    category_path = _get_category_path(category)
+    category_path = _get_category_path(category, pack_id)
     if not category_path.is_dir():
         return {
             "category_exists": False,
@@ -382,7 +395,7 @@ def batch_delete_emojis(category: str, image_files: list[str]) -> dict[str, obje
     deleted_files = []
     missing_files = []
     for image_file in dict.fromkeys(image_files):
-        if delete_emoji_from_category(category, image_file):
+        if delete_emoji_from_category(category, image_file, pack_id):
             deleted_files.append(Path(image_file).name)
         else:
             missing_files.append(Path(image_file).name)
@@ -395,10 +408,13 @@ def batch_delete_emojis(category: str, image_files: list[str]) -> dict[str, obje
 
 
 def move_emoji_to_category(
-    source_category: str, image_file: str, target_category: str
+    source_category: str,
+    image_file: str,
+    target_category: str,
+    pack_id: str | None = None,
 ) -> dict[str, object]:
     """将单个表情包移动到另一个类别。"""
-    source_category_path = _get_category_path(source_category)
+    source_category_path = _get_category_path(source_category, pack_id)
     if not source_category_path.is_dir():
         return {
             "source_category_exists": False,
@@ -409,7 +425,7 @@ def move_emoji_to_category(
             "missing": True,
         }
 
-    target_category_path = _get_category_path(target_category)
+    target_category_path = _get_category_path(target_category, pack_id)
     target_category_path.mkdir(parents=True, exist_ok=True)
 
     image_name = Path(image_file).name
@@ -451,10 +467,13 @@ def move_emoji_to_category(
 
 
 def batch_move_emojis(
-    source_category: str, image_files: list[str], target_category: str
+    source_category: str,
+    image_files: list[str],
+    target_category: str,
+    pack_id: str | None = None,
 ) -> dict[str, object]:
     """批量将表情包移动到另一个类别。"""
-    source_category_path = _get_category_path(source_category)
+    source_category_path = _get_category_path(source_category, pack_id)
     if not source_category_path.is_dir():
         return {
             "source_category_exists": False,
@@ -468,7 +487,9 @@ def batch_move_emojis(
     conflicting_files = []
 
     for image_file in dict.fromkeys(image_files):
-        result = move_emoji_to_category(source_category, image_file, target_category)
+        result = move_emoji_to_category(
+            source_category, image_file, target_category, pack_id
+        )
         if result["moved"]:
             moved_files.append(result["filename"])
         elif result["conflict"]:
@@ -487,10 +508,13 @@ def batch_move_emojis(
 
 
 def copy_emoji_to_category(
-    source_category: str, image_file: str, target_category: str
+    source_category: str,
+    image_file: str,
+    target_category: str,
+    pack_id: str | None = None,
 ) -> dict[str, object]:
     """将单个表情包复制到另一个类别。"""
-    source_category_path = _get_category_path(source_category)
+    source_category_path = _get_category_path(source_category, pack_id)
     if not source_category_path.is_dir():
         return {
             "source_category_exists": False,
@@ -501,7 +525,7 @@ def copy_emoji_to_category(
             "missing": True,
         }
 
-    target_category_path = _get_category_path(target_category)
+    target_category_path = _get_category_path(target_category, pack_id)
     target_category_path.mkdir(parents=True, exist_ok=True)
 
     image_name = Path(image_file).name
@@ -543,10 +567,13 @@ def copy_emoji_to_category(
 
 
 def batch_copy_emojis(
-    source_category: str, image_files: list[str], target_category: str
+    source_category: str,
+    image_files: list[str],
+    target_category: str,
+    pack_id: str | None = None,
 ) -> dict[str, object]:
     """批量将表情包复制到另一个类别。"""
-    source_category_path = _get_category_path(source_category)
+    source_category_path = _get_category_path(source_category, pack_id)
     if not source_category_path.is_dir():
         return {
             "source_category_exists": False,
@@ -560,7 +587,9 @@ def batch_copy_emojis(
     conflicting_files = []
 
     for image_file in dict.fromkeys(image_files):
-        result = copy_emoji_to_category(source_category, image_file, target_category)
+        result = copy_emoji_to_category(
+            source_category, image_file, target_category, pack_id
+        )
         if result["copied"]:
             copied_files.append(result["filename"])
         elif result["conflict"]:
@@ -578,9 +607,11 @@ def batch_copy_emojis(
     }
 
 
-def clear_category_emojis(category: str) -> dict[str, object]:
+def clear_category_emojis(
+    category: str, pack_id: str | None = None
+) -> dict[str, object]:
     """清空指定类别下的所有表情包，但保留类别目录和配置。"""
-    category_path = _get_category_path(category)
+    category_path = _get_category_path(category, pack_id)
     if not category_path.is_dir():
         return {
             "category_exists": False,
@@ -598,17 +629,17 @@ def clear_category_emojis(category: str) -> dict[str, object]:
     }
 
 
-def clear_all_emojis() -> dict[str, object]:
+def clear_all_emojis(pack_id: str | None = None) -> dict[str, object]:
     """清空所有类别中的表情包，但保留目录和配置。"""
     deleted_by_category = {}
-    memes_root = _get_memes_root()
+    memes_root = _get_memes_root(pack_id)
     if not memes_root.exists():
         return {"deleted_by_category": deleted_by_category}
 
     for category_path in memes_root.iterdir():
         if not category_path.is_dir():
             continue
-        result = clear_category_emojis(category_path.name)
+        result = clear_category_emojis(category_path.name, pack_id)
         deleted_files = result["deleted_files"]
         if deleted_files:
             deleted_by_category[category_path.name] = len(deleted_files)
@@ -616,9 +647,14 @@ def clear_all_emojis() -> dict[str, object]:
     return {"deleted_by_category": deleted_by_category}
 
 
-def update_emoji_in_category(category, old_image_file, new_image_file):
+def update_emoji_in_category(
+    category,
+    old_image_file,
+    new_image_file,
+    pack_id: str | None = None,
+):
     """更新（替换）表情包文件"""
-    category_path = _get_category_path(category)
+    category_path = _get_category_path(category, pack_id)
 
     if not category_path.is_dir():
         return False

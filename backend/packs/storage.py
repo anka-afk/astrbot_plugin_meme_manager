@@ -447,19 +447,26 @@ def _create_empty_pack(pack_id: str) -> str:
     return pack_id
 
 
-def create_local_pack(name: str, description: str = "", operation_guard=None) -> dict:
+def create_local_pack(
+    name: str,
+    description: str = "",
+    operation_guard=None,
+    pack_id: str | None = None,
+) -> dict:
     """Create a named local pack without changing the current default.
 
     Args:
         name: User-visible name, between one and 80 characters.
         description: Optional description, at most 500 characters.
         operation_guard: Optional runtime mutation guard.
+        pack_id: Optional user-chosen pack ID. When empty a random ID is used.
 
     Returns:
         Identity and name of the newly registered pack.
 
     Raises:
-        ValueError: The supplied name or description is invalid.
+        ValueError: The supplied name, description or pack ID is invalid, or
+            the requested pack ID is already taken.
         OSError: The pack or registry cannot be written.
     """
     import secrets
@@ -468,11 +475,24 @@ def create_local_pack(name: str, description: str = "", operation_guard=None) ->
         raise ValueError("请输入 1 到 80 个字符的表情包名称")
     if not isinstance(description, str) or len(description) > 500:
         raise ValueError("表情包描述不能超过 500 个字符")
-    pack_id = f"local-{secrets.token_hex(8)}"
+    requested_id = str(pack_id or "").strip()
+    if requested_id:
+        if not re.fullmatch(r"[A-Za-z0-9._-]{2,64}", requested_id):
+            raise ValueError(
+                "表情包 ID 只能包含字母、数字、点、下划线和短横线，长度为 2-64 个字符"
+            )
+        if requested_id in {".", ".."} or requested_id.startswith("."):
+            raise ValueError("表情包 ID 不能以点开头")
+        pack_id = requested_id
+    else:
+        pack_id = f"local-{secrets.token_hex(8)}"
     if operation_guard:
         operation_guard(pack_id, "创建表情包")
     pack = PACKS_DIR / pack_id
-    pack.mkdir(parents=True, exist_ok=False)
+    try:
+        pack.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as exc:
+        raise ValueError(f"表情包 ID {pack_id} 已存在，请换一个") from exc
     registry = _load_registry()
     try:
         (pack / "memes" / "默认分类").mkdir(parents=True)

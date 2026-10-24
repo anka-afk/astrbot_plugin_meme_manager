@@ -1020,6 +1020,15 @@
               autocomplete="off"
           /></label>
           <label
+            >表情包 ID（可选）
+            <input
+              name="pack_id"
+              maxlength="64"
+              pattern="[A-Za-z0-9._\-]{2,64}"
+              placeholder="例如：my-daily-pack，留空自动生成"
+              autocomplete="off"
+          /></label>
+          <label
             >描述（可选）
             <textarea
               name="description"
