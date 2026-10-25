@@ -39,6 +39,16 @@ jobs:
       - name: Commit updated cards
         shell: bash
         run: |
+          stats_dir="$(mktemp -d)"
+          cp .github/img/stats/* "$stats_dir/"
+          git restore -- .github/img/stats
+          if git ls-remote --exit-code --heads origin codex/marketplace-stats > /dev/null; then
+            git fetch --depth=1 origin codex/marketplace-stats
+            git checkout -B codex/marketplace-stats FETCH_HEAD
+          else
+            git checkout -b codex/marketplace-stats
+          fi
+          cp "$stats_dir/"* .github/img/stats/
           git add -- .github/img/stats
           if git diff --cached --quiet; then
             exit 0
@@ -46,4 +56,4 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'docs: update marketplace stats'
-          git push origin HEAD:main
+          git push origin HEAD:refs/heads/codex/marketplace-stats
