@@ -84,43 +84,43 @@ from astrbot.core.message.message_event_result import MessageChain
 
 
 async def send_with_meme_manager(context, event, text: str):
-   # Get the registered plugin instance.
-   md = context.get_registered_star("meme_manager")
-   plugin = md.star_cls if md and md.star_cls else None
+    # Get the registered plugin instance.
+    md = context.get_registered_star("meme_manager")
+    plugin = md.star_cls if md and md.star_cls else None
 
-   if not plugin:
-      # Send normally when the plugin is unavailable.
-      await event.send(MessageChain([Plain(text)]))
-      return
+    if not plugin:
+        # Send normally when the plugin is unavailable.
+        await event.send(MessageChain([Plain(text)]))
+        return
 
-   # Parse and send the text and selected images.
-   await plugin.compat_send_message(event, text)
+    # Parse and send the text and selected images.
+    await plugin.compat_send_message(event, text)
 ```
 
 如果你希望自己控制发送时机，也可以使用两段式接口：
 
 ```python
 async def send_in_two_steps(context, event, chain: MessageChain):
-   md = context.get_registered_star("meme_manager")
-   plugin = md.star_cls if md and md.star_cls else None
-   if not plugin:
-      await event.send(chain)
-      return
+    md = context.get_registered_star("meme_manager")
+    plugin = md.star_cls if md and md.star_cls else None
+    if not plugin:
+        await event.send(chain)
+        return
 
-   prepared = await plugin.compat_prepare_message(event, chain)
+    prepared = await plugin.compat_prepare_message(event, chain)
 
-   # Send the prepared text and components.
-   cleaned_chain = prepared["cleaned_chain"]
-   if cleaned_chain.chain:
-      await event.send(cleaned_chain)
+    # Send the prepared text and components.
+    cleaned_chain = prepared["cleaned_chain"]
+    if cleaned_chain.chain:
+        await event.send(cleaned_chain)
 
-   # Send prepared images through the public API.
-   await plugin.compat_send_prepared_message(
-      event,
-      prepared,
-      send_text=False,
-      send_images=True,
-   )
+    # Send prepared images through the public API.
+    await plugin.compat_send_prepared_message(
+        event,
+        prepared,
+        send_text=False,
+        send_images=True,
+    )
 ```
 
 接口说明：
@@ -129,6 +129,8 @@ async def send_in_two_steps(context, event, chain: MessageChain):
 - `compat_send_message(event, message, send_images=True)`：直接完成处理与发送。
 - `compat_send_prepared_message(event, prepared, send_text=True, send_images=True)`：发送预处理结果（适合两段式流程）。
 - `message` 支持 `str` / `list` / `MessageChain`。
+
+图包管理还提供两个异步接口：`await plugin.get_pack_status(pack_id)` 查询本地图包状态（`missing` / `ready` / `error`），`await plugin.install_pack(source, expected_pack_id=None)` 从调用方提供的 GitHub 来源安装。`source` 使用 `{"type": "github", "repo": "owner/repo", "ref": "v1.0.0", "subpath": "."}` 格式。安装返回实际图包 ID 等存储结果，不覆盖已有图包、不修改使用规则、不清理空图包；来源、安装时机及选包策略由调用方负责。指定 `expected_pack_id` 时，清单不符或同 ID 已存在会在写入前抛出异常；未指定时沿用现有导入器的重名编号规则。取消调用会等待现有安装线程收尾。
 
 ## 前端开发与检查
 

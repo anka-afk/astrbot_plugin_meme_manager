@@ -17,7 +17,7 @@ def _ensure_pack_id(pack_id: str, context: str) -> str:
     pack_id = str(pack_id or "").strip()
     if not pack_id:
         raise ValueError(f"{context} 的 id 不能为空")
-    if len(pack_id) < 2 or len(pack_id) > 64:
+    if pack_id == ".." or len(pack_id) < 2 or len(pack_id) > 64:
         raise ValueError(f"{context} 的 id 长度非法")
     allowed = set("abcdefghijklmnopqrstuvwxyz0123456789._-")
     if any(ch not in allowed for ch in pack_id):
