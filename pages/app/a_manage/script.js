@@ -29,6 +29,7 @@ async function initApp() {
         "meme_image_data",
         "meme_image_semantic",
         "semantic/reviews",
+        "sync/status",
         "img_host/sync/status",
         "img_host/sync/task_status",
       ].includes(endpoint)
@@ -50,13 +51,12 @@ async function initApp() {
     ).trim();
     if (
       selectedPackId &&
-      defaultManagePackId &&
-      selectedPackId !== defaultManagePackId &&
-      ["emoji/", "category/"].some((prefix) => endpoint.startsWith(prefix))
+      ["emoji/", "category/", "sync/"].some((prefix) =>
+        endpoint.startsWith(prefix),
+      )
     ) {
-      throw new Error(
-        "当前为管理视图模式，仅支持浏览。请切回默认管理包后再执行编辑操作。",
-      );
+      // 写接口按当前管理的表情包定位目标目录，避免误改默认包。
+      mergedBody.managed_pack_id = selectedPackId;
     }
     if (selectedPackId && endpoint.startsWith("img_host/sync/")) {
       mergedBody.managed_pack_id = selectedPackId;
@@ -777,7 +777,6 @@ async function initApp() {
     "pack-import-confirm-btn",
   );
   const packImportResult = document.getElementById("pack-import-result");
-  let defaultManagePackId = "";
   let activeManagePackId = "";
   let managePacksById = new Map();
   let pendingPackImportToken = "";
@@ -1530,10 +1529,13 @@ async function initApp() {
     packImportDropzone?.classList.add("checking");
     setPackTransferResult(packImportResult, "正在检查压缩包结构和兼容性…", "");
     try {
-      const data = await window.AstrBotPluginPage.upload(
-        "packs/import/stage",
-        file,
-      );
+      const data = await window.MemeUI.uploadPackArchiveInChunks(file, {
+        onProgress: (received, total) => {
+          if (packImportFileLabel) {
+            packImportFileLabel.textContent = `正在上传 ${file.name}（${received}/${total}）…`;
+          }
+        },
+      });
       pendingPackImportToken = String(data?.import_token || "").trim();
       if (!pendingPackImportToken) {
         throw new Error("服务器没有返回导入凭证");
@@ -1790,7 +1792,6 @@ async function initApp() {
       }
 
       let selectedPackId = "";
-      defaultManagePackId = "";
       packs.forEach((pack) => {
         const option = document.createElement("option");
         option.value = String(pack.id || "").trim();
@@ -1798,15 +1799,9 @@ async function initApp() {
         if (!selectedPackId) {
           selectedPackId = option.value;
         }
-        if (!defaultManagePackId && pack?.is_default) {
-          defaultManagePackId = option.value;
-        }
         managePackSelect.appendChild(option);
       });
 
-      if (!defaultManagePackId) {
-        defaultManagePackId = selectedPackId;
-      }
       managePackSelect.add(new Option("＋ 创建新表情包…", "__create__"));
 
       managePackSelect.disabled = false;
@@ -3943,10 +3938,6 @@ async function initApp() {
     if (
       moveBusy ||
       event.isPrimary === false ||
-      (event.pointerType === "mouse" &&
-        activeManagePackId &&
-        defaultManagePackId &&
-        activeManagePackId !== defaultManagePackId) ||
       (event.pointerType === "mouse" && event.button !== 0) ||
       event.target.closest(".delete-btn")
     ) {
@@ -4126,7 +4117,9 @@ async function initApp() {
         return;
       }
 
-      const state = uploadStateByCategory.get(uploadBlock.dataset.category);
+      const state = uploadStateByCategory.get(
+        `${activeManagePackId}::${uploadBlock.dataset.category}`,
+      );
 
       if (!state) {
         uploadBlock.classList.remove("uploading");
@@ -4175,10 +4168,12 @@ async function initApp() {
   }
 
   function isCategoryUploading(category) {
-    return uploadStateByCategory.has(category);
+    return uploadStateByCategory.has(`${activeManagePackId}::${category}`);
   }
 
   async function uploadFilesToCategory(category, fileList) {
+    const packId = activeManagePackId;
+    const uploadKey = `${packId}::${category}`;
     const { validFiles, invalidCount } = normalizeUploadFiles(fileList);
 
     if (invalidCount > 0) {
@@ -4224,7 +4219,7 @@ async function initApp() {
       currentFileName: uniqueFiles[0]?.name || "",
       refreshing: false,
     };
-    uploadStateByCategory.set(category, uploadState);
+    uploadStateByCategory.set(uploadKey, uploadState);
     refreshUploadDropzones(category);
 
     showToast(
@@ -4244,7 +4239,7 @@ async function initApp() {
       refreshUploadDropzones(category);
 
       try {
-        await uploadEmoji(category, file);
+        await uploadEmoji(category, file, packId);
         uploadState.completed += 1;
       } catch (error) {
         if (error.code === "duplicate_emoji" || error.status === 409) {
@@ -4259,14 +4254,14 @@ async function initApp() {
       refreshUploadDropzones(category);
     }
 
-    if (uploadState.completed > 0) {
+    if (uploadState.completed > 0 && activeManagePackId === packId) {
       uploadState.refreshing = true;
       uploadState.currentFileName = "";
       refreshUploadDropzones(category);
       await refreshUi({ emojis: true });
     }
 
-    uploadStateByCategory.delete(category);
+    uploadStateByCategory.delete(uploadKey);
     refreshUploadDropzones(category);
 
     if (uploadState.failed === 0 && uploadState.duplicates === 0) {
@@ -4626,11 +4621,8 @@ async function initApp() {
   async function moveEmojiItemsToCategory(targetCategory, items, undo = false) {
     if (moveBusy) return;
     const packId = activeManagePackId;
-    if (
-      (packId && defaultManagePackId && packId !== defaultManagePackId) ||
-      (undo && lastMove?.packId !== packId)
-    ) {
-      showToast("请切回执行移动时的默认管理包。", "warning", "无法移动");
+    if (undo && lastMove?.packId !== packId) {
+      showToast("请切回执行移动时的表情包后再撤销。", "warning", "无法移动");
       return;
     }
     if (!targetCategory) {
@@ -4668,7 +4660,7 @@ async function initApp() {
     try {
       for (const [sourceCategory, imageFiles] of groupedItems.entries()) {
         try {
-          if (activeManagePackId !== packId || defaultManagePackId !== packId)
+          if (activeManagePackId !== packId)
             throw new Error("管理包已变化，请重新加载后操作");
           const data = await apiPost("emoji/batch_move", {
             source_category: undo ? targetCategory : sourceCategory,
@@ -5497,10 +5489,6 @@ async function initApp() {
   function updateSelectionToolbar() {
     const selectedCount = selectionState.items.size;
     const availableMoveTargets = getAvailableMoveTargets();
-    const readOnlyPack =
-      activeManagePackId &&
-      defaultManagePackId &&
-      activeManagePackId !== defaultManagePackId;
 
     selectionDock.classList.toggle("hidden", !selectionState.enabled);
     document.body.classList.toggle(
@@ -5509,12 +5497,9 @@ async function initApp() {
     );
     selectionDockSummary.textContent = `已选 ${selectedCount} 张`;
     selectionDockMove.disabled =
-      moveBusy ||
-      readOnlyPack ||
-      !selectedCount ||
-      !availableMoveTargets.length;
+      moveBusy || !selectedCount || !availableMoveTargets.length;
     selectionDockMove.textContent = moveBusy ? "移动中…" : "移动分类";
-    selectionDockDelete.disabled = moveBusy || readOnlyPack || !selectedCount;
+    selectionDockDelete.disabled = moveBusy || !selectedCount;
     selectionDockPack.disabled =
       moveBusy || !selectedCount || !activeManagePackId;
   }
@@ -5782,11 +5767,16 @@ async function initApp() {
   }
 
   // 上传表情包
-  async function uploadEmoji(category, file) {
-    return await window.AstrBotPluginPage.upload(
-      "emoji/add/" + encodeURIComponent(category),
-      file,
-    );
+  async function uploadEmoji(
+    category,
+    file,
+    packId = activeManagePackId || managePackSelect?.value || "",
+  ) {
+    // The host bridge encodes each path segment once.
+    const endpoint = packId
+      ? `emoji/add/${packId}/${category}`
+      : `emoji/add/${category}`;
+    return await window.AstrBotPluginPage.upload(endpoint, file);
   }
 
   // 删除表情包
@@ -7143,6 +7133,7 @@ async function initApp() {
       try {
         const result = await apiPost("packs/create", {
           name: String(data.get("name") || "").trim(),
+          pack_id: String(data.get("pack_id") || "").trim(),
           description: data.get("description") || "",
         });
         createPackDialog.close();
