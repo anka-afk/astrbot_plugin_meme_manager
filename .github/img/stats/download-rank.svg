@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="260" height="132" viewBox="0 0 260 132" role="img" aria-labelledby="title desc">
+  <title id="title">市场下载量排名：#1；数据更新于 2026-10-25 05:48 UTC</title>
+  <desc id="desc">Source: https://api.soulter.top/astrbot/plugins. Rankings compare entries in the official AstrBot marketplace; equal values share a rank.</desc>
+  <rect x="0.5" y="0.5" width="259" height="131" rx="14" fill="#fff8e6" stroke="#946200" stroke-opacity=".2"/>
+  <g font-family="Arial, Microsoft YaHei, sans-serif">
+    <text x="20" y="24" font-size="10" letter-spacing="1.2" fill="#946200">ASTRBOT PLUGIN MARKET</text>
+    <text x="20" y="67" font-size="38" font-weight="700" fill="#946200">#1</text>
+    <text x="20" y="92" font-size="14" fill="#243449">市场下载量排名</text>
+    <text x="20" y="115" font-size="10" fill="#586779">2026-10-25 05:48 UTC</text>
+  </g>
+</svg>

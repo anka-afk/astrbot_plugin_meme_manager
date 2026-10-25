@@ -1,0 +1,49 @@
+name: Update marketplace stats
+
+on:
+  schedule:
+    - cron: '17 22 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/scripts/update_market_stats.py
+      - .github/scripts/test_market_stats.py
+      - .github/workflows/update-market-stats.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplace-stats
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.repository == 'anka-afk/astrbot_plugin_meme_manager'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Check ranking and failure handling
+        run: python -m unittest discover -s .github/scripts -p 'test_*.py'
+      - name: Refresh cards from the official market
+        run: python .github/scripts/update_market_stats.py
+      - name: Commit updated cards
+        shell: bash
+        run: |
+          git add -- .github/img/stats
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'docs: update marketplace stats'
+          git push origin HEAD:main

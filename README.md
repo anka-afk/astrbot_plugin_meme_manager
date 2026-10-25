@@ -1,25 +1,41 @@
+<div align="center">
+
 # 🌟 AstrBot 表情包管理器
 
 ![Banner](.github/img/Banner.png)
-
-<div align="center">
-
+[![AstrBot](https://img.shields.io/badge/AstrBot-4.17.0%2B-27a7d8)](https://github.com/AstrBotDevs/AstrBot)
+[![Release](https://img.shields.io/github/v/release/anka-afk/astrbot_plugin_meme_manager?color=27a7d8&label=Release)](https://github.com/anka-afk/astrbot_plugin_meme_manager/releases/latest)
+[![Stars](https://img.shields.io/github/stars/anka-afk/astrbot_plugin_meme_manager?style=flat&color=e9b949)](https://github.com/anka-afk/astrbot_plugin_meme_manager/stargazers)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 ![Python Version](https://img.shields.io/badge/Python-3.10.14%2B-blue)
-![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
 [![PRs Welcome](https://img.shields.io/badge/PRs-Welcome-brightgreen)](DEVELOPMENT.md)
 [![Contributors](https://img.shields.io/github/contributors/anka-afk/astrbot_plugin_meme_manager?color=green)](https://github.com/anka-afk/astrbot_plugin_meme_manager/graphs/contributors)
 [![Last Commit](https://img.shields.io/github/last-commit/anka-afk/astrbot_plugin_meme_manager)](https://github.com/anka-afk/astrbot_plugin_meme_manager/commits/main)
 
-</div>
-
-<div align="center">
+<p>
+  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src=".github/img/stats/download-rank.svg" width="260" alt="AstrBot 官方市场下载量排名，含数据更新时间"></a>
+  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src=".github/img/stats/downloads.svg" width="260" alt="AstrBot 官方市场下载量，含数据更新时间"></a>
+  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src=".github/img/stats/star-rank.svg" width="260" alt="AstrBot 官方市场 Star 排名，含数据更新时间"></a>
+</p>
 
 [![Moe Counter](https://count.getloli.com/get/@GalChat?theme=moebooru)](https://github.com/anka-afk/astrbot_plugin_meme_manager)
 
 </div>
 
 为 AstrBot 提供表情包下载、整理、智能发送与自动收集功能。通过 WebUI 管理多个表情包，按会话或人格组合使用，并支持分类选图、语义检索和云端同步。
+
+## ✨ 能做什么
+
+| 你想做的事           | 表情包管理器如何帮你                                                     |
+| -------------------- | ------------------------------------------------------------------------ |
+| 先让 Bot 用上表情    | 从资源广场安装表情包，设置使用规则，即可开始使用；无需额外选图模型或图床 |
+| 为不同聊天搭配表情   | 按默认、会话或人格绑定多个包，自由组合；无需修改人格提示词               |
+| 找到更贴合语境的图片 | 四种选图模式，从分类标签到语义检索，按需配置辅助模型或 Tool 调用         |
+| 整理越来越大的图库   | WebUI 分类预览、拖拽整理、批量操作、跨包移动，资源包更新前逐图查看差异   |
+| 留下聊天里的好表情   | 自动识别、分类、去重，支持人工审核后入包与增量生成向量                   |
+| 备份和分享自己的收藏 | 支持多种图床同步，也能按开放协议制作、发布社区表情包                     |
+
+> **第一次用？** 先安装一个表情包、保存使用规则，就能体验普通分类模式（这是最省 token 的模式）。语义检索和自动收集可按需开启，相关模型调用费用取决于所用服务。
 
 ## 📑 目录
 
@@ -33,7 +49,7 @@
 - [⚠️ 兼容性](#️-兼容性)
 - [📝 使用指令](#-使用指令)
 - [📜 更新日志](#-更新日志)
-- [🛠️ 问题反馈](#️-问题反馈)
+- [✨ Star](#star)
 - [📄 许可证](#-许可证)
 
 ## 📢 通知
@@ -45,11 +61,15 @@
 
 </details>
 
+<a id="quick-start"></a>
+
 ## 🛠️ 第一次使用
 
+在 AstrBot 插件市场搜索 **表情包管理器** 安装
+
 1. 安装插件后，进入 AstrBot WebUI → 插件页面 → **表情包管理器**。
-2. 打开**资源广场**，下载一个官方或社区表情包；也可以使用 `/表情管理 恢复默认表情包` 安装官方包。
-3. 进入**设置中心 → 使用规则**，将下载的包设为默认，或绑定到指定会话、人格，然后保存规则。同一规则可多选表情包；桌面端按住 Ctrl / Command 点击，先选的包优先。
+2. 打开**资源广场**，下载一个官方或社区表情包。
+3. 进入**设置中心 → 使用规则**，将下载的包设为默认，或绑定到指定会话、人格，然后保存规则。同一规则可多选表情包；桌面端按住 Ctrl / Command 点击。
 4. 开始聊天。插件会自动提供当前表情包的分类提示，无需修改人格；有合适的表情时，模型可以配合文字发送，也可以只发表情。
 
 首次使用没有内置图片，需要先安装表情包。管理页的选包用于浏览和编辑，聊天实际使用哪个包由使用规则决定。
@@ -93,6 +113,8 @@
 
 > 建议：先在本地或测试环境通过“资源广场安装”验证一次，确保索引条目可安装、可预览、分类描述清晰。
 
+<a id="webui"></a>
+
 ## 🖥️ WebUI 管理界面
 
 ![访问 WebUI](.github/img/访问WebUI.png)
@@ -101,12 +123,7 @@
 
 浏览和安装官方、社区表情包，也支持通过 GitHub 仓库地址安装索引之外的表情包。
 
-已安装的资源包有新版时，可在**可更新**栏目查看。更新前按分类逐张预览新增、修改和删除的图片，自选要纳入的内容，再选择更新方式：
-
-- **合并更新，保留本地修改**：优先保留自己整理过的内容。
-- **合并更新，保留上游更改**：优先采用资源包作者的更新，保留本地独有内容。
-- **只添加新内容**：补充新表情，不修改或删除已有图片。
-- **完整替换**：按确认的内容替换当前包，操作前需确认可能丢弃本地修改。
+已安装的资源包有新版时，可在**可更新**栏目查看。
 
 ![资源广场](.github/img/资源广场.png)
 
@@ -121,18 +138,9 @@
 
 按分类预览图片，上传、删除、拖拽移动或批量整理表情，编辑分类描述，并切换不同表情包进行管理。
 
-桌面端可拖拽移动图片，触屏端可长按进入多选，再批量操作。移动既支持包内分类整理，也支持**移动到其他表情包**；跨包移动时可保留原分类或指定目标分类，同名分类描述不一致时会提示手动选择，确认后再移动。
+桌面端可拖拽移动图片，触屏端可长按进入多选，再批量操作。
 
 ![表情包管理](.github/img/表情包管理.png)
-
-<details>
-<summary>图片预览加载与浏览器缓存</summary>
-
-页面预览默认同时加载 2 张图片，可在 AstrBot 插件配置的「页面预览」或插件设置中心的「存储与下载 → 页面预览」调整为 1–8 张，保存后刷新页面生效。并发限制按每个打开的插件页面计算。
-
-已浏览的图片会使用浏览器私有缓存，文件未变化时重新进入页面可减少重复下载。替换文件后重新加载图库会使用新的图片版本；浏览器清理缓存或强制刷新时可能重新下载。此功能控制加载并发和重复流量，不限制服务器总带宽。
-
-</details>
 
 ### 语义表情包
 
@@ -146,12 +154,12 @@
 
 在**模式**页选择原生分类、辅助模型分类或两种语义检索模式，再沿流程图查看使用规则、选图、回退与发送设置。点击流程中的配置项可在弹窗内修改；也可以从**使用规则、表情发送、自动收集、存储与下载、提示词模板、标签与匹配、导入与备份**等分类进入。配置修改后点击“保存并应用”，使用规则单独保存。
 
-| 模式 | 如何选图 | 使用前准备 | 适合的用法 |
-| --- | --- | --- | --- |
-| 原生分类标签 | 回复模型输出分类标签，再从该分类随机取图 | 安装表情包，无需额外选图模型或语义索引 | 先体验分类选图，配置较少 |
-| 辅助模型分类标签 | 辅助模型根据回复选择分类，再从分类随机取图 | 选图会额外调用辅助模型，默认复用当前对话的回复模型 | 希望由辅助模型负责分类选择 |
-| Tool 语义检索 | 回复模型调用搜索工具，从候选中选择具体图片 | 回复模型支持 Tool 调用；完成图片描述与向量索引 | 希望回复模型主动检索、选择更贴切的图片 |
-| 辅助模型语义检索 | 辅助模型根据回复检索并选图 | 完成图片描述与向量索引；选图额外调用辅助模型 | 希望回复模型专注对话，由辅助模型负责选图 |
+| 模式             | 如何选图                                   | 使用前准备                                         | 适合的用法                                     |
+| ---------------- | ------------------------------------------ | -------------------------------------------------- | ---------------------------------------------- |
+| 原生分类标签     | 回复模型输出分类标签，再从该分类随机取图   | 安装表情包，无需额外选图模型或语义索引             | 让模型自己选择表情，配置少，最省 token，最平衡 |
+| 辅助模型分类标签 | 辅助模型根据回复选择分类，再从分类随机取图 | 选图会额外调用辅助模型，默认复用当前对话的回复模型 | 希望由辅助模型负责分类选择                     |
+| Tool 语义检索    | 回复模型调用搜索工具，从候选中选择具体图片 | 回复模型支持 Tool 调用；完成图片描述与向量索引     | 希望回复模型主动检索、选择更贴切的图片         |
+| 辅助模型语义检索 | 辅助模型根据回复检索并选图                 | 完成图片描述与向量索引；选图额外调用辅助模型       | 希望回复模型专注对话，由辅助模型负责选图       |
 
 两种语义模式均需配置图片描述模型与向量模型。语义数据或索引未就绪时，会回退到对应的分类标签方式；Tool 不可用时回退到原生分类标签。
 
@@ -215,8 +223,6 @@
 | `/表情管理 覆盖到云端`                 | ⚠️ 让云端与本地完全一致                             |
 | `/表情管理 从云端覆盖`                 | ⚠️ 让本地与云端完全一致                             |
 
-> `/表情管理 添加表情` 的上传目标以当前会话使用规则解析的主表情包为准，与管理页当前浏览的图包无关；多包绑定时仅写主包。执行命令后请在 30 秒内发送图片；处理结果会分别报告新增、重复和失败数量。
-
 ## 📜 更新日志
 
 当前版本：v5.2.5
@@ -228,9 +234,19 @@
 
 完整版本记录请查看 [CHANGELOG.md](CHANGELOG.md)。
 
-## 🛠️ 问题反馈
+<a id="star"></a>
 
-如果遇到问题或有功能建议，欢迎在 GitHub 提交 Issue。
+## ✨ Star
+
+感谢每一位使用、反馈、分享表情包和贡献代码的朋友。如果这个插件对你有帮助，欢迎点一个 Star。
+
+分享，让你我走到了今天。
+
+<div align="center">
+
+[![Star History](https://api.star-history.com/svg?repos=anka-afk/astrbot_plugin_meme_manager&type=Date)](https://www.star-history.com/#anka-afk/astrbot_plugin_meme_manager&Date)
+
+</div>
 
 ## 📄 许可证
 
