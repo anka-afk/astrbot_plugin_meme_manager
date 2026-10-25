@@ -32,6 +32,7 @@ from .config import (
 from .image_host.img_sync import ImageSync
 from .mixins.commands import CommandMixin
 from .mixins.event_handlers import EventHandlerMixin, normalize_trigger_scope
+from .mixins.integration import IntegrationMixin
 from .mixins.web_api import WebAPIMixin
 from .utils import dict_to_string, load_json
 
@@ -43,7 +44,7 @@ PLUGIN_NAME = "meme_manager"
 WEBUI_LOG_PREFIX = f"[{PLUGIN_NAME}][WebUI]"
 
 
-class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin):
+class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, IntegrationMixin):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         self._normalize_mixin_handler_module_paths()

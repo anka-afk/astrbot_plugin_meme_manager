@@ -130,6 +130,8 @@ async def send_in_two_steps(context, event, chain: MessageChain):
 - `compat_send_prepared_message(event, prepared, send_text=True, send_images=True)`：发送预处理结果（适合两段式流程）。
 - `message` 支持 `str` / `list` / `MessageChain`。
 
+图包管理还提供两个异步接口：`await plugin.get_pack_status(pack_id)` 查询本地图包状态（`missing` / `ready` / `error`），`await plugin.install_pack(source, expected_pack_id=None)` 从调用方提供的 GitHub 来源安装。`source` 使用 `{"type": "github", "repo": "owner/repo", "ref": "v1.0.0", "subpath": "."}` 格式。安装返回实际图包 ID 等存储结果，不覆盖已有图包、不修改使用规则、不清理空图包；来源、安装时机及选包策略由调用方负责。指定 `expected_pack_id` 时，清单不符或同 ID 已存在会在写入前抛出异常；未指定时沿用现有导入器的重名编号规则。取消调用会等待现有安装线程收尾。
+
 ## 前端开发与检查
 
 页面使用原生 HTML、CSS 和 JavaScript。AstrBot 将静态资源限制在注册页面的目录内，因此四个功能页统一位于 `pages/app/` 下，通过 `../shared/` 引用同一份公共资源。直接修改 `pages/app/shared/` 即可，无需复制或构建。新增资源也应放在 `app/` 内，避免越过页面目录边界。

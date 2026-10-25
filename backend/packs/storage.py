@@ -958,13 +958,17 @@ def import_pack_archive(
     embedding_dimension: int = 0,
     preserve_existing_manual: bool = True,
     community_origin: dict | None = None,
+    preserve_existing_selection: bool = False,
+    expected_pack_id: str | None = None,
 ) -> dict:
     if not zip_path.is_file():
         raise FileNotFoundError("压缩包不存在")
     if not zipfile.is_zipfile(zip_path):
         raise ValueError("文件不是有效的 zip 压缩包")
 
-    previous_single_empty_pack_id = _snapshot_single_empty_pack()
+    previous_single_empty_pack_id = (
+        None if preserve_existing_selection else _snapshot_single_empty_pack()
+    )
     detected_format = ""
     transfer_info: dict = {}
     vectors_restored = False
@@ -985,9 +989,17 @@ def import_pack_archive(
             suggested_pack_id or zip_path.stem,
         )
         original_pack_id = str(normalized_manifest.get("id") or "").strip()
+        if expected_pack_id is not None:
+            expected_pack_id = validate_pack_id(expected_pack_id, "expected_pack_id")
+            if original_pack_id != expected_pack_id:
+                raise ValueError("压缩包清单标识与 expected_pack_id 不一致")
         if community_origin is not None:
             _save_json(prepared_pack_dir / ".community-origin.json", community_origin)
-        pack_id = original_pack_id if overwrite else _allocate_pack_id(original_pack_id)
+        pack_id = (
+            original_pack_id
+            if overwrite or expected_pack_id is not None
+            else _allocate_pack_id(original_pack_id)
+        )
         if pack_id != original_pack_id:
             normalized_manifest["id"] = pack_id
             current_name = str(normalized_manifest.get("name") or original_pack_id)
@@ -1226,7 +1238,7 @@ def import_pack_archive(
             post_install = _apply_post_install_policy(
                 new_pack_id=pack_id,
                 previous_single_empty_pack_id=previous_single_empty_pack_id,
-                set_as_default=set_as_default,
+                set_as_default=bool(set_as_default and not preserve_existing_selection),
                 operation_guard=operation_guard,
             )
         except Exception:
@@ -1250,7 +1262,8 @@ def import_pack_archive(
                 previous_empty_index.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(previous_empty_index_snapshot, previous_empty_index)
             _restore_file_snapshot(REGISTRY_PATH, registry_snapshot)
-            _restore_file_snapshot(SELECTION_RULES_PATH, rules_snapshot)
+            if not preserve_existing_selection:
+                _restore_file_snapshot(SELECTION_RULES_PATH, rules_snapshot)
             raise
 
         return {
@@ -1685,6 +1698,8 @@ def install_pack_from_github_source(
     github_accelerator_url: str = "",
     progress_callback: InstallProgressCallback | None = None,
     cancel_check: InstallCancelCheck | None = None,
+    preserve_existing_selection: bool = False,
+    expected_pack_id: str | None = None,
 ) -> dict:
     """从 GitHub 来源下载并安装表情包。
 
@@ -1696,6 +1711,8 @@ def install_pack_from_github_source(
         github_accelerator_url: 可选的 GitHub 加速地址。
         progress_callback: 安装阶段、已下载字节和总字节的回调。
         cancel_check: 返回 True 时终止安装的协作式取消检查。
+        preserve_existing_selection: Preserve selection rules and empty packs.
+        expected_pack_id: Require this manifest ID without allocating a suffix.
 
     Returns:
         已安装表情包的信息。
@@ -1777,6 +1794,8 @@ def install_pack_from_github_source(
             set_as_default=set_as_default,
             operation_guard=operation_guard,
             community_origin={"source": github_source, **snapshot(source_pack_dir)},
+            preserve_existing_selection=preserve_existing_selection,
+            expected_pack_id=expected_pack_id,
         )
         result["source"] = github_source
         return result
