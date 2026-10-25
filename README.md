@@ -13,9 +13,9 @@
 [![Last Commit](https://img.shields.io/github/last-commit/anka-afk/astrbot_plugin_meme_manager)](https://github.com/anka-afk/astrbot_plugin_meme_manager/commits/main)
 
 <p>
-  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src=".github/img/stats/download-rank.svg" width="260" alt="AstrBot 官方市场下载量排名，含数据更新时间"></a>
-  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src=".github/img/stats/downloads.svg" width="260" alt="AstrBot 官方市场下载量，含数据更新时间"></a>
-  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src=".github/img/stats/star-rank.svg" width="260" alt="AstrBot 官方市场 Star 排名，含数据更新时间"></a>
+  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src="https://raw.githubusercontent.com/anka-afk/astrbot_plugin_meme_manager/refs/heads/codex/marketplace-stats/.github/img/stats/download-rank.svg" width="260" alt="AstrBot 官方市场下载量排名，含数据更新时间"></a>
+  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src="https://raw.githubusercontent.com/anka-afk/astrbot_plugin_meme_manager/refs/heads/codex/marketplace-stats/.github/img/stats/downloads.svg" width="260" alt="AstrBot 官方市场下载量，含数据更新时间"></a>
+  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src="https://raw.githubusercontent.com/anka-afk/astrbot_plugin_meme_manager/refs/heads/codex/marketplace-stats/.github/img/stats/star-rank.svg" width="260" alt="AstrBot 官方市场 Star 排名，含数据更新时间"></a>
 </p>
 
 [![Moe Counter](https://count.getloli.com/get/@GalChat?theme=moebooru)](https://github.com/anka-afk/astrbot_plugin_meme_manager)
@@ -229,12 +229,13 @@
 
 ## 📜 更新日志
 
-当前版本：v5.2.5
+当前版本：v5.2.6
 
-- 修复自动收集入包后，描述和向量已完成但页面仍显示“语义待更新”的问题，同步快照计数与后台状态刷新（[#161](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/161)）。旧图包的异常快照可通过一次增量更新校正。
-- 修复聊天上传无法读取 QQ 官方接入的本地图片，以及全部失败仍提示成功的问题；支持框架图片转换、内容校验、同分类去重和准确的成功失败提示（[#162](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/162)）。
-- 聊天上传统一写入当前会话主图包，防止重名覆盖，并保护切包和任务取消时的文件、语义元数据一致性。
-- 升级后请重载插件并刷新管理页面。1046 项后端测试、85 个子测试及 62 项前端测试通过。
+- 修复新建及非默认表情包无法编辑的问题，上传、删除、移动与分类编辑均作用于当前管理包；同时修复中文分类重复编码和批量上传中切包导致目标混乱的问题。
+- 新建表情包支持自定义包 ID，压缩包导入采用 8 MB 分片上传，支持大体积图包导入。
+- 修复在弹窗内拖动选择文本后，鼠标在遮罩上松开导致弹窗误关闭的问题。
+- 新增图包状态查询与安装联动接口，保留已有使用规则；优化首页说明，并展示自动更新的市场排名卡片和 Star 趋势。
+- 升级后请重载插件并刷新管理页面。1072 项后端测试、85 个子测试、68 项前端测试及 4 项排名脚本测试通过。
 
 完整版本记录请查看 [CHANGELOG.md](CHANGELOG.md)。
 
