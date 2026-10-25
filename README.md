@@ -13,9 +13,9 @@
 [![Last Commit](https://img.shields.io/github/last-commit/anka-afk/astrbot_plugin_meme_manager)](https://github.com/anka-afk/astrbot_plugin_meme_manager/commits/main)
 
 <p>
-  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src="https://raw.githubusercontent.com/anka-afk/astrbot_plugin_meme_manager/refs/heads/codex/marketplace-stats/.github/img/stats/download-rank.svg" width="260" alt="AstrBot 官方市场下载量排名，含数据更新时间"></a>
-  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src="https://raw.githubusercontent.com/anka-afk/astrbot_plugin_meme_manager/refs/heads/codex/marketplace-stats/.github/img/stats/downloads.svg" width="260" alt="AstrBot 官方市场下载量，含数据更新时间"></a>
-  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src="https://raw.githubusercontent.com/anka-afk/astrbot_plugin_meme_manager/refs/heads/codex/marketplace-stats/.github/img/stats/star-rank.svg" width="260" alt="AstrBot 官方市场 Star 排名，含数据更新时间"></a>
+  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src="https://raw.githubusercontent.com/anka-afk/astrbot_plugin_meme_manager/refs/heads/marketplace-stats/.github/img/stats/download-rank.svg" width="260" alt="AstrBot 官方市场下载量排名，含数据更新时间"></a>
+  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src="https://raw.githubusercontent.com/anka-afk/astrbot_plugin_meme_manager/refs/heads/marketplace-stats/.github/img/stats/downloads.svg" width="260" alt="AstrBot 官方市场下载量，含数据更新时间"></a>
+  <a href="https://cloud.astrbot.app/plugin/anka/meme_manager"><img src="https://raw.githubusercontent.com/anka-afk/astrbot_plugin_meme_manager/refs/heads/marketplace-stats/.github/img/stats/star-rank.svg" width="260" alt="AstrBot 官方市场 Star 排名，含数据更新时间"></a>
 </p>
 
 [![Moe Counter](https://count.getloli.com/get/@GalChat?theme=moebooru)](https://github.com/anka-afk/astrbot_plugin_meme_manager)
@@ -148,7 +148,7 @@
 
 普通模式按分类选择表情；语义模式会先为图片生成描述和检索向量，再根据对话寻找更贴切的图片。使用前需在设置中心配置图片描述模型与向量模型，并在“语义化”页面完成处理。生成描述和向量会调用对应模型，费用取决于所用服务。
 
-语义化页面可以查看处理进度、继续任务和重试失败图片。启用人工审核时，自动收集的图片先在表情包管理页审核接收；关闭审核时，新图片自动入包。启用语义检索后，“自动收集后生成向量”默认开启，入包后后台增量生成向量并复用已有索引。该设置仅在语义检索启用时显示；关闭后可在管理页点击“增量处理”。待分类或描述未完成的图片需先在语义化页面处理，不影响已有有效向量的检索。详见[向量更新说明](docs/zh/semantic-index.md)。
+语义化页面可以查看处理进度、继续任务和重试失败图片。启用人工审核时，自动收集的图片先在表情包管理页审核接收；关闭审核时，新图片自动入包。启用语义检索后，“自动收集后生成向量”默认开启，入包后后台增量生成向量并复用已有索引。该设置仅在语义检索启用时显示；关闭后可在管理页点击“增量处理”。待分类或描述未完成的图片需先在语义化页面处理，不影响已有有效向量的检索。
 
 ![语义表情包](.github/img/语义表情包页面.png)
 
@@ -234,8 +234,6 @@
 - 修复新建及非默认表情包无法编辑的问题，上传、删除、移动与分类编辑均作用于当前管理包；同时修复中文分类重复编码和批量上传中切包导致目标混乱的问题。
 - 新建表情包支持自定义包 ID，压缩包导入采用 8 MB 分片上传，支持大体积图包导入。
 - 修复在弹窗内拖动选择文本后，鼠标在遮罩上松开导致弹窗误关闭的问题。
-- 新增图包状态查询与安装联动接口，保留已有使用规则；优化首页说明，并展示自动更新的市场排名卡片和 Star 趋势。
-- 升级后请重载插件并刷新管理页面。1072 项后端测试、85 个子测试、68 项前端测试及 4 项排名脚本测试通过。
 
 完整版本记录请查看 [CHANGELOG.md](CHANGELOG.md)。
 
