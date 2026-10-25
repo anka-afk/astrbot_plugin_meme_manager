@@ -84,43 +84,43 @@ from astrbot.core.message.message_event_result import MessageChain
 
 
 async def send_with_meme_manager(context, event, text: str):
-   # Get the registered plugin instance.
-   md = context.get_registered_star("meme_manager")
-   plugin = md.star_cls if md and md.star_cls else None
+    # Get the registered plugin instance.
+    md = context.get_registered_star("meme_manager")
+    plugin = md.star_cls if md and md.star_cls else None
 
-   if not plugin:
-      # Send normally when the plugin is unavailable.
-      await event.send(MessageChain([Plain(text)]))
-      return
+    if not plugin:
+        # Send normally when the plugin is unavailable.
+        await event.send(MessageChain([Plain(text)]))
+        return
 
-   # Parse and send the text and selected images.
-   await plugin.compat_send_message(event, text)
+    # Parse and send the text and selected images.
+    await plugin.compat_send_message(event, text)
 ```
 
 如果你希望自己控制发送时机，也可以使用两段式接口：
 
 ```python
 async def send_in_two_steps(context, event, chain: MessageChain):
-   md = context.get_registered_star("meme_manager")
-   plugin = md.star_cls if md and md.star_cls else None
-   if not plugin:
-      await event.send(chain)
-      return
+    md = context.get_registered_star("meme_manager")
+    plugin = md.star_cls if md and md.star_cls else None
+    if not plugin:
+        await event.send(chain)
+        return
 
-   prepared = await plugin.compat_prepare_message(event, chain)
+    prepared = await plugin.compat_prepare_message(event, chain)
 
-   # Send the prepared text and components.
-   cleaned_chain = prepared["cleaned_chain"]
-   if cleaned_chain.chain:
-      await event.send(cleaned_chain)
+    # Send the prepared text and components.
+    cleaned_chain = prepared["cleaned_chain"]
+    if cleaned_chain.chain:
+        await event.send(cleaned_chain)
 
-   # Send prepared images through the public API.
-   await plugin.compat_send_prepared_message(
-      event,
-      prepared,
-      send_text=False,
-      send_images=True,
-   )
+    # Send prepared images through the public API.
+    await plugin.compat_send_prepared_message(
+        event,
+        prepared,
+        send_text=False,
+        send_images=True,
+    )
 ```
 
 接口说明：

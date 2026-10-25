@@ -9,6 +9,7 @@ from ...config import (
     SELECTION_RULES_PATH,
 )
 from ..semantic.models import runtime_category_mapping
+from .protocol import validate_pack_id
 
 
 def _load_json(path: Path, default):
@@ -176,6 +177,35 @@ def resolve_pack_id(
 
 def get_pack_paths(pack_id: str) -> dict[str, Path]:
     pack_dir = PACKS_DIR / pack_id
+    return {
+        "pack_dir": pack_dir,
+        "memes_dir": pack_dir / "memes",
+        "metadata_path": pack_dir / "memes_data.json",
+        "manifest_path": pack_dir / "manifest.json",
+    }
+
+
+def resolve_pack_paths(pack_id: str) -> dict[str, Path]:
+    """Resolve an existing pack without allowing paths outside the pack root.
+
+    Args:
+        pack_id: Protocol-compatible pack identifier.
+
+    Returns:
+        Absolute paths for the pack, images, category metadata and manifest.
+
+    Raises:
+        ValueError: The ID is invalid or escapes the pack root.
+        FileNotFoundError: The requested pack directory does not exist.
+    """
+    normalized = validate_pack_id(pack_id)
+    pack_dir = (PACKS_DIR / normalized).resolve()
+    try:
+        pack_dir.relative_to(PACKS_DIR.resolve())
+    except ValueError as exc:
+        raise ValueError("pack_id 无效") from exc
+    if not pack_dir.is_dir():
+        raise FileNotFoundError(f"表情包 {normalized} 不存在")
     return {
         "pack_dir": pack_dir,
         "memes_dir": pack_dir / "memes",

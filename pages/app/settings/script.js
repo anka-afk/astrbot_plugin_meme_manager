@@ -421,10 +421,13 @@ async function initSettingsPage() {
     packImportDropzone?.classList.add("checking");
     setPackTransferResult(packImportResult, "正在检查压缩包结构和兼容性…", "");
     try {
-      const data = await window.AstrBotPluginPage.upload(
-        "packs/import/stage",
-        file,
-      );
+      const data = await window.MemeUI.uploadPackArchiveInChunks(file, {
+        onProgress: (received, total) => {
+          if (packImportFileLabel) {
+            packImportFileLabel.textContent = `正在上传 ${file.name}（${received}/${total}）…`;
+          }
+        },
+      });
       pendingPackImportToken = String(data?.import_token || "").trim();
       if (!pendingPackImportToken) {
         throw new Error("服务器没有返回导入凭证");
