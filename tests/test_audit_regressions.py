@@ -91,6 +91,43 @@ async def test_uninstall_api_uses_real_operation_guard(audit_runtime):
     assert subject.semantic_task_manager._external_pack_operations == {}
 
 
+@pytest.mark.parametrize("link_location", ["pack_root", "index_root", "contents"])
+def test_uninstall_handles_links_without_deleting_external_data(
+    audit_runtime, link_location
+):
+    root, pack, _ = audit_runtime
+    external = root / "external"
+    external.mkdir()
+    sentinel = external / "keep.txt"
+    sentinel.write_bytes(b"outside library")
+    index_dir = root / "semantic_indexes/audit-pack"
+    index_dir.parent.mkdir()
+    try:
+        if link_location == "pack_root":
+            pack.rename(root / "original-pack")
+            pack.symlink_to(external, target_is_directory=True)
+        elif link_location == "index_root":
+            index_dir.symlink_to(external, target_is_directory=True)
+        else:
+            (pack / "linked-directory").symlink_to(external, target_is_directory=True)
+            (pack / "memes/happy/linked.txt").symlink_to(sentinel)
+            index_dir.mkdir()
+            (index_dir / "linked-directory").symlink_to(
+                external, target_is_directory=True
+            )
+    except (OSError, NotImplementedError):
+        pytest.skip("Creating filesystem links is unavailable")
+    if link_location == "contents":
+        storage.uninstall_pack("audit-pack")
+        assert not pack.exists()
+        assert not index_dir.exists()
+    else:
+        with pytest.raises(ValueError):
+            storage.uninstall_pack("audit-pack")
+        assert pack.exists()
+    assert sentinel.read_bytes() == b"outside library"
+
+
 @pytest.mark.parametrize(
     "failure", ["replace", "index_move", "index_create", "registry"]
 )
@@ -245,9 +282,6 @@ def test_imported_vectors_are_not_deserialized(audit_runtime, monkeypatch):
     result = storage.import_pack_archive(
         archive_path,
         preserve_existing_selection=True,
-        embedding_provider_id="audit-provider",
-        embedding_model="audit-model",
-        embedding_dimension=2,
     )
     imported_pack = storage.PACKS_DIR / result["pack_id"]
     imported = semantic_storage.load_metadata(imported_pack)
@@ -303,9 +337,6 @@ async def test_backup_round_trip_rebuilds_search_and_preserves_manual_text(
         Path(exported["archive_path"]),
         overwrite=overwrite,
         preserve_existing_selection=True,
-        embedding_provider_id=embedding.provider_id,
-        embedding_model=embedding.model_name,
-        embedding_dimension=embedding.dimension,
     )
     imported_pack = storage.PACKS_DIR / result["pack_id"]
     assert result["vectors_restored"] is False

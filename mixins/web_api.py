@@ -672,31 +672,6 @@ class WebAPIMixin:
         )
         return guidance
 
-    def _pack_import_embedding_signature(self) -> dict:
-        """返回当前本地嵌入模型签名，用于安全恢复备份。"""
-        try:
-            provider = self._resolve_embedding_provider()
-            embedding = EmbeddingAdapter(
-                provider, str(getattr(self, "semantic_embedding_provider_id", "") or "")
-            )
-        except Exception:
-            return {
-                "embedding_provider_id": "",
-                "embedding_model": "",
-                "embedding_dimension": 0,
-            }
-        if not embedding.ready:
-            return {
-                "embedding_provider_id": "",
-                "embedding_model": "",
-                "embedding_dimension": 0,
-            }
-        return {
-            "embedding_provider_id": embedding.provider_id,
-            "embedding_model": embedding.model_name,
-            "embedding_dimension": embedding.dimension,
-        }
-
     async def _run_guarded_pack_file_operation(
         self,
         pack_id: str,
@@ -3049,7 +3024,6 @@ class WebAPIMixin:
             overwrite_manual_semantics = str(
                 form.get("overwrite_manual_semantics", "false")
             ).lower() in {"1", "true", "yes", "on"}
-            import_signature = self._pack_import_embedding_signature()
 
             files = await request.files
             if not files or "file" not in files:
@@ -3085,7 +3059,6 @@ class WebAPIMixin:
                     set_as_default=set_as_default,
                     suggested_pack_id=suggested_pack_id,
                     preserve_existing_manual=not overwrite_manual_semantics,
-                    **import_signature,
                 )
             else:
                 result = await self._run_guarded_runtime_file_operation(
@@ -3096,7 +3069,6 @@ class WebAPIMixin:
                     set_as_default=set_as_default,
                     suggested_pack_id=suggested_pack_id,
                     preserve_existing_manual=not overwrite_manual_semantics,
-                    **import_signature,
                 )
             self._reload_personas()
             return jsonify({"message": "导入成功", **result}), 200
@@ -3393,7 +3365,6 @@ class WebAPIMixin:
                 "set_as_default": set_as_default,
                 "suggested_pack_id": str(session_data.get("suggested_pack_id") or ""),
                 "preserve_existing_manual": not overwrite_manual_semantics,
-                **self._pack_import_embedding_signature(),
             }
             if overwrite:
                 result = await self._run_guarded_pack_file_operation(

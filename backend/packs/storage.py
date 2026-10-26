@@ -968,9 +968,6 @@ def import_pack_archive(
     set_as_default: bool = False,
     operation_guard: PackOperationGuard | None = None,
     suggested_pack_id: str | None = None,
-    embedding_provider_id: str = "",
-    embedding_model: str = "",
-    embedding_dimension: int = 0,
     preserve_existing_manual: bool = True,
     community_origin: dict | None = None,
     preserve_existing_selection: bool = False,
@@ -986,7 +983,6 @@ def import_pack_archive(
     )
     detected_format = ""
     transfer_info: dict = {}
-    vectors_restored = False
     vector_warning = ""
 
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -1198,7 +1194,7 @@ def import_pack_archive(
         except Exception:
             if new_pack_installed:
                 shutil.rmtree(target_pack_dir, ignore_errors=True)
-            if vectors_restored or old_index_moved:
+            if old_index_moved:
                 shutil.rmtree(target_index_dir, ignore_errors=True)
             if old_pack_moved and old_pack_dir.exists():
                 shutil.move(str(old_pack_dir), str(target_pack_dir))
@@ -1228,7 +1224,7 @@ def import_pack_archive(
             "detected_format": detected_format,
             "export_mode": str(transfer_info.get("export_mode") or "share"),
             "semantic_metadata": (target_pack_dir / "semantic_metadata.json").is_file(),
-            "vectors_restored": vectors_restored,
+            "vectors_restored": False,
             "vector_warning": vector_warning or None,
             "manual_data_preserved": manual_data_preserved,
             **post_install,
@@ -1364,14 +1360,15 @@ def uninstall_pack(
         raise ValueError("pack_id 无效")
     if not pack_dir.is_dir():
         raise FileNotFoundError(f"表情包 {pack_id} 不存在")
-    _require_regular_tree(pack_dir, "卸载表情包")
     index_dir = PLUGIN_DATA_DIR / "semantic_indexes" / pack_id
-    _require_regular_tree(index_dir, "卸载向量索引")
+    for directory in (pack_dir, index_dir):
+        if directory.is_symlink() or getattr(directory, "is_junction", lambda: False)():
+            raise ValueError("卸载目录不能是符号链接或目录联接")
     if operation_guard:
         operation_guard(pack_id, "卸载资源包")
 
     shutil.rmtree(pack_dir)
-    shutil.rmtree(PLUGIN_DATA_DIR / "semantic_indexes" / pack_id, ignore_errors=True)
+    shutil.rmtree(index_dir, ignore_errors=True)
 
     registry = _load_registry()
     registry["installed_packs"] = [
