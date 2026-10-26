@@ -231,12 +231,12 @@ Cloudflare R2 使用 MinIO Python SDK 接入 S3 API，不依赖 `boto3` / `botoc
 
 ## 📜 更新日志
 
-当前版本：v5.2.8
+当前版本：v5.2.9
 
-- 修复自动收集在 AstrBot 冷启动时误报视觉模型不存在的问题（[#173](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/173)），等待核心加载完成后再启动。
-- 保留插件热重载时立即启动自动收集的行为，以及模型配置错误和不支持图片输入时的诊断。
+- R2 图床改用 MinIO Python SDK，移除 AWS SDK 对 `python-dateutil<3` 的依赖，解决与桌面端核心依赖锁冲突导致的安装失败（[#176](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/176)）。
+- 原有 R2 配置、对象路径和同步记录继续使用，无需迁移桶内图片；保留下载校验、分页同步及失败保护。
 
-升级后请重载插件，无需调整已有视觉模型配置。
+升级后请按 AstrBot 提示完成新版依赖安装并重载插件，无需部署 MinIO 服务或降级核心依赖。
 
 完整版本记录请查看 [CHANGELOG.md](CHANGELOG.md)。
 

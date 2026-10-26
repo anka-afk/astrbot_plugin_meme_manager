@@ -2,6 +2,13 @@
 
 本文件记录 AstrBot 表情包管理器的主要版本更新，最新版本排在最前。
 
+## v5.2.9
+
+- Cloudflare R2 适配器由 AWS SDK 切换为 MinIO Python SDK，移除 `boto3` / `botocore` 依赖，解决其 `python-dateutil<3` 限制与 AstrBot Desktop 核心依赖锁冲突导致插件安装失败的问题（[#176](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/176)）。
+- 保留现有 R2 配置、对象路径、SHA-256 元数据和同步记录的 ETag 格式；继续校验下载内容与远端对象版本，提供分片上传、分页列举及有次数限制的失败重试。
+
+升级后请按 AstrBot 提示完成新版依赖安装并重载插件。无需部署 MinIO 服务，无需迁移 R2 桶内图片，也无需降级核心依赖。
+
 ## v5.2.8
 
 - 修复开启自动收集后，AstrBot 冷启动时因视觉模型尚未注册而误报“Provider ... was not found”的问题（[#173](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/173)）。冷启动时等待核心加载完成后再启动自动收集；插件热重载时，已注册的视觉模型仍可立即启动。
