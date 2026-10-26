@@ -86,6 +86,13 @@ PLUGIN_NAME = "meme_manager"
 WEBUI_LOG_PREFIX = f"[{PLUGIN_NAME}][WebUI]"
 MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_ORIGINAL_IMAGE_BYTES = 32 * 1024 * 1024
+IMAGE_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 PREVIEW_IMAGE_MAX_DIMENSION = 512
 IMG_HOST_STATUS_CACHE_TTL_SECONDS = 15
 PACK_IMPORT_SESSION_TTL_SECONDS = 60 * 60
@@ -2022,7 +2029,15 @@ class WebAPIMixin:
     async def _api_serve_meme_image(self):
         category = request.args.get("category", "")
         filename = request.args.get("filename", "")
+        if (
+            not is_safe_category_name(category)
+            or not is_safe_category_name(filename)
+            or Path(filename).suffix.lower() not in pack_storage.IMAGE_EXTENSIONS
+        ):
+            return jsonify({"message": "Invalid image path"}), 400
         view_context = self._resolve_webui_pack_view_context()
+        if request.args.get("managed_pack_id") and view_context is None:
+            return jsonify({"message": "Pack not found"}), 404
         memes_root = (
             view_context["memes_dir"].resolve()
             if view_context
@@ -2035,7 +2050,12 @@ class WebAPIMixin:
             return jsonify({"status": "error", "message": "非法路径"}), 403
         if not file_path.is_file():
             return jsonify({"status": "error", "message": "文件不存在"}), 404
-        return await send_file(str(file_path))
+        response = await send_file(
+            str(file_path), mimetype=IMAGE_MIME_TYPES[Path(filename).suffix.lower()]
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+        return response
 
     @staticmethod
     def _preview_revision(file_path: Path) -> str:
@@ -2100,6 +2120,12 @@ class WebAPIMixin:
     async def _api_get_meme_image_data(self):
         category = request.args.get("category", "")
         filename = request.args.get("filename", "")
+        if (
+            not is_safe_category_name(category)
+            or not is_safe_category_name(filename)
+            or Path(filename).suffix.lower() not in pack_storage.IMAGE_EXTENSIONS
+        ):
+            return jsonify({"message": "Invalid image path"}), 400
         size = request.args.get("size", "preview")
         if size not in {"preview", "original"}:
             return jsonify({"message": "Invalid preview size"}), 400
@@ -2156,9 +2182,7 @@ class WebAPIMixin:
                 413,
             )
 
-        mime_type = (
-            mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-        )
+        mime_type = IMAGE_MIME_TYPES[Path(filename).suffix.lower()]
         if size == "preview" and mime_type != "image/gif":
             try:
                 data_url, mime_type = await asyncio.to_thread(
@@ -2201,6 +2225,8 @@ class WebAPIMixin:
         ) or not self._safe_semantic_image_name(filename):
             return jsonify({"message": "分类或文件名无效"}), 400
         view_context = self._resolve_webui_pack_view_context()
+        if request.args.get("managed_pack_id") and view_context is None:
+            return jsonify({"message": "Pack not found"}), 404
         memes_root = (
             view_context["memes_dir"].resolve()
             if view_context
