@@ -1,7 +1,6 @@
 aiohttp
 tqdm
-boto3
-botocore
+minio>=7.2.20,<8
 pillow
 requests
 faiss-cpu

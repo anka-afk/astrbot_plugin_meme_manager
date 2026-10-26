@@ -1,11 +1,13 @@
 """Cloudflare R2 storage with portable object paths and bounded S3 requests."""
 
 import mimetypes
+import os
 from pathlib import Path
 from urllib.parse import quote
 
-import boto3
-from botocore.config import Config
+import certifi
+import urllib3
+from minio import Minio
 
 from ..core.file_handler import (
     SUPPORTED_FORMATS,
@@ -38,20 +40,27 @@ class CloudflareR2Provider(ImageHostInterface):
             str(config.get("prefix") or "memes").strip("/")
         )
         self.public_url = str(config.get("public_url") or "").rstrip("/")
-        self.s3_client = boto3.client(
-            "s3",
-            endpoint_url=f"https://{self.account_id}.r2.cloudflarestorage.com",
-            aws_access_key_id=config["access_key_id"],
-            aws_secret_access_key=config["secret_access_key"],
-            region_name="auto",
-            config=Config(
-                signature_version="s3v4",
-                s3={"addressing_style": "path"},
-                connect_timeout=10,
-                read_timeout=60,
-                retries={"mode": "standard", "total_max_attempts": 3},
+        self._http = urllib3.PoolManager(
+            timeout=urllib3.Timeout(connect=10, read=60),
+            cert_reqs="CERT_REQUIRED",
+            ca_certs=os.environ.get("SSL_CERT_FILE") or certifi.where(),
+            retries=urllib3.Retry(
+                total=2,
+                redirect=0,
+                backoff_factor=0.2,
+                status_forcelist=[429, 500, 502, 503, 504],
+                respect_retry_after_header=False,
             ),
         )
+        self.s3_client = Minio(
+            f"{self.account_id}.r2.cloudflarestorage.com",
+            access_key=config["access_key_id"],
+            secret_key=config["secret_access_key"],
+            secure=True,
+            region="auto",
+            http_client=self._http,
+        )
+        self.s3_client.disable_virtual_style_endpoint()
 
     def upload_image(self, file_path: Path) -> ImageInfo:
         """Stream an image to R2 with a content fingerprint.
@@ -69,13 +78,14 @@ class CloudflareR2Provider(ImageHostInterface):
         fingerprint = file_fingerprint(file_path)
         with file_path.open("rb") as stream:
             response = self.s3_client.put_object(
-                Bucket=self.bucket_name,
-                Key=key,
-                Body=stream,
-                ContentLength=fingerprint["size"],
-                ContentType=mimetypes.guess_type(file_path.name)[0]
+                self.bucket_name,
+                key,
+                stream,
+                fingerprint["size"],
+                content_type=mimetypes.guess_type(file_path.name)[0]
                 or "application/octet-stream",
-                Metadata={"sha256": fingerprint["sha256"]},
+                metadata={"sha256": fingerprint["sha256"]},
+                num_parallel_uploads=1,
             )
         category, _, filename = relative.rpartition("/")
         return {
@@ -86,7 +96,8 @@ class CloudflareR2Provider(ImageHostInterface):
             "url": self._get_public_url(key),
             "size": fingerprint["size"],
             "sha256": fingerprint["sha256"],
-            "etag": response.get("ETag", ""),
+            # Keep the quoted wire format used by existing sync baselines.
+            "etag": f'"{response.etag}"' if response.etag else "",
         }
 
     def delete_image(self, image_id: str) -> bool:
@@ -99,7 +110,7 @@ class CloudflareR2Provider(ImageHostInterface):
             Whether the S3 delete request completed.
         """
         self._parse_s3_key(image_id)
-        self.s3_client.delete_object(Bucket=self.bucket_name, Key=image_id)
+        self.s3_client.remove_object(self.bucket_name, image_id)
         return True
 
     def get_image_list(self) -> list[ImageInfo]:
@@ -109,30 +120,27 @@ class CloudflareR2Provider(ImageHostInterface):
             Complete image metadata from the selected prefix.
         """
         images = []
-        paginator = self.s3_client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(
-            Bucket=self.bucket_name, Prefix=f"{self.prefix}/"
+        for obj in self.s3_client.list_objects(
+            self.bucket_name, prefix=f"{self.prefix}/", recursive=True
         ):
-            for obj in page.get("Contents", []):
-                key = obj["Key"]
-                if (
-                    key.endswith("/")
-                    or Path(key).suffix.lower() not in SUPPORTED_FORMATS
-                ):
-                    continue
-                category, filename = self._parse_s3_key(key)
-                relative = f"{category}/{filename}" if category else filename
-                images.append(
-                    {
-                        "id": key,
-                        "relative_path": relative,
-                        "filename": filename,
-                        "category": category,
-                        "url": self._get_public_url(key),
-                        "size": int(obj["Size"]) if "Size" in obj else None,
-                        "etag": obj.get("ETag", ""),
-                    }
-                )
+            key = obj.object_name
+            if not key:
+                raise CloudflareR2Error("R2 inventory contains an unnamed object")
+            if obj.is_dir or Path(key).suffix.lower() not in SUPPORTED_FORMATS:
+                continue
+            category, filename = self._parse_s3_key(key)
+            relative = f"{category}/{filename}" if category else filename
+            images.append(
+                {
+                    "id": key,
+                    "relative_path": relative,
+                    "filename": filename,
+                    "category": category,
+                    "url": self._get_public_url(key),
+                    "size": obj.size,
+                    "etag": f'"{obj.etag}"' if obj.etag else "",
+                }
+            )
         return images
 
     def download_image(self, image_info: ImageInfo, save_path: Path) -> bool:
@@ -147,20 +155,21 @@ class CloudflareR2Provider(ImageHostInterface):
         """
         key = image_info["id"]
         self._parse_s3_key(key)
-        params = {"Bucket": self.bucket_name, "Key": key}
-        if image_info.get("etag"):
-            params["IfMatch"] = image_info["etag"]
-        response = self.s3_client.get_object(**params)
-        body = response["Body"]
+        headers = {"If-Match": image_info["etag"]} if image_info.get("etag") else {}
+        response = self.s3_client.get_object(
+            self.bucket_name, key, request_headers=headers
+        )
         try:
+            content_length = response.headers.get("Content-Length")
             save_image_stream(
-                body.iter_chunks(chunk_size=1024 * 1024),
+                response.stream(amt=1024 * 1024),
                 Path(save_path),
-                response.get("ContentLength"),
-                response.get("Metadata", {}).get("sha256", ""),
+                int(content_length) if content_length is not None else None,
+                response.headers.get("x-amz-meta-sha256", ""),
             )
         finally:
-            body.close()
+            response.close()
+            response.release_conn()
         return True
 
     def _generate_s3_key(self, file_path: Path) -> str:
@@ -223,4 +232,4 @@ class CloudflareR2Provider(ImageHostInterface):
 
     def close(self) -> None:
         """Release the S3 connection pool."""
-        self.s3_client.close()
+        self._http.clear()

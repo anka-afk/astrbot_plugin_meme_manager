@@ -93,6 +93,8 @@
 - WebDAV
 - StarDots
 
+Cloudflare R2 使用 MinIO Python SDK 接入 S3 API，不依赖 `boto3` / `botocore`，避免其 `python-dateutil<3` 限制与桌面端依赖锁冲突。已有账户 ID、访问密钥、存储桶、路径前缀和公开访问地址配置继续使用，无需迁移桶内图片。
+
 ## 📚 协议与创作指引
 
 ### 协议文档
