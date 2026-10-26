@@ -602,8 +602,7 @@ class WebAPIMixin:
             )
         if not pack_id:
             raise ValueError("pack_id 不能为空")
-        if not re.fullmatch(r"[A-Za-z0-9._-]{2,64}", pack_id):
-            raise ValueError("pack_id 无效")
+        pack_id = validate_pack_id(pack_id)
         pack_dir = (PACKS_DIR / pack_id).resolve()
         try:
             pack_dir.relative_to(PACKS_DIR.resolve())
@@ -904,7 +903,9 @@ class WebAPIMixin:
         managed_pack_id = str(request.args.get("managed_pack_id") or "").strip()
         if not managed_pack_id:
             return None
-        if not re.fullmatch(r"[A-Za-z0-9._-]{2,64}", managed_pack_id):
+        try:
+            managed_pack_id = validate_pack_id(managed_pack_id)
+        except ValueError:
             return None
 
         pack_dir = (PACKS_DIR / managed_pack_id).resolve()

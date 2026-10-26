@@ -231,12 +231,12 @@ def _directory_size(path: Path) -> int:
 
 
 def _require_regular_tree(path: Path, operation: str) -> None:
-    if path.is_symlink():
+    if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
         raise ValueError(f"{operation}目录不能是符号链接")
     if not path.is_dir():
         return
     for item in path.rglob("*"):
-        if item.is_symlink():
+        if item.is_symlink() or getattr(item, "is_junction", lambda: False)():
             raise ValueError(f"{operation}包含符号链接，已拒绝处理: {item.name}")
 
 
@@ -565,9 +565,7 @@ def list_installed_packs() -> list[dict]:
 
 
 def get_pack_detail(pack_id: str) -> dict:
-    pack_id = str(pack_id or "").strip()
-    if not pack_id:
-        raise ValueError("pack_id 不能为空")
+    pack_id = validate_pack_id(pack_id)
 
     pack_dir = PACKS_DIR / pack_id
     if not pack_dir.is_dir():
@@ -609,9 +607,7 @@ def get_pack_detail(pack_id: str) -> dict:
 
 
 def set_default_pack(pack_id: str) -> dict:
-    pack_id = str(pack_id or "").strip()
-    if not pack_id:
-        raise ValueError("pack_id 不能为空")
+    pack_id = validate_pack_id(pack_id)
     if not (PACKS_DIR / pack_id).is_dir():
         raise FileNotFoundError(f"表情包 {pack_id} 不存在")
 
@@ -1418,15 +1414,18 @@ def export_pack_archive(
 def uninstall_pack(
     pack_id: str, operation_guard: PackOperationGuard | None = None
 ) -> dict:
-    pack_id = str(pack_id or "").strip()
-    if not pack_id:
-        raise ValueError("pack_id 不能为空")
+    pack_id = validate_pack_id(pack_id)
 
     previous_default_pack_id = _current_default_pack_id()
 
     pack_dir = PACKS_DIR / pack_id
+    if pack_dir.resolve().parent != PACKS_DIR.resolve():
+        raise ValueError("pack_id 无效")
     if not pack_dir.is_dir():
         raise FileNotFoundError(f"表情包 {pack_id} 不存在")
+    _require_regular_tree(pack_dir, "卸载表情包")
+    index_dir = PLUGIN_DATA_DIR / "semantic_indexes" / pack_id
+    _require_regular_tree(index_dir, "卸载向量索引")
     if operation_guard:
         operation_guard(pack_id, "卸载资源包")
 
