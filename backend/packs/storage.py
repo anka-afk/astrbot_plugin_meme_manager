@@ -1980,6 +1980,7 @@ def export_runtime_backup(
         if COMMUNITY_CACHE_PATH.is_file():
             shutil.copy2(COMMUNITY_CACHE_PATH, snapshot_root / "community_cache.json")
         if PACKS_DIR.is_dir():
+            _require_regular_tree(PACKS_DIR, "导出全量备份")
             if operation_guard:
                 for pack_dir in PACKS_DIR.iterdir():
                     if pack_dir.is_dir():
@@ -2029,7 +2030,9 @@ def import_runtime_backup(
     with tempfile.TemporaryDirectory(
         dir=TEMP_DIR, prefix="runtime_restore_"
     ) as tmp_dir:
-        extract_root = Path(tmp_dir)
+        workspace = Path(tmp_dir)
+        extract_root = workspace / "extract"
+        extract_root.mkdir()
         _extract_zip_safely(backup_zip_path, extract_root)
         backup_root = _find_backup_root(extract_root)
         _require_regular_tree(backup_root, "恢复全量备份")
@@ -2042,7 +2045,7 @@ def import_runtime_backup(
         if not backup_packs_dir.is_dir() and not backup_registry.is_file():
             raise ValueError("备份包中没有可恢复的数据")
 
-        prepared_packs = extract_root / "prepared_packs"
+        prepared_packs = workspace / "prepared_packs"
         prepared_packs.mkdir()
         prepared_manifests: dict[str, dict] = {}
         if backup_packs_dir.is_dir():
@@ -2201,16 +2204,24 @@ def import_runtime_backup(
             else None
         )
         semantic_indexes_dir = PLUGIN_DATA_DIR / "semantic_indexes"
-        old_packs_dir = extract_root / "old_runtime_packs"
-        old_indexes_dir = extract_root / "old_runtime_indexes"
+        # Keep rollback sources outside the temporary workspace so a failed
+        # rollback never lets TemporaryDirectory remove the original library.
+        old_packs_dir = PACKS_DIR.with_name(f".packs-{workspace.name}.old")
+        old_indexes_dir = semantic_indexes_dir.with_name(
+            f".indexes-{workspace.name}.old"
+        )
+        if old_packs_dir.exists() or old_indexes_dir.exists():
+            raise FileExistsError("恢复暂存目录已存在，请稍后重试")
         added_pack_ids: list[str] = []
         moved_index_dirs: dict[str, Path] = {}
         packs_swapped = False
+        old_packs_moved = False
         indexes_swapped = False
         try:
             if overwrite and backup_packs_dir.is_dir():
                 if PACKS_DIR.exists():
                     shutil.move(str(PACKS_DIR), str(old_packs_dir))
+                    old_packs_moved = True
                 shutil.move(str(prepared_packs), str(PACKS_DIR))
                 packs_swapped = True
                 if semantic_indexes_dir.exists():
@@ -2229,9 +2240,7 @@ def import_runtime_backup(
                     added_pack_ids.append(prepared_pack_dir.name)
                     target_index_dir = semantic_indexes_dir / prepared_pack_dir.name
                     if target_index_dir.exists():
-                        moved_index = (
-                            extract_root / f"old_index_{prepared_pack_dir.name}"
-                        )
+                        moved_index = workspace / f"old_index_{prepared_pack_dir.name}"
                         shutil.move(str(target_index_dir), str(moved_index))
                         moved_index_dirs[prepared_pack_dir.name] = moved_index
                     restored_packs += 1
@@ -2242,17 +2251,17 @@ def import_runtime_backup(
             if community_payload is not None:
                 _save_json(COMMUNITY_CACHE_PATH, community_payload)
         except Exception:
-            if packs_swapped:
+            if packs_swapped or old_packs_moved:
                 shutil.rmtree(PACKS_DIR, ignore_errors=True)
                 if old_packs_dir.exists():
-                    shutil.move(str(old_packs_dir), str(PACKS_DIR))
+                    old_packs_dir.rename(PACKS_DIR)
             else:
                 for pack_id in added_pack_ids:
                     shutil.rmtree(PACKS_DIR / pack_id, ignore_errors=True)
             if indexes_swapped:
                 shutil.rmtree(semantic_indexes_dir, ignore_errors=True)
                 if old_indexes_dir.exists():
-                    shutil.move(str(old_indexes_dir), str(semantic_indexes_dir))
+                    old_indexes_dir.rename(semantic_indexes_dir)
             else:
                 for pack_id, moved_index in moved_index_dirs.items():
                     target_index_dir = semantic_indexes_dir / pack_id
@@ -2264,6 +2273,8 @@ def import_runtime_backup(
             _restore_file_snapshot(COMMUNITY_CACHE_PATH, community_snapshot)
             raise
 
+        shutil.rmtree(old_packs_dir, ignore_errors=True)
+        shutil.rmtree(old_indexes_dir, ignore_errors=True)
         return {
             "restored_packs": restored_packs,
             "runtime_dir": str(PLUGIN_DATA_DIR),
