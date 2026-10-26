@@ -1,11 +1,11 @@
 import hashlib
 import io
 import json
+from unittest.mock import Mock
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import requests
-from botocore.response import StreamingBody
-from botocore.stub import ANY, Stubber
 from image_host.providers.cloudflare_r2_provider import CloudflareR2Provider
 from image_host.providers.stardots_provider import (
     AuthenticationError as StarDotsAuthenticationError,
@@ -25,6 +25,8 @@ from image_host.providers.webdav_provider import (
     InvalidResponseError,
     WebDAVProvider,
 )
+from minio.error import S3Error
+from urllib3 import HTTPResponse
 
 
 @pytest.fixture
@@ -41,7 +43,7 @@ def response():
 
 
 @pytest.fixture
-def r2(tmp_path):
+def r2(tmp_path, monkeypatch):
     provider = CloudflareR2Provider(
         {
             "account_id": "account",
@@ -51,6 +53,11 @@ def r2(tmp_path):
             "local_dir": str(tmp_path),
             "public_url": "https://cdn.example/",
         }
+    )
+    monkeypatch.setattr(
+        provider._http,
+        "urlopen",
+        Mock(side_effect=AssertionError("Unexpected R2 HTTP request")),
     )
     yield provider
     provider.close()
@@ -108,89 +115,141 @@ def test_r2_rejects_keys_outside_namespace(r2, key):
 def test_r2_streams_upload_with_correct_path_and_content_metadata(r2, make_image):
     path = make_image("animals/cats/meme.png")
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    with Stubber(r2.s3_client) as stub:
-        stub.add_response(
-            "put_object",
-            {"ETag": '"version"'},
-            {
-                "Bucket": "bucket",
-                "Key": "memes/animals/cats/meme.png",
-                "Body": ANY,
-                "ContentLength": path.stat().st_size,
-                "ContentType": "image/png",
-                "Metadata": {"sha256": digest},
-            },
-        )
-        result = r2.upload_image(path)
-        assert result["id"] == "memes/animals/cats/meme.png"
-        assert result["relative_path"] == "animals/cats/meme.png"
-        assert result["sha256"] == digest
-        assert result["etag"] == '"version"'
-        stub.assert_no_pending_responses()
+    r2._http.urlopen.side_effect = [
+        HTTPResponse(status=200, headers={"ETag": '"version"'})
+    ]
+
+    result = r2.upload_image(path)
+
+    assert result["id"] == "memes/animals/cats/meme.png"
+    assert result["relative_path"] == "animals/cats/meme.png"
+    assert result["sha256"] == digest
+    assert result["etag"] == '"version"'
+    call = r2._http.urlopen.call_args
+    assert call.args == (
+        "PUT",
+        "https://account.r2.cloudflarestorage.com/bucket/memes/animals/cats/meme.png",
+    )
+    assert call.kwargs["body"] == path.read_bytes()
+    assert call.kwargs["headers"]["Content-Type"] == "image/png"
+    assert call.kwargs["headers"]["x-amz-meta-sha256"] == digest
+    assert "/auto/s3/aws4_request" in call.kwargs["headers"]["Authorization"]
+    assert r2._http.urlopen.call_count == 1
 
 
 def test_r2_lists_all_pages_and_filters_nonimages(r2):
-    with Stubber(r2.s3_client) as stub:
-        stub.add_response(
-            "list_objects_v2",
-            {
-                "IsTruncated": True,
-                "NextContinuationToken": "next",
-                "Contents": [
-                    {"Key": "memes/a.png", "Size": 10, "ETag": '"opaque-2"'},
-                    {"Key": "memes/note.json", "Size": 20},
-                ],
-            },
-            {"Bucket": "bucket", "Prefix": "memes/"},
-        )
-        stub.add_response(
-            "list_objects_v2",
-            {
-                "IsTruncated": False,
-                "Contents": [{"Key": "memes/cats/b.png", "Size": 30}],
-            },
-            {"Bucket": "bucket", "Prefix": "memes/", "ContinuationToken": "next"},
-        )
-        images = r2.get_image_list()
-        assert [image["relative_path"] for image in images] == ["a.png", "cats/b.png"]
-        assert images[0]["etag"] == '"opaque-2"'
-        assert "sha256" not in images[0]
+    r2._http.urlopen.side_effect = [
+        HTTPResponse(
+            status=200,
+            body=b"<ListBucketResult><Name>bucket</Name><IsTruncated>true</IsTruncated>"
+            b"<NextContinuationToken>next</NextContinuationToken>"
+            b'<Contents><Key>memes/a.png</Key><Size>10</Size><ETag>"opaque-2"</ETag></Contents>'
+            b"<Contents><Key>memes/note.json</Key><Size>20</Size></Contents></ListBucketResult>",
+        ),
+        HTTPResponse(
+            status=200,
+            body=b"<ListBucketResult><Name>bucket</Name><IsTruncated>false</IsTruncated>"
+            b"<Contents><Key>memes/cats/b.png</Key><Size>30</Size></Contents></ListBucketResult>",
+        ),
+    ]
+
+    images = r2.get_image_list()
+
+    assert [image["relative_path"] for image in images] == ["a.png", "cats/b.png"]
+    assert images[0]["etag"] == '"opaque-2"'
+    assert "sha256" not in images[0]
+    calls = r2._http.urlopen.call_args_list
+    assert len(calls) == 2
+    assert parse_qs(urlsplit(calls[0].args[1]).query)["prefix"] == ["memes/"]
+    assert parse_qs(urlsplit(calls[1].args[1]).query)["continuation-token"] == ["next"]
 
 
 def test_r2_failed_second_page_does_not_return_partial_inventory(r2):
-    with Stubber(r2.s3_client) as stub:
-        stub.add_response(
-            "list_objects_v2",
-            {
-                "IsTruncated": True,
-                "NextContinuationToken": "next",
-                "Contents": [{"Key": "memes/a.png", "Size": 10}],
-            },
-        )
-        stub.add_client_error(
-            "list_objects_v2", service_error_code="AccessDenied", http_status_code=403
-        )
-        with pytest.raises(Exception):
-            r2.get_image_list()
+    r2._http.urlopen.side_effect = [
+        HTTPResponse(
+            status=200,
+            body=b"<ListBucketResult><Name>bucket</Name><IsTruncated>true</IsTruncated>"
+            b"<NextContinuationToken>next</NextContinuationToken>"
+            b"<Contents><Key>memes/a.png</Key><Size>10</Size></Contents></ListBucketResult>",
+        ),
+        HTTPResponse(
+            status=403,
+            headers={"Content-Type": "application/xml"},
+            body=b"<Error><Code>AccessDenied</Code><Message>Denied</Message></Error>",
+        ),
+    ]
+    with pytest.raises(S3Error, match="AccessDenied"):
+        r2.get_image_list()
 
 
 def test_r2_download_uses_conditional_get_and_closes_stream(r2, image_bytes, tmp_path):
     content = image_bytes()
     raw = io.BytesIO(content)
-    with Stubber(r2.s3_client) as stub:
-        stub.add_response(
-            "get_object",
-            {
-                "Body": StreamingBody(raw, len(content)),
-                "ContentLength": len(content),
-                "Metadata": {"sha256": hashlib.sha256(content).hexdigest()},
-            },
-            {"Bucket": "bucket", "Key": "memes/a.png", "IfMatch": '"version"'},
-        )
-        path = tmp_path / "a.png"
-        assert r2.download_image({"id": "memes/a.png", "etag": '"version"'}, path)
-        assert path.read_bytes() == content
-        assert raw.closed
+    response = HTTPResponse(
+        status=200,
+        body=raw,
+        headers={
+            "Content-Length": str(len(content)),
+            "x-amz-meta-sha256": hashlib.sha256(content).hexdigest(),
+        },
+        preload_content=False,
+    )
+    response.release_conn = Mock(wraps=response.release_conn)
+    r2._http.urlopen.side_effect = [response]
+    path = tmp_path / "a.png"
+
+    assert r2.download_image({"id": "memes/a.png", "etag": '"version"'}, path)
+
+    assert path.read_bytes() == content
+    assert raw.closed
+    response.release_conn.assert_called()
+    assert r2._http.urlopen.call_args.kwargs["headers"]["If-Match"] == '"version"'
+
+
+@pytest.mark.parametrize("failure", ["checksum", "length", "stream"])
+def test_r2_failed_download_keeps_target_and_releases_connection(
+    r2, image_bytes, tmp_path, failure
+):
+    content = image_bytes()
+    raw = io.BytesIO(content)
+    response = HTTPResponse(
+        status=200,
+        body=raw,
+        headers={
+            "Content-Length": str(len(content)),
+            "x-amz-meta-sha256": hashlib.sha256(content).hexdigest(),
+        },
+        preload_content=False,
+    )
+    response.release_conn = Mock(wraps=response.release_conn)
+    if failure == "checksum":
+        response.headers["x-amz-meta-sha256"] = "0" * 64
+    elif failure == "length":
+        response.headers["Content-Length"] = "invalid"
+    else:
+        response.stream = Mock(side_effect=OSError("connection lost"))
+    r2._http.urlopen.side_effect = [response]
+    path = tmp_path / "existing.png"
+    path.write_bytes(content)
+
+    with pytest.raises((ValueError, OSError)):
+        r2.download_image({"id": "memes/a.png"}, path)
+
+    assert path.read_bytes() == content
+    assert raw.closed
+    response.release_conn.assert_called()
+    assert not list(tmp_path.glob(".image-download-*.tmp"))
+
+
+def test_r2_pool_verifies_tls_and_closes(r2, monkeypatch):
+    assert r2._http.connection_pool_kw["cert_reqs"] == "CERT_REQUIRED"
+    assert r2._http.connection_pool_kw["ca_certs"]
+    clear = Mock(wraps=r2._http.clear)
+    monkeypatch.setattr(r2._http, "clear", clear)
+
+    r2.close()
+
+    clear.assert_called_once()
 
 
 @pytest.mark.parametrize(
