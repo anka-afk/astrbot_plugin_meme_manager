@@ -1499,7 +1499,7 @@ async function initApp() {
     }
     if (packImportVectorState) {
       packImportVectorState.textContent = data?.vectors_present
-        ? "包含，将校验"
+        ? "包含，导入后需在本机重建"
         : "不包含";
     }
     const warnings = Array.isArray(data?.warnings) ? data.warnings : [];

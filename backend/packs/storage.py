@@ -899,6 +899,8 @@ def inspect_pack_archive(zip_path: Path, suggested_pack_id: str | None = None) -
             warnings.append(
                 "压缩包声明包含向量，但缺少完整索引文件；将按无向量包导入。"
             )
+        elif declared_vectors:
+            warnings.append("导入后保留图片和语义描述，向量索引需要在本机重建。")
 
         return {
             "detected_format": detected_format,
@@ -1038,9 +1040,7 @@ def import_pack_archive(
         semantic_file = prepared_pack_dir / "semantic_metadata.json"
         declared_vectors = bool(transfer_info.get("features", {}).get("vectors", False))
         source_index_dir = pack_root / "semantic_index"
-        source_index_manifest, bundled_index_path = _index_bundle_details(
-            source_index_dir
-        )
+        _, bundled_index_path = _index_bundle_details(source_index_dir)
         vector_files_present = bundled_index_path is not None
         restore_candidate = bool(
             transfer_info.get("export_mode") == "backup"
@@ -1048,50 +1048,28 @@ def import_pack_archive(
             and vector_files_present
             and semantic_file.is_file()
         )
-        expected_dimension = _safe_nonnegative_int(embedding_dimension) or 0
-        expected_signature_available = bool(
-            str(embedding_provider_id or "").strip() and expected_dimension > 0
-        )
-        archive_dimension = _safe_nonnegative_int(
-            source_index_manifest.get("embedding_dimension", 0)
-        )
-        signature_matches = bool(
-            expected_signature_available
-            and str(source_index_manifest.get("embedding_provider_id") or "")
-            == str(embedding_provider_id or "")
-            and str(source_index_manifest.get("embedding_model") or "")
-            == str(embedding_model or "")
-            and archive_dimension == expected_dimension
-        )
-        wants_vector_restore = bool(restore_candidate and signature_matches)
-        if restore_candidate and not expected_signature_available:
+        # Archive metadata cannot authenticate native index bytes. Preserve
+        # portable descriptions and build indexes locally instead of parsing
+        # externally supplied FAISS files in the AstrBot process.
+        if restore_candidate:
             vector_warning = (
-                "当前未提供本机向量模型信息，已保留语义描述并放弃压缩包向量。"
+                "已保留图片和语义描述；压缩包向量不直接载入，请在本机重建索引。"
             )
-        elif restore_candidate and not signature_matches:
-            vector_warning = (
-                "压缩包向量模型或维度与本机不一致，已保留语义描述并等待重建。"
-            )
+        elif declared_vectors:
+            vector_warning = "压缩包缺少完整向量索引，已按无向量包导入。"
 
         if semantic_file.is_file():
             # 无论新旧包都先按图片内容复核路径和哈希，避免错误记录指向其他文件。
             imported_data = import_metadata_file(semantic_file)
-            if wants_vector_restore:
-                reconciled = reconcile_metadata(
-                    prepared_pack_dir, external_data=imported_data
-                )
-                reconciled["pack_id"] = pack_id
-                save_metadata(prepared_pack_dir, reconciled)
-            else:
-                portable_data = reset_local_embedding_state(
-                    imported_data, prepared_pack_dir
-                )
-                reconciled = reconcile_metadata(
-                    prepared_pack_dir, external_data=portable_data
-                )
-                reconciled = reset_local_embedding_state(reconciled)
-                reconciled["pack_id"] = pack_id
-                save_metadata(prepared_pack_dir, reconciled)
+            portable_data = reset_local_embedding_state(
+                imported_data, prepared_pack_dir
+            )
+            reconciled = reconcile_metadata(
+                prepared_pack_dir, external_data=portable_data
+            )
+            reconciled = reset_local_embedding_state(reconciled)
+            reconciled["pack_id"] = pack_id
+            save_metadata(prepared_pack_dir, reconciled)
 
         target_pack_dir = PACKS_DIR / pack_id
         manual_data_preserved = False
@@ -1122,42 +1100,9 @@ def import_pack_archive(
                 )
                 merged["pack_id"] = pack_id
                 save_metadata(prepared_pack_dir, reset_local_embedding_state(merged))
-                wants_vector_restore = False
                 vector_warning = (
                     "已保留现有图包的人工语义；为避免错配，压缩包向量已放弃并等待重建。"
                 )
-
-        prepared_index_dir = workspace / "prepared_index"
-        if wants_vector_restore:
-            shutil.copytree(source_index_dir, prepared_index_dir)
-            index_manifest_path = prepared_index_dir / "index_manifest.json"
-            index_manifest = _load_json(index_manifest_path, {})
-            if isinstance(index_manifest, dict):
-                index_manifest["pack_id"] = pack_id
-                _save_json(index_manifest_path, index_manifest)
-
-            validation_runtime = workspace / "vector_validation"
-            validation_index_dir = validation_runtime / "semantic_indexes" / pack_id
-            validation_index_dir.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(prepared_index_dir, validation_index_dir)
-            try:
-                vectors_restored = index_is_ready(
-                    validation_runtime,
-                    pack_id,
-                    metadata=load_metadata(prepared_pack_dir),
-                    embedding_provider_id=str(embedding_provider_id or ""),
-                    embedding_model=str(embedding_model or ""),
-                    embedding_dimension=expected_dimension,
-                )
-            except Exception:
-                vectors_restored = False
-            if not vectors_restored:
-                vector_warning = "向量索引校验未通过，已保留语义描述并改为待重建状态。"
-                portable = reset_local_embedding_state(load_metadata(prepared_pack_dir))
-                portable["pack_id"] = pack_id
-                save_metadata(prepared_pack_dir, portable)
-        elif declared_vectors and not vector_warning:
-            vector_warning = "压缩包缺少完整向量索引，已按无向量包导入。"
 
         target_index_dir = PLUGIN_DATA_DIR / "semantic_indexes" / pack_id
         old_pack_dir = workspace / "replaced_pack"
@@ -1213,10 +1158,6 @@ def import_pack_archive(
             PACKS_DIR.mkdir(parents=True, exist_ok=True)
             prepared_pack_dir.rename(target_pack_dir)
             new_pack_installed = True
-            if vectors_restored:
-                target_index_dir.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(prepared_index_dir, target_index_dir)
-
             registry = _load_registry()
             installed = registry["installed_packs"]
             manifest = _load_manifest(pack_id)
