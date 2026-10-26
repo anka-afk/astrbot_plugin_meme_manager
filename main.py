@@ -295,8 +295,8 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         self._semantic_initial_rebuild_task = None
 
     async def initialize(self) -> None:
-        """Start collection on plugin reload as well as initial startup."""
-        await self.auto_collect_manager.start()
+        """Start collection on reload, deferring unregistered providers at startup."""
+        await self.auto_collect_manager.start(defer_missing_provider=True)
 
     @filter.on_astrbot_loaded()
     async def _schedule_semantic_initial_rebuild(self):
