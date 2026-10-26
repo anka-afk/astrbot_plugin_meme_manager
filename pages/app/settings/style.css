@@ -1127,6 +1127,183 @@ button.drag-handle:hover {
   grid-column: 1 / -1;
 }
 
+.rule-pack-picker {
+  display: grid;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.rule-pack-status,
+.rule-pack-picker > small {
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.rule-pack-selected {
+  display: grid;
+  gap: var(--space-8);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rule-pack-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.rule-pack-row.missing {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+}
+
+.rule-pack-rank {
+  flex: 0 0 24px;
+  color: var(--text-muted);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.rule-pack-info {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+.rule-pack-info strong {
+  color: var(--text);
+  font-size: var(--font-label);
+  font-weight: 600;
+}
+
+.rule-pack-row .rule-pack-info {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.rule-pack-row .rule-pack-info small {
+  grid-column: 1 / -1;
+}
+
+.rule-pack-info small {
+  color: var(--text-muted);
+  font-size: var(--font-caption);
+}
+
+.rule-pack-primary {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  justify-self: start;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--brand-soft);
+  color: var(--brand-strong);
+  font-size: var(--font-caption);
+}
+
+.rule-pack-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-4);
+}
+
+.rule-pack-actions button {
+  min-width: 36px;
+  min-height: 36px;
+  padding: var(--space-4);
+  font-size: 18px;
+  box-shadow: none;
+}
+
+.rule-pack-choices {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.rule-pack-choices > summary {
+  padding: var(--space-12);
+  cursor: pointer;
+  color: var(--brand-strong);
+  font-size: var(--font-label);
+}
+
+.rule-pack-choices > input[type="search"] {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 0 var(--space-12) var(--space-8);
+}
+
+.rule-pack-options {
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--space-8) var(--space-8);
+}
+
+.field-row .rule-pack-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  margin: 0;
+  padding: var(--space-8);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.rule-pack-option:hover,
+.rule-pack-option:focus-within {
+  background: var(--surface-hover);
+}
+
+.field-row .rule-pack-option input[type="checkbox"] {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.rule-pack-empty {
+  margin: 0;
+  padding: var(--space-12);
+  color: var(--text-muted);
+  font-size: var(--font-label);
+}
+
+.rule-pack-picker [hidden] {
+  display: none;
+}
+
+@media (max-width: 480px) {
+  .rule-pack-row {
+    flex-wrap: wrap;
+  }
+
+  .rule-pack-row .rule-pack-info {
+    flex-basis: calc(100% - 32px);
+  }
+
+  .rule-pack-actions {
+    margin-left: auto;
+  }
+
+  .rule-pack-actions button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
 .rule-actions {
   display: flex;
   gap: var(--space-8);

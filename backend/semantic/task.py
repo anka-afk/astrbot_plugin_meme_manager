@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..packs.protocol import validate_pack_id
 from .caption import generate_caption
 from .index import (
     EmbeddingAdapter,
@@ -567,10 +567,7 @@ class SemanticTaskManager:
 
     @staticmethod
     def _validate_pack_id(pack_id: str) -> str:
-        value = str(pack_id or "").strip()
-        if not value or not re.fullmatch(r"[A-Za-z0-9._-]{2,64}", value):
-            raise ValueError("pack_id 无效")
-        return value
+        return validate_pack_id(pack_id)
 
     def _state_path(self, pack_id: str) -> Path:
         return (

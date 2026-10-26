@@ -12,6 +12,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
+from ..packs.protocol import validate_pack_id
 from .models import (
     REVIEW_CATEGORY,
     SCHEMA_VERSION,
@@ -208,9 +209,7 @@ class EmbeddingAdapter:
 
 
 def index_dir(plugin_data_dir: Path | str, pack_id: str) -> Path:
-    value = str(pack_id or "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9._-]{2,64}", value):
-        raise ValueError("pack_id 无效")
+    value = validate_pack_id(pack_id)
     return Path(plugin_data_dir).resolve() / "semantic_indexes" / value
 
 

@@ -380,7 +380,7 @@ async function initSettingsPage() {
     }
     if (packImportVectorState) {
       packImportVectorState.textContent = data?.vectors_present
-        ? "包含，将校验"
+        ? "包含，导入后需在本机重建"
         : "不包含";
     }
     const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
@@ -583,22 +583,172 @@ async function initSettingsPage() {
     return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
   }
 
-  function appendPackOptions(select, selectedPackIds = []) {
-    for (const missingId of selectedPackIds.filter((id) => !installedPacks.some((pack) => String(pack.id) === id))) {
-      const missingOption = document.createElement("option");
-      missingOption.value = missingId;
-      missingOption.textContent = `表情包不存在（${missingId}）`;
-      missingOption.selected = true;
-      select.appendChild(missingOption);
-    }
+  function createRulePackPicker(rule, index) {
+    const picker = document.createElement("div");
+    picker.className = "rule-pack-picker";
+    picker.setAttribute("role", "group");
+    picker.setAttribute("aria-labelledby", `rule-pack-label-${index}`);
+    const status = document.createElement("small");
+    status.className = "rule-pack-status";
+    status.setAttribute("role", "status");
+    const selectedList = document.createElement("ol");
+    selectedList.className = "rule-pack-selected";
+    selectedList.setAttribute("aria-label", "已选表情包，按优先顺序排列");
+    const help = document.createElement("small");
+    help.id = `rule-pack-help-${index}`;
+    help.textContent = "排在前面的优先；第一个为主表情包，聊天上传写入该包。";
+    picker.setAttribute("aria-describedby", help.id);
+
+    const choices = document.createElement("details");
+    choices.className = "rule-pack-choices";
+    const summary = document.createElement("summary");
+    summary.textContent = "添加表情包";
+    const search = document.createElement("input");
+    search.type = "search";
+    search.placeholder = "搜索名称或 ID";
+    search.setAttribute("aria-label", "搜索可选表情包");
+    const options = document.createElement("div");
+    options.className = "rule-pack-options";
+    const empty = document.createElement("p");
+    empty.className = "rule-pack-empty";
+    empty.setAttribute("role", "status");
+    const optionRows = [];
+
+    const renderSelection = (focusId, focusAction = "remove") => {
+      const ids = getRulePackIds(rule);
+      status.textContent = ids.length
+        ? `已选 ${ids.length} 个表情包`
+        : "尚未选择表情包，请添加至少一个。";
+      selectedList.replaceChildren();
+      selectedList.hidden = !ids.length;
+      ids.forEach((id, position) => {
+        const pack = installedPacks.find((item) => String(item.id) === id);
+        const name = pack?.name || id;
+        const row = document.createElement("li");
+        row.className = `rule-pack-row${pack ? "" : " missing"}`;
+        row.dataset.packId = id;
+        const rank = document.createElement("span");
+        rank.className = "rule-pack-rank";
+        rank.textContent = String(position + 1);
+        rank.setAttribute("aria-hidden", "true");
+        const info = document.createElement("div");
+        info.className = "rule-pack-info";
+        const title = document.createElement("strong");
+        title.textContent = pack ? name : "表情包不存在";
+        const detail = document.createElement("small");
+        detail.textContent = id;
+        info.append(title, detail);
+        if (position === 0) {
+          const badge = document.createElement("span");
+          badge.className = "rule-pack-primary";
+          badge.textContent = "主表情包";
+          info.appendChild(badge);
+        }
+        const actions = document.createElement("div");
+        actions.className = "rule-pack-actions";
+        for (const [action, text, label, disabled] of [
+          ["up", "↑", "上移", position === 0],
+          ["down", "↓", "下移", position === ids.length - 1],
+          ["remove", "×", "移除", false],
+        ]) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "ghost compact-btn";
+          button.dataset.packAction = action;
+          button.textContent = text;
+          button.disabled = disabled;
+          button.title = `${label} ${name}`;
+          button.setAttribute("aria-label", button.title);
+          button.addEventListener("click", () => {
+            const ordered = getRulePackIds(rule);
+            const current = ordered.indexOf(id);
+            if (action === "remove") {
+              ordered.splice(current, 1);
+            } else {
+              const next = current + (action === "up" ? -1 : 1);
+              [ordered[current], ordered[next]] = [ordered[next], ordered[current]];
+            }
+            rule.pack_id = ordered[0] || "";
+            updateRuleFromInput(index, "pack_ids", ordered);
+            renderSelection(
+              action === "remove"
+                ? ordered[Math.min(current, ordered.length - 1)]
+                : id,
+              action,
+            );
+            if (!ordered.length) summary.focus();
+          });
+          actions.appendChild(button);
+        }
+        row.append(rank, info, actions);
+        selectedList.appendChild(row);
+        if (id === focusId) {
+          const target = actions.querySelector(
+            `[data-pack-action="${focusAction}"]`,
+          );
+          (target.disabled
+            ? actions.querySelector('[data-pack-action="remove"]')
+            : target
+          ).focus();
+        }
+      });
+      for (const { checkbox } of optionRows) {
+        checkbox.checked = ids.includes(checkbox.value);
+      }
+    };
+
     for (const pack of installedPacks) {
-      const packId = String(pack.id || "");
-      const option = document.createElement("option");
-      option.value = packId;
-      option.selected = selectedPackIds.includes(packId);
-      option.textContent = `${pack.name || packId} (${packId})`;
-      select.appendChild(option);
+      const id = String(pack.id || "");
+      const row = document.createElement("label");
+      row.className = "rule-pack-option";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = id;
+      const info = document.createElement("span");
+      info.className = "rule-pack-info";
+      const name = document.createElement("strong");
+      name.textContent = pack.name || id;
+      const detail = document.createElement("small");
+      detail.textContent = id;
+      info.append(name, detail);
+      row.append(checkbox, info);
+      options.appendChild(row);
+      optionRows.push({
+        row,
+        checkbox,
+        text: `${pack.name || ""} ${id}`.toLocaleLowerCase(),
+      });
+      checkbox.addEventListener("change", () => {
+        const ids = getRulePackIds(rule).filter((value) => value !== id);
+        if (checkbox.checked) ids.push(id);
+        rule.pack_id = ids[0] || "";
+        updateRuleFromInput(index, "pack_ids", ids);
+        renderSelection();
+      });
     }
+    const filterOptions = () => {
+      const query = search.value.trim().toLocaleLowerCase();
+      for (const option of optionRows) {
+        option.row.hidden = !option.text.includes(query);
+      }
+      empty.hidden = optionRows.some(({ row }) => !row.hidden);
+      empty.textContent = installedPacks.length
+        ? "没有匹配的表情包，试试其他名称或 ID。"
+        : "暂无已安装的表情包，请先前往资源广场安装。";
+    };
+    search.addEventListener("input", filterOptions);
+    choices.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        choices.open = false;
+        summary.focus();
+      }
+    });
+    choices.append(summary, search, options, empty);
+    picker.append(status, selectedList, choices, help);
+    renderSelection();
+    filterOptions();
+    return picker;
   }
 
   function getTargetSuggestions(scope) {
@@ -860,16 +1010,8 @@ async function initSettingsPage() {
       packField.className = "field-row";
       const packLabel = document.createElement("label");
       packLabel.textContent = "使用表情包";
-      packLabel.htmlFor = `rule-pack-${index}`;
-      const packSelectElement = document.createElement("select");
-      packSelectElement.dataset.role = "pack";
-      packSelectElement.id = `rule-pack-${index}`;
-      packSelectElement.multiple = true;
-      packSelectElement.size = Math.min(5, Math.max(2, installedPacks.length));
-      appendPackOptions(packSelectElement, getRulePackIds(rule));
-      const packHelp = document.createElement("small");
-      packHelp.textContent = "可多选；桌面端按住 Ctrl / Command 点击。先选的表情包优先。";
-      packField.append(packLabel, packSelectElement, packHelp);
+      packLabel.id = `rule-pack-label-${index}`;
+      packField.append(packLabel, createRulePackPicker(rule, index));
 
       grid.appendChild(scopeField);
       grid.appendChild(targetField);
@@ -903,7 +1045,6 @@ async function initSettingsPage() {
       const targetInput = targetField.querySelector(
         'input[data-role="target"]',
       );
-      const packSelect = packField.querySelector('select[data-role="pack"]');
 
       scopeSelect.disabled = isDefault;
       scopeSelect.addEventListener("change", () => {
@@ -925,17 +1066,6 @@ async function initSettingsPage() {
 
       targetInput.addEventListener("input", () => {
         updateRuleFromInput(index, "target", targetInput.value);
-      });
-
-      packSelect.addEventListener("change", () => {
-        const selected = Array.from(packSelect.selectedOptions, (option) => option.value);
-        const previous = getRulePackIds(rules[index]);
-        const ordered = [
-          ...previous.filter((id) => selected.includes(id)),
-          ...selected.filter((id) => !previous.includes(id)),
-        ];
-        rules[index].pack_id = ordered[0] || "";
-        updateRuleFromInput(index, "pack_ids", ordered);
       });
 
       actions

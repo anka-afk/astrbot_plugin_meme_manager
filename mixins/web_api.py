@@ -86,6 +86,13 @@ PLUGIN_NAME = "meme_manager"
 WEBUI_LOG_PREFIX = f"[{PLUGIN_NAME}][WebUI]"
 MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_ORIGINAL_IMAGE_BYTES = 32 * 1024 * 1024
+IMAGE_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 PREVIEW_IMAGE_MAX_DIMENSION = 512
 IMG_HOST_STATUS_CACHE_TTL_SECONDS = 15
 PACK_IMPORT_SESSION_TTL_SECONDS = 60 * 60
@@ -602,8 +609,7 @@ class WebAPIMixin:
             )
         if not pack_id:
             raise ValueError("pack_id 不能为空")
-        if not re.fullmatch(r"[A-Za-z0-9._-]{2,64}", pack_id):
-            raise ValueError("pack_id 无效")
+        pack_id = validate_pack_id(pack_id)
         pack_dir = (PACKS_DIR / pack_id).resolve()
         try:
             pack_dir.relative_to(PACKS_DIR.resolve())
@@ -665,31 +671,6 @@ class WebAPIMixin:
             }
         )
         return guidance
-
-    def _pack_import_embedding_signature(self) -> dict:
-        """返回当前本地嵌入模型签名，用于安全恢复备份。"""
-        try:
-            provider = self._resolve_embedding_provider()
-            embedding = EmbeddingAdapter(
-                provider, str(getattr(self, "semantic_embedding_provider_id", "") or "")
-            )
-        except Exception:
-            return {
-                "embedding_provider_id": "",
-                "embedding_model": "",
-                "embedding_dimension": 0,
-            }
-        if not embedding.ready:
-            return {
-                "embedding_provider_id": "",
-                "embedding_model": "",
-                "embedding_dimension": 0,
-            }
-        return {
-            "embedding_provider_id": embedding.provider_id,
-            "embedding_model": embedding.model_name,
-            "embedding_dimension": embedding.dimension,
-        }
 
     async def _run_guarded_pack_file_operation(
         self,
@@ -904,7 +885,9 @@ class WebAPIMixin:
         managed_pack_id = str(request.args.get("managed_pack_id") or "").strip()
         if not managed_pack_id:
             return None
-        if not re.fullmatch(r"[A-Za-z0-9._-]{2,64}", managed_pack_id):
+        try:
+            managed_pack_id = validate_pack_id(managed_pack_id)
+        except ValueError:
             return None
 
         pack_dir = (PACKS_DIR / managed_pack_id).resolve()
@@ -2021,7 +2004,15 @@ class WebAPIMixin:
     async def _api_serve_meme_image(self):
         category = request.args.get("category", "")
         filename = request.args.get("filename", "")
+        if (
+            not is_safe_category_name(category)
+            or not is_safe_category_name(filename)
+            or Path(filename).suffix.lower() not in pack_storage.IMAGE_EXTENSIONS
+        ):
+            return jsonify({"message": "Invalid image path"}), 400
         view_context = self._resolve_webui_pack_view_context()
+        if request.args.get("managed_pack_id") and view_context is None:
+            return jsonify({"message": "Pack not found"}), 404
         memes_root = (
             view_context["memes_dir"].resolve()
             if view_context
@@ -2034,7 +2025,12 @@ class WebAPIMixin:
             return jsonify({"status": "error", "message": "非法路径"}), 403
         if not file_path.is_file():
             return jsonify({"status": "error", "message": "文件不存在"}), 404
-        return await send_file(str(file_path))
+        response = await send_file(
+            str(file_path), mimetype=IMAGE_MIME_TYPES[Path(filename).suffix.lower()]
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+        return response
 
     @staticmethod
     def _preview_revision(file_path: Path) -> str:
@@ -2099,6 +2095,12 @@ class WebAPIMixin:
     async def _api_get_meme_image_data(self):
         category = request.args.get("category", "")
         filename = request.args.get("filename", "")
+        if (
+            not is_safe_category_name(category)
+            or not is_safe_category_name(filename)
+            or Path(filename).suffix.lower() not in pack_storage.IMAGE_EXTENSIONS
+        ):
+            return jsonify({"message": "Invalid image path"}), 400
         size = request.args.get("size", "preview")
         if size not in {"preview", "original"}:
             return jsonify({"message": "Invalid preview size"}), 400
@@ -2155,9 +2157,7 @@ class WebAPIMixin:
                 413,
             )
 
-        mime_type = (
-            mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-        )
+        mime_type = IMAGE_MIME_TYPES[Path(filename).suffix.lower()]
         if size == "preview" and mime_type != "image/gif":
             try:
                 data_url, mime_type = await asyncio.to_thread(
@@ -2200,6 +2200,8 @@ class WebAPIMixin:
         ) or not self._safe_semantic_image_name(filename):
             return jsonify({"message": "分类或文件名无效"}), 400
         view_context = self._resolve_webui_pack_view_context()
+        if request.args.get("managed_pack_id") and view_context is None:
+            return jsonify({"message": "Pack not found"}), 404
         memes_root = (
             view_context["memes_dir"].resolve()
             if view_context
@@ -3022,7 +3024,6 @@ class WebAPIMixin:
             overwrite_manual_semantics = str(
                 form.get("overwrite_manual_semantics", "false")
             ).lower() in {"1", "true", "yes", "on"}
-            import_signature = self._pack_import_embedding_signature()
 
             files = await request.files
             if not files or "file" not in files:
@@ -3058,7 +3059,6 @@ class WebAPIMixin:
                     set_as_default=set_as_default,
                     suggested_pack_id=suggested_pack_id,
                     preserve_existing_manual=not overwrite_manual_semantics,
-                    **import_signature,
                 )
             else:
                 result = await self._run_guarded_runtime_file_operation(
@@ -3069,7 +3069,6 @@ class WebAPIMixin:
                     set_as_default=set_as_default,
                     suggested_pack_id=suggested_pack_id,
                     preserve_existing_manual=not overwrite_manual_semantics,
-                    **import_signature,
                 )
             self._reload_personas()
             return jsonify({"message": "导入成功", **result}), 200
@@ -3366,7 +3365,6 @@ class WebAPIMixin:
                 "set_as_default": set_as_default,
                 "suggested_pack_id": str(session_data.get("suggested_pack_id") or ""),
                 "preserve_existing_manual": not overwrite_manual_semantics,
-                **self._pack_import_embedding_signature(),
             }
             if overwrite:
                 result = await self._run_guarded_pack_file_operation(

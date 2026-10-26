@@ -176,7 +176,10 @@ def resolve_pack_id(
 
 
 def get_pack_paths(pack_id: str) -> dict[str, Path]:
-    pack_dir = PACKS_DIR / pack_id
+    pack_id = validate_pack_id(pack_id)
+    pack_dir = (PACKS_DIR / pack_id).resolve()
+    if pack_dir.parent != PACKS_DIR.resolve():
+        raise ValueError("pack_id 无效")
     return {
         "pack_dir": pack_dir,
         "memes_dir": pack_dir / "memes",

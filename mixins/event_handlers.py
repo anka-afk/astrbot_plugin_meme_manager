@@ -1698,7 +1698,7 @@ class EventHandlerMixin:
                     background = PILImage.new("RGB", img.size, (255, 255, 255))
                     if img.mode == "P":
                         img = img.convert("RGBA")
-                    background.paste(img, mask=img.split()[3])  # 第 3 个索引是透明通道
+                    background.paste(img, mask=img.getchannel("A"))
                     img = background
                 else:
                     img = img.convert("RGB")
