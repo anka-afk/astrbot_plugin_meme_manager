@@ -182,17 +182,32 @@ class AutoCollectManager:
             os.fsync(file_obj.fileno())
         os.replace(temporary, path)
 
-    async def start(self) -> None:
-        """校验已配置的视觉模型，并启动一个后台工作任务。"""
+    async def start(self, *, defer_missing_provider: bool = False) -> None:
+        """Validate the vision provider and start one background worker.
+
+        Args:
+            defer_missing_provider: Skip unregistered providers during plugin
+                initialization; the core-loaded hook will retry after loading.
+        """
         if not self.enabled or self._worker_task is not None:
             return
         if not self.vision_provider_id:
             logger.warning("[meme_manager] 已启用自动收集，但尚未选择视觉模型")
             return
+        if (
+            defer_missing_provider
+            and self.vision_provider_id
+            not in self.plugin.context.provider_manager.inst_map
+        ):
+            logger.info(
+                "[meme_manager] Waiting for AstrBot to load vision provider: %s",
+                self.vision_provider_id,
+            )
+            return
         provider = self.plugin.context.get_provider_by_id(self.vision_provider_id)
         if provider is None:
             logger.info(
-                "[meme_manager] 自动收集视觉模型尚未就绪，等待加载后重试：%s",
+                "[meme_manager] Auto collection is inactive; vision provider is unavailable: %s",
                 self.vision_provider_id,
             )
             return
