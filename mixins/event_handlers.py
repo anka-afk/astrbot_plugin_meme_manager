@@ -93,13 +93,25 @@ class EventHandlerMixin:
             async def send_filtered_stream(generator, *args, **kwargs):
                 event.set_extra("meme_manager_stream_exhausted", False)
                 filtered = self._filter_meme_stream(event, generator)
+                stream_completed = False
                 try:
-                    result = await send_streaming(filtered, *args, **kwargs)
+                    try:
+                        result = await send_streaming(filtered, *args, **kwargs)
+                    finally:
+                        await filtered.aclose()
+                    stream_completed = bool(
+                        event.get_extra("meme_manager_stream_exhausted")
+                    )
                 finally:
-                    await filtered.aclose()
+                    if not stream_completed:
+                        event.set_extra("meme_manager_stream_exhausted", False)
+                        event.set_extra("found_emotions", None)
+                        event.set_extra("meme_manager_semantic_selected_ids", None)
+                        event.set_extra("meme_manager_image_only_reply", False)
+                        event.set_extra("meme_manager_legacy_probability_hit", None)
                 # Plugin-initiated streams can lose STREAMING_FINISH in AstrBot.
                 # Wait for both source exhaustion and the adapter's final flush.
-                if event.get_extra("meme_manager_stream_exhausted") and (
+                if stream_completed and (
                     self.streaming_compatibility
                     or event.get_platform_name() == "webchat"
                     or event.get_extra("meme_manager_image_only_reply")

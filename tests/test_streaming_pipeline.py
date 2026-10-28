@@ -11,7 +11,11 @@ from test_meme_only_replies import reply_context as reply_context
 
 from astrbot.core.config.default import DEFAULT_CONFIG
 from astrbot.core.message.components import Plain
-from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.message.message_event_result import (
+    MessageChain,
+    MessageEventResult,
+    ResultContentType,
+)
 from astrbot.core.pipeline.process_stage.method import star_request
 from astrbot.core.pipeline.process_stage.method.agent_sub_stages import internal
 from astrbot.core.pipeline.process_stage.stage import ProcessStage
@@ -177,30 +181,45 @@ async def test_plugin_stream_delivers_without_final_decoration(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("interruption", ["source", "early_return", "flush", "cancel"])
-async def test_incomplete_stream_never_sends_images(reply_context, interruption):
-    sender, event, state, _ = reply_context
+@pytest.mark.parametrize("semantic", [False, True])
+async def test_incomplete_stream_never_sends_images(
+    reply_context, monkeypatch, interruption, semantic
+):
+    sender, event, state, root = reply_context
     sender.emotions_probability = 100
+    sender._semantic_mode_active = lambda event: semantic
+    selected_id = "meme:0123456789ab"
+    monkeypatch.setattr(
+        event_handlers,
+        "validate_selected_id",
+        lambda event, value, pack: (
+            root / "happy" / "meme.png" if value == selected_id else None
+        ),
+    )
+    state["meme_manager_semantic_mode"] = "tool" if semantic else ""
     closed = []
-    response = LLMResponse(role="assistant", completion_text="Hello &&happy&&")
+    text = f"Hello &&{selected_id if semantic else 'happy'}&&"
+    response = LLMResponse(role="assistant", completion_text=text)
+    failed = True
 
     async def source():
         try:
-            yield MessageChain([Plain("Hello &&happy&&")])
             await sender._resp_impl(event, response)
+            yield MessageChain([Plain(text)])
             if interruption == "source":
                 raise ValueError("source failed")
         finally:
             closed.append(True)
 
     async def deliver(generator):
-        if interruption == "early_return":
+        if failed and interruption == "early_return":
             await anext(generator)
             return
         async for _ in generator:
             pass
-        if interruption == "flush":
+        if failed and interruption == "flush":
             raise ValueError("flush failed")
-        if interruption == "cancel":
+        if failed and interruption == "cancel":
             raise asyncio.CancelledError
 
     event.send_streaming = deliver
@@ -216,6 +235,23 @@ async def test_incomplete_stream_never_sends_images(reply_context, interruption)
             await event.send_streaming(source())
     sender._send_meme_image.assert_not_awaited()
     assert closed == [True]
+    assert not state["meme_manager_stream_exhausted"]
+    assert state["found_emotions"] is None
+    assert state["meme_manager_semantic_selected_ids"] is None
+    assert not state["meme_manager_image_only_reply"]
+    assert state["meme_manager_legacy_probability_hit"] is None
+
+    failed = False
+
+    async def error_notice():
+        yield MessageChain([Plain("The previous reply failed. Please try again.")])
+
+    await event.send_streaming(error_notice())
+    state["result"] = MessageEventResult(
+        chain=[], result_content_type=ResultContentType.STREAMING_FINISH
+    )
+    await sender._on_decorating_result_impl(event)
+    sender._send_meme_image.assert_not_awaited()
 
 
 @pytest.mark.asyncio
