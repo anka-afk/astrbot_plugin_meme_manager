@@ -561,6 +561,99 @@ class AutoCollectReviewTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(result["meme_confidence"], 0.0)
                     self.assertEqual(result["category_confidence"], 0.0)
 
+    async def test_content_review_only_appends_rules_when_enabled(self):
+        self.plugin.context = SimpleNamespace(
+            llm_generate=AsyncMock(
+                return_value=SimpleNamespace(completion_text='{"is_meme": false}')
+            )
+        )
+        cases = [
+            ({}, ""),
+            ({"content_review_prompt": "custom rule"}, ""),
+            (
+                {
+                    "content_review_enabled": True,
+                    "content_review_prompt": "custom rule",
+                },
+                "custom rule",
+            ),
+            (
+                {"content_review_enabled": True, "content_review_prompt": "  "},
+                auto_collect.DEFAULT_CONTENT_REVIEW_PROMPT,
+            ),
+        ]
+        with patch.object(auto_collect, "AUTO_COLLECT_TEMP_DIR", self.root):
+            for config, expected in cases:
+                with self.subTest(config=config):
+                    manager = auto_collect.AutoCollectManager(self.plugin, config)
+                    self.plugin.context.llm_generate.reset_mock()
+                    await manager._classify(png_bytes(), ".png", {"happy": "happy"})
+                    self.plugin.context.llm_generate.assert_awaited_once()
+                    prompt = self.plugin.context.llm_generate.await_args.kwargs[
+                        "system_prompt"
+                    ]
+                    if expected:
+                        self.assertTrue(
+                            prompt.startswith(auto_collect.AUTO_COLLECT_SYSTEM_PROMPT)
+                        )
+                        self.assertIn(expected, prompt)
+                        self.assertIn("is_meme=false", prompt)
+                    else:
+                        self.assertEqual(
+                            prompt, auto_collect.AUTO_COLLECT_SYSTEM_PROMPT
+                        )
+
+    def test_content_review_rules_partition_the_decision_cache(self):
+        manager = self.manager
+        categories = {"happy": "happy"}
+        disabled = manager._cache_key("digest", "pack-a", categories)
+        manager.content_review_prompt = "first rule"
+        self.assertEqual(manager._cache_key("digest", "pack-a", categories), disabled)
+        manager.content_review_enabled = True
+        first = manager._cache_key("digest", "pack-a", categories)
+        self.assertNotEqual(first, disabled)
+        manager.content_review_prompt = "second rule"
+        self.assertNotEqual(manager._cache_key("digest", "pack-a", categories), first)
+        manager.content_review_enabled = False
+        self.assertEqual(manager._cache_key("digest", "pack-a", categories), disabled)
+
+    async def test_content_review_rejection_skips_manual_and_automatic_intake(self):
+        self.plugin.context = SimpleNamespace(
+            get_provider_by_id=lambda provider_id: None,
+            llm_generate=AsyncMock(
+                return_value=SimpleNamespace(
+                    completion_text=json.dumps(
+                        {
+                            "is_meme": False,
+                            "meme_confidence": 0,
+                            "reason": "Rejected by content rules",
+                        }
+                    )
+                )
+            ),
+        )
+        manager = auto_collect.AutoCollectManager(
+            self.plugin, {"content_review_enabled": True}
+        )
+        source = self.root / "incoming.png"
+        source.write_bytes(png_bytes())
+        job = auto_collect.AutoCollectJob(
+            source, "pack-a", {"happy": "happy"}, "group", "1"
+        )
+        with patch.object(auto_collect, "AUTO_COLLECT_TEMP_DIR", self.root):
+            for manual_review in (True, False):
+                with self.subTest(manual_review=manual_review):
+                    manager.manual_review = manual_review
+                    await manager._process_job(job)
+                    self.assertFalse(
+                        auto_collect.AUTO_COLLECT_INBOX_METADATA_PATH.exists()
+                    )
+                    self.assertFalse(
+                        list((self.packs / "pack-a" / "memes" / "happy").iterdir())
+                    )
+        self.plugin.context.llm_generate.assert_awaited_once()
+        self.assertEqual(manager.counters["model_rejected"], 2)
+
     async def test_plain_text_messages_do_not_increment_collection_skip_counters(self):
         self.manager._ready = True
         self.manager.scope = {"unmatched"}

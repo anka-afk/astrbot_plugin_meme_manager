@@ -55,12 +55,14 @@ async function initPluginConfig() {
     ],
     [
       "视觉识别",
-      "待审箱有容量才继续；有缓存时复用，否则检查每日额度并调用支持图片输入的模型。",
+      "待审箱有容量才继续；无缓存时按每日额度识别。可开启内容审核，在同一次识别中按提示词过滤不适合收录的图片。",
       "collect-recognition",
       [
         ["pending_limit", "待审核容量"],
         ["daily_recognition_limit", "每日识别上限"],
         ["vision_provider_id", "视觉模型"],
+        ["content_review_enabled", "内容审核"],
+        ["content_review_prompt", "审核提示词"],
       ],
     ],
     [
@@ -278,13 +280,15 @@ async function initPluginConfig() {
     {
       id: "collect-recognition",
       category: "collect",
-      title: "视觉识别",
+      title: "视觉识别与内容审核",
       description:
-        "待审箱满时停止提交候选；没有缓存时，按每日额度调用视觉模型。",
+        "待审箱满时停止提交候选；没有缓存时按每日额度调用视觉模型。内容审核默认关闭，开启后在同一次识别中追加审核规则。",
       prefixes: [
         "auto_collect.pending_limit",
         "auto_collect.daily_recognition_limit",
         "auto_collect.vision_provider_id",
+        "auto_collect.content_review_enabled",
+        "auto_collect.content_review_prompt",
       ],
     },
     {
@@ -558,9 +562,12 @@ async function initPluginConfig() {
     const manualReview =
       changes.get("auto_collect.manual_review") ??
       fields.get("auto_collect.manual_review")?.value;
+    const contentReviewEnabled =
+      changes.get("auto_collect.content_review_enabled") ??
+      fields.get("auto_collect.content_review_enabled")?.value;
     document.getElementById(
       "collection-workflow-state",
-    ).textContent = `当前选择：${collectionEnabled ? "开启" : "关闭"}`;
+    ).textContent = `当前选择：${collectionEnabled ? "开启" : "关闭"} · 内容审核${contentReviewEnabled ? "开启" : "关闭"}`;
     document.getElementById("collection-workflow-result").textContent = `${
       collectionEnabled ? "" : "自动收集处于关闭状态，以上展示启用后的流程。"
     }${

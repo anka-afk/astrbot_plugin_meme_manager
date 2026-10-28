@@ -103,6 +103,11 @@ class AutoCollectConfigurationTests(unittest.TestCase):
         self.assertEqual(config["max_images_per_message"]["default"], 1)
         self.assertEqual(config["max_images_per_message"]["slider"]["max"], 10)
         self.assertEqual(config["cooldown_seconds"]["default"], 20)
+        self.assertFalse(config["content_review_enabled"]["default"])
+        self.assertEqual(
+            config["content_review_prompt"]["default"],
+            auto_collect.DEFAULT_CONTENT_REVIEW_PROMPT,
+        )
         self.assertNotIn("allow_animated", config)
 
     def test_semantic_page_contains_conditional_auto_inbox(self):
