@@ -251,6 +251,8 @@ def test_partial_edit_cleans_old_fields_and_preserves_current_values(shared_conf
             "generation.message.streaming_compatibility": False,
             "community.github_accelerator_url": "",
             "auto_collect.scope": ["group:123", "user:456"],
+            "auto_collect.content_review_enabled": True,
+            "auto_collect.content_review_prompt": "Reject watermarks",
         },
         shared_config.schema,
     )
@@ -263,6 +265,8 @@ def test_partial_edit_cleans_old_fields_and_preserves_current_values(shared_conf
     assert updated["semantic"]["min_score"] == 0
     assert updated["generation"]["message"]["streaming_compatibility"] is False
     assert updated["community"]["github_accelerator_url"] == ""
+    assert updated["auto_collect"]["content_review_enabled"] is True
+    assert updated["auto_collect"]["content_review_prompt"] == "Reject watermarks"
     assert values["semantic"]["min_score"] == 0.25
 
 
@@ -529,11 +533,14 @@ def test_collection_embedding_setting_defaults_and_runtime_wiring(
 ):
     snapshot, values = describe_settings(shared_config)
     field = next(
-        item for item in snapshot["fields"]
+        item
+        for item in snapshot["fields"]
         if item["path"] == "semantic.auto_collect_embedding"
     )
     assert field["default"] is True
-    assert shared_config.schema["semantic"]["items"]["auto_collect_embedding"]["condition"] == {"enabled": True}
+    assert shared_config.schema["semantic"]["items"]["auto_collect_embedding"][
+        "condition"
+    ] == {"enabled": True}
     manager = Mock(return_value=SimpleNamespace())
     monkeypatch.setattr(plugin_main, "AutoCollectManager", manager)
     start_plugin(values)

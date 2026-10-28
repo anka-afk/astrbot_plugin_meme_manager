@@ -25,6 +25,22 @@ const {
 } = vm.runInNewContext(
   `${declarations}; ({ workflows, workspaceModes, workspaceCommon, workspaceCollection, workspaceStorage, groups })`,
 );
+const collectionSteps = vm.runInNewContext(
+  `${source.slice(source.indexOf("  const collectionSteps = ["), source.indexOf("  for (const ["))}; collectionSteps`,
+);
+
+test("collection workflow opens the group containing each linked setting", () => {
+  for (const [, , groupId, settings] of collectionSteps) {
+    const group = groups.find((item) => item.id === groupId);
+    assert.ok(group, groupId);
+    for (const [path] of settings) {
+      assert.ok(group.prefixes.includes(`auto_collect.${path}`), path);
+    }
+  }
+  const recognition = collectionSteps.find((step) => step[2] === "collect-recognition");
+  assert.ok(recognition[3].some(([path]) => path === "content_review_enabled"));
+  assert.ok(recognition[3].some(([path]) => path === "content_review_prompt"));
+});
 
 test("every mode workflow exposes every configuration group", () => {
   const all = groups.map((group) => group.id);

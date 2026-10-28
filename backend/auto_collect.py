@@ -68,6 +68,10 @@ AUTO_COLLECT_SYSTEM_PROMPT = (
     + """
 请根据图片实际内容选择分类，而非将已有分类当作前提。caption 必须描述核心含义及聊天使用场景；tags 返回 6-10 个细粒度标签；visible_text 必须忠实记录图片文字。仍然仅返回上述审核 JSON 格式。"""
 )
+DEFAULT_CONTENT_REVIEW_PROMPT = (
+    "拒绝收录包含色情、血腥暴力、明显脏话辱骂或其他令人强烈不适内容的图片；"
+    "结合画面和可见文字判断。"
+)
 
 
 @dataclass(slots=True)
@@ -103,6 +107,11 @@ class AutoCollectManager:
         self.plugin = plugin
         self.enabled = bool(config.get("enabled", False))
         self.manual_review = bool(config.get("manual_review", True))
+        self.content_review_enabled = bool(config.get("content_review_enabled", False))
+        self.content_review_prompt = (
+            str(config.get("content_review_prompt") or "").strip()
+            or DEFAULT_CONTENT_REVIEW_PROMPT
+        )
         self.auto_embedding = bool(config.get("auto_embedding", True))
         self._embedding_tasks: dict[str, asyncio.Task] = {}
         self._auto_accept_tasks: dict[str, asyncio.Task] = {}
@@ -860,6 +869,11 @@ class AutoCollectManager:
         """
         catalog = json.dumps(categories, ensure_ascii=False, sort_keys=True)
         catalog_hash = hashlib.sha256(catalog.encode("utf-8")).hexdigest()[:16]
+        if self.content_review_enabled:
+            review_hash = hashlib.sha256(
+                self.content_review_prompt.encode("utf-8")
+            ).hexdigest()[:16]
+            catalog_hash += f":content-review:{review_hash}"
         provider = (
             self.plugin.context.get_provider_by_id(self.vision_provider_id)
             if hasattr(self.plugin, "context")
@@ -934,6 +948,13 @@ class AutoCollectManager:
                 "max_tokens": 1400,
                 "response_format": {"type": "json_object"},
             }
+            if self.content_review_enabled:
+                request_data["system_prompt"] += (
+                    "\n\n额外的自动收集内容审核要求：\n"
+                    + self.content_review_prompt
+                    + "\n不符合要求时，返回 is_meme=false、meme_confidence=0，并在 reason 中简述拒绝原因；"
+                    "符合要求时继续原有识别、分类和描述。保持原有 JSON 字段及格式。"
+                )
             try:
                 response = await self.plugin.context.llm_generate(**request_data)
             except Exception as exc:
