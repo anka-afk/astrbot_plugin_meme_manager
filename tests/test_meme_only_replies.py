@@ -214,7 +214,8 @@ async def test_webchat_stream_cleans_tags_without_decorating_hook(
     assert payloads[-1]["data"] == expected
     assert response.completion_text == expected
     event.send.assert_not_awaited()
-    assert state["found_emotions"] == ["happy"]
+    assert state["found_emotions"] is None
+    sender._send_meme_image.assert_awaited_once()
     state["result"] = MessageEventResult(
         chain=[Plain(response.completion_text)],
         result_content_type=ResultContentType.STREAMING_FINISH,
@@ -345,7 +346,8 @@ async def test_stream_final_response_selects_images_without_replacement_message(
     event.send_streaming = deliver
     await sender._mark_llm_request_origin_impl(event)
     await event.send_streaming(state["result"].async_stream)
-    assert state["found_emotions"] == ["happy", "sad"]
+    assert state["found_emotions"] is None
+    assert sender._send_meme_image.await_count == 2
     event.send.assert_not_awaited()
     state["result"] = MessageEventResult(
         chain=response.result_chain.chain,

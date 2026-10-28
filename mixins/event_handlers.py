@@ -91,11 +91,24 @@ class EventHandlerMixin:
         ):
 
             async def send_filtered_stream(generator, *args, **kwargs):
+                event.set_extra("meme_manager_stream_exhausted", False)
                 filtered = self._filter_meme_stream(event, generator)
                 try:
-                    return await send_streaming(filtered, *args, **kwargs)
+                    result = await send_streaming(filtered, *args, **kwargs)
                 finally:
                     await filtered.aclose()
+                # Plugin-initiated streams can lose STREAMING_FINISH in AstrBot.
+                # Wait for both source exhaustion and the adapter's final flush.
+                if event.get_extra("meme_manager_stream_exhausted") and (
+                    self.streaming_compatibility
+                    or event.get_platform_name() == "webchat"
+                    or event.get_extra("meme_manager_image_only_reply")
+                ):
+                    try:
+                        await self._send_memes_streaming(event, stream_completed=True)
+                    except Exception:
+                        logger.exception("[meme_manager] Failed to send stream memes")
+                return result
 
             event.send_streaming = send_filtered_stream
             event.set_extra("meme_manager_stream_filter_installed", True)
@@ -561,6 +574,7 @@ class EventHandlerMixin:
                 )
                 final_chunk.chain = [Plain(remaining)]
                 yield final_chunk
+            event.set_extra("meme_manager_stream_exhausted", True)
         finally:
             if hasattr(source, "aclose"):
                 await source.aclose()
@@ -1711,10 +1725,20 @@ class EventHandlerMixin:
             logger.error(f"[meme_manager] 转换图片为 GIF 失败: {e}")
             return image_path
 
-    async def _send_memes_streaming(self, event: AstrMessageEvent):
-        """流式传输兼容模式：在流式消息发送完成后，主动发送表情图片作为独立消息。"""
-        # 流式结果仍须通过请求来源门控，与非流式主路径保持一致。
-        if not self._should_attach_for_result(event, event.get_result()):
+    async def _send_memes_streaming(
+        self, event: AstrMessageEvent, *, stream_completed: bool = False
+    ):
+        """Send selected memes after a completed streaming reply.
+
+        Args:
+            event: Event containing this reply's validated selections.
+            stream_completed: Whether the adapter finished an exhausted stream.
+                This bypasses the result-type check, while retaining origin gates.
+        """
+        if not self._scope_allows_llm_origin(event) or (
+            not stream_completed
+            and not self._should_attach_for_result(event, event.get_result())
+        ):
             event.set_extra("meme_manager_semantic_selected_ids", None)
             event.set_extra("found_emotions", None)
             return
