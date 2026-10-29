@@ -548,7 +548,7 @@
             "description": "静态图转 GIF 发送",
             "type": "bool",
             "default": false,
-            "hint": "开启后，发送静态图片时会转换为 1 帧 GIF"
+            "hint": "开启后，发送静态图片时会转换为 1 帧 GIF。部分微信 4.x 接入需要这样才能按表情气泡渲染 JPG/PNG；其他平台通常不需要，遇到体积变大或显示异常时请关闭。"
           },
           "enable_mixed": {
             "description": "启用图文同条回复",
