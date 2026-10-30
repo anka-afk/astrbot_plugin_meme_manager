@@ -3,14 +3,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from astrbot_plugin_meme_manager import main as plugin_main
-from astrbot_plugin_meme_manager.main import MemeSender
-from astrbot_plugin_meme_manager.mixins import event_handlers
-from astrbot_plugin_meme_manager.mixins.event_handlers import (
-    LLM_REQUEST_ORIGIN_EXTRA_KEY,
-)
-from PIL import Image as PillowImage
-
 from astrbot.api.provider import LLMResponse
 from astrbot.core.message.components import Image, Plain
 from astrbot.core.message.message_event_result import (
@@ -23,6 +15,13 @@ from astrbot.core.pipeline.result_decorate.stage import ResultDecorateStage
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.sources.webchat.webchat_event import WebChatMessageEvent
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
+from astrbot_plugin_meme_manager import main as plugin_main
+from astrbot_plugin_meme_manager.main import MemeSender
+from astrbot_plugin_meme_manager.mixins import event_handlers
+from astrbot_plugin_meme_manager.mixins.event_handlers import (
+    LLM_REQUEST_ORIGIN_EXTRA_KEY,
+)
+from PIL import Image as PillowImage
 
 
 @pytest.fixture
@@ -126,6 +125,7 @@ async def test_marker_only_reply_delivers_all_images_without_blank_text(
     reply_context, streaming, mixed, chain_response
 ):
     sender, event, state, _ = reply_context
+    sender.emotions_probability = 100
     sender.enable_mixed_message = mixed
     response = LLMResponse(
         role="assistant", completion_text="&&happy&&\n&&sad&&\n&&angry&&"
@@ -326,6 +326,7 @@ async def test_stream_final_response_selects_images_without_replacement_message(
     reply_context,
 ):
     sender, event, state, _ = reply_context
+    sender.emotions_probability = 100
     event.get_platform_name = lambda: "webchat"
     event.send = AsyncMock()
     response = LLMResponse(role="assistant", completion_text="&&happy&&&&sad&&")
@@ -470,6 +471,7 @@ async def test_semantic_image_only_reply_keeps_multiple_selections(
     reply_context, monkeypatch, streaming
 ):
     sender, event, state, root = reply_context
+    sender.emotions_probability = 100
     sender._semantic_mode_active = lambda event: True
     paths = {
         f"meme:{index:012x}": root / tag / "meme.png"

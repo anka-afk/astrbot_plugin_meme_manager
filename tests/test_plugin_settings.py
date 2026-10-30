@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot_plugin_meme_manager import main as plugin_main
 from astrbot_plugin_meme_manager.backend.plugin_settings import (
     describe_settings,
@@ -11,8 +12,6 @@ from astrbot_plugin_meme_manager.backend.plugin_settings import (
 )
 from astrbot_plugin_meme_manager.mixins.web_api import WebAPIMixin
 from quart import Quart
-
-from astrbot.core.config.astrbot_config import AstrBotConfig
 
 
 @pytest.fixture
@@ -101,6 +100,46 @@ def test_filter_all_tags_shared_config_roundtrip(shared_config, start_plugin):
         values, snapshot["fields"], {field["path"]: True}, shared_config.schema
     )
     assert start_plugin(updated).filter_all_tags is True
+
+
+@pytest.mark.parametrize("probability", [0, 37, 100])
+def test_independent_probabilities_settings_roundtrip(
+    shared_config, start_plugin, probability
+):
+    # Old configuration files omit both new fields and keep autonomous calls.
+    shared_config["semantic"].pop("tool_probability_enabled", None)
+    shared_config["semantic"].pop("tool_call_probability", None)
+    shared_config.save_config()
+    old_sender = start_plugin(shared_config)
+    assert old_sender.tool_probability_enabled is False
+    assert old_sender.tool_call_probability == 100
+    snapshot, values = describe_settings(shared_config)
+    changes = {
+        "semantic.tool_probability_enabled": True,
+        "semantic.tool_call_probability": probability,
+        "generation.emotion.probability": 0,
+    }
+    updated = validate_settings_changes(
+        values, snapshot["fields"], changes, shared_config.schema
+    )
+    shared_config.save_config(updated)
+    reloaded = AstrBotConfig(shared_config.config_path, schema=shared_config.schema)
+    sender = start_plugin(reloaded)
+    assert sender.tool_probability_enabled is True
+    assert sender.tool_call_probability == probability
+    assert sender.emotions_probability == 0
+    fresh, _ = describe_settings(reloaded)
+    fields = {item["path"]: item for item in fresh["fields"]}
+    for path, expected in changes.items():
+        assert fields[path]["value"] == expected
+    for invalid in (-1, 101, True, 20.5):
+        with pytest.raises(ValueError):
+            validate_settings_changes(
+                updated,
+                fresh["fields"],
+                {"semantic.tool_call_probability": invalid},
+                shared_config.schema,
+            )
 
 
 def test_lsky_configuration_and_token_redaction(shared_config, start_plugin):

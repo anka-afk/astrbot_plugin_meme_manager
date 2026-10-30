@@ -172,3 +172,15 @@ node --test tests/frontend/collection-review.test.mjs
 ```
 
 流程测试使用临时 PNG/GIF 文件、真实后台队列、审核 API、表情包写入及语义存储，覆盖消息临时文件释放、处理中去重、改分类接收、拒收后重启、两种模式自动接收及模型失败恢复。仅外部视觉模型返回值使用可控替身，不会调用真实模型或写入运行中的图库；模型识别质量和平台实际消息格式仍需真实环境验证。
+
+
+## 概率门控回归验证
+
+发送判定保存在事件的 `meme_manager_send_probability_hit` 中。Tool 概率策略和命中结果也按事件保存，不按会话全局缓存；重复请求钩子不清空候选或再次抽样。前置请求只包含当前请求中可用的 `search_memes`，使用相同回复 Provider 与 `ProviderRequest.model`，不修改共享工具集或普通回复的 `tool_choice`。执行端最多执行首个声明的调用，并保留工具权限代理。取消会向上传播，失败不会转成分类选图。
+
+```sh
+python -m pytest tests/test_probability_gates.py tests/test_streaming_pipeline.py tests/test_plugin_settings.py -q
+node --test tests/frontend/settings-mode.test.mjs
+```
+
+验证时将 `ASTRBOT_ROOT` 指向临时目录，避免写入正在运行的 AstrBot。所有测试使用模拟 Provider；不要为测试调用实际收费模型。完整测试及代码检查仍按上文执行。本插件没有单独的前端构建或 TypeScript 项目，界面预览使用 `node tests/frontend/preview.mjs`，以模拟设置验证开关、独立数值和重新加载；这不能替代真实模型、平台和网络接口的兼容性验证。

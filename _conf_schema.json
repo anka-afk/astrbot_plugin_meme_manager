@@ -225,6 +225,24 @@
         "default": 0.25,
         "hint": "低于此值的结果不会返回"
       },
+      "tool_probability_enabled": {
+        "description": "启用 Tool 概率触发",
+        "type": "bool",
+        "default": false,
+        "hint": "仅限 Tool 选图模式。关闭时由模型自主调用；开启后按独立调用概率触发检索，可能增加一次当前回复模型的前置请求。"
+      },
+      "tool_call_probability": {
+        "condition": { "tool_probability_enabled": true },
+        "description": "工具调用概率（%）",
+        "type": "int",
+        "default": 100,
+        "hint": "仅在启用 Tool 概率触发时生效。每轮独立判定一次：命中就尝试 search_memes，未命中则禁止本轮检索。0% 不检索，100% 每轮尝试；与表情发送概率无关。",
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 5
+        }
+      },
       "auto_collect_embedding": {
         "condition": { "enabled": true },
         "description": "自动收集后生成向量",
@@ -421,12 +439,12 @@
             "hint": "每条回复最多发送的表情数量。任意负数表示不限量，0 表示不发送表情，正数按选图顺序保留前 N 个，超出部分截断。适用于分类和语义模式，包括流式回复。"
           },
           "probability": {
-            "description": "表情出现概率",
+            "description": "表情发送概率",
             "type": "int",
             "default": 100,
-            "hint": "语义 Tool 模式下，每轮按此概率决定是否注入并要求回复模型调用 search_memes，范围为 1-100",
+            "hint": "所有选图模式共用的独立发送门控，每轮只判定一次。0% 不发送表情，100% 允许发送但不强迫检索或出图；不影响模型调用或工具检索。",
             "slider": {
-              "min": 1,
+              "min": 0,
               "max": 100,
               "step": 5
             }
