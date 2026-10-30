@@ -6,6 +6,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from astrbot.api.provider import LLMResponse
+from astrbot.core.message.components import Plain
+from astrbot.core.message.message_event_result import (
+    MessageEventResult,
+    ResultContentType,
+)
 from astrbot_plugin_meme_manager import main as plugin_main
 from astrbot_plugin_meme_manager.backend.packs import resolver, storage
 from astrbot_plugin_meme_manager.backend.semantic import index as semantic_index
@@ -19,13 +25,6 @@ from astrbot_plugin_meme_manager.mixins.event_handlers import (
 from astrbot_plugin_meme_manager.mixins.web_api import WebAPIMixin
 from PIL import Image as PillowImage
 from quart import Quart
-
-from astrbot.api.provider import LLMResponse
-from astrbot.core.message.components import Plain
-from astrbot.core.message.message_event_result import (
-    MessageEventResult,
-    ResultContentType,
-)
 
 
 @pytest.fixture
@@ -141,6 +140,7 @@ def test_uninstall_preserves_remaining_multi_pack_bindings(runtime):
 @pytest.fixture
 def semantic_runtime(runtime, monkeypatch):
     sender = object.__new__(MemeSender)
+    sender.emotions_probability = 100
     sender.config = {}
     sender.semantic_top_k = 5
     sender.semantic_min_score = 0
@@ -291,9 +291,7 @@ async def test_primary_file_errors_do_not_abort_secondary_search(
     assert [item["_source_pack_id"] for item in result["candidates"]] == ["pack-b"]
 
 
-@pytest.mark.parametrize(
-    "stage", ["load_metadata", "index_is_ready"]
-)
+@pytest.mark.parametrize("stage", ["load_metadata", "index_is_ready"])
 def test_primary_file_errors_do_not_abort_secondary_readiness(
     semantic_runtime, monkeypatch, stage
 ):

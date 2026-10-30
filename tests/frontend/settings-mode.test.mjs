@@ -42,6 +42,37 @@ test("collection workflow opens the group containing each linked setting", () =>
   assert.ok(recognition[3].some(([path]) => path === "content_review_prompt"));
 });
 
+test("Tool trigger settings belong to Tool mode and default to autonomous calls", async () => {
+  const schema = JSON.parse(await readFile(new URL("../../_conf_schema.json", import.meta.url), "utf8"));
+  const tool = schema.semantic.items;
+  assert.equal(tool.tool_probability_enabled.type, "bool");
+  assert.equal(tool.tool_probability_enabled.default, false);
+  assert.equal(tool.tool_call_probability.default, 100);
+  assert.equal(tool.tool_call_probability.slider.min, 0);
+  assert.equal(schema.generation.items.emotion.items.probability.slider.min, 0);
+  const group = groups.find((item) => item.id === "tool-trigger");
+  assert.deepEqual([...group.modes], ["semantic-tool"]);
+  assert.ok(workspaceModes["semantic-tool"].primary.includes("tool-trigger"));
+});
+
+test("Tool trigger toggle records boolean changes and refreshes dependent visibility", () => {
+  const fields = new Map([["semantic.tool_probability_enabled", { type: "bool", value: false }]]);
+  const changes = new Map();
+  let input;
+  let updates = 0;
+  const handlerSource = source.slice(source.indexOf('  form.addEventListener("input",'), source.indexOf('  resetPrompts.addEventListener("click",'));
+  vm.runInNewContext(handlerSource, {
+    form: { addEventListener(type, handler) { assert.equal(type, "input"); input = handler; } },
+    fields, changes, updateState() {}, updateView() { updates++; },
+  });
+  input({ target: { dataset: { configPath: "semantic.tool_probability_enabled" }, checked: true } });
+  assert.equal(changes.get("semantic.tool_probability_enabled"), true);
+  assert.equal(updates, 1);
+  input({ target: { dataset: { configPath: "semantic.tool_probability_enabled" }, checked: false } });
+  assert.equal(changes.size, 0);
+  assert.equal(updates, 2);
+});
+
 test("every mode workflow exposes every configuration group", () => {
   const all = groups.map((group) => group.id);
   assert.equal(new Set(all).size, all.length);

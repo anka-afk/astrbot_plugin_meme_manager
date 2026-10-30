@@ -120,31 +120,31 @@ async function initPluginConfig() {
   const workflows = {
     "category-native": [
       ["选择表情包", "按使用规则为当前会话选择表情包"],
-      ["决定是否配图", "按触发范围、概率和数量控制"],
+      ["决定是否配图", "按触发范围和数量控制"],
       ["生成分类标签", "回复模型根据提示词和示例输出标签"],
       ["匹配并取图", "识别标签，匹配当前图包分类并随机取图"],
-      ["发送表情", "按平台消息格式发送图片"],
+      ["发送表情", "通过独立发送概率门控后发送图片"],
     ],
     "category-auxiliary": [
       ["选择表情包", "按使用规则为当前会话选择表情包"],
-      ["决定是否配图", "按触发范围、概率和数量控制"],
+      ["决定是否配图", "按触发范围和数量控制"],
       ["辅助模型选分类", "根据回复选择分类标签"],
       ["匹配并取图", "识别标签，匹配当前图包分类并随机取图"],
-      ["发送表情", "按平台消息格式发送图片"],
+      ["发送表情", "通过独立发送概率门控后发送图片"],
     ],
     "semantic-tool": [
       ["选择表情包", "按使用规则为当前会话选择表情包"],
-      ["决定是否配图", "按触发范围、概率和数量控制"],
-      ["发起搜索", "回复模型按需调用搜索工具"],
+      ["决定是否配图", "按触发范围和数量控制"],
+      ["发起搜索", "模型自主调用，或按独立调用概率触发检索"],
       ["检索并选图", "从索引中查找候选并选择图片"],
-      ["发送表情", "按平台消息格式发送图片"],
+      ["发送表情", "通过独立发送概率门控后发送图片"],
     ],
     "semantic-auxiliary": [
       ["选择表情包", "按使用规则为当前会话选择表情包"],
-      ["决定是否配图", "按触发范围、概率和数量控制"],
+      ["决定是否配图", "按触发范围和数量控制"],
       ["辅助模型生成检索词", "根据回复提炼选图意图"],
       ["检索并选图", "从索引中查找候选并选择图片"],
-      ["发送表情", "按平台消息格式发送图片"],
+      ["发送表情", "通过独立发送概率门控后发送图片"],
     ],
   };
   const workspaceModes = {
@@ -163,7 +163,7 @@ async function initPluginConfig() {
       fallback: [],
     },
     "semantic-tool": {
-      primary: ["semantic", "semantic-models"],
+      primary: ["tool-trigger", "semantic", "semantic-models"],
       fallback: [
         "prompts",
         "category-example",
@@ -227,6 +227,14 @@ async function initPluginConfig() {
       title: "发送方式",
       description: "根据聊天平台选择适合的图片和消息格式。",
       prefixes: ["generation.message."],
+    },
+    {
+      id: "tool-trigger",
+      modes: ["semantic-tool"],
+      category: "models",
+      title: "Tool 调用策略",
+      description: "关闭时保留模型自主调用；开启概率触发可能增加一次当前回复模型的前置请求。发送概率始终独立。",
+      prefixes: ["semantic.tool_probability_enabled", "semantic.tool_call_probability"],
     },
     {
       id: "semantic",
@@ -436,7 +444,7 @@ async function initPluginConfig() {
   ];
   const labels = {
     "generation.trigger.scope": "应用范围",
-    "generation.emotion.probability": "表情出现概率（%）",
+    "generation.emotion.probability": "表情发送概率（%）",
     "generation.emotion.llm.provider_id": "情感辅助模型",
     "semantic.top_k": "每次检索候选数",
     "semantic.min_score": "最低相似度",
@@ -448,7 +456,7 @@ async function initPluginConfig() {
   };
   const hints = {
     "generation.emotion.probability":
-      "在语义检索模式下，每轮按此概率决定是否让回复模型选图。",
+      "所有模式共用的发送门控，每轮只判定一次。0% 不发图，100% 允许发送；不影响模型或工具检索。",
     "generation.emotion.llm.enabled":
       "将选图交给情感辅助模型，回复模型只负责对话。",
     "generation.emotion.llm.provider_id":
@@ -707,7 +715,7 @@ async function initPluginConfig() {
     document.getElementById("selection-mode-detail").textContent = auxiliary
       ? "选图会额外调用辅助模型，默认复用当前对话的回复模型。切换模式会保留已填写的参数。"
       : semantic
-      ? "需要回复模型支持 Tool 调用；工具不可用时回退到原生分类标签。"
+      ? "模型自主调用保持原有行为；概率触发命中后尝试一次检索，失败时只回复文字，不切换其他模式补发。"
       : "无需额外选图模型。可在「提示词模板」与「标签与匹配」中调整分类选图，在「表情发送」中调整公共发送设置。";
     resetPrompts.hidden =
       Boolean(query) ||
@@ -755,6 +763,9 @@ async function initPluginConfig() {
       for (const row of card.querySelectorAll(".config-field")) {
         row.hidden =
           row.dataset.modeSwitch === "true" ||
+          (row.dataset.path === "semantic.tool_call_probability" &&
+            !(changes.get("semantic.tool_probability_enabled") ??
+              fields.get("semantic.tool_probability_enabled")?.value)) ||
           (row.dataset.path === "semantic.auto_collect_embedding" &&
             !semantic) ||
           (Boolean(query) && !row.dataset.search.includes(query));
@@ -1194,6 +1205,7 @@ async function initPluginConfig() {
     updateState();
     if (
       path === "storage.provider" ||
+      path === "semantic.tool_probability_enabled" ||
       path === "semantic.embedding_provider_id" ||
       path.startsWith("auto_collect.")
     )

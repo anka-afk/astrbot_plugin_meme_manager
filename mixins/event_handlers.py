@@ -7,18 +7,20 @@ import re
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-
-from PIL import Image as PILImage
 
 from astrbot.api import logger
 from astrbot.api.all import *
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import *
 from astrbot.api.provider import LLMResponse, ProviderRequest
+from astrbot.core.agent.run_context import ContextWrapper
+from astrbot.core.agent.tool import ToolSet
 from astrbot.core.message.components import Image, Plain
 from astrbot.core.message.message_event_result import MessageChain, ResultContentType
 from astrbot.core.platform.message_type import MessageType
+from PIL import Image as PILImage
 
 from ..backend.meme_parser import MemeParser
 from ..backend.meme_parser.text_safety import (
@@ -72,7 +74,22 @@ def normalize_trigger_scope(value: Any) -> str:
 
 
 class EventHandlerMixin:
-    """处理图片上传、LLM 响应解析、消息装饰等事件"""
+    """Handle uploads, LLM replies and meme delivery."""
+
+    def _meme_send_allowed(self, event: AstrMessageEvent) -> bool:
+        """Cache the independent delivery decision for one event's reply.
+
+        Args:
+            event: Message event shared by hooks, retries and stream delivery.
+
+        Returns:
+            Whether this reply is eligible to send selected memes.
+        """
+        decision = event.get_extra("meme_manager_send_probability_hit")
+        if decision is None:
+            decision = probability_hit(self.emotions_probability)
+            event.set_extra("meme_manager_send_probability_hit", decision)
+        return bool(decision)
 
     async def _mark_llm_request_origin_impl(self, event: AstrMessageEvent) -> None:
         """在 AstrBot 构建默认请求前记录本轮 LLM 请求来源。"""
@@ -647,8 +664,7 @@ class EventHandlerMixin:
         if not emotions:
             return [], []
 
-        random_value = random.randint(1, 100)
-        if random_value > self.emotions_probability:
+        if not self._meme_send_allowed(event):
             return [], []
 
         emotion_images: list[Image] = []
@@ -1131,6 +1147,17 @@ class EventHandlerMixin:
                 exc_info=True,
             )
         self._apply_request_prompt(req, event)
+        if event.get_extra("meme_manager_semantic_mode") == "tool":
+            if event.get_extra("meme_manager_tool_probability_enabled") is None:
+                enabled = bool(getattr(self, "tool_probability_enabled", False))
+                event.set_extra("meme_manager_tool_probability_enabled", enabled)
+                if enabled:
+                    event.set_extra(
+                        "meme_manager_tool_probability_hit",
+                        probability_hit(getattr(self, "tool_call_probability", 100)),
+                    )
+            if event.get_extra("meme_manager_tool_probability_enabled"):
+                await self._prepare_probability_tool_search(event, req)
         if not self.emotion_llm_enabled:
             return
 
@@ -1147,6 +1174,166 @@ class EventHandlerMixin:
             # AstrBot 的本轮 Provider/模型覆盖只存在于事件和 ProviderRequest 中。
             # 必须在回复请求发出前缓存，不能仅查询会话默认 Provider。
             await self._resolve_emotion_llm_provider_id(event)
+
+    async def _prepare_probability_tool_search(
+        self, event: AstrMessageEvent, req: ProviderRequest
+    ) -> None:
+        """Attempt one required search using the reply provider and model.
+
+        Args:
+            event: Event holding this reply's decisions and verified candidates.
+            req: Normal reply request; only its local tool set and prompt change.
+        """
+        lock = event.get_extra("meme_manager_tool_probability_lock")
+        if lock is None:
+            lock = asyncio.Lock()
+            event.set_extra("meme_manager_tool_probability_lock", lock)
+        async with lock:
+            if not event.get_extra("meme_manager_tool_probability_attempted"):
+                # Claim the attempt before awaiting, including on cancellation.
+                event.set_extra("meme_manager_tool_probability_attempted", True)
+                tool_set = getattr(req, "func_tool", None)
+                full_set = getattr(tool_set, "get_full_tool_set", None)
+                if callable(full_set):
+                    tool_set = full_set()
+                tool = tool_set.get_tool("search_memes") if tool_set else None
+                self._remove_semantic_tool(req)
+                result = {"ok": False, "reason": "tool_probability_miss"}
+                try:
+                    if event.get_extra("meme_manager_tool_probability_hit"):
+                        if tool is None or not getattr(tool, "active", True):
+                            raise ValueError("search_memes is unavailable")
+                        selected = event.get_extra("selected_provider")
+                        if isinstance(selected, str) and selected:
+                            provider = self.context.get_provider_by_id(selected)
+                        else:
+                            provider = await self.context.get_using_provider_async(
+                                umo=event.unified_msg_origin
+                            )
+                        if provider is None:
+                            raise ValueError("Reply provider is unavailable")
+                        if req.image_urls:
+                            model_config = (
+                                self.context.get_config(event.unified_msg_origin)
+                                .get("agent_runner", {})
+                                .get("config", {})
+                                .get("model", {})
+                            )
+                            fallback_ids = model_config.get("fallback_provider_ids", [])
+                            if fallback_ids:
+                                # The core may already have routed this image
+                                # request to a fallback before this hook. Reuse
+                                # its selection policy without changing the event.
+                                try:
+                                    from astrbot.core.astr_main_agent import (
+                                        _get_fallback_chat_providers,
+                                        _select_image_chat_provider,
+                                    )
+                                except ImportError:
+                                    # Older cores do not perform this image routing.
+                                    pass
+                                else:
+                                    provider = _select_image_chat_provider(
+                                        provider,
+                                        req,
+                                        _get_fallback_chat_providers(
+                                            provider, self.context, fallback_ids
+                                        ),
+                                    )
+                        modalities = provider.provider_config.get("modalities")
+                        if (
+                            isinstance(modalities, list)
+                            and modalities
+                            and "tool_use" not in modalities
+                        ):
+                            raise ValueError("Reply model does not support tools")
+                        response = await provider.text_chat(
+                            prompt=req.prompt,
+                            session_id=req.session_id,
+                            contexts=copy.deepcopy(req.contexts),
+                            tool_calls_result=copy.deepcopy(req.tool_calls_result),
+                            image_urls=list(req.image_urls or []),
+                            audio_urls=list(req.audio_urls or []),
+                            extra_user_content_parts=copy.deepcopy(
+                                req.extra_user_content_parts
+                            ),
+                            system_prompt=req.system_prompt
+                            + (
+                                "\n本次仅生成一次 search_memes 调用，不输出回复正文。"
+                                "根据对话、人格和准备回复的意图生成简短检索词。"
+                            ),
+                            func_tool=ToolSet([tool]),
+                            model=req.model,
+                            tool_choice="required",
+                            request_max_retries=0,
+                        )
+                        names = getattr(response, "tools_call_name", []) or []
+                        arguments = getattr(response, "tools_call_args", []) or []
+                        # Execute only the first declared call, even if required
+                        # returned duplicates or the first arguments are invalid.
+                        if not names or names[0] != "search_memes" or not arguments:
+                            raise ValueError(
+                                "Required search_memes call was not returned"
+                            )
+                        args = arguments[0]
+                        if (
+                            not isinstance(args, dict)
+                            or set(args) != {"query"}
+                            or not isinstance(args["query"], str)
+                            or not args["query"].strip()
+                        ):
+                            raise ValueError("Invalid search_memes arguments")
+                        event.set_extra("meme_manager_tool_probability_running", True)
+                        try:
+                            # Preserve AstrBot's permission proxy when present.
+                            if tool.handler is not None:
+                                raw_result = await tool.handler(event, **args)
+                            else:
+                                raw_result = await tool.call(
+                                    ContextWrapper(
+                                        SimpleNamespace(
+                                            context=self.context, event=event
+                                        )
+                                    ),
+                                    **args,
+                                )
+                            result = json.loads(raw_result)
+                            if not isinstance(result, dict):
+                                raise ValueError("Invalid search_memes result")
+                        finally:
+                            event.set_extra(
+                                "meme_manager_tool_probability_running", False
+                            )
+                except asyncio.CancelledError:
+                    result = {"ok": False, "reason": "tool_search_cancelled"}
+                    event.set_extra("meme_manager_semantic_candidates", {})
+                    logger.info("[meme_manager] Probability tool search cancelled")
+                    raise
+                except Exception as exc:
+                    result = {"ok": False, "reason": "tool_search_failed"}
+                    event.set_extra("meme_manager_semantic_candidates", {})
+                    logger.warning(
+                        "[meme_manager] Probability tool search skipped: %s", exc
+                    )
+                finally:
+                    event.set_extra("meme_manager_semantic_search_completed", True)
+                    if not result.get("ok"):
+                        event.set_extra("meme_manager_semantic_candidates", {})
+                    event.set_extra(
+                        "meme_manager_tool_probability_result",
+                        json.dumps(result, ensure_ascii=False),
+                    )
+                    if not result.get("ok") or not result.get("candidates"):
+                        logger.info(
+                            "[meme_manager] Probability tool search has no selection: %s",
+                            result.get("reason", "no_candidates"),
+                        )
+            self._remove_semantic_tool(req)
+            req.system_prompt = self._strip_meme_prompt(
+                req.system_prompt
+            ) + self._semantic_system_prompt(
+                event.get_extra("meme_manager_tool_probability_result")
+            )
 
     async def _resolve_emotion_llm_provider_id(self, event: AstrMessageEvent) -> str:
         """返回情感辅助模型；配置留空时复用本轮真实回复 Provider。"""
@@ -1369,11 +1556,7 @@ class EventHandlerMixin:
         clean_text = parser.feed(text) + parser.finish()
         found_emotions = parser.selections
 
-        # 概率预检：旧版路径只掷一次骰，结果存入 extra 供发送阶段复用，
-        # 避免“调用情感模型”与“发送表情”各自掷骰导致概率叠加（p²）。
-        legacy_probability_hit = probability_hit(self.emotions_probability)
-        event.set_extra("meme_manager_legacy_probability_hit", legacy_probability_hit)
-        if self.emotion_llm_enabled and legacy_probability_hit:
+        if self.emotion_llm_enabled:
             try:
                 category_catalog = [
                     {
@@ -1433,7 +1616,7 @@ class EventHandlerMixin:
                 response.result_chain = MessageChain([Plain("")])
             event.set_extra("meme_manager_image_only_reply", True)
             # 此图片就是回复本身，而不是可选的文本附件。
-            event.set_extra("meme_manager_legacy_probability_hit", True)
+            # Image-only replies use the same delivery gate as text replies.
         logger.debug(
             f"[meme_manager] 清理后的最终文本内容长度: {len(response.completion_text)}"
         )
@@ -1532,9 +1715,7 @@ class EventHandlerMixin:
                     await self._send_memes_streaming(event)
                 return
 
-            # 第二步：语义模式按候选 ID 精确取图，不走概率、分类目录和 random.choice。
-            # 触发范围门控：仅在配置允许的消息类型上附加表情图片；
-            # 文本标记清理（第一步）不受此门控影响，始终执行。
+            # Validate exact semantic IDs after the shared delivery gate.
             scope_allows_attach = self._should_attach_for_result(event, result)
             semantic_selected_ids = (
                 event.get_extra("meme_manager_semantic_selected_ids") or []
@@ -1542,6 +1723,7 @@ class EventHandlerMixin:
             if (
                 scope_allows_attach
                 and semantic_selected_ids
+                and self._meme_send_allowed(event)
                 and self._semantic_mode_active(event)
             ):
                 pack_context = self._resolve_runtime_pack_context(event=event)
@@ -1586,14 +1768,7 @@ class EventHandlerMixin:
             # 第三步：旧模式添加表情图片（如果有找到的表情）
             found_emotions = event.get_extra("found_emotions") or []
             if scope_allows_attach and found_emotions and not semantic_selected_ids:
-                # 概率判定复用 _resp_impl 阶段的预检结果（避免二次掷骰）；
-                # extra 缺失（异常路径）时回退本地掷骰，保持旧行为。
-                legacy_probability_hit = event.get_extra(
-                    "meme_manager_legacy_probability_hit"
-                )
-                if legacy_probability_hit is None:
-                    legacy_probability_hit = probability_hit(self.emotions_probability)
-                if legacy_probability_hit:
+                if self._meme_send_allowed(event):
                     # 创建表情图片列表
                     emotion_images = []
                     temp_files = []  # 记录临时文件路径
@@ -1754,6 +1929,10 @@ class EventHandlerMixin:
             event.set_extra("meme_manager_semantic_selected_ids", None)
             event.set_extra("found_emotions", None)
             return
+        if not self._meme_send_allowed(event):
+            event.set_extra("meme_manager_semantic_selected_ids", None)
+            event.set_extra("found_emotions", None)
+            return
         semantic_selected_ids = (
             event.get_extra("meme_manager_semantic_selected_ids") or []
         )
@@ -1784,15 +1963,6 @@ class EventHandlerMixin:
             return
 
         try:
-            # 概率判定复用 _resp_impl 阶段的预检结果；extra 缺失时回退本地掷骰。
-            legacy_probability_hit = event.get_extra(
-                "meme_manager_legacy_probability_hit"
-            )
-            if legacy_probability_hit is None:
-                legacy_probability_hit = probability_hit(self.emotions_probability)
-            if not legacy_probability_hit:
-                return
-
             for emotion in self._limit_meme_selection(found_emotions):
                 memes = self._get_category_meme_files(event, emotion)
                 if not memes:

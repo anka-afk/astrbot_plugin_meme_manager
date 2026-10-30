@@ -6,9 +6,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from astrbot_plugin_meme_manager.mixins import event_handlers
-from test_meme_only_replies import reply_context as reply_context
-
 from astrbot.core.config.default import DEFAULT_CONFIG
 from astrbot.core.message.components import Plain
 from astrbot.core.message.message_event_result import (
@@ -28,6 +25,8 @@ from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest
 from astrbot.core.star.star_handler import EventType
+from astrbot_plugin_meme_manager.mixins import event_handlers
+from test_meme_only_replies import reply_context as reply_context
 
 
 @pytest.mark.asyncio
@@ -260,7 +259,7 @@ async def test_incomplete_stream_never_sends_images(
     [
         (False, 100, False, 0),
         (True, 0, False, 0),
-        (False, 0, True, 1),
+        (False, 0, True, 0),
     ],
 )
 async def test_stream_completion_respects_attachment_settings(
