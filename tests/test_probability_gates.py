@@ -3,7 +3,7 @@
 import asyncio
 import json
 from types import MethodType, SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from astrbot.core.agent.tool import FunctionTool, ToolSet
@@ -218,6 +218,59 @@ async def test_preflight_preserves_provider_model_and_request(tool_reply):
     assert "meme:0123456789ab" in request.system_prompt
     assert request.prompt == "hello"
     assert not hasattr(request, "tool_choice")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "primary_tools,fallback_tools", [(True, True), (False, True), (True, False)]
+)
+async def test_preflight_uses_core_image_fallback_provider(
+    tool_reply, primary_tools, fallback_tools
+):
+    from astrbot.core.astr_main_agent import (
+        _get_fallback_chat_providers,
+        _select_image_chat_provider,
+    )
+    from astrbot.core.provider.provider import Provider
+
+    sender, event, state, request, _, primary, search = tool_reply
+    primary.provider_config = {
+        "id": "primary",
+        "modalities": ["text"] + (["tool_use"] if primary_tools else []),
+    }
+    fallback = Mock(spec=Provider)
+    fallback.provider_config = {
+        "id": "vision",
+        "modalities": ["text", "image"] + (["tool_use"] if fallback_tools else []),
+    }
+    fallback.text_chat = AsyncMock(return_value=primary.text_chat.return_value)
+    state["selected_provider"] = "primary"
+    sender.context.get_provider_by_id = lambda value: {
+        "primary": primary,
+        "vision": fallback,
+    }[value]
+    sender.context.get_config = lambda *args: {
+        "agent_runner": {"config": {"model": {"fallback_provider_ids": ["vision"]}}}
+    }
+    request.image_urls = ["fixture.png"]
+    # AstrBot has already selected the image fallback before invoking our hook,
+    # and clears a model override that belonged to the original provider.
+    actual = _select_image_chat_provider(
+        primary,
+        request,
+        _get_fallback_chat_providers(primary, sender.context, ["vision"]),
+    )
+    assert actual is fallback
+    request.model = None
+    await sender._inject_meme_prompt_impl(event, request)
+    primary.text_chat.assert_not_awaited()
+    if fallback_tools:
+        fallback.text_chat.assert_awaited_once()
+        assert fallback.text_chat.call_args.kwargs["model"] is None
+        search.assert_awaited_once()
+    else:
+        fallback.text_chat.assert_not_awaited()
+        search.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -1201,8 +1201,6 @@ class EventHandlerMixin:
                 result = {"ok": False, "reason": "tool_probability_miss"}
                 try:
                     if event.get_extra("meme_manager_tool_probability_hit"):
-                        if not self._reply_model_supports_tools(event):
-                            raise ValueError("Reply model does not support tools")
                         if tool is None or not getattr(tool, "active", True):
                             raise ValueError("search_memes is unavailable")
                         selected = event.get_extra("selected_provider")
@@ -1214,6 +1212,41 @@ class EventHandlerMixin:
                             )
                         if provider is None:
                             raise ValueError("Reply provider is unavailable")
+                        if req.image_urls:
+                            model_config = (
+                                self.context.get_config(event.unified_msg_origin)
+                                .get("agent_runner", {})
+                                .get("config", {})
+                                .get("model", {})
+                            )
+                            fallback_ids = model_config.get("fallback_provider_ids", [])
+                            if fallback_ids:
+                                # The core may already have routed this image
+                                # request to a fallback before this hook. Reuse
+                                # its selection policy without changing the event.
+                                try:
+                                    from astrbot.core.astr_main_agent import (
+                                        _get_fallback_chat_providers,
+                                        _select_image_chat_provider,
+                                    )
+                                except ImportError:
+                                    # Older cores do not perform this image routing.
+                                    pass
+                                else:
+                                    provider = _select_image_chat_provider(
+                                        provider,
+                                        req,
+                                        _get_fallback_chat_providers(
+                                            provider, self.context, fallback_ids
+                                        ),
+                                    )
+                        modalities = provider.provider_config.get("modalities")
+                        if (
+                            isinstance(modalities, list)
+                            and modalities
+                            and "tool_use" not in modalities
+                        ):
+                            raise ValueError("Reply model does not support tools")
                         response = await provider.text_chat(
                             prompt=req.prompt,
                             session_id=req.session_id,
