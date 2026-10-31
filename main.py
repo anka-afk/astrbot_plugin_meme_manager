@@ -222,6 +222,12 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             ("generation", "emotion", "probability"),
             default=100,
         )
+        self.explicit_request_bypass_probability = bool(
+            self._read_config_value(
+                ("generation", "emotion", "explicit_request_bypass_probability"),
+                default=True,
+            )
+        )
         self.tool_probability_enabled = bool(
             self._read_config_value(
                 ("semantic", "tool_probability_enabled"), default=False

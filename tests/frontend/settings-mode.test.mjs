@@ -50,9 +50,23 @@ test("Tool trigger settings belong to Tool mode and default to autonomous calls"
   assert.equal(tool.tool_call_probability.default, 100);
   assert.equal(tool.tool_call_probability.slider.min, 0);
   assert.equal(schema.generation.items.emotion.items.probability.slider.min, 0);
+  assert.equal(
+    schema.generation.items.emotion.items.explicit_request_bypass_probability.type,
+    "bool",
+  );
+  assert.equal(
+    schema.generation.items.emotion.items.explicit_request_bypass_probability.default,
+    true,
+  );
   const group = groups.find((item) => item.id === "tool-trigger");
   assert.deepEqual([...group.modes], ["semantic-tool"]);
   assert.ok(workspaceModes["semantic-tool"].primary.includes("tool-trigger"));
+  const appearance = groups.find((item) => item.id === "appearance");
+  assert.ok(
+    appearance.prefixes.includes(
+      "generation.emotion.explicit_request_bypass_probability",
+    ),
+  );
 });
 
 test("Tool trigger toggle records boolean changes and refreshes dependent visibility", () => {
