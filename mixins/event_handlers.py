@@ -49,13 +49,72 @@ from ..backend.semantic.query import (
 )
 from ..backend.semantic.storage import invalidate_semantic_metadata
 from ..config import PLUGIN_DATA_DIR
-from ..utils import probability_hit
+from ..utils import normalize_probability, probability_hit
 
 TRIGGER_SCOPE_CHAT_ONLY = "only_chat_llm"
 TRIGGER_SCOPE_CHAT_AND_PLUGIN = "chat_and_plugin_llm"
 LLM_REQUEST_ORIGIN_EXTRA_KEY = "meme_manager_llm_request_origin"
 LLM_REQUEST_ORIGIN_CHAT = "chat"
 LLM_REQUEST_ORIGIN_PLUGIN = "plugin"
+
+_EXPLICIT_MEME_REQUEST_RE = re.compile(
+    r"(?:给我|帮我|麻烦(?:你)?|请(?:你)?)?\s*(?:再)?(?:发|来|整|丢)"
+    r"(?:一|个|张|两|几|点|些)*\s*(?:表情包|表情|梗图|meme)"
+    r"|(?:表情包|表情|梗图|meme)\s*(?:呢|来一个|发一个)",
+    re.IGNORECASE,
+)
+_NEGATED_MEME_REQUEST_RE = re.compile(
+    r"(?:不要|不用|别|先不|不许|禁止|勿|停止)\s*(?:再)?"
+    r"(?:给(?:我|他|她|它|你))?\s*(?:发|来|整|丢)"
+    r"(?:一|个|张|两|几|点|些)*\s*(?:表情包|表情|梗图|meme)"
+    r"|(?:不想|不要)看(?:表情包|表情|梗图|meme)",
+    re.IGNORECASE,
+)
+_MEME_REQUEST_EXCLUSION_RE = re.compile(
+    r"发不出去|发送失败|没发出去|没收到|发了吗|有没有发"
+    r"|为什么(?:要|又|给我|你)*发|怎么(?:又|给我|你)*发"
+    r"|凭什么(?:给我|你)*发|(?:不会|不能|没法)(?:给我|你)?发"
+    r"|(?:没|不是|谁)让(?:我|你|他|她|它)?(?:给(?:我|你|他|她|它))?发",
+    re.IGNORECASE,
+)
+_EXPLICIT_MEME_REQUEST_EN_RE = re.compile(
+    r"\b(?:send|show|give)(?:\s+me)?(?:\s+(?:a|an|one))?\s+"
+    r"(?:meme|sticker)(?:s)?\b"
+    r"|\b(?:meme|sticker)(?:\s+please|\s+now)\b",
+    re.IGNORECASE,
+)
+
+
+def _event_message_text(event: AstrMessageEvent) -> str:
+    text = getattr(event, "message_str", "")
+    if callable(text):
+        text = text()
+    if not text:
+        getter = getattr(event, "get_message_str", None)
+        if callable(getter):
+            text = getter()
+    return str(text or "").strip()
+
+
+def is_explicit_meme_request(event: AstrMessageEvent) -> bool:
+    """Return True for an unambiguous request to send a meme/sticker.
+
+    Negative requests and status questions such as "why did you send a
+    sticker?" or "did it send?" are deliberately excluded. The check is
+    conservative: false negatives only retain normal probability behavior,
+    while false positives could bypass the user's configured probability.
+    """
+    text = _event_message_text(event)
+    if not text or not (
+        _EXPLICIT_MEME_REQUEST_RE.search(text)
+        or _EXPLICIT_MEME_REQUEST_EN_RE.search(text)
+    ):
+        return False
+    if _NEGATED_MEME_REQUEST_RE.search(text):
+        return False
+    if _MEME_REQUEST_EXCLUSION_RE.search(text):
+        return False
+    return True
 
 
 def normalize_trigger_scope(value: Any) -> str:
@@ -87,8 +146,21 @@ class EventHandlerMixin:
         """
         decision = event.get_extra("meme_manager_send_probability_hit")
         if decision is None:
-            decision = probability_hit(self.emotions_probability)
+            explicit_bypass = bool(
+                getattr(self, "explicit_request_bypass_probability", True)
+            )
+            probability = normalize_probability(self.emotions_probability)
+            explicit_request = (
+                explicit_bypass
+                and probability > 0
+                and is_explicit_meme_request(event)
+            )
+            decision = explicit_request or probability_hit(probability)
             event.set_extra("meme_manager_send_probability_hit", decision)
+            event.set_extra(
+                "meme_manager_send_probability_source",
+                "explicit_request" if explicit_request else "probability",
+            )
         return bool(decision)
 
     async def _mark_llm_request_origin_impl(self, event: AstrMessageEvent) -> None:

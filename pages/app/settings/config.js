@@ -218,6 +218,7 @@ async function initPluginConfig() {
       prefixes: [
         "generation.trigger.",
         "generation.emotion.probability",
+        "generation.emotion.explicit_request_bypass_probability",
         "generation.emotion.max_memes_per_message",
       ],
     },
@@ -445,6 +446,8 @@ async function initPluginConfig() {
   const labels = {
     "generation.trigger.scope": "应用范围",
     "generation.emotion.probability": "表情发送概率（%）",
+    "generation.emotion.explicit_request_bypass_probability":
+      "明确请求时绕过发送概率",
     "generation.emotion.llm.provider_id": "情感辅助模型",
     "semantic.top_k": "每次检索候选数",
     "semantic.min_score": "最低相似度",
@@ -457,6 +460,8 @@ async function initPluginConfig() {
   const hints = {
     "generation.emotion.probability":
       "所有模式共用的发送门控，每轮只判定一次。0% 不发图，100% 允许发送；不影响模型或工具检索。",
+    "generation.emotion.explicit_request_bypass_probability":
+      "用户明确要求发表情时跳过随机门控；0% 仍为完全关闭。",
     "generation.emotion.llm.enabled":
       "将选图交给情感辅助模型，回复模型只负责对话。",
     "generation.emotion.llm.provider_id":

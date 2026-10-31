@@ -448,6 +448,12 @@
               "max": 100,
               "step": 5
             }
+          },
+          "explicit_request_bypass_probability": {
+            "description": "明确请求时绕过发送概率",
+            "type": "bool",
+            "default": true,
+            "hint": "用户明确要求“发个表情包”“来个梗图”等时，只要发送概率大于 0%，就跳过随机门控并发送模型已选中的表情。0% 仍是完全关闭。否定请求和发送状态询问不会触发。"
           }
         }
       },

@@ -17,6 +17,9 @@ from astrbot.core.provider.entities import LLMResponse, ProviderRequest
 from astrbot_plugin_meme_manager import main as plugin_main
 from astrbot_plugin_meme_manager.main import MemeSender
 from astrbot_plugin_meme_manager.mixins import event_handlers
+from astrbot_plugin_meme_manager.mixins.event_handlers import (
+    is_explicit_meme_request,
+)
 from test_meme_only_replies import reply_context as reply_context
 
 
@@ -403,6 +406,68 @@ def test_events_and_sessions_do_not_share_decisions(reply_context, monkeypatch):
         )
         assert sender._meme_send_allowed(other) is expected
     assert sender._meme_send_allowed(event)
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("给我发个表情包", True),
+        ("来张梗图看看", True),
+        ("send me a meme", True),
+        ("不要发表情包", False),
+        ("先不用发梗图", False),
+        ("别给我发个表情包", False),
+        ("不要给我发个梗图", False),
+        ("为什么发表情包？", False),
+        ("为什么给我发个表情包？", False),
+        ("表情包发出去了吗", False),
+        ("这个表情包挺好笑的", False),
+        ("我没让你发表情包", False),
+        ("不知道怎么发表情包", False),
+    ],
+)
+def test_explicit_meme_request_detection(reply_context, message, expected):
+    _, event, _, _ = reply_context
+    event.message_str = message
+    assert is_explicit_meme_request(event) is expected
+
+
+@pytest.mark.parametrize(
+    ("message", "bypass", "probability", "expected", "source"),
+    [
+        ("给我发个表情包", True, 5, True, "explicit_request"),
+        ("来个梗图", True, 5, True, "explicit_request"),
+        ("给我发个表情包", True, 0, False, "probability"),
+        ("给我发个表情包", False, 5, False, "probability"),
+        ("不要发表情包", True, 5, False, "probability"),
+        ("别给我发个表情包", True, 5, False, "probability"),
+        ("为什么发表情包", True, 5, False, "probability"),
+        ("为什么给我发个表情包", True, 5, False, "probability"),
+    ],
+)
+def test_explicit_request_bypass_probability(
+    reply_context,
+    monkeypatch,
+    message,
+    bypass,
+    probability,
+    expected,
+    source,
+):
+    sender, event, state, _ = reply_context
+    event.message_str = message
+    sender.emotions_probability = probability
+    sender.explicit_request_bypass_probability = bypass
+    draws = []
+
+    def miss(configured_probability):
+        draws.append(configured_probability)
+        return False
+
+    monkeypatch.setattr(event_handlers, "probability_hit", miss)
+    assert sender._meme_send_allowed(event) is expected
+    assert state["meme_manager_send_probability_source"] == source
+    assert draws == ([] if source == "explicit_request" else [probability])
 
 
 @pytest.mark.asyncio
