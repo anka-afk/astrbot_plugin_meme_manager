@@ -483,6 +483,7 @@ async function initPluginConfig() {
   const changes = new Map();
   let revision = "";
   let active = "models";
+  let pendingGroupAnchor = "";
   let providers = { chat: [], embedding: [] };
   let packs = [];
   let loaded = false;
@@ -794,6 +795,14 @@ async function initPluginConfig() {
     }
     document.getElementById("config-search-empty").hidden =
       !loaded || visibleCount > 0;
+    if (pendingGroupAnchor) {
+      const card = document.getElementById(`config-group-${pendingGroupAnchor}`);
+      if (card) {
+        pendingGroupAnchor = "";
+        card.scrollIntoView({ block: "start", behavior: "instant" });
+        card.querySelector("h3")?.focus({ preventScroll: true });
+      }
+    }
   }
 
   function updateState(message = "", error = false) {
@@ -1165,17 +1174,27 @@ async function initPluginConfig() {
       updateView();
     });
   }
-  const initialTab = location.hash.slice(1);
-  if (tabs.some((tab) => tab.dataset.settingsTab === initialTab))
-    active = initialTab;
-  window.addEventListener("hashchange", () => {
-    const target = location.hash.slice(1);
-    if (tabs.some((tab) => tab.dataset.settingsTab === target)) {
-      active = target;
-      search.value = "";
-      updateView();
-    }
-  });
+  // Deep links address either a tab (#models) or one configuration card
+  // (#config-group-semantic-models). Card ids already exist for every group, so
+  // a link from another page can land on the setting it mentions.
+  const hashGroupId = (value) =>
+    value.startsWith("config-group-")
+      ? value.slice("config-group-".length)
+      : "";
+  const applyLocationHash = (render = true) => {
+    const raw = location.hash.slice(1);
+    const groupId = hashGroupId(raw);
+    const nextTab =
+      (groupId && groups.find((group) => group.id === groupId)?.category) || raw;
+    if (!tabs.some((tab) => tab.dataset.settingsTab === nextTab)) return false;
+    active = nextTab;
+    search.value = "";
+    pendingGroupAnchor = groupId;
+    if (render) updateView();
+    return true;
+  };
+  applyLocationHash(false);
+  window.addEventListener("hashchange", () => applyLocationHash());
   form.addEventListener("input", (event) => {
     const control = event.target;
     const path = control.dataset.configPath;

@@ -171,3 +171,21 @@ test("dialog edits the original configuration card and restores it on close", ()
   assert.equal(original[0], card);
   assert.equal(body.children.length, 0);
 });
+
+test("semantic page links the card it asks the user to open", async () => {
+  const group = groups.find((item) => item.id === "semantic-models");
+  assert.equal(group.category, "models");
+  const semanticPage = await readFile(
+    new URL("../../pages/app/semantic/index.html", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    semanticPage.includes(`../settings/index.html#config-group-${group.id}`),
+  );
+  const semanticScript = await readFile(
+    new URL("../../pages/app/semantic/script.js", import.meta.url),
+    "utf8",
+  );
+  assert.ok(!semanticScript.includes("语义与模型"));
+  assert.ok(semanticScript.includes("设置中心 → 模式 → 语义化模型"));
+});
