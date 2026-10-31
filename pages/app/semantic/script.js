@@ -410,14 +410,14 @@ async function initSemanticPage() {
       showNotice(data.status_message || "任务状态已更新");
     } else if (data.semantic_enabled && data.semantic_config_ready === false) {
       showNotice(
-        "语义检索已开启，但向量模型尚未就绪；当前仍使用分类逻辑。请前往设置中心的“语义与模型”检查配置。",
+        "语义检索已开启，但向量模型尚未就绪；当前仍使用分类逻辑。请前往「设置中心 → 模式 → 语义化模型」检查向量模型配置。",
         true,
       );
     } else if (!embeddingReady) {
       showNotice(
         data.embedding_configured_provider_id
           ? `已配置 Embedding 模型「${data.embedding_configured_provider_id}」，但当前 Provider 不可用；请检查 Provider 是否启用或配置是否已加载。`
-          : "尚未选择向量模型，请前往设置中心的“语义与模型”完成配置。",
+          : "尚未选择向量模型，请前往「设置中心 → 模式 → 语义化模型」完成配置。",
         true,
       );
     } else if (
@@ -434,7 +434,7 @@ async function initSemanticPage() {
       );
     } else if (!visionReady) {
       showNotice(
-        "未配置视觉模型，请前往设置中心的“语义与模型”选择图片描述模型。",
+        "未配置视觉模型，请前往「设置中心 → 模式 → 语义化模型」选择图片描述模型。",
         true,
       );
     } else {
