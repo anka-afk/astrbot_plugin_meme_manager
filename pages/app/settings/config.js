@@ -444,7 +444,7 @@ async function initPluginConfig() {
     "generation.emotion.probability":
       "每轮按此概率允许自动附图；0% 不自动附图，不限制 send_meme 主动发送工具",
     "generation.emotion.send_tool_enabled":
-      "默认开启。向主模型提供 send_meme，可按分类或本轮语义候选立即发图；由模型决定调用，可多次发送，不受自动配图概率或数量上限限制；调用后本轮不自动补图",
+      "向主模型提供 send_meme 工具，可按分类或本轮语义候选立即发图；由模型决定调用",
     "generation.prompt.head": "定义表情工具和发送格式，分类列表自动接在末尾",
     "generation.prompt.tail": "接在分类列表后，约束标签使用和选图方式",
     "generation.prompt.quantity_guidance_enabled":
