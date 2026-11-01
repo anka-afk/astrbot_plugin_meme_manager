@@ -18,7 +18,7 @@ def test_request_prompt_only_advertises_available_images(tmp_path, has_image):
     sender = make_sender()
     sender.emotion_llm_enabled = False
     sender._semantic_pack_ready = lambda **kwargs: False
-    sender._remove_semantic_tool = lambda req: None
+    sender._remove_meme_tool = lambda req: None
     sender.prompt_head = "Head"
     sender.prompt_tail = "Tail"
     sender.sys_prompt_add = ""

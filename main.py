@@ -32,7 +32,12 @@ from .config import (
 )
 from .image_host.img_sync import ImageSync
 from .mixins.commands import CommandMixin
-from .mixins.event_handlers import EventHandlerMixin, normalize_trigger_scope
+from .mixins.event_handlers import (
+    SEND_TOOL_PROMPT_MARKER_END,
+    SEND_TOOL_PROMPT_MARKER_START,
+    EventHandlerMixin,
+    normalize_trigger_scope,
+)
 from .mixins.integration import IntegrationMixin
 from .mixins.web_api import WebAPIMixin
 from .utils import dict_to_string, load_json
@@ -226,6 +231,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         self.emotions_probability = self._read_config_value(
             ("generation", "emotion", "probability"),
             default=100,
+        )
+        self.send_meme_tool_enabled = bool(
+            self._read_config_value(
+                ("generation", "emotion", "send_tool_enabled"), default=True
+            )
         )
         self.tool_probability_enabled = bool(
             self._read_config_value(
@@ -668,8 +678,13 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         return False
 
     @staticmethod
-    def _remove_semantic_tool(req: ProviderRequest) -> None:
-        """语义模式不可用时，从当前请求的工具集中移除搜索工具。"""
+    def _remove_meme_tool(req: ProviderRequest, name: str = "search_memes") -> None:
+        """Remove a meme tool from this request without changing shared tools.
+
+        Args:
+            req: Current provider request.
+            name: Tool to remove while preserving other tools and permissions.
+        """
         tool_set = getattr(req, "func_tool", None)
         get_full_tool_set = getattr(tool_set, "get_full_tool_set", None)
         if callable(get_full_tool_set):
@@ -683,7 +698,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             tool_set = req.func_tool
         remove_tool = getattr(tool_set, "remove_tool", None)
         if callable(remove_tool):
-            remove_tool("search_memes")
+            remove_tool(name)
 
     def _semantic_mode_active(self, event: AstrMessageEvent | None) -> bool:
         """判断事件是否仍指向已验证的语义表情包。
@@ -772,6 +787,12 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             rf"{re.escape(SEMANTIC_PROMPT_MARKER_END)}"
         )
         prompt = semantic_marker_pattern.sub("", prompt).rstrip()
+        prompt = re.sub(
+            rf"\n*{re.escape(SEND_TOOL_PROMPT_MARKER_START)}[\s\S]*?"
+            rf"{re.escape(SEND_TOOL_PROMPT_MARKER_END)}",
+            "",
+            prompt,
+        ).rstrip()
         if self.sys_prompt_add and prompt.endswith(self.sys_prompt_add):
             prompt = prompt[: -len(self.sys_prompt_add)].rstrip()
         if not self.prompt_head:
@@ -959,7 +980,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 else None
             )
             return
-        self._remove_semantic_tool(req)
+        self._remove_meme_tool(req)
         if semantic_mode == "llm" or self.emotion_llm_enabled:
             req.system_prompt = self._strip_meme_prompt(req.system_prompt)
             return
@@ -1046,7 +1067,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         event.set_extra("meme_manager_semantic_search_completed", True)
         provider_request = event.get_extra("provider_request")
         if provider_request is not None:
-            self._remove_semantic_tool(provider_request)
+            self._remove_meme_tool(provider_request)
 
         context = self._resolve_runtime_pack_context(event=event)
         pack_ids = context.get("pack_ids", [])
@@ -1095,6 +1116,38 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         except Exception as exc:
             logger.error("语义表情查询失败: %s", exc, exc_info=True)
             return dumps_result({"ok": False, "reason": "语义查询失败"})
+
+    @llm_tool(name="send_meme")
+    async def send_meme_tool(self, event: AstrMessageEvent, category: str) -> str:
+        """Send one randomly chosen meme from a category to the current chat now.
+
+        Use when the user explicitly asks you to send a meme and you have not
+        already used meme tags for this reply. You may also use it proactively
+        when an image would help express your response. Choose one sending
+        method per reply: if you already used meme tags, do not call this tool;
+        after calling this tool, do not output meme tags. Do not use for
+        requests for text only, explanations of memes, or questions about
+        whether an earlier image was sent. Each successful call sends a
+        separate image message. Call again only to send another
+        intended image. Automatic attachment probability and quantity limits
+        do not apply to this tool.
+
+        The JSON result confirms an adapter send only when ok=true and
+        status=sent, with sent_count=1. If ok=false, read reason and do not
+        claim success. A successful send does not confirm the user viewed it.
+
+        Args:
+            category(string): Exact key from the available send_meme categories
+                in the system prompt. Copy the key unchanged; do not supply a
+                description, file path, URL, or semantic image ID.
+
+        Returns:
+            JSON with ok=true, status=sent, and sent_count=1 only after the
+            platform adapter returns successfully. This does not confirm the
+            user viewed the image. On failure, ok=false and reason explain why
+            delivery was not confirmed; do not claim that the image was sent.
+        """
+        return await self._send_meme_tool_impl(event, category)
 
     async def terminate(self):
         if getattr(self, "auto_collect_manager", None):

@@ -201,6 +201,10 @@ node --test tests/frontend/collection-review.test.mjs
 
 ## 概率门控回归验证
 
+`send_meme(category)` 是独立的即时发送动作，`generation.emotion.send_tool_enabled` 默认开启。请求钩子仅在原请求已包含该工具、来源范围允许且主模型支持工具时保留它，分类目录来自当前绑定图包的实际有图分类；不注入绕过宿主工具权限的新工具。工具只接收精确分类键，会话由事件提供，执行前及转换后检查资源仍属于当前图包。工具忽略自动配图概率和数量上限，允许同轮多次调用；使用 `meme_manager_direct_send_attempted` 阻止同轮自动附件或辅助模型再次选图。失败返回稳定原因码，取消传播，转换临时文件始终清理，实际发送复用 `_send_meme_image` 和成功历史记录。
+
+工具说明参考 [OpenAI Function calling 的定义最佳实践](https://developers.openai.com/api/docs/guides/function-calling#best-practices-for-defining-functions)：说明用途、适用与不适用场景、参数格式、调用副作用与返回字段含义；动态分类目录和调用策略放在可移除的系统提示块中。会话、文件路径和发送概率不作为模型参数。
+
 发送判定保存在事件的 `meme_manager_send_probability_hit` 中。Tool 概率策略和命中结果也按事件保存，不按会话全局缓存；重复请求钩子不清空候选或再次抽样。前置请求只包含当前请求中可用的 `search_memes`，使用相同回复 Provider 与 `ProviderRequest.model`，不修改共享工具集或普通回复的 `tool_choice`。执行端最多执行首个声明的调用，并保留工具权限代理。取消会向上传播，失败不会转成分类选图。
 
 ```sh

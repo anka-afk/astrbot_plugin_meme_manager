@@ -108,6 +108,7 @@ async function initPluginConfig() {
       prefixes: [
         "generation.trigger.",
         "generation.emotion.probability",
+        "generation.emotion.send_tool_enabled",
         "generation.emotion.max_memes_per_message",
       ],
     },
@@ -348,6 +349,7 @@ async function initPluginConfig() {
     "generation.emotion.llm.enabled": "由谁选择表情包",
     "generation.trigger.scope": "应用范围",
     "generation.emotion.probability": "表情发送概率（%）",
+    "generation.emotion.send_tool_enabled": "允许主模型主动发送表情",
     "generation.emotion.llm.provider_id": "配图聊天模型",
     "generation.emotion.llm.backend": "辅助模型类型",
     "semantic.query.source": "检索词来源",
@@ -438,9 +440,11 @@ async function initPluginConfig() {
     "generation.emotion.llm.context_turns": "提供最近 N 轮对话，0 表示不提供",
     "generation.emotion.llm.inject_persona": "将当前人格设定提供给辅助选图模型",
     "generation.emotion.max_memes_per_message":
-      "每条回复最多发送 N 张，负数不限，0 不发送；正数按选图顺序保留前 N 张，适用于所有选图方式及流式回复",
+      "自动配图最多 N 张，负数不限，0 不自动附图；不限制 send_meme 主动发送工具",
     "generation.emotion.probability":
-      "每轮按此概率允许发送表情，不影响检索和模型调用",
+      "每轮按此概率允许自动附图；0% 不自动附图，不限制 send_meme 主动发送工具",
+    "generation.emotion.send_tool_enabled":
+      "默认开启。主模型按分类立即发图，可多次调用，不受发送概率或数量上限限制；调用后本轮不自动补图",
     "generation.prompt.head": "定义表情工具和发送格式，分类列表自动接在末尾",
     "generation.prompt.tail": "接在分类列表后，约束标签使用和选图方式",
     "generation.prompt.quantity_guidance_enabled":

@@ -36,6 +36,22 @@ const defaults = {
   "auto_collect.manual_review": true,
   "decision_service.base_url": "https://system-one.dev/v1",
 };
+
+test("direct sends have a default-on switch separate from automatic attachment gates", async () => {
+  const schema = JSON.parse(
+    await readFile(new URL("../../_conf_schema.json", import.meta.url), "utf8"),
+  );
+  const emotion = schema.generation.items.emotion.items;
+  assert.equal(emotion.send_tool_enabled.type, "bool");
+  assert.equal(emotion.send_tool_enabled.default, true);
+  assert.ok(
+    groups.find((group) => group.id === "appearance").prefixes.includes(
+      "generation.emotion.send_tool_enabled",
+    ),
+  );
+  assert.match(emotion.probability.hint, /不限制.*send_meme/);
+  assert.match(emotion.max_memes_per_message.hint, /不限制.*send_meme/);
+});
 const describe = (values = {}, options = {}) =>
   describeSetup(
     { ...defaults, ...values },
