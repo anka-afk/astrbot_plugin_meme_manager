@@ -55,7 +55,7 @@ function fixture(hash) {
     configDialogTitle: heading,
     configDialogBody: { scrollTop: 0 },
     configMask: { classList: { remove() {} }, setAttribute() {} },
-    categories: { models: ["配图"], collect: ["自动收集"] },
+    categories: { models: ["模式"], collect: ["自动收集"] },
     mountDialogContent(node) {
       context.dialogContent = node;
       details.open = true;
@@ -211,7 +211,7 @@ test("semantic page links and names point at the current data preparation group"
       .length,
     2,
   );
-  assert.ok(script.includes("设置中心 → 配图 → 语义数据准备"));
+  assert.ok(script.includes("设置中心 → 模式 → 语义数据准备"));
   assert.ok(!script.includes("语义与模型"));
 });
 

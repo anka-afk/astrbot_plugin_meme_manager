@@ -416,14 +416,14 @@ async function initSemanticPage() {
       showNotice(data.status_message || "任务状态已更新");
     } else if (data.semantic_enabled && data.semantic_config_ready === false) {
       showNotice(
-        "向量模型未就绪，当前使用分类匹配；请到「设置中心 → 配图 → 语义数据准备」检查配置。",
+        "向量模型未就绪，当前使用分类匹配；请到「设置中心 → 模式 → 语义数据准备」检查配置。",
         true,
       );
     } else if (!embeddingReady) {
       showNotice(
         data.embedding_configured_provider_id
           ? `向量模型「${data.embedding_configured_provider_id}」不可用，请检查提供商是否启用、配置是否已加载。`
-          : "尚未选择向量模型，请前往「设置中心 → 配图 → 语义数据准备」配置",
+          : "尚未选择向量模型，请前往「设置中心 → 模式 → 语义数据准备」配置",
         true,
       );
     } else if (
@@ -436,7 +436,7 @@ async function initSemanticPage() {
       );
     } else if (!visionReady) {
       showNotice(
-        "未配置视觉模型，请到「设置中心 → 配图 → 语义数据准备」选择支持图片输入的建库图片描述模型。",
+        "未配置视觉模型，请到「设置中心 → 模式 → 语义数据准备」选择支持图片输入的建库图片描述模型。",
         true,
       );
     } else {

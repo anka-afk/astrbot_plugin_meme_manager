@@ -273,7 +273,7 @@ test("locating a draft opens its original field in a dialog while tab navigation
     configDialogTitle: tab,
     configDialogBody: { scrollTop: 0 },
     configMask: { classList: { remove() {} }, setAttribute() {} },
-    categories: { models: ["配图"] },
+    categories: { models: ["模式"] },
     mountDialogContent(node) {
       context.dialogContent = node;
       details.open = true;

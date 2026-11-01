@@ -63,7 +63,7 @@ backend/
 
 固定 `#decision` 导航供独立服务配置，`#models` 旧链接保持有效。`setup-state.js` 从当前草稿生成模型角色、缺项及准备状态，不发送请求或序列化密钥。配图和自动收集缺项分别显示在流程内的 `selection-required`、`collection-required`，保留原字段定位；两页均不展示独立的模型状态卡片。决策服务直接展示接口参数，语义准备提醒独立显示。保存全部更改包含所有插件配置分区，使用规则保持独立；密钥修改清单只显示替换或清除状态。
 
-设置支持 `#config-group-<group.id>`：`applyLocationHash` 校验目标所属分区，通过 `navigateToSetting` 打开弹窗并聚焦标题或指定字段，保留卡片 fragment 及鉴权查询参数。`#config-group-rules` 打开使用规则弹窗，`#rules` 仍进入独立分区。首次加载或保存期间仅记录待跳转目标，在解除 `busy/inert` 后处理；加载失败保留目标供重试，切换普通分区或无效锚点会取消待跳转。显式打开尚未启用的模块时展示未使用说明，不自动修改功能开关；存储提供商卡片也可预先配置。保存后重建表单保留当前弹窗。语义化页模型设置链接直达 `semantic-models`，文案统一为“配图 → 语义数据准备”。
+设置支持 `#config-group-<group.id>`：`applyLocationHash` 校验目标所属分区，通过 `navigateToSetting` 打开弹窗并聚焦标题或指定字段，保留卡片 fragment 及鉴权查询参数。`#config-group-rules` 打开使用规则弹窗，`#rules` 仍进入独立分区。首次加载或保存期间仅记录待跳转目标，在解除 `busy/inert` 后处理；加载失败保留目标供重试，切换普通分区或无效锚点会取消待跳转。显式打开尚未启用的模块时展示未使用说明，不自动修改功能开关；存储提供商卡片也可预先配置。保存后重建表单保留当前弹窗。语义化页模型设置链接直达 `semantic-models`，文案统一为“模式 → 语义数据准备”。
 
 `backend/selection.py` 规范化分类／图片候选和 selected、abstained、failed 结果；`backend/decision.py` 通过异步 HTTP 执行 System One 请求，不调用 AstrBot 聊天接口，不请求流式，不自动重试。会话／事件候选校验和真实资源权限仍在调用方执行。客户端延迟创建、并发有界、取消传播，插件关闭时释放 session；返回错误只暴露稳定原因码，密钥及服务原始错误不进入页面或日志。
 

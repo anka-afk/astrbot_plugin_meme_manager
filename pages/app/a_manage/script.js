@@ -1228,7 +1228,7 @@ async function initApp() {
       if (rebuildPackVectorsBtn) {
         rebuildPackVectorsBtn.disabled = true;
         rebuildPackVectorsBtn.title =
-          "请先到「设置中心 → 配图 → 语义数据准备」配置向量模型。";
+          "请先到「设置中心 → 模式 → 语义数据准备」配置向量模型。";
         rebuildPackVectorsBtn.innerHTML =
           '<i class="fas fa-circle-exclamation icon"></i>先配置向量模型';
       }
@@ -1359,7 +1359,7 @@ async function initApp() {
     }
     if (!status.embedding_provider_ready) {
       showToast(
-        "请先到「设置中心 → 配图 → 语义数据准备」配置向量模型。",
+        "请先到「设置中心 → 模式 → 语义数据准备」配置向量模型。",
         "warning",
         "未配置向量模型",
       );

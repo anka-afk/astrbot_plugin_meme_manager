@@ -93,7 +93,7 @@ async function initPluginConfig() {
   }
   const categories = {
     sending: ["表情发送", ""],
-    models: ["配图", ""],
+    models: ["模式", ""],
     decision: ["决策服务", ""],
     collect: ["自动收集", ""],
     storage: ["存储与下载", ""],
@@ -771,7 +771,7 @@ async function initPluginConfig() {
         workflowSteps.append(item);
       }
     }
-    document.getElementById("mode-workflow-title").textContent = "当前配图流程";
+    document.getElementById("mode-workflow-title").textContent = "当前流程";
     const values = Object.fromEntries(
       [...fields].map(([path]) => [path, currentValue(path)]),
     );
