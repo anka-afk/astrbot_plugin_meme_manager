@@ -77,17 +77,20 @@ def _normalize_task(
             raise _SelectionError("invalid_candidates")
         seen.add(candidate_id)
         if task.kind == "category":
+            description = item.get("description", "")
+            if not isinstance(description, str):
+                raise _SelectionError("invalid_task")
+            # Category descriptions have no storage limit; bound model input only.
             candidates.append(
                 {
                     "id": candidate_id,
-                    "description": _text(
-                        item.get("description", ""), "description", 4_000
-                    ),
+                    "description": description[:4_000],
                 }
             )
             continue
         tags = item.get("tags", [])
-        if not isinstance(tags, list) or len(tags) > 32:
+        # Manual semantics allow 50 ordinary tags plus one fixed category tag.
+        if not isinstance(tags, list) or len(tags) > 51:
             raise _SelectionError("invalid_candidates")
         candidates.append(
             {

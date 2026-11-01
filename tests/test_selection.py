@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock
 import pytest
 from backend.decision import DecisionError
 from backend.selection import SelectionTask, select_candidates
+from backend.semantic.models import ensure_category_tag
+from backend.semantic.storage import _normalize_manual_semantic_inputs
 
 
 def category_task(**overrides):
@@ -147,6 +149,72 @@ async def test_chat_semantic_is_single_select(raw_text, status, selected_ids):
     )
     assert result.status == status
     assert result.selected_ids == selected_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["chat", "decision"])
+@pytest.mark.parametrize("tag_count", [32, 50])
+@pytest.mark.parametrize("selected_index", [0, 1])
+async def test_semantic_selection_accepts_all_legally_saved_manual_tags(
+    backend, tag_count, selected_index
+):
+    _, tags, _ = _normalize_manual_semantic_inputs(
+        "caption", [f"tag-{index}" for index in range(tag_count)], ""
+    )
+    stored_tags = ensure_category_tag(tags, "happy")
+    task = semantic_task()
+    task.candidates[0]["tags"] = stored_tags
+    generate = AsyncMock(
+        return_value=chat_response(
+            json.dumps({"selected_ids": [task.candidates[selected_index]["id"]]})
+        )
+    )
+    client = FakeDecisionClient(
+        {"selection": {"type": "choice", "choice": f"c{selected_index}"}}
+    )
+
+    result = await select_candidates(
+        task, backend=backend, generate=generate, decision_client=client
+    )
+
+    assert result.status == "selected"
+    assert result.selected_ids == [task.candidates[selected_index]["id"]]
+    if backend == "chat":
+        generate.assert_awaited_once()
+        assert all(tag in generate.await_args.args[0] for tag in stored_tags)
+    else:
+        generate.assert_not_awaited()
+        assert client.calls[0][1]["selection"]["criteria"]["c0"]["tags"] == stored_tags
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["chat", "decision"])
+@pytest.mark.parametrize("description_size", [4_001, 20_000])
+async def test_long_category_description_cannot_block_other_valid_candidates(
+    backend, description_size
+):
+    description = "表" * description_size
+    task = category_task()
+    task.candidates[0]["description"] = description
+    generate = AsyncMock(return_value=chat_response('{"selected_ids":["self"]}'))
+    client = FakeDecisionClient({"selection": {"type": "choice", "choice": "c1"}})
+
+    result = await select_candidates(
+        task, backend=backend, generate=generate, decision_client=client
+    )
+
+    assert result.status == "selected"
+    assert result.selected_ids == ["self"]
+    assert task.candidates[0]["description"] == description
+    if backend == "chat":
+        prompt = generate.await_args.args[0]
+        assert description[:4_000] in prompt
+        assert description not in prompt
+    else:
+        assert (
+            client.calls[0][1]["selection"]["criteria"]["c0"]["description"]
+            == description[:4_000]
+        )
 
 
 @pytest.mark.asyncio
@@ -352,7 +420,7 @@ async def test_selection_cancellation_propagates(backend):
         (category_task(reply="x" * 120_001), "invalid_task"),
         (category_task(candidates=[{"id": "same"}] * 2), "invalid_candidates"),
         (
-            category_task(candidates=[{"id": "large", "description": "表" * 20_000}]),
+            category_task(candidates=[{"id": "invalid", "description": []}]),
             "invalid_task",
         ),
     ],

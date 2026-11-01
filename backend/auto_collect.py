@@ -1910,6 +1910,7 @@ class AutoCollectManager:
             metadata = self._load_json(AUTO_COLLECT_INBOX_METADATA_PATH, {"items": {}})
             items = metadata.get("items", {})
             validated = {}
+            skipped_review_ids = set()
             for selection in selections:
                 if not isinstance(selection, dict):
                     raise ValueError("图片选择格式无效")
@@ -1918,17 +1919,7 @@ class AutoCollectManager:
                     pack_id, record_id, _record=items.get(record_id, {})
                 )
                 item = items[record_id]
-                category = str(
-                    selection.get("category")
-                    or item.get("suggested_category")
-                    or REVIEW_CATEGORY
-                )
-                if category not in categories and category != REVIEW_CATEGORY:
-                    raise ValueError("请选择当前表情包中的分类")
-                validated[record_id] = (source, category)
-            if not manual_confirmed:
-                for record_id in list(validated):
-                    item = items[record_id]
+                if not manual_confirmed:
                     classification = item.get("classification", {})
                     review_required = bool(
                         item.get("review_required")
@@ -1939,10 +1930,19 @@ class AutoCollectManager:
                         )
                     )
                     if review_required:
-                        validated.pop(record_id)
-                        result["skipped_review"] += 1
-                if not validated:
-                    return result
+                        skipped_review_ids.add(record_id)
+                        continue
+                category = str(
+                    selection.get("category")
+                    or item.get("suggested_category")
+                    or REVIEW_CATEGORY
+                )
+                if category not in categories and category != REVIEW_CATEGORY:
+                    raise ValueError("请选择当前表情包中的分类")
+                validated[record_id] = (source, category)
+            result["skipped_review"] = len(skipped_review_ids)
+            if not validated:
+                return result
             self.plugin.semantic_task_manager.begin_external_pack_operation(
                 pack_id, "审核自动收集图片"
             )

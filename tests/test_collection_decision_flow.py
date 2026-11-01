@@ -164,7 +164,11 @@ async def test_conclusive_rejection_is_cached_with_unknown_category(decision_flo
 
 
 @pytest.mark.asyncio
-async def test_mixed_automatic_batch_skips_only_forced_review_records(decision_flow):
+@pytest.mark.parametrize("suggested_category", ["happy", "deleted-category"])
+@pytest.mark.parametrize("review_flag", ["top_level", "classification"])
+async def test_mixed_automatic_batch_skips_only_forced_review_records(
+    decision_flow, suggested_category, review_flag
+):
     harness = decision_flow
     manager = harness.host.auto_collect_manager
     harness.host.decision_client.probability = [0.5, 0.97]
@@ -174,14 +178,20 @@ async def test_mixed_automatic_batch_skips_only_forced_review_records(decision_f
         await asyncio.wait_for(manager.queue.join(), 5)
     pending = await manager.pending_status("pack-a")
     assert pending["count"] == 2
-    result = await manager.accept_pending(
-        "pack-a",
-        [{"id": item["id"]} for item in pending["items"]],
-        manual_confirmed=False,
-    )
+    review_id = next(item["id"] for item in pending["items"] if item["review_required"])
+    metadata = manager._load_json(auto_collect.AUTO_COLLECT_INBOX_METADATA_PATH, {})
+    record = metadata["items"][review_id]
+    record["suggested_category"] = suggested_category
+    record["review_required"] = review_flag == "top_level"
+    record["classification"]["review_required"] = review_flag == "classification"
+    manager._save_json(auto_collect.AUTO_COLLECT_INBOX_METADATA_PATH, metadata)
+    manager.manual_review = False
+    result = await manager.import_pending("pack-a")
     assert result["imported"] == result["skipped_review"] == 1
     remaining = await manager.pending_status("pack-a")
     assert remaining["count"] == 1 and remaining["items"][0]["review_required"]
+    assert remaining["items"][0]["id"] == review_id
+    assert manager.pending_image_path("pack-a", review_id).is_file()
 
 
 @pytest.mark.asyncio
@@ -197,6 +207,14 @@ async def test_stale_top_level_flag_cannot_override_classification_review(
     metadata = manager._load_json(auto_collect.AUTO_COLLECT_INBOX_METADATA_PATH, {})
     record = next(iter(metadata["items"].values()))
     record["review_required"] = False
+    record["suggested_category"] = "deleted-category"
     manager._save_json(auto_collect.AUTO_COLLECT_INBOX_METADATA_PATH, metadata)
     assert (await manager.pending_status("pack-a"))["items"][0]["review_required"]
     assert (await manager.import_pending("pack-a"))["skipped_review"] == 1
+    selection = {"id": record["id"]}
+    result = await manager.accept_pending(
+        "pack-a", [selection, selection], manual_confirmed=False
+    )
+    assert result == {"imported": 0, "duplicates": 0, "failed": 0, "skipped_review": 1}
+    with pytest.raises(ValueError):
+        await manager.accept_pending("pack-a", [selection], manual_confirmed=True)
