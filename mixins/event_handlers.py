@@ -2255,6 +2255,9 @@ class EventHandlerMixin:
             or event.get_extra("meme_manager_semantic_selected_ids")
         ):
             return json.dumps({"ok": False, "reason": "tag_delivery_selected"})
+        # Claim automatic attachment ownership even when target validation fails.
+        # Further explicit tool calls remain allowed after an unsuccessful call.
+        event.set_extra("meme_manager_direct_send_attempted", True)
         if not isinstance(target, str) or not target:
             return json.dumps({"ok": False, "reason": "invalid_target"})
         context = self._resolve_runtime_pack_context(event=event)
@@ -2275,7 +2278,6 @@ class EventHandlerMixin:
             if not files:
                 return json.dumps({"ok": False, "reason": "no_images"})
             source = random.choice(files)
-        event.set_extra("meme_manager_direct_send_attempted", True)
         final_path = str(source)
         conversion = None
         try:
@@ -2350,7 +2352,20 @@ class EventHandlerMixin:
             else:
                 # QQ group image replies must reuse the triggering message context.
                 if isinstance(raw_message, GroupMessage):
-                    await event.send(MessageChain([image]))
+                    lock = event.get_extra("meme_manager_qq_image_send_lock")
+                    if lock is None:
+                        lock = asyncio.Lock()
+                        event.set_extra("meme_manager_qq_image_send_lock", lock)
+                    async with lock:
+                        # QQ's stream and ordinary sends share send_buffer. Keep
+                        # pending stream text separate from this immediate image.
+                        has_buffer = hasattr(event, "send_buffer")
+                        buffered = getattr(event, "send_buffer", None)
+                        try:
+                            await event.send(MessageChain([image]))
+                        finally:
+                            if has_buffer:
+                                event.send_buffer = buffered
                     await self._confirm_meme_delivery(event, [image])
                     return
         sent = await self.context.send_message(

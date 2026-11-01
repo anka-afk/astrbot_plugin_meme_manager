@@ -301,7 +301,91 @@ async def test_unknown_or_unsafe_categories_never_send(direct_sender, category):
     sender, event, state, _ = direct_sender
     assert not json.loads(await sender.send_meme_tool(event, category))["ok"]
     sender.context.send_message.assert_not_awaited()
-    assert not state.get("meme_manager_direct_send_attempted")
+    assert state.get("meme_manager_direct_send_attempted")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "invalid_target",
+        "invalid_category",
+        "no_images",
+        "semantic_unavailable",
+        "invalid_candidate",
+    ],
+)
+async def test_rejected_targets_do_not_trigger_automatic_images_or_auxiliary_calls(
+    direct_sender, reason
+):
+    sender, event, state, _ = direct_sender
+    sender.emotions_probability = 100
+    sender.max_memes_per_message = -1
+    sender.emotion_llm_enabled = True
+    sender._build_emotion_llm_injection_suffix = lambda event: ""
+    sender._build_meme_quantity_prompt = lambda: ""
+    sender._emotion_llm_generate = AsyncMock(
+        return_value=LLMResponse(
+            role="assistant", completion_text='{"selected_ids":["sad"]}'
+        )
+    )
+    target = "deleted-category"
+    if reason == "invalid_target":
+        target = ""
+    elif reason == "no_images":
+        target = "happy"
+        original_get_files = sender._get_category_meme_files
+        sender._get_category_meme_files = lambda event, category: (
+            [] if category == "happy" else original_get_files(event, category)
+        )
+    elif reason in {"semantic_unavailable", "invalid_candidate"}:
+        target = "meme:ffffffffffff"
+        sender._semantic_mode_active = lambda event: reason == "invalid_candidate"
+    assert json.loads(await sender.send_meme_tool(event, target)) == {
+        "ok": False,
+        "reason": reason,
+    }
+    sender._semantic_mode_active = lambda event: False
+    await sender._resp_impl(
+        event, LLMResponse(role="assistant", completion_text="Hello")
+    )
+    state["result"] = MessageEventResult(
+        chain=[Plain("Hello")], result_content_type=ResultContentType.LLM_RESULT
+    )
+    await sender._on_decorating_result_impl(event)
+    await sender._after_message_sent_impl(event)
+    await sender._send_memes_streaming(event, stream_completed=True)
+    sender._emotion_llm_generate.assert_not_awaited()
+    sender.context.send_message.assert_not_awaited()
+    assert not state.get("meme_manager_pending_images")
+
+
+@pytest.mark.asyncio
+async def test_rejected_semantic_id_does_not_restart_post_reply_retrieval(
+    semantic_sender,
+):
+    sender, event, state, _ = semantic_sender
+    sender.emotion_llm_enabled = True
+    state["meme_manager_semantic_mode"] = "llm"
+    sender._build_emotion_semantic_query = AsyncMock(
+        side_effect=AssertionError("No automatic retrieval after the tool failed")
+    )
+    result = json.loads(await sender.send_meme_tool(event, "meme:ffffffffffff"))
+    assert result == {"ok": False, "reason": "invalid_candidate"}
+    await sender._resp_impl(
+        event, LLMResponse(role="assistant", completion_text="Hello")
+    )
+    sender._build_emotion_semantic_query.assert_not_awaited()
+    sender.context.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_model_can_explicitly_retry_after_rejected_target(direct_sender):
+    sender, event, state, _ = direct_sender
+    assert not json.loads(await sender.send_meme_tool(event, "deleted-category"))["ok"]
+    assert state.get("meme_manager_direct_send_attempted")
+    assert json.loads(await sender.send_meme_tool(event, "happy"))["ok"]
+    sender.context.send_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -321,6 +405,7 @@ async def test_using_tags_prevents_a_tool_send_in_the_same_reply(
     result = json.loads(await sender.send_meme_tool(event, "happy"))
     assert result == {"ok": False, "reason": "tag_delivery_selected"}
     sender.context.send_message.assert_not_awaited()
+    assert not state.get("meme_manager_direct_send_attempted")
 
 
 @pytest.mark.asyncio
