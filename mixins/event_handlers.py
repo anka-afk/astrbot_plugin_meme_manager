@@ -30,6 +30,7 @@ from ..backend.meme_parser.text_safety import (
     _protected_reference_spans,
     strip_internal_image_ref_lines,
 )
+from ..backend.message_tool import MemeMessageTool, OutgoingEvent
 from ..backend.packs.categories import resolve_safe_category_directory
 from ..backend.packs.images import (
     IMAGE_EXTENSIONS,
@@ -183,6 +184,10 @@ class EventHandlerMixin:
             Whether this reply is eligible to send selected memes.
         """
         if event.get_extra("meme_manager_direct_send_attempted"):
+            return False
+        if not event.get_extra("meme_manager_outgoing_processing") and str(
+            getattr(event, "unified_msg_origin", "")
+        ) in (event.get_extra("meme_manager_tool_message_targets") or ()):
             return False
         decision = event.get_extra("meme_manager_send_probability_hit")
         if decision is None:
@@ -748,16 +753,21 @@ class EventHandlerMixin:
             if hasattr(source, "aclose"):
                 await source.aclose()
 
-    def _limit_meme_selection(self, selections: list[str]) -> list[str]:
+    def _limit_meme_selection(self, selections: list[str], event=None) -> list[str]:
         """Truncate a reply's selected memes before building or sending images.
 
         Args:
             selections: Ordered category names or semantic image IDs.
+            event: Optional event carrying prior automatic tool deliveries.
 
         Returns:
             The first configured number of selections, or all for a negative limit.
         """
         limit = getattr(self, "max_memes_per_message", -1)
+        if event is not None and limit >= 0:
+            limit = max(
+                0, limit - (event.get_extra("meme_manager_automatic_sent_count") or 0)
+            )
         return selections[:limit] if limit >= 0 else selections
 
     def _get_category_meme_files(
@@ -801,35 +811,248 @@ class EventHandlerMixin:
         emotions: list[str],
     ) -> tuple[list[Image], list[str]]:
         """根据表情列表构建待发送图片组件，并返回临时文件列表。"""
-        if not emotions:
-            return [], []
+        return await self._build_selected_meme_images(event, emotions)
 
-        if not self._meme_send_allowed(event):
-            return [], []
+    async def _build_selected_meme_images(self, event, selections, *, semantic=False):
+        """Build and revalidate selected images with cancellation-safe cleanup.
 
-        emotion_images: list[Image] = []
-        temp_files: list[str] = []
+        Args:
+            event: Selection context and owning delivery gate.
+            selections: Ordered category names or verified candidate IDs.
+            semantic: Whether selections are exact semantic candidates.
 
-        for emotion in self._limit_meme_selection(emotions):
-            memes = self._get_category_meme_files(event, emotion)
-            if not memes:
+        Returns:
+            Prepared images and their temporary conversion files.
+        """
+        images, temp_files = [], []
+        if not selections or not self._meme_send_allowed(event):
+            return images, temp_files
+        context = self._resolve_runtime_pack_context(event=event)
+        if semantic and not self._semantic_mode_active(event):
+            return images, temp_files
+        for selection in self._limit_meme_selection(selections, event):
+            if semantic:
+                source = validate_selected_id(event, selection, context)
+            else:
+                files = self._get_category_meme_files(event, selection)
+                source = random.choice(files) if files else None
+            if source is None:
                 continue
-
-            meme_file = str(random.choice(memes))
-
+            final_path = str(source)
+            conversion = asyncio.create_task(
+                asyncio.to_thread(self._convert_to_gif, str(source))
+            )
             try:
-                final_meme_file = await asyncio.to_thread(
-                    self._convert_to_gif, meme_file
+                final_path = await asyncio.shield(conversion)
+                current = self._resolve_runtime_pack_context(event=event)
+                valid = (
+                    validate_selected_id(event, selection, current) == source
+                    if semantic
+                    else source in self._get_category_meme_files(event, selection)
                 )
-                if final_meme_file != meme_file:
-                    temp_files.append(final_meme_file)
-                image = Image.fromFileSystem(final_meme_file)
-                self._track_prepared_meme(event, image, meme_file, category=emotion)
-                emotion_images.append(image)
-            except Exception as e:
-                logger.error(f"[meme_manager] 构建表情图片失败: {e}")
+                if not valid:
+                    continue
+                image = Image.fromFileSystem(final_path)
+                self._track_prepared_meme(
+                    event,
+                    image,
+                    source,
+                    category=source.parent.name if semantic else selection,
+                    candidate_id=selection if semantic else "",
+                )
+                normalized = await self._ensure_image_send_format(image)
+                self._alias_prepared_meme(event, image, normalized)
+                images.append(normalized)
+            except asyncio.CancelledError:
+                # A cancelled await does not stop the conversion thread.
+                while not conversion.done():
+                    try:
+                        await asyncio.shield(conversion)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not conversion.cancelled() and conversion.exception() is None:
+                    final_path = conversion.result()
+                raise
+            except Exception:
+                logger.exception("[meme_manager] Failed to prepare selected meme")
+            finally:
+                if final_path != str(source):
+                    temp_files.append(final_path)
+                # Register eagerly so cancellation of a later image cannot leak.
+                event.set_extra(
+                    "meme_manager_temp_files",
+                    list(
+                        dict.fromkeys(
+                            (event.get_extra("meme_manager_temp_files") or [])
+                            + temp_files
+                        )
+                    ),
+                )
+        return images, temp_files
 
-        return emotion_images, temp_files
+    async def _cleanup_outgoing_files(self, event, *, files=None):
+        """Remove temporary images after a completed or interrupted tool call.
+
+        Args:
+            event: Isolated event owning conversion output.
+            files: Optional explicit list from a public prepared-message payload.
+        """
+        if files is None:
+            files = event.get_extra("meme_manager_temp_files") or []
+        for filename in files:
+            try:
+                Path(filename).unlink(missing_ok=True)
+            except OSError:
+                logger.warning("[meme_manager] Outgoing meme cleanup failed")
+
+    async def _resolve_outgoing_event(self, event):
+        """Resolve destination persona and semantic readiness without source writes.
+
+        Args:
+            event: Isolated event with an already validated destination.
+        """
+        if event.unified_msg_origin == str(event.source.unified_msg_origin):
+            return
+        event.platform_name = ""
+        for platform in getattr(
+            getattr(self.context, "platform_manager", None), "platform_insts", []
+        ):
+            if platform.meta().id == event.session.platform_id:
+                event.platform_name = platform.meta().name
+                break
+        event.set_extra("meme_manager_resolved_persona_id", "")
+        event.set_extra("meme_manager_direct_send_attempted", False)
+        event.set_extra("meme_manager_semantic_active", False)
+        event.set_extra("meme_manager_semantic_mode", "")
+        event.set_extra("meme_manager_semantic_verified_pack_ids", "")
+        event.set_extra("meme_manager_reply_provider_id", "")
+        event.set_extra("meme_manager_reply_model", "")
+        event.set_extra("selected_provider", "")
+        event.set_extra("persona_id", "")
+        event.persona_id = ""
+        try:
+            manager = self.context.conversation_manager
+            cid = await manager.get_curr_conversation_id(event.unified_msg_origin)
+            conversation = (
+                await manager.get_conversation(event.unified_msg_origin, cid)
+                if cid
+                else None
+            )
+            (
+                persona_id,
+                _,
+                _,
+                _,
+            ) = await self.context.persona_manager.resolve_selected_persona(
+                umo=event.unified_msg_origin,
+                conversation_persona_id=getattr(conversation, "persona_id", None),
+                platform_name=event.get_platform_name(),
+                provider_settings=self.context.get_config(event.unified_msg_origin).get(
+                    "provider_settings", {}
+                ),
+            )
+            event.set_extra("meme_manager_resolved_persona_id", persona_id or "")
+        except Exception:
+            logger.warning(
+                "[meme_manager] Could not resolve outgoing persona", exc_info=True
+            )
+        context = self._resolve_runtime_pack_context(event=event)
+        mode = (
+            "llm"
+            if self.emotion_llm_enabled
+            else str(event.source.get_extra("meme_manager_semantic_mode") or "")
+        )
+        if mode and self._semantic_pack_ready(event=event):
+            event.set_extra("meme_manager_semantic_active", True)
+            event.set_extra("meme_manager_semantic_mode", mode)
+            event.set_extra(
+                "meme_manager_semantic_verified_pack_ids",
+                ",".join(context.get("pack_ids", [])),
+            )
+
+    async def _prepare_outgoing_message(self, event, message):
+        """Reuse reply selection for a component-preserving outgoing message.
+
+        Args:
+            event: Isolated selection event for the destination.
+            message: Original validated components or public compatibility input.
+
+        Returns:
+            Clean components, selected images, and conversion ownership.
+        """
+        components = self._normalize_outgoing_message_components(message)
+        text = "\n".join(c.text for c in components if isinstance(c, Plain))
+        response = LLMResponse(role="assistant", completion_text=text)
+        await self._resp_impl(event, response)
+        context = self._resolve_runtime_pack_context(event=event)
+        semantic = self._semantic_mode_active(event)
+        categories = runtime_category_mapping(context.get("category_mapping") or {})
+        parser = self._make_meme_parser(
+            categories, semantic=semantic, final_cleanup=True
+        )
+        parser.feed(text)
+        parser.finish()
+        edits = [(token.start, token.end) for token in parser.tokens]
+        if self.content_cleanup_rule and self.content_cleanup_rule != r"&&[a-zA-Z]*&&":
+            protected = _protected_reference_spans(text)
+            edits.extend(
+                match.span()
+                for match in re.finditer(self.content_cleanup_rule, text)
+                if not any(
+                    match.start() < end and match.end() > start
+                    for start, end in protected
+                )
+            )
+        edits.sort()
+        cleaned = []
+        offset = 0
+        for component in components:
+            if not isinstance(component, Plain):
+                cleaned.append(component)
+                continue
+            # Project source-coordinate edits back onto the original components.
+            # This preserves code context across media without moving that media.
+            end_offset = offset + len(component.text)
+            cursor, pieces = 0, []
+            for start, end in edits:
+                if start >= end_offset or end <= offset:
+                    continue
+                start, end = (
+                    max(0, start - offset),
+                    min(len(component.text), end - offset),
+                )
+                pieces.append(component.text[cursor : max(cursor, start)])
+                cursor = max(cursor, end)
+            pieces.append(component.text[cursor:])
+            value = "".join(pieces)
+            # Final filtering also removes unknown markers, which have no tokens.
+            if getattr(self, "filter_all_tags", False):
+                value = MemeParser.parse(value, filter_all=True).text
+            value = value.strip()
+            if value:
+                cleaned.append(Plain(value))
+            offset = end_offset + 1
+        ids = event.get_extra("meme_manager_semantic_selected_ids") or []
+        emotions = event.get_extra("found_emotions") or []
+        delivered = event.get_extra("meme_manager_tool_delivered_choices") or ()
+        selections = [
+            value
+            for value in (ids if semantic else emotions)
+            if (event.unified_msg_origin, value) not in delivered
+        ]
+        images, files = await self._build_selected_meme_images(
+            event, selections, semantic=semantic
+        )
+        return {
+            "cleaned_chain": MessageChain(cleaned),
+            "emotions": emotions,
+            "selected_ids": ids,
+            "images": images,
+            "temp_files": files,
+            "delivery_event": event,
+        }
 
     async def compat_prepare_message(
         self,
@@ -837,47 +1060,20 @@ class EventHandlerMixin:
         message: str | list | MessageChain,
     ) -> dict:
         """对外兼容接口：清理消息中的表情标记并准备待发送表情图片。"""
-        pack_context = self._resolve_runtime_pack_context(event=event)
-        context_mapping = pack_context.get("category_mapping")
-        active_category_mapping = (
-            runtime_category_mapping(context_mapping)
-            if isinstance(context_mapping, dict)
-            else runtime_category_mapping(self.category_mapping)
+        from astrbot.core.platform.message_session import MessageSession
+
+        origin = str(getattr(event, "unified_msg_origin", "") or "")
+        local = OutgoingEvent(
+            event, MessageSession.from_str(origin) if origin else None
         )
-        valid_emoticons = set(active_category_mapping.keys())
-
-        raw_components = self._normalize_outgoing_message_components(message)
-        cleaned_components = []
-        found_emotions: list[str] = []
-
-        for component in raw_components:
-            if isinstance(component, Plain):
-                cleaned_text, extracted = self._extract_marked_emotions_from_text(
-                    component.text,
-                    valid_emoticons,
-                )
-                found_emotions.extend(extracted)
-                if getattr(self, "filter_all_tags", False):
-                    cleaned_text = self._clean_outgoing_plain_text(cleaned_text)
-                if cleaned_text.strip():
-                    cleaned_components.append(Plain(cleaned_text.strip()))
-            else:
-                cleaned_components.append(component)
-
-        # 按模型选择的顺序保留分类，每个分类只保留一次。
-        filtered_emotions = self._filter_emotion_selection(found_emotions)
-
-        emotion_images, temp_files = await self._build_emotion_images_for_event(
-            event,
-            filtered_emotions,
-        )
-
-        return {
-            "cleaned_chain": MessageChain(cleaned_components),
-            "emotions": filtered_emotions,
-            "images": emotion_images,
-            "temp_files": temp_files,
-        }
+        try:
+            prepared = await self._prepare_outgoing_message(local, message)
+            if prepared["images"]:
+                event.set_extra("meme_manager_tag_image_prepared", True)
+            return prepared
+        except BaseException:
+            await self._cleanup_outgoing_files(local)
+            raise
 
     async def compat_send_message(
         self,
@@ -915,13 +1111,11 @@ class EventHandlerMixin:
             if send_images and emotion_images:
                 for image in emotion_images:
                     await self._send_meme_image(event, image)
+                    await self._confirm_meme_delivery(
+                        prepared.get("delivery_event", event), [image]
+                    )
         finally:
-            for temp_file in temp_files:
-                try:
-                    if os.path.exists(temp_file):
-                        os.remove(temp_file)
-                except Exception as e:
-                    logger.error(f"[meme_manager] 清理兼容接口临时文件失败: {e}")
+            await self._cleanup_outgoing_files(event, files=temp_files)
 
         return {
             "sent_text": bool(send_text and cleaned_chain.chain),
@@ -1268,6 +1462,20 @@ class EventHandlerMixin:
             event.set_extra("meme_manager_semantic_active", False)
             event.set_extra("meme_manager_semantic_mode", "")
             return
+        tool_set = getattr(req, "func_tool", None)
+        get_tool = getattr(tool_set, "get_tool", None)
+        message_tool = get_tool("send_message_to_user") if callable(get_tool) else None
+        if (
+            message_tool is not None
+            and getattr(message_tool, "active", True)
+            and not isinstance(message_tool, MemeMessageTool)
+            and type(message_tool).__module__ == "astrbot.core.tools.message_tools"
+        ):
+            get_full = getattr(tool_set, "get_full_tool_set", None)
+            local_tools = get_full() if callable(get_full) else copy.copy(tool_set)
+            local_tools.tools = list(local_tools.tools)
+            local_tools.add_tool(MemeMessageTool(message_tool, self))
+            req.func_tool = local_tools
         event.set_extra("meme_manager_resolved_persona_id", None)
         try:
             # 与 AstrBot 的会话覆盖和继承默认人格选择保持一致。
@@ -1753,6 +1961,13 @@ class EventHandlerMixin:
             return
 
         text = response.completion_text
+        if not event.get_extra("meme_manager_outgoing_processing") and str(
+            getattr(event, "unified_msg_origin", "")
+        ) in (event.get_extra("meme_manager_tool_message_targets") or ()):
+            response.completion_text = self._clean_outgoing_plain_text(text).strip()
+            event.set_extra("found_emotions", [])
+            event.set_extra("meme_manager_semantic_selected_ids", [])
+            return
         cleaned_text = strip_internal_image_ref_lines(text)
         if cleaned_text != text:
             response.completion_text = cleaned_text
@@ -1945,123 +2160,23 @@ class EventHandlerMixin:
                     await self._send_memes_streaming(event)
                 return
 
-            # Validate exact semantic IDs after the shared delivery gate.
-            scope_allows_attach = self._should_attach_for_result(event, result)
-            semantic_selected_ids = (
-                event.get_extra("meme_manager_semantic_selected_ids") or []
-            )
-            if (
-                scope_allows_attach
-                and semantic_selected_ids
-                and self._meme_send_allowed(event)
-                and self._semantic_mode_active(event)
-            ):
-                pack_context = self._resolve_runtime_pack_context(event=event)
-                semantic_images = []
-                semantic_temp_files = []
-                for selected_id in self._limit_meme_selection(semantic_selected_ids):
-                    image_path = validate_selected_id(event, selected_id, pack_context)
-                    if image_path is None:
-                        continue
-                    try:
-                        final_path = await asyncio.to_thread(
-                            self._convert_to_gif, str(image_path)
-                        )
-                        if final_path != str(image_path):
-                            semantic_temp_files.append(final_path)
-                        image = Image.fromFileSystem(final_path)
-                        self._track_prepared_meme(
-                            event, image, image_path, candidate_id=selected_id
-                        )
-                        semantic_images.append(image)
-                    except Exception as exc:
-                        logger.error("构建语义表情图片失败: %s", exc)
-                if semantic_temp_files:
-                    event.set_extra("meme_manager_temp_files", semantic_temp_files)
-                if semantic_images:
-                    # 语义模式不再随机丢弃模型已经选择的候选；
-                    # 发送方式（合并/分离）按 mixed_message 概率决定，与旧版路径一致。
-                    use_mixed_message = not cleaned_components
-                    if cleaned_components and self.enable_mixed_message:
-                        use_mixed_message = (
-                            random.randint(1, 100) <= self.mixed_message_probability
-                        )
-                    if use_mixed_message and self.send_image_as_base64:
-                        normalized_images = []
-                        for image in semantic_images:
-                            normalized = await self._ensure_image_send_format(image)
-                            self._alias_prepared_meme(event, image, normalized)
-                            normalized_images.append(normalized)
-                        semantic_images = normalized_images
-                    if use_mixed_message:
+            if self._should_attach_for_result(event, result):
+                ids = event.get_extra("meme_manager_semantic_selected_ids") or []
+                emotions = event.get_extra("found_emotions") or []
+                images, files = await self._build_selected_meme_images(
+                    event, ids or emotions, semantic=bool(ids)
+                )
+                if images:
+                    mixed = not cleaned_components or (
+                        self.enable_mixed_message
+                        and random.randint(1, 100) <= self.mixed_message_probability
+                    )
+                    if mixed:
                         cleaned_components = self._merge_components_with_images(
-                            cleaned_components, semantic_images
+                            cleaned_components, images
                         )
                     else:
-                        event.set_extra("meme_manager_pending_images", semantic_images)
-            # 第三步：旧模式添加表情图片（如果有找到的表情）
-            found_emotions = event.get_extra("found_emotions") or []
-            if scope_allows_attach and found_emotions and not semantic_selected_ids:
-                if self._meme_send_allowed(event):
-                    # 创建表情图片列表
-                    emotion_images = []
-                    temp_files = []  # 记录临时文件路径
-                    for emotion in self._limit_meme_selection(found_emotions):
-                        memes = self._get_category_meme_files(event, emotion)
-                        if not memes:
-                            continue
-                        meme_file = str(random.choice(memes))
-
-                        try:
-                            # 转换静态图为 GIF（如果配置开启）
-                            final_meme_file = await asyncio.to_thread(
-                                self._convert_to_gif, meme_file
-                            )
-                            if final_meme_file != meme_file:
-                                temp_files.append(final_meme_file)
-                            image = Image.fromFileSystem(final_meme_file)
-                            self._track_prepared_meme(
-                                event, image, meme_file, category=emotion
-                            )
-                            emotion_images.append(image)
-                        except Exception as e:
-                            logger.error(f"添加表情图片失败: {e}")
-
-                    if emotion_images:
-                        # 记录临时文件到 event extra
-                        if temp_files:
-                            existing_temp_files = (
-                                event.get_extra("meme_manager_temp_files") or []
-                            )
-                            event.set_extra(
-                                "meme_manager_temp_files",
-                                existing_temp_files + temp_files,
-                            )
-
-                        use_mixed_message = not cleaned_components
-                        if cleaned_components and self.enable_mixed_message:
-                            use_mixed_message = (
-                                random.randint(1, 100) <= self.mixed_message_probability
-                            )
-
-                        if use_mixed_message and self.send_image_as_base64:
-                            normalized_images = []
-                            for image in emotion_images:
-                                normalized = await self._ensure_image_send_format(image)
-                                self._alias_prepared_meme(event, image, normalized)
-                                normalized_images.append(normalized)
-                            emotion_images = normalized_images
-
-                        if use_mixed_message:
-                            cleaned_components = self._merge_components_with_images(
-                                cleaned_components, emotion_images
-                            )
-                        else:
-                            event.set_extra(
-                                "meme_manager_pending_images", emotion_images
-                            )
-                    else:
-                        pass
+                        event.set_extra("meme_manager_pending_images", images)
 
             # 清空当前事件已处理的表情列表
             event.set_extra("found_emotions", None)
@@ -2177,7 +2292,9 @@ class EventHandlerMixin:
         if semantic_selected_ids and self._semantic_mode_active(event):
             pack_context = self._resolve_runtime_pack_context(event=event)
             try:
-                for selected_id in self._limit_meme_selection(semantic_selected_ids):
+                for selected_id in self._limit_meme_selection(
+                    semantic_selected_ids, event
+                ):
                     image_path = validate_selected_id(event, selected_id, pack_context)
                     if image_path is None:
                         continue
@@ -2203,7 +2320,7 @@ class EventHandlerMixin:
             return
 
         try:
-            for emotion in self._limit_meme_selection(found_emotions):
+            for emotion in self._limit_meme_selection(found_emotions, event):
                 memes = self._get_category_meme_files(event, emotion)
                 if not memes:
                     continue
@@ -2250,7 +2367,9 @@ class EventHandlerMixin:
         ):
             return json.dumps({"ok": False, "reason": "tool_unavailable"})
         if (
-            event.get_extra("meme_manager_tag_image_prepared")
+            str(event.unified_msg_origin)
+            in (event.get_extra("meme_manager_tool_tag_targets") or ())
+            or event.get_extra("meme_manager_tag_image_prepared")
             or event.get_extra("found_emotions")
             or event.get_extra("meme_manager_semantic_selected_ids")
         ):

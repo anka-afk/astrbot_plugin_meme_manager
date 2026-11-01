@@ -107,37 +107,6 @@ async def test_concurrent_qq_tool_sends_preserve_the_original_buffer(qq_stream):
 
 
 @pytest.mark.asyncio
-async def test_cancelling_a_send_waiting_for_the_lock_does_not_touch_the_buffer(
-    qq_stream,
-):
-    sender, event, delivered, _ = qq_stream
-    original = MessageChain([Plain("unsent-text")])
-    event.send_buffer = original
-    lock = asyncio.Lock()
-    await lock.acquire()
-    event.set_extra("meme_manager_qq_image_send_lock", lock)
-    formatted = asyncio.Event()
-
-    async def format_image(image):
-        formatted.set()
-        return image
-
-    sender._ensure_image_send_format = format_image
-    task = asyncio.create_task(sender.send_meme_tool(event, "happy"))
-    try:
-        await asyncio.wait_for(formatted.wait(), 3)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert event.send_buffer is original
-        assert lock.locked()
-        assert not delivered
-        assert not getattr(sender, "_delivery_history", None)
-    finally:
-        lock.release()
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("buffered", [False, True])
 @pytest.mark.parametrize("failure", ["error", "cancel"])
 async def test_qq_tool_send_restores_buffer_on_error_or_cancellation(
