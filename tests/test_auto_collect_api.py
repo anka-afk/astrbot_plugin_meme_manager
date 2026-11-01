@@ -103,6 +103,29 @@ async def test_review_list_and_preview_are_pack_scoped(review_api):
 
 
 @pytest.mark.asyncio
+async def test_semantic_summary_uses_same_inbox_contract_and_pack_scope(
+    review_api, monkeypatch
+):
+    app, subject, _, _ = review_api
+    subject._semantic_request_pack_id = AsyncMock(return_value="first")
+    subject._get_img_host_sync_task_status = Mock()
+    subject.semantic_task_manager.status = Mock(
+        return_value={"embedding_provider_ready": False}
+    )
+    subject.semantic_task_manager._resolve_embedding_provider = Mock(return_value=None)
+    monkeypatch.setattr(web_api, "index_is_ready", lambda *args: False)
+    async with app.test_request_context("/?pack_id=first"):
+        response, status = await subject._api_semantic_status()
+        assert status == 200
+        data = await response.get_json()
+    assert data[
+        "auto_collect_inbox"
+    ] == await subject.auto_collect_manager.pending_status("first")
+    assert data["auto_collect_inbox"]["count"] == 1
+    assert data["auto_collect_inbox"]["items"][0]["judgment_backend"] == "unknown"
+
+
+@pytest.mark.asyncio
 async def test_accept_rejects_cross_pack_and_invalid_category(review_api):
     app, subject, record_id, _ = review_api
     for payload in (

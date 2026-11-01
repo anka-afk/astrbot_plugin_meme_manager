@@ -1,5 +1,11 @@
 import { PreviewClient } from "../shared/preview.js";
 import { setupPackTransfer } from "./pack-transfer.js";
+import {
+  collectionAvailability,
+  collectionConfidence,
+  collectionReviewReason,
+  collectionStages,
+} from "../shared/collection-status.js";
 
 async function initApp() {
   await window.AstrBotPluginPage.ready();
@@ -132,6 +138,9 @@ async function initApp() {
         snapshot_failed: "图片读取失败",
         failed: "处理失败",
         pack_busy: "表情包忙碌",
+        vision_requests: "视觉服务请求",
+        decision_requests: "决策服务请求",
+        decision_attempts: "决策任务尝试",
       })) {
         const entry = document.createElement("div");
         const term = document.createElement("dt");
@@ -166,7 +175,15 @@ async function initApp() {
       collectionReview.filter.value = selectedFilter;
       if (collectionReview.filter.selectedIndex < 0)
         collectionReview.filter.value = "";
-      collectionReview.status.textContent = `共 ${collectionReview.items.length} 张待审核图片`;
+      const forced = collectionReview.items.filter(
+        (item) => item.review_required,
+      ).length;
+      const availability = collectionAvailability(data);
+      collectionReview.status.textContent = `共 ${
+        collectionReview.items.length
+      } 张待审核图片${forced ? `，其中 ${forced} 张必须人工复核` : ""}${
+        availability ? `。${availability}。` : ""
+      }`;
       if (collectionReview.dialog.open) renderCollectionReview();
     } catch (error) {
       if (
@@ -208,8 +225,9 @@ async function initApp() {
       !review.selectAll.checked &&
       items.some((item) => review.selected.has(item.id));
     review.more.hidden = items.length <= review.limit;
-    document.getElementById("collection-review-selection").textContent =
-      `当前筛选 ${items.length} 张，已选 ${review.selected.size} 张`;
+    document.getElementById(
+      "collection-review-selection",
+    ).textContent = `当前筛选 ${items.length} 张，已选 ${review.selected.size} 张`;
     review.accept.disabled = review.discard.disabled =
       review.busy || !review.selected.size;
     if (!items.length) {
@@ -270,12 +288,24 @@ async function initApp() {
       );
       const confidence = document.createElement("p");
       confidence.className = "collection-review-confidence";
-      confidence.textContent = `分类把握 ${Math.round(
-        Number(item.category_confidence || 0) * 100,
-      )}%，表情把握 ${Math.round(Number(item.meme_confidence || 0) * 100)}%`;
+      confidence.textContent = `分类把握 ${collectionConfidence(
+        item.category_confidence,
+      )}，表情把握 ${collectionConfidence(item.meme_confidence)}`;
       const description = document.createElement("p");
       description.textContent = item.caption || item.reason || "暂无描述";
       card.append(label, image, category, confidence, description);
+      const stages = document.createElement("p");
+      stages.className = "collection-review-confidence";
+      stages.textContent = collectionStages(item);
+      card.append(stages);
+      if (item.review_required) {
+        const warning = document.createElement("p");
+        warning.className = "collection-review-warning";
+        warning.textContent = `必须人工复核：${collectionReviewReason(
+          item,
+        )}。接收所选表示你已人工确认。`;
+        card.append(warning);
+      }
       if (typeof item.near_duplicate === "string" && item.near_duplicate) {
         const warning = document.createElement("div");
         warning.className = "collection-review-warning";
@@ -843,7 +873,11 @@ async function initApp() {
           ),
         );
       }
-      moveResultText.textContent = `已跨包移动 ${result.moved.length} 张${result.failed.length ? `，${result.failed.length} 张未移动，已保留选择` : ""}`;
+      moveResultText.textContent = `已跨包移动 ${result.moved.length} 张${
+        result.failed.length
+          ? `，${result.failed.length} 张未移动，已保留选择`
+          : ""
+      }`;
       moveUndoBtn.classList.add("hidden");
       moveResult.classList.remove("hidden");
       const details = result.failed
@@ -916,8 +950,8 @@ async function initApp() {
       semanticStatus === "complete"
         ? "已语义化"
         : semanticStatus === "partial"
-          ? "部分语义化"
-          : "";
+        ? "部分语义化"
+        : "";
     return `${name} (${id})${semanticLabel ? `（${semanticLabel}）` : ""}`;
   }
 
@@ -969,8 +1003,8 @@ async function initApp() {
       transferCurrentPack.textContent = pack
         ? `当前：${pack.name || pack.id}（${Number(pack.image_count || 0)} 张）`
         : normalizedPackId
-          ? `当前：${normalizedPackId}`
-          : "暂无可导出的表情包";
+        ? `当前：${normalizedPackId}`
+        : "暂无可导出的表情包";
     }
     if (!normalizedPackId) {
       exportCapabilityPackId = "";
@@ -1019,10 +1053,10 @@ async function initApp() {
           .filter(Boolean)
           .join("；");
         vectorBackupHint.textContent = available
-          ? `包含完整本机向量${
+          ? `包含本机向量${
               modelHint ? `（${modelHint}）` : ""
-            }，适合迁回相同模型环境。`
-          : "当前没有完整向量；完成语义化并建立索引后才可导出。";
+            }，适用于相同向量模型和维度的环境。`
+          : "尚无完整向量，完成语义化并建立索引后可导出。";
       }
     } catch (error) {
       if (!isCurrentRequest()) {
@@ -1126,7 +1160,7 @@ async function initApp() {
         vectorOperations.has(normalizedPackId) ||
         ["running", "paused"].includes(String(status?.task_status || ""));
       incrementPackVectorsBtn.title =
-        "复用有效向量，仅处理已完成描述的新增或变化图片；模型或维度变化时需要重建。";
+        "仅处理描述已完成的新增或变化图片；更换向量模型或维度后需重建。";
     }
 
     if (state === "loading") {
@@ -1189,12 +1223,12 @@ async function initApp() {
       }
       if (packVectorStatus) {
         packVectorStatus.title =
-          "当前没有可用的向量模型。已有语义描述不会丢失，配置模型后即可在此重建。";
+          "当前没有可用的向量模型；已有图片描述会保留，配置模型后可重建索引。";
       }
       if (rebuildPackVectorsBtn) {
         rebuildPackVectorsBtn.disabled = true;
         rebuildPackVectorsBtn.title =
-          "请先到设置中心的“语义与模型”配置向量模型。";
+          "请先到「设置中心 → 模式 → 语义数据准备」配置向量模型。";
         rebuildPackVectorsBtn.innerHTML =
           '<i class="fas fa-circle-exclamation icon"></i>先配置向量模型';
       }
@@ -1325,7 +1359,7 @@ async function initApp() {
     }
     if (!status.embedding_provider_ready) {
       showToast(
-        "请先到设置中心的“语义与模型”配置向量模型。",
+        "请先到「设置中心 → 模式 → 语义数据准备」配置向量模型。",
         "warning",
         "未配置向量模型",
       );
@@ -1403,18 +1437,18 @@ async function initApp() {
       title: importedShare
         ? "分享包需要重建向量"
         : alreadyReady && manual
-          ? "重新建立当前包向量？"
-          : "当前表情包需要重建向量",
+        ? "重新建立当前包向量？"
+        : "当前表情包需要重建向量",
       description:
         `「${packName}」${
           importedShare
             ? "来自无向量分享版，需要在本机补建向量。"
             : alreadyReady && manual
-              ? "已有可用向量，重建后会替换当前本机索引。"
-              : "尚未按当前向量模型建立可用的本机索引。"
+            ? "已有可用向量，重建后会替换当前本机索引。"
+            : "尚未按当前向量模型建立可用的本机索引。"
         }` +
         `本次只会调用向量模型${modelLabel ? `（${modelLabel}）` : ""}，` +
-        "不会重新调用视觉模型，也不会覆盖现有语义描述。是否继续？",
+        "保留现有图片描述。确定重建向量索引吗？",
       confirmLabel: "立即重建向量",
     });
     if (!confirmed) {
@@ -1444,10 +1478,10 @@ async function initApp() {
     }
     const rebuildRequired = Boolean(
       status.semantic_enabled &&
-      status.embedding_provider_ready &&
-      status.semantic_caption_complete &&
-      status.dimension_rebuild_required &&
-      !["running", "paused"].includes(String(status.task_status || "")),
+        status.embedding_provider_ready &&
+        status.semantic_caption_complete &&
+        status.dimension_rebuild_required &&
+        !["running", "paused"].includes(String(status.task_status || "")),
     );
     if (!rebuildRequired) {
       return false;
@@ -1597,8 +1631,8 @@ async function initApp() {
       const vectorHint = data?.vectors_restored
         ? "，向量已恢复"
         : data?.vector_warning
-          ? `；${data.vector_warning}`
-          : "";
+        ? `；${data.vector_warning}`
+        : "";
       resetPackImportPreview({ keepResult: true });
       setPackTransferResult(
         packImportResult,
@@ -1664,8 +1698,8 @@ async function initApp() {
       packSemanticStatusText.textContent = pack.semantic_files_changed
         ? `语义待更新，已有 ${completedCount} 条`
         : semanticTotal
-          ? `语义化进度：${completedCount}/${semanticTotal}${failureHint}`
-          : "语义化尚未全部完成";
+        ? `语义化进度：${completedCount}/${semanticTotal}${failureHint}`
+        : "语义化尚未全部完成";
       packSemanticStatus.title = pack.semantic_files_changed
         ? "图包新增了图片，或原图片内容已被替换，需要继续语义化。"
         : "当前图包仍有图片的语义描述未完成。";
@@ -1749,7 +1783,7 @@ async function initApp() {
     firstUseCatalogGuideShown = true;
     const confirmed = await showConfirm({
       title: "第一次使用？",
-      description: "可以前往资源广场下载官方表情包哦。",
+      description: "当前表情包为空。",
       confirmLabel: "前往广场",
     });
     if (!confirmed) {
@@ -2262,8 +2296,8 @@ async function initApp() {
     const rawStatus = loading
       ? "loading"
       : error
-        ? "failed"
-        : String(semantic?.status || "none");
+      ? "failed"
+      : String(semantic?.status || "none");
     const status = rawStatus === "pending" ? "partial" : rawStatus;
     const normalizedStatus = statuses.includes(status) ? status : "none";
     if (imagePreviewState && !loading && !error) {
@@ -2369,8 +2403,8 @@ async function initApp() {
         embeddingStatus === "done"
           ? "status-done"
           : embeddingStatus === "failed"
-            ? "status-failed"
-            : "status-pending",
+          ? "status-failed"
+          : "status-pending",
       );
     }
     const duplicatePaths = Array.isArray(semantic?.same_content_paths)
@@ -2378,9 +2412,7 @@ async function initApp() {
       : [];
     if (imagePreviewDuplicateNotice) {
       imagePreviewDuplicateNotice.textContent = duplicatePaths.length
-        ? `检测到另外 ${
-            duplicatePaths.length
-          } 张内容相同的图片。本次只修改当前路径，不会改动：${duplicatePaths.join(
+        ? `另有 ${duplicatePaths.length} 张同内容图片：${duplicatePaths.join(
             "、",
           )}`
         : "";
@@ -2415,15 +2447,15 @@ async function initApp() {
       imagePreviewSemanticState.textContent = "语义化失败";
       imagePreviewSemanticCaption.textContent =
         String(semantic?.error || "").trim() ||
-        "这张图片上次语义化失败，可以前往语义化页面重试。";
+        "上次处理失败，可前往语义化页面重试。";
     } else if (normalizedStatus === "partial") {
       imagePreviewSemanticState.textContent = "等待完成";
       imagePreviewSemanticCaption.textContent =
-        "这张图片已进入语义化流程，但描述尚未完成。";
+        "描述未完成，可前往语义化页面继续处理。";
     } else {
       imagePreviewSemanticState.textContent = "未语义化";
       imagePreviewSemanticCaption.textContent =
-        "这张图片还没有语义描述，可以前往语义化页面继续处理。";
+        "暂无描述，可前往语义化页面生成。";
     }
 
     const tags = Array.isArray(semantic?.tags) ? semantic.tags : [];
@@ -2455,12 +2487,12 @@ async function initApp() {
           ? embeddingStatus === "done"
             ? "语义向量已建立，可用于搜索。"
             : embeddingStatus === "failed"
-              ? `语义已保存，但向量更新失败${
-                  semantic?.embedding_error
-                    ? `：${semantic.embedding_error}`
-                    : "。"
-                }`
-              : "语义已保存，向量等待更新。"
+            ? `语义已保存，但向量更新失败${
+                semantic?.embedding_error
+                  ? `：${semantic.embedding_error}`
+                  : "。"
+              }`
+            : "语义已保存，向量等待更新。"
           : "";
     }
   }
@@ -2488,10 +2520,10 @@ async function initApp() {
         semantic.category_review_status === "manual_confirmed"
           ? "match"
           : semantic.category_review_status === "manual_rejected"
-            ? "mismatch"
-            : semantic.status === "none"
-              ? "match"
-              : "keep";
+          ? "mismatch"
+          : semantic.status === "none"
+          ? "match"
+          : "keep";
     }
     if (imagePreviewFixedTags) {
       imagePreviewFixedTags.replaceChildren();
@@ -2509,7 +2541,7 @@ async function initApp() {
     }
     if (imagePreviewReviewRewriteStatus) {
       imagePreviewReviewRewriteStatus.textContent =
-        "模型会重写语义并自动选择分类；只生成候选，不会直接保存或移动。";
+        "生成语义和分类建议，检查并保存后才会修改图片数据或移动分类。";
       imagePreviewReviewRewriteStatus.classList.remove("has-proposal");
     }
     if (imagePreviewTargetCategory) {
@@ -2538,8 +2570,8 @@ async function initApp() {
     const duplicateCount = Number(semantic.same_content_count || 0);
     if (imagePreviewEditScope) {
       imagePreviewEditScope.textContent = duplicateCount
-        ? `只修改当前路径。检测到另外 ${duplicateCount} 张同内容图片，它们不会被一并修改。`
-        : "只修改当前图片路径和当前分类，不会批量共享修改。";
+        ? `仅修改当前图片，另外 ${duplicateCount} 张同内容图片不变。`
+        : "仅修改当前图片，其他同内容图片不变。";
     }
     window.setTimeout(() => imagePreviewCaptionInput?.focus(), 0);
   }
@@ -2811,8 +2843,8 @@ async function initApp() {
         result?.moved
           ? "保存、移动与向量更新"
           : updateVector
-            ? "保存与向量更新"
-            : "保存成功",
+          ? "保存与向量更新"
+          : "保存成功",
       );
     } catch (error) {
       showToast(error?.message || String(error), "error", "保存失败");
@@ -2827,8 +2859,7 @@ async function initApp() {
     if (!state || !semantic.can_restore_auto) return;
     const confirmed = await showConfirm({
       title: "确认恢复自动生成",
-      description:
-        "这会放弃当前图片的人工描述、普通标签和可见文字。其他同内容图片不会受影响。确认继续吗？",
+      description: "将丢弃当前图片的人工描述、普通标签和可见文字。确认继续吗？",
       confirmLabel: "放弃人工修改",
       confirmClassName: "danger",
     });
@@ -3501,8 +3532,8 @@ async function initApp() {
 
     return Boolean(
       event.target.closest(".emoji-item") ||
-      event.target.closest(".emoji-upload") ||
-      event.target.closest(".category"),
+        event.target.closest(".emoji-upload") ||
+        event.target.closest(".category"),
     );
   }
 
@@ -3520,8 +3551,8 @@ async function initApp() {
   function hasActiveDragInteraction() {
     return Boolean(
       longPressState.emojiItem ||
-      dragModeState.pointerId !== null ||
-      dragModeState.items.length > 0,
+        dragModeState.pointerId !== null ||
+        dragModeState.items.length > 0,
     );
   }
 
@@ -3871,7 +3902,9 @@ async function initApp() {
         target.dataset.dropCategory = category;
         target.className = "drag-target-option";
         target.disabled = !hasMoveableItemsForTarget(dragItems, category);
-        target.textContent = `${category}${target.disabled ? "（原分类）" : ""}`;
+        target.textContent = `${category}${
+          target.disabled ? "（原分类）" : ""
+        }`;
         dragTargetList.appendChild(target);
       });
     dragTargetTray.classList.remove("hidden");
@@ -4577,10 +4610,7 @@ async function initApp() {
       moveTargetModalTitle.textContent = "选择目标分类";
     }
     if (moveTargetModalDescription) {
-      moveTargetModalDescription.textContent =
-        uniqueItems.length > 1
-          ? `已选 ${uniqueItems.length} 个表情包，选择要批量移动到的分类。`
-          : "选择要移动到的目标分类。";
+      moveTargetModalDescription.textContent = `已选 ${uniqueItems.length} 张`;
     }
 
     if (moveTargetList) {
@@ -4715,8 +4745,14 @@ async function initApp() {
           : null;
       }
       moveResultText.textContent = undo
-        ? `已撤销 ${movedCount} 张${remainingItems.length ? `，${remainingItems.length} 张未恢复，可重试` : ""}`
-        : `已移动 ${movedCount} 张到 ${targetCategory}${remainingItems.length ? `，${remainingItems.length} 张未移动` : ""}`;
+        ? `已撤销 ${movedCount} 张${
+            remainingItems.length
+              ? `，${remainingItems.length} 张未恢复，可重试`
+              : ""
+          }`
+        : `已移动 ${movedCount} 张到 ${targetCategory}${
+            remainingItems.length ? `，${remainingItems.length} 张未移动` : ""
+          }`;
       moveUndoBtn.textContent = undo && lastMove ? "重试撤销" : "撤销";
       moveUndoBtn.classList.toggle("hidden", !lastMove);
       moveResult.classList.remove("hidden");
@@ -4939,8 +4975,8 @@ async function initApp() {
         state === "success"
           ? "fas fa-check icon"
           : state === "error"
-            ? "fas fa-circle-exclamation icon"
-            : "fas fa-spinner fa-spin icon";
+          ? "fas fa-circle-exclamation icon"
+          : "fas fa-spinner fa-spin icon";
     }
     imgHostSyncProgressText.textContent = message;
   }
@@ -5027,12 +5063,12 @@ async function initApp() {
             status.phase === "cancelled"
               ? "同步已停止，已完成的文件会保留。"
               : status.conflicts
-                ? `已处理 ${status.succeeded || 0} 个文件；还有 ${
-                    status.conflicts
-                  } 个同名冲突，请检查后选择覆盖方向。`
-                : `${actionLabel}失败：${
-                    status.message || "请查看日志"
-                  }${detail}`;
+              ? `已处理 ${status.succeeded || 0} 个文件；还有 ${
+                  status.conflicts
+                } 个同名冲突，请检查后选择覆盖方向。`
+              : `${actionLabel}失败：${
+                  status.message || "请查看日志"
+                }${detail}`;
           void refreshUi({
             emojis: true,
             syncStatus: true,
@@ -5155,8 +5191,9 @@ async function initApp() {
     const totalEmojiCount = categoryEntries.reduce((total, [, emojis]) => {
       return total + (Array.isArray(emojis) ? emojis.length : 0);
     }, 0);
-    document.getElementById("library-result-count").textContent =
-      `共 ${totalEmojiCount} 张图片，分为 ${categoryEntries.length} 个分类`;
+    document.getElementById(
+      "library-result-count",
+    ).textContent = `共 ${totalEmojiCount} 张图片，分为 ${categoryEntries.length} 个分类`;
 
     if (!categoryEntries.length || totalEmojiCount === 0) {
       const hint = document.createElement("div");
@@ -5164,16 +5201,15 @@ async function initApp() {
       hint.innerHTML =
         activeSemanticReviewFilter === "all" && !librarySearch
           ? `
-        <p class="empty-pack-hint-title">当前还没有表情包内容</p>
-        <p class="empty-pack-hint-meta">你可以先新建分类上传表情，或前往资源广场下载官方包；也可直接一键安装官方包。</p>
+        <p class="empty-pack-hint-title">暂无表情</p>
+        <p class="empty-pack-hint-meta">可新建分类上传图片，或从资源广场安装表情包。</p>
         <div class="empty-pack-hint-actions">
-          <button id="empty-hint-install-official" type="button">一键安装官方包</button>
+          <button id="empty-hint-install-official" type="button">安装官方包</button>
           <button id="empty-hint-create-category" type="button">新建分类</button>
-          <a id="empty-hint-open-catalog" href="#">前往资源广场下载</a>
+          <a id="empty-hint-open-catalog" href="#">资源广场</a>
         </div>
       `
-          : `<p class="empty-pack-hint-title">当前筛选条件下没有图片</p>
-             <p class="empty-pack-hint-meta">试试其他名称，或清除搜索和审核筛选。</p>
+          : `<p class="empty-pack-hint-title">没有匹配的图片</p>
              <div class="empty-pack-hint-actions"><button id="clear-library-filters" type="button">清除筛选</button></div>`;
       container.appendChild(hint);
       document
@@ -5361,8 +5397,8 @@ async function initApp() {
                   review.reclassification_reason || reviewReason,
                 )}`
               : reviewStatus === "needs_review" && reviewReason
-                ? `${semanticBadge.textContent}；原因：${reviewReason}`
-                : semanticBadge.textContent;
+              ? `${semanticBadge.textContent}；原因：${reviewReason}`
+              : semanticBadge.textContent;
             emojiItem.appendChild(semanticBadge);
           }
 
@@ -5555,11 +5591,11 @@ async function initApp() {
               ? "取消可见项"
               : "取消本类"
             : filtered
-              ? "全选可见项"
-              : "本类全选"
+            ? "全选可见项"
+            : "本类全选"
           : filtered
-            ? "选择可见项"
-            : "本类选择";
+          ? "选择可见项"
+          : "本类选择";
       }
     });
   }
@@ -5668,8 +5704,7 @@ async function initApp() {
       dangerModalAcknowledge.disabled = false;
     }
     if (dangerModalStageText) {
-      dangerModalStageText.textContent =
-        "请先勾选已理解，勾选后会自动开始 5 秒倒计时。";
+      dangerModalStageText.textContent = "勾选后开始 5 秒倒计时";
     }
     if (dangerModalConfirmBtn) {
       dangerModalConfirmBtn.disabled = true;
@@ -5751,7 +5786,7 @@ async function initApp() {
     dangerModalTitle.textContent = title;
     dangerModalDescription.textContent = description;
     if (dangerModalStageText) {
-      dangerModalStageText.textContent = `请先勾选已理解，勾选后会自动开始 ${countdown} 秒倒计时。倒计时结束后才可执行。`;
+      dangerModalStageText.textContent = `勾选后开始 ${countdown} 秒倒计时`;
     }
     if (dangerModalConfirmBtn) {
       dangerModalConfirmBtn.textContent = "请先勾选上方选项";
@@ -6831,7 +6866,7 @@ async function initApp() {
   async function removeFromConfig(category) {
     const confirmed = await showConfirm({
       title: "从配置中删除类别",
-      description: `确定要从配置中删除「${category}」吗？该操作不会删除磁盘上的文件夹，只会移除配置记录。`,
+      description: `从配置中删除「${category}」？磁盘文件保留。`,
       confirmLabel: "确认删除",
       confirmClassName: "danger",
     });
@@ -6876,8 +6911,7 @@ async function initApp() {
       categoryEditModalTitle.textContent = `编辑类别「${category}」`;
     }
     if (categoryEditModalDescription) {
-      categoryEditModalDescription.textContent =
-        "修改类别名称和描述，保存后立即生效。";
+      categoryEditModalDescription.textContent = "保存后立即生效。";
     }
     if (categoryEditNameInput) {
       categoryEditNameInput.value = category;

@@ -11,9 +11,7 @@
   <body>
     <header class="page-header">
       <div>
-        <p class="eyebrow">Meme Pack Catalog</p>
-        <h1><i class="fas fa-store icon"></i>表情包资源广场</h1>
-        <p class="subtitle">下载并安装官方与社区表情包。</p>
+        <h1><i class="fas fa-store icon"></i>资源广场</h1>
       </div>
       <nav class="nav-actions" aria-label="页面导航"></nav>
     </header>
@@ -103,8 +101,7 @@
           安装<span>使用自定义来源</span>
         </summary>
         <p id="source-form-hint" class="manual-source-hint">
-          <i class="fas fa-circle-info"></i>
-          输入表情包的仓库与目录。支持兼容结构的表情包，安装时会自动识别。
+          填写表情包仓库与目录，安装时自动识别兼容结构。
         </p>
         <form id="source-install-form" aria-describedby="source-form-hint">
           <div class="triple-grid">
@@ -120,7 +117,7 @@
                 aria-describedby="source-repo-hint"
               />
               <span id="source-repo-hint" class="field-hint"
-                >填写用户名/仓库名，例如 anka-afk/meme-packs</span
+                >用户名/仓库名</span
               >
             </div>
             <div class="field-row">
@@ -135,7 +132,7 @@
                 aria-describedby="source-ref-hint"
               />
               <span id="source-ref-hint" class="field-hint"
-                >填写分支名、标签或提交 ID</span
+                >分支、标签或提交 ID</span
               >
             </div>
             <div class="field-row">
@@ -150,7 +147,7 @@
                 aria-describedby="source-subpath-hint"
               />
               <span id="source-subpath-hint" class="field-hint"
-                >相对于仓库根目录；根目录填写 .</span
+                >填写相对于仓库根目录的路径；根目录填写 .</span
               >
             </div>
           </div>
@@ -165,7 +162,7 @@
       <section class="panel log-panel">
         <div class="panel-header">
           <h2><i class="fas fa-list-check icon"></i>操作记录</h2>
-          <span class="hint">仅保留本次访问的记录</span>
+          <span class="hint">仅显示本次访问的记录</span>
         </div>
         <div id="log-list" class="log-list" role="log" aria-live="polite"></div>
       </section>
@@ -187,8 +184,8 @@
           <input id="install-overwrite-checkbox" type="checkbox" />
           <span>覆盖同名表情包</span>
         </label>
-        <p class="dialog-tip">
-          如有同名包，默认保留原包并为新包追加后缀。勾选覆盖将替换原包文件。
+        <p class="dialog-meta">
+          未勾选时保留原包，并为新包追加后缀；勾选后替换本地同名包。
         </p>
         <label class="checkbox">
           <input id="install-default-checkbox" type="checkbox" />

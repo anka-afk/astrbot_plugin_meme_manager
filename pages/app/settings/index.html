@@ -11,9 +11,7 @@
   <body>
     <header class="page-header">
       <div>
-        <p class="eyebrow">Meme Pack Settings</p>
-        <h1><i class="fas fa-sliders icon"></i>表情包设置中心</h1>
-        <p class="subtitle">从选图到发送，让每个表情都恰到好处。</p>
+        <h1><i class="fas fa-sliders icon"></i>表情包设置</h1>
       </div>
       <nav class="nav-actions" aria-label="页面导航"></nav>
     </header>
@@ -31,10 +29,20 @@
           />
         </label>
         <p class="settings-nav-label">设置中心</p>
+        <label class="settings-mobile-nav" for="settings-category"
+          >设置分类
+          <select id="settings-category" aria-label="设置分类"></select>
+        </label>
         <nav id="settings-nav" aria-label="设置分类导航">
           <button type="button" data-settings-tab="models" aria-current="page">
             <i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i
             >模式<span class="settings-dirty-dot" hidden></span>
+          </button>
+          <button type="button" data-settings-tab="decision">
+            <i class="fas fa-server" aria-hidden="true"></i>决策服务<span
+              class="settings-dirty-dot"
+              hidden
+            ></span>
           </button>
           <button type="button" data-settings-tab="rules">
             <i class="fas fa-route" aria-hidden="true"></i>使用规则
@@ -71,14 +79,11 @@
             <i class="fas fa-box-archive" aria-hidden="true"></i>导入与备份
           </button>
         </nav>
-        <p class="settings-sidebar-note">
-          从模式流程打开设置，或按分类查找和修改。
-        </p>
       </aside>
       <div class="settings-content">
         <section class="panel rules-panel" data-settings-panel="rules">
           <div class="panel-head">
-            <h2><i class="fas fa-route icon"></i>表情包使用规则</h2>
+            <h2><i class="fas fa-route icon"></i>使用规则</h2>
             <div class="head-actions">
               <button id="add-rule-btn" class="secondary">新增规则</button>
               <button id="reload-rules-btn" class="ghost">重新加载</button>
@@ -86,7 +91,7 @@
           </div>
 
           <p class="hint">
-            从上到下优先匹配人设或会话，未匹配时使用默认表情包。可拖动规则，也可用上移、下移按钮调整顺序。
+            从上到下匹配人设或会话，未命中时使用默认表情包。可拖动规则，或用上移、下移调整顺序。
           </p>
 
           <div
@@ -123,7 +128,6 @@
         >
           <div class="settings-section-heading">
             <div>
-              <p class="eyebrow">Preferences</p>
               <h2 id="config-section-title">表情发送</h2>
               <p id="config-section-description" class="hint"></p>
             </div>
@@ -150,225 +154,225 @@
             class="panel selection-mode-panel"
             hidden
           >
-            <fieldset
-              id="selection-mode-options"
-              aria-describedby="selection-mode-help"
-            >
-              <legend>选择模式</legend>
-              <p id="selection-mode-help" class="hint">
-                一次使用一种模式。切换后可调整流程中的设置，保存并应用后生效。
-              </p>
+            <fieldset id="selection-method-options" class="selection-dimension">
+              <legend>
+                <span class="dimension-number" aria-hidden="true">1</span
+                >标签粒度
+              </legend>
               <div class="selection-mode-grid">
                 <label class="selection-mode-card">
                   <input
                     type="radio"
-                    name="selection-mode"
-                    value="category-native"
+                    name="selection-method"
+                    value="category"
                   />
                   <span
-                    ><strong>原生分类标签</strong
-                    ><small
-                      >回复模型输出分类标签，从该分类中随机取图。</small
-                    ></span
+                    ><strong>分类</strong
+                    ><small>从所选分类随机取图</small></span
                   >
                 </label>
                 <label class="selection-mode-card">
                   <input
                     type="radio"
-                    name="selection-mode"
-                    value="category-auxiliary"
+                    name="selection-method"
+                    value="semantic"
                   />
                   <span
-                    ><strong>辅助模型分类标签</strong
+                    ><strong>图片</strong
                     ><small
-                      >辅助模型根据回复选择分类，再从分类中随机取图。</small
-                    ></span
-                  >
-                </label>
-                <label class="selection-mode-card">
-                  <input
-                    type="radio"
-                    name="selection-mode"
-                    value="semantic-tool"
-                  />
-                  <span
-                    ><strong>Tool 语义检索</strong
-                    ><small
-                      >回复模型调用搜索工具，从候选中选择具体图片。</small
-                    ></span
-                  >
-                </label>
-                <label class="selection-mode-card">
-                  <input
-                    type="radio"
-                    name="selection-mode"
-                    value="semantic-auxiliary"
-                  />
-                  <span
-                    ><strong>辅助模型语义检索</strong
-                    ><small
-                      >辅助模型根据回复检索并选图，回复模型专注对话。</small
+                      >按语义检索并选择具体图片。需先用视觉模型生成图片描述，再配置向量模型建立索引。</small
                     ></span
                   >
                 </label>
               </div>
             </fieldset>
-            <p
-              id="selection-mode-status"
-              class="selection-mode-status"
-              role="status"
-            ></p>
-            <div id="selection-mode-readiness" class="config-notice" hidden>
-              <p id="selection-mode-readiness-text" role="status"></p>
-              <p class="hint">
-                按各会话实际使用的表情包判断；语义数据或索引未就绪时，自动回退到对应的分类标签方式。
-              </p>
-              <a
-                href="../semantic/index.html"
-                data-nav-target="../semantic/index.html"
-                >前往语义化 →</a
-              >
-            </div>
+            <fieldset id="selection-agent-options" class="selection-dimension">
+              <legend>
+                <span class="dimension-number" aria-hidden="true">2</span
+                >由谁选择表情包
+              </legend>
+              <div class="selection-mode-grid">
+                <label class="selection-mode-card">
+                  <input type="radio" name="selection-agent" value="reply" />
+                  <span
+                    ><strong>主模型</strong
+                    ><small>由当前对话模型在生成回复时选择表情包</small></span
+                  >
+                </label>
+                <label class="selection-mode-card">
+                  <input type="radio" name="selection-agent" value="assisted" />
+                  <span
+                    ><strong>辅助模型</strong
+                    ><small>回复生成后选择表情包</small></span
+                  >
+                </label>
+              </div>
+            </fieldset>
+            <p class="hint">切换选图方式会保留已填写的参数，保存后生效。</p>
             <p id="selection-mode-detail" class="hint"></p>
+            <p
+              id="selection-readiness-note"
+              class="selection-readiness-note"
+              role="status"
+              hidden
+            ></p>
           </section>
           <section
             id="mode-workflow"
-            class="panel mode-workflow"
-            aria-labelledby="mode-workflow-title"
+            class="panel selection-workflow"
             hidden
+            aria-labelledby="mode-workflow-title"
           >
             <div class="workflow-heading">
-              <h3 id="mode-workflow-title" tabindex="-1">模式流程</h3>
+              <h3 id="mode-workflow-title" tabindex="-1">当前流程</h3>
             </div>
             <ol
               id="mode-workflow-steps"
               class="workflow-steps"
               aria-label="本轮选图流程"
             ></ol>
+            <ul id="selection-required" aria-label="配图待补充配置" hidden></ul>
           </section>
-          <dialog
+          <section
+            id="collection-workflow"
+            class="panel selection-workflow"
+            hidden
+            aria-labelledby="collection-workflow-title"
+          >
+            <div class="workflow-heading">
+              <h3 id="collection-workflow-title" tabindex="-1">自动收集流程</h3>
+              <span id="collection-workflow-state" class="badge"></span>
+            </div>
+            <ol
+              class="workflow-steps collection-workflow-steps"
+              aria-label="自动收集流程"
+            >
+              <li>
+                <button
+                  type="button"
+                  class="workflow-node"
+                  data-setting-group="collect"
+                  aria-expanded="false"
+                >
+                  <strong>来源与频率</strong><small>设置 →</small>
+                </button>
+                <div class="workflow-links"></div>
+              </li>
+              <li>
+                <button
+                  type="button"
+                  class="workflow-node"
+                  data-setting-group="collect-recognition"
+                  aria-expanded="false"
+                >
+                  <strong>图片理解与判断</strong
+                  ><span id="collection-analysis-summary"></span
+                  ><small>设置 →</small>
+                </button>
+                <div class="workflow-links"></div>
+              </li>
+              <li>
+                <button
+                  type="button"
+                  class="workflow-node"
+                  data-setting-group="collect-review"
+                  aria-expanded="false"
+                >
+                  <strong>审核与入包</strong
+                  ><span id="collection-review-summary"></span
+                  ><small>设置 →</small>
+                </button>
+                <div class="workflow-links"></div>
+              </li>
+            </ol>
+            <p id="collection-workflow-result" class="hint"></p>
+            <ul
+              id="collection-required"
+              aria-label="自动收集待补充配置"
+              hidden
+            ></ul>
+          </section>
+          <div id="config-sections"></div>
+          <p id="config-search-empty" class="rules-placeholder" hidden>
+            没有匹配的配置，试试搜索模型、概率或图床。
+          </p>
+          <div class="config-save-bar">
+            <div>
+              <p id="config-save-status" role="status">正在读取设置…</p>
+              <p id="config-save-scope" class="hint" hidden></p>
+              <details id="config-changes-review" hidden>
+                <summary id="config-changes-summary">查看待保存修改</summary>
+                <ul id="config-changes-list"></ul>
+              </details>
+            </div>
+            <button id="save-config-btn" type="submit" disabled>
+              <i class="fas fa-floppy-disk icon" aria-hidden="true"></i
+              >保存全部更改
+            </button>
+          </div>
+        </form>
+        <div
+          id="config-flow-mask"
+          class="dialog-mask hidden"
+          aria-hidden="true"
+        >
+          <section
             id="config-flow-dialog"
-            class="ui-dialog ui-dialog-sectioned"
+            class="dialog-card ui-dialog-sectioned"
+            role="dialog"
+            aria-modal="true"
             aria-labelledby="config-flow-dialog-title"
           >
-            <div class="flow-dialog-heading ui-dialog-heading">
-              <h3
-                id="config-flow-dialog-title"
-                class="ui-dialog-title text-h3 pa-4 pb-0 pl-6"
-                tabindex="-1"
-              ></h3>
-              <div class="flow-dialog-heading-actions">
-                <button
-                  id="config-flow-dialog-reset"
-                  type="button"
-                  class="ghost"
-                  hidden
+            <header class="flow-dialog-heading ui-dialog-heading">
+              <div>
+                <p id="config-flow-dialog-context" class="eyebrow"></p>
+                <h3
+                  id="config-flow-dialog-title"
+                  class="ui-dialog-title text-h3 pa-4 pb-0 pl-6"
+                  tabindex="-1"
                 >
-                  恢复默认模板
-                </button>
-                <button
-                  type="button"
-                  class="ghost"
-                  data-flow-dialog-close
-                  aria-label="关闭设置"
-                >
-                  ×
-                </button>
+                  配置参数
+                </h3>
               </div>
-            </div>
+              <button
+                id="config-flow-dialog-reset"
+                type="button"
+                class="ghost"
+                hidden
+              >
+                恢复默认模板
+              </button>
+              <button
+                type="button"
+                class="ghost"
+                data-dialog-dismiss
+                aria-label="关闭设置"
+              >
+                ×
+              </button>
+            </header>
             <div id="config-flow-dialog-body" class="ui-dialog-body"></div>
-            <div class="flow-dialog-actions ui-dialog-actions">
+            <footer class="flow-dialog-actions ui-dialog-actions">
               <p id="config-flow-dialog-status" role="status"></p>
-              <button type="button" class="ghost" data-flow-dialog-close>
+              <button type="button" class="ghost" data-dialog-dismiss>
                 关闭
               </button>
               <button
                 id="config-flow-dialog-save"
                 type="submit"
-                class="secondary"
-                disabled
+                form="plugin-config-form"
               >
-                保存并应用
+                保存全部更改
               </button>
-            </div>
-          </dialog>
-          <section
-            id="collection-workflow"
-            class="panel mode-workflow"
-            aria-labelledby="collection-workflow-title"
-            hidden
-          >
-            <div class="workflow-heading">
-              <h3 id="collection-workflow-title" tabindex="-1">自动收集流程</h3>
-              <span
-                id="collection-workflow-state"
-                class="workflow-state"
-                role="status"
-              ></span>
-            </div>
-            <ol
-              id="collection-workflow-steps"
-              class="workflow-steps"
-              aria-label="自动收集流程"
-            ></ol>
-            <p
-              id="collection-workflow-result"
-              class="workflow-fallback"
-              role="status"
-            ></p>
-            <p class="workflow-fallback">
-              自动检查重复图片；启用语义检索后，默认在入包时自动增量生成向量，可在「审核与入包」关闭。描述未完成的图片需先到「语义化」页面处理。
-            </p>
+            </footer>
           </section>
-          <div id="config-sections"></div>
-          <p id="config-search-empty" class="rules-placeholder" hidden>
-            没有找到相关配置，试试“模型”“概率”或“图床”。
-          </p>
-          <div class="config-save-bar">
-            <div>
-              <p id="config-save-status" role="status">正在读取设置…</p>
-            </div>
-            <button id="save-config-btn" type="submit" disabled>
-              <i class="fas fa-floppy-disk icon" aria-hidden="true"></i
-              >保存并应用
-            </button>
-          </div>
-        </form>
-        <dialog
-          id="rules-flow-dialog"
-          class="ui-dialog ui-dialog-sectioned"
-          aria-labelledby="rules-flow-dialog-title"
-        >
-          <div class="flow-dialog-heading ui-dialog-heading">
-            <h3
-              id="rules-flow-dialog-title"
-              class="ui-dialog-title text-h3 pa-4 pb-0 pl-6"
-            >
-              表情包使用规则
-            </h3>
-            <button
-              type="button"
-              class="ghost"
-              data-rules-dialog-close
-              aria-label="关闭规则"
-            >
-              ×
-            </button>
-          </div>
-          <div id="rules-flow-dialog-body" class="ui-dialog-body"></div>
-          <div class="flow-dialog-actions ui-dialog-actions">
-            <button type="button" class="ghost" data-rules-dialog-close>
-              关闭
-            </button>
-          </div>
-        </dialog>
+        </div>
         <div data-settings-panel="backup" hidden>
           <section class="panel backup-panel">
             <h2><i class="fas fa-box-archive icon"></i>导入与备份</h2>
 
             <div class="block pack-transfer-block">
               <h3>单个表情包</h3>
-              <p class="hint compact-hint">分享、备份或迁移一个表情包。</p>
               <div class="field-row">
                 <label for="transfer-pack-select">当前表情包</label>
                 <select
@@ -387,7 +391,6 @@
                   </span>
                   <span>
                     <strong>导出当前表情包</strong>
-                    <small>分享或迁回自己的环境</small>
                   </span>
                   <i class="fas fa-chevron-down pack-transfer-chevron"></i>
                 </summary>
@@ -410,9 +413,8 @@
                       />
                       <span>
                         <strong>分享版</strong>
-                        <small>不带向量，可上传资源广场</small>
+                        <small>不含向量，适合分享或上传资源广场</small>
                       </span>
-                      <em>推荐</em>
                     </label>
                     <label class="export-mode-option" for="export-mode-backup">
                       <input
@@ -445,11 +447,13 @@
                   </span>
                   <span>
                     <strong>从压缩包导入</strong>
-                    <small>兼容新版与旧版表情包</small>
                   </span>
                   <i class="fas fa-chevron-down pack-transfer-chevron"></i>
                 </summary>
                 <div class="pack-transfer-section-body">
+                  <p class="hint">
+                    选择文件后先检查，确认导入后才会写入或覆盖。
+                  </p>
                   <label
                     id="pack-import-dropzone"
                     class="pack-import-dropzone"
@@ -468,7 +472,6 @@
                       <strong id="pack-import-file-label"
                         >选择或拖入 zip 文件</strong
                       >
-                      <small>先检查，不会立即覆盖</small>
                     </span>
                   </label>
 
@@ -550,7 +553,7 @@
             <div class="block">
               <h3>导出全量备份</h3>
               <p class="hint">
-                备份所有表情包与运行时设置，文件保存在服务器上。
+                备份所有表情包与运行时设置，文件保存到服务器目录。
               </p>
               <div class="field-row">
                 <label for="backup-output-dir-input">导出目录（可选）</label>
@@ -573,7 +576,7 @@
 
             <div class="block">
               <h3>恢复全量备份</h3>
-              <p class="hint">从已有备份恢复表情包与运行时设置。</p>
+              <p class="hint">恢复表情包与运行时设置。</p>
               <div class="field-row">
                 <label for="backup-file-input">备份压缩包（zip）</label>
                 <input id="backup-file-input" type="file" accept=".zip" />

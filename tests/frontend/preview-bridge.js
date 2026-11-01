@@ -176,6 +176,16 @@
       index % 3
     ],
     near_duplicate: index === 5 ? "surprise/震惊.png" : "",
+    ...(index >= 4 ? {
+      judgment_backend: "decision",
+      decision_status: index === 6 ? "failed" : "completed",
+      review_required: true,
+      review_reasons: [index === 6 ? "decision_failed" : "category_confidence_low"],
+      stage_status: index === 6
+        ? { understanding: "completed", judgment: "failed" }
+        : { understanding: "completed", meme_usage: "accepted", content_rule: "allow", category: "uncertain" },
+      ...(index === 6 ? { category_confidence: null, meme_confidence: null } : {}),
+    } : {}),
     received_at: new Date().toISOString(),
   }));
   async function request(endpoint, body = {}) {
@@ -191,6 +201,9 @@
           count: body.pack_id === "weekend" ? 0 : collected.length,
           items: body.pack_id === "weekend" ? [] : collected,
           categories: descriptions,
+          ready: !params.has("preview_service_missing"),
+          reason: params.has("preview_service_missing") ? "missing_model" : "ready",
+          review_required_count: collected.filter((item) => item.review_required).length,
         };
       case "auto-collect/inbox/image_data": {
         const item = collected.find((entry) => entry.id === body.id);
@@ -450,6 +463,14 @@
           task_status: taskStatus,
           task_phase: taskStatus === "running" ? "captioning" : "finished",
           worker_alive: true,
+          auto_collect_inbox: {
+            visible: true,
+            count: body.pack_id === "weekend" ? 0 : collected.length,
+            items: body.pack_id === "weekend" ? [] : collected,
+            ready: !params.has("preview_service_missing"),
+            reason: params.has("preview_service_missing") ? "missing_model" : "ready",
+            review_required_count: collected.filter((item) => item.review_required).length,
+          },
           total_tasks: 18,
           file_total: 18,
           unique_total: 18,
@@ -462,9 +483,9 @@
           queued_embedding_tasks: 2,
           active_request_count: taskStatus === "running" ? 1 : 0,
           concurrency: 1,
-          embedding_provider_ready: true,
-          vision_provider_ready: true,
-          index_ready: true,
+          embedding_provider_ready: !params.has("preview_no_models"),
+          vision_provider_ready: !params.has("preview_no_models"),
+          index_ready: !params.has("preview_no_models"),
           queue_status: taskStatus === "running" ? "running" : "waiting",
           embedding_model: "Example embedding",
           embedding_configured_dimension: 1024,
@@ -473,7 +494,7 @@
           elapsed_seconds: 84,
           semantic_caption_complete: !params.has("incomplete_descriptions"),
           semantic_enabled: true,
-          semantic_config_ready: true,
+          semantic_config_ready: !params.has("preview_no_models"),
         };
       case "semantic/items":
         return {
@@ -512,9 +533,39 @@
       case "semantic/pause":
         taskStatus = "paused";
         return { message: "任务已暂停" };
+      case "settings/decision-models":
+        if (params.has("preview_model_list_failure"))
+          throw new Error("暂时无法获取模型列表，可直接填写模型 ID。");
+        if (params.has("preview_model_list_empty")) return {models: []};
+        return {models: [{id: "jev", name: "Jev"}, {id: "clef-flash", name: "Clef Flash"}, {id: "clef", name: "Clef"}]};
       case "settings/config":
-        if (!configSnapshot)
+        if (!configSnapshot) {
           configSnapshot = await (await fetch("/__preview/settings")).json();
+          const combination = params.get("preview_selection");
+          const preset = {
+            ...(combination ? {
+              "semantic.enabled": combination.startsWith("semantic-"),
+              "generation.emotion.llm.enabled": combination.endsWith("-post"),
+            } : {}),
+            ...(params.get("preview_backend") === "decision" ? {
+              "generation.emotion.llm.backend": "decision",
+              "decision_service.model": "jev",
+            } : {}),
+            ...(params.get("preview_query_source") === "reply_text" ? {"semantic.query.source": "reply_text"} : {}),
+          };
+          for (const field of configSnapshot.fields) {
+            if (Object.hasOwn(preset, field.path)) field.value = preset[field.path];
+            if (params.has("preview_service_missing") && field.path.startsWith("decision_service.")) {
+              if (field.secret) field.configured = false;
+              if (field.path === "decision_service.model") field.value = "";
+            }
+          }
+          if (params.has("preview_no_models")) configSnapshot.providers = {chat: [], embedding: []};
+          if (params.has("preview_provider_list_failure")) {
+            configSnapshot.provider_list_errors = ["chat", "embedding"];
+            configSnapshot.providers = {chat: [], embedding: []};
+          }
+        }
         if (body.changes) {
           if (params.has("preview_conflict"))
             throw new Error(
@@ -530,8 +581,11 @@
         }
         return structuredClone({
           ...configSnapshot,
-          applied: true,
-          message: "设置已保存并生效。",
+          decision_service_status: {
+            ready: configSnapshot.fields.some((field) => field.path === "decision_service.model" && field.value),
+          },
+          applied: !params.has("preview_apply_failure"),
+          message: params.has("preview_apply_failure") ? "设置已保存，但插件应用失败，请重新加载插件。" : "设置已保存并生效。",
         });
       case "settings/rules":
         if (body.rules) rules = body.rules;

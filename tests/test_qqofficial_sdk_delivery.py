@@ -25,6 +25,7 @@ async def test_real_qq_group_adapter_preserves_trigger_message_id(monkeypatch):
         message_id="trigger-message-id",
     )
     event.platform_meta = SimpleNamespace(name="qq_official")
+    event._extras = {}
     event.send_buffer = None
     post_group_message = AsyncMock(return_value={"id": "sent-image-id"})
     event.bot = SimpleNamespace(

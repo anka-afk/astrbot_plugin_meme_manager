@@ -202,22 +202,81 @@
       }
     }
   },
+  "decision_service": {
+    "description": "决策服务（System One）",
+    "type": "object",
+    "hint": "辅助配图与自动收集共用一份服务配置，分别决定是否使用；打开或保存设置不会发起收费推理",
+    "items": {
+      "base_url": {
+        "description": "服务基础地址",
+        "type": "string",
+        "default": "https://system-one.dev/v1",
+        "hint": "填写 v1 基础地址，客户端追加 systemone；不使用聊天 completions 接口"
+      },
+      "token": {
+        "description": "服务密钥",
+        "type": "string",
+        "default": "",
+        "hint": "使用服务商提供的 API 密钥；设置中心保存后不回显"
+      },
+      "model": {
+        "description": "决策模型 ID",
+        "type": "string",
+        "default": "",
+        "hint": "填写服务当前支持的准确模型 ID；不根据名称推断能力或自动切换模型"
+      },
+      "timeout": {
+        "description": "单次任务总超时（秒）",
+        "type": "int",
+        "default": 15,
+        "slider": { "min": 1, "max": 300, "step": 1 },
+        "hint": "包含等待并发槽位和 HTTP 请求；超时不自动重试收费推理"
+      },
+      "max_concurrency": {
+        "description": "共享请求并发上限",
+        "type": "int",
+        "default": 2,
+        "slider": { "min": 1, "max": 64, "step": 1 },
+        "hint": "自动收集保持单 worker；默认 2 为聊天配图保留另一槽位"
+      }
+    }
+  },
   "semantic": {
     "description": "语义检索与图包语义化",
     "type": "object",
-    "hint": "开启后默认使用 Tool 检索；若同时开启“情感辅助模型”，则由辅助模型接管。没有有效语义向量的图包会自动回退分类标签模式，待处理图片不影响已有有效向量的检索",
+    "hint": "标签粒度选择图片级（语义）时检索具体图片；由谁选择标签单独设置。没有有效向量时在请求准备阶段回退分类取图",
     "items": {
       "enabled": {
-        "description": "启用新版语义包检索",
+        "description": "标签粒度：图片级（语义）",
         "type": "bool",
         "default": false,
-        "hint": "默认向回复模型提供 search_memes Tool；开启情感辅助模型后改由该模型选图。不完整图包不会进入语义检索"
+        "hint": "关闭时使用分类级标签并随机取图；开启时检索具体图片，需先用视觉模型生成图片描述，并配置向量模型建立索引。主模型自选或额外辅助可独立选择"
+      },
+      "query": {
+        "description": "辅助选图的语义查询",
+        "type": "object",
+        "items": {
+          "source": {
+            "description": "检索词来源",
+            "type": "string",
+            "default": "generated",
+            "options": ["generated", "reply_text"],
+            "hint": "仅图片级标签与额外辅助组合使用：generated 由聊天模型生成短语，reply_text 使用可见回复文本；决策模型不生成检索词"
+          },
+          "provider_id": {
+            "description": "检索词聊天模型",
+            "type": "string",
+            "default": "",
+            "_special": "select_provider",
+            "hint": "仅生成检索词时使用。留空时跟随配图聊天模型；配图使用决策后端时跟随本轮回复聊天模型。显式指定时使用该 Provider 默认模型"
+          }
+        }
       },
       "top_k": {
         "description": "运行时：每次返回候选数",
         "type": "int",
         "default": 5,
-        "hint": "只把少量候选交给回复模型或情感辅助模型"
+        "hint": "只把少量候选交给主模型或配图模型"
       },
       "min_score": {
         "description": "运行时：最低相似度",
@@ -229,7 +288,7 @@
         "description": "启用 Tool 概率触发",
         "type": "bool",
         "default": false,
-        "hint": "仅限 Tool 选图模式。关闭时由模型自主调用；开启后按独立调用概率触发检索，可能增加一次当前回复模型的前置请求。"
+        "hint": "仅限 Tool 选图模式。关闭时由模型自主调用；开启后按独立调用概率触发检索，可能增加一次当前主模型的前置请求。"
       },
       "tool_call_probability": {
         "condition": { "tool_probability_enabled": true },
@@ -277,24 +336,31 @@
         "default": false,
         "hint": "默认关闭。开启后仅处理符合来源范围、冷却和抽样条件的图片"
       },
+      "judgment_backend": {
+        "description": "收录与分类方式",
+        "type": "string",
+        "default": "vision",
+        "options": ["vision", "decision"],
+        "hint": "vision 由视觉模型一次合并判断；decision 先理解图片，再由共享决策服务根据文字证据分项判断。不确定、无法分类或决策失败强制人工复核，会增加决策请求"
+      },
       "vision_provider_id": {
-        "description": "自动收集视觉模型 Provider ID",
+        "description": "自动收集图片理解模型 Provider ID",
         "type": "string",
         "default": "",
         "_special": "select_provider",
         "hint": "必须选择支持图片输入的聊天模型；未选择或模型明确不支持 image 模态时不会启动自动收集"
       },
       "manual_review": {
-        "description": "人工审核表情包",
+        "description": "人工确认入包",
         "type": "bool",
         "default": true,
-        "hint": "默认开启。收集后在表情包管理页切换到对应包，点击右侧待审核按钮预览、修改分类并接收。关闭后新收集图片自动入包，已有待审核图片仍需处理；启用语义检索后默认自动增量生成向量"
+        "hint": "默认开启。收集后到表情包管理页预览、修改分类并接收。关闭后新收集图片可自动入包，但决策路径不确定、分类不明或失败时始终强制人工复核；已有待审图片仍需处理。开启语义选图后可自动增量生成向量"
       },
       "content_review_enabled": {
-        "description": "内容审核",
+        "description": "内容规则筛选",
         "type": "bool",
         "default": false,
-        "hint": "默认关闭。开启后在同一次视觉识别中追加内容审核提示词，由模型过滤不符合规则的图片，不额外调用模型；与人工审核开关独立"
+        "hint": "默认关闭，与人工审核开关独立。视觉合并判断时在同次视觉请求追加规则；决策路径在同次决策请求增加一个计费问题，仅基于描述和可见文字初筛，证据不足时人工复核，并非直接看图审核"
       },
       "content_review_prompt": {
         "description": "内容审核提示词",
@@ -357,19 +423,19 @@
         "description": "每日视觉识别上限",
         "type": "int",
         "default": 100,
-        "hint": "达到上限后当天不再调用自动收集视觉模型；0 表示不限制"
+        "hint": "按 UTC 自然日限制图片视觉识别任务，0 表示不限制；缓存命中不重复占用。决策尝试和服务请求另行计数，结构化输出兼容重试可能增加视觉请求"
       },
       "min_meme_confidence": {
         "description": "最低表情包置信度",
         "type": "float",
         "default": 0.85,
-        "hint": "模型判断低于该置信度时不会收录"
+        "hint": "视觉路径使用模型自报置信度，低于阈值不收录。决策路径使用表情用途概率：高于 0.5 且达到阈值才通过，低于 0.5 且不高于 1−max(阈值,0.5) 才拒收，中间区间人工复核。阈值不是准确率保证"
       },
       "min_category_confidence": {
         "description": "最低分类置信度",
         "type": "float",
         "default": 0.65,
-        "hint": "关闭人工审核时，分类置信度不足的图片进入 needs_review；开启人工审核时保留模型建议分类，供你在预览中判断和修正"
+        "hint": "视觉路径关闭人工审核时，低分类置信度图片自动入包并归入「待分类」。决策路径使用所选分类的分布概率；分类未知、概率缺失或不足均强制人工复核"
       }
     }
   },
@@ -392,40 +458,47 @@
         }
       },
       "emotion": {
-        "description": "情感辅助与分类标签选图",
+        "description": "配图模型与分类标签选图",
         "type": "object",
         "items": {
           "llm": {
-            "description": "情感模型辅助（开启后接管 Tool）",
+            "description": "额外模型辅助选图",
             "type": "object",
             "hint": "存在有效语义向量时由该模型从语义候选中选图；没有可用索引时自动改用分类标签",
             "items": {
               "enabled": {
-                "description": "启用情感辅助模型",
+                "description": "由谁选择表情包：额外模型辅助",
                 "type": "bool",
                 "default": false,
-                "hint": "开启后不再向回复模型提供 search_memes Tool，而是调用这里配置的模型完成选图"
+                "hint": "关闭时使用主模型自身的标签或工具调用能力；开启时增加独立的辅助请求，可使用聊天 LLM 或决策服务。辅助步骤在回复内容生成后执行"
+              },
+              "backend": {
+                "description": "辅助模型类型",
+                "type": "string",
+                "default": "chat",
+                "options": ["chat", "decision"],
+                "hint": "仅额外辅助时使用。聊天 LLM 保留分类多选；决策模型每轮最多选一个分类或一张图片，也可主动不发送"
               },
               "provider_id": {
-                "description": "情感辅助模型 Provider ID（留空使用回复模型）",
+                "description": "配图聊天模型（留空跟随主模型）",
                 "type": "string",
                 "default": "",
-                "hint": "无需单独配置：留空时会自动复用本轮当前对话的回复模型；填写后才使用指定模型。此模型同时负责新版语义候选选择和分类标签选择",
+                "hint": "仅聊天辅助使用。留空精确复用本轮回复 Provider 和模型，仍会增加独立请求；指定后使用该 Provider 默认模型",
                 "_special": "select_provider"
               },
               "context_turns": {
-                "description": "注入给情感模型的上下文轮数",
+                "description": "提供给配图模型的上下文轮数",
                 "type": "int",
                 "default": 0,
                 "hint": "0 表示不注入上下文；大于 0 时会把最近 N 轮对话追加到提示词末尾（用于提高缓存命中与语境一致性）",
                 "slider": {
                   "min": 0,
-                  "max": 10,
+                  "max": 20,
                   "step": 1
                 }
               },
               "inject_persona": {
-                "description": "向情感模型注入当前人格提示词",
+                "description": "向配图模型提供当前人格",
                 "type": "bool",
                 "default": false,
                 "hint": "开启后会把当前人格设定作为参考追加到提示词末尾，仅用于选图参考"
@@ -433,16 +506,22 @@
             }
           },
           "max_memes_per_message": {
-            "description": "每条消息表情硬上限",
+            "description": "自动配图数量上限",
             "type": "int",
             "default": -1,
-            "hint": "每条回复最多发送的表情数量。任意负数表示不限量，0 表示不发送表情，正数按选图顺序保留前 N 个，超出部分截断。适用于分类和语义模式，包括流式回复。"
+            "hint": "每条回复自动附加的表情数量。任意负数表示不限量，0 表示不自动附图，正数保留前 N 张。适用于分类和语义自动配图，包括流式回复；不限制模型主动调用 send_meme 工具。"
+          },
+          "send_tool_enabled": {
+            "description": "启用主动发送表情工具",
+            "type": "bool",
+            "default": true,
+            "hint": "默认开启。向支持工具调用的主模型提供 send_meme，由模型决定何时调用；可按当前会话分类随机发图，或发送本轮 search_memes 检索候选中的具体图片。调用不受自动配图的发送概率（含 0%）和数量上限限制，可多次调用；使用后本轮不再自动附加表情。关闭后不提供或执行该工具，仍遵守应用范围、图包绑定和 AstrBot 工具权限。"
           },
           "probability": {
             "description": "表情发送概率",
             "type": "int",
             "default": 100,
-            "hint": "所有选图模式共用的独立发送门控，每轮只判定一次。0% 不发送表情，100% 允许发送但不强迫检索或出图；不影响模型调用或工具检索。",
+            "hint": "所有自动配图模式共用的独立发送门控，每轮只判定一次。0% 不自动附图，100% 允许自动配图；不影响模型调用或工具检索，也不限制模型主动调用 send_meme。",
             "slider": {
               "min": 0,
               "max": 100,

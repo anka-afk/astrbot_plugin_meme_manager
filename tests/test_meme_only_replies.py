@@ -3,6 +3,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from astrbot_plugin_meme_manager import main as plugin_main
+from astrbot_plugin_meme_manager.main import MemeSender
+from astrbot_plugin_meme_manager.mixins import event_handlers
+from astrbot_plugin_meme_manager.mixins.event_handlers import (
+    LLM_REQUEST_ORIGIN_EXTRA_KEY,
+)
+from PIL import Image as PillowImage
+
 from astrbot.api.provider import LLMResponse
 from astrbot.core.message.components import Image, Plain
 from astrbot.core.message.message_event_result import (
@@ -15,13 +23,6 @@ from astrbot.core.pipeline.result_decorate.stage import ResultDecorateStage
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.sources.webchat.webchat_event import WebChatMessageEvent
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
-from astrbot_plugin_meme_manager import main as plugin_main
-from astrbot_plugin_meme_manager.main import MemeSender
-from astrbot_plugin_meme_manager.mixins import event_handlers
-from astrbot_plugin_meme_manager.mixins.event_handlers import (
-    LLM_REQUEST_ORIGIN_EXTRA_KEY,
-)
-from PIL import Image as PillowImage
 
 
 @pytest.fixture
@@ -185,7 +186,7 @@ async def test_webchat_stream_cleans_tags_without_decorating_hook(
     event.message_obj = SimpleNamespace(message_id="tag-cleanup")
     event.session = SimpleNamespace(session_id="test")
     event.get_platform_name = lambda: "webchat"
-    event.send = AsyncMock()
+    original_send = event.send = AsyncMock()
     monkeypatch.setattr(AstrMessageEvent, "send_streaming", AsyncMock())
     queue = AsyncMock(return_value=True)
     monkeypatch.setattr(webchat_queue_mgr, "put_back_queue", queue)
@@ -213,7 +214,7 @@ async def test_webchat_stream_cleans_tags_without_decorating_hook(
     assert payloads[-1]["type"] == "complete"
     assert payloads[-1]["data"] == expected
     assert response.completion_text == expected
-    event.send.assert_not_awaited()
+    original_send.assert_not_awaited()
     assert state["found_emotions"] is None
     sender._send_meme_image.assert_awaited_once()
     state["result"] = MessageEventResult(
@@ -328,7 +329,7 @@ async def test_stream_final_response_selects_images_without_replacement_message(
     sender, event, state, _ = reply_context
     sender.emotions_probability = 100
     event.get_platform_name = lambda: "webchat"
-    event.send = AsyncMock()
+    original_send = event.send = AsyncMock()
     response = LLMResponse(role="assistant", completion_text="&&happy&&&&sad&&")
 
     async def source():
@@ -349,7 +350,7 @@ async def test_stream_final_response_selects_images_without_replacement_message(
     await event.send_streaming(state["result"].async_stream)
     assert state["found_emotions"] is None
     assert sender._send_meme_image.await_count == 2
-    event.send.assert_not_awaited()
+    original_send.assert_not_awaited()
     state["result"] = MessageEventResult(
         chain=response.result_chain.chain,
         result_content_type=ResultContentType.STREAMING_FINISH,

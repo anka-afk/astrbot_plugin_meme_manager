@@ -29,6 +29,9 @@ class CommandMixin:
         查看图库
         添加分类
         添加表情
+        收集表情
+        开始收集
+        结束收集
         恢复默认表情包
         清空指定类型
         清空全部
@@ -182,8 +185,62 @@ class CommandMixin:
         yield event.plain_result(f"✅ 已创建分类「{category}」：{description}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
+    @meme_manager.command("收集表情")
+    async def collect_memes(self, event: AstrMessageEvent):
+        """Collect quoted images using the configured classification pipeline.
+
+        Args:
+            event: Administrator command with a quote or attached images.
+
+        Yields:
+            Acknowledgment of submission or an actionable error.
+        """
+        event.set_extra("meme_manager_manual_collection_command", True)
+        response = await self.manual_collect_manager.quick(event)
+        if response:
+            yield event.plain_result(response)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @meme_manager.command("开始收集")
+    async def start_collecting_memes(self, event: AstrMessageEvent):
+        """Begin a sender-scoped continuous image collection session.
+
+        Args:
+            event: Administrator command identifying the chat and collector.
+
+        Yields:
+            Target pack, review behavior, and stop instructions.
+        """
+        event.set_extra("meme_manager_manual_collection_command", True)
+        response = await self.manual_collect_manager.start(event)
+        if (
+            self.manual_collect_manager.key(event)
+            in self.manual_collect_manager.sessions
+        ):
+            self.upload_states.pop(f"{event.session_id}_{event.get_sender_id()}", None)
+        yield event.plain_result(response)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @meme_manager.command("结束收集")
+    async def stop_collecting_memes(self, event: AstrMessageEvent):
+        """Stop receiving images and report completed and pending outcomes.
+
+        Args:
+            event: Administrator command identifying the active collector.
+
+        Yields:
+            Current aggregate results without cancelling queued jobs.
+        """
+        event.set_extra("meme_manager_manual_collection_command", True)
+        yield event.plain_result(self.manual_collect_manager.stop(event))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @meme_manager.command("添加表情")
     async def upload_meme(self, event: AstrMessageEvent, category: str = None):
+        manual_manager = getattr(self, "manual_collect_manager", None)
+        if manual_manager and manual_manager.key(event) in manual_manager.sessions:
+            yield event.plain_result("当前正在连续收集，请先发送 /表情管理 结束收集。")
+            return
         category = str(category or "").strip()
         if not category:
             yield event.plain_result(

@@ -6,6 +6,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from astrbot_plugin_meme_manager.mixins import event_handlers
+from test_meme_only_replies import reply_context as reply_context
+
 from astrbot.core.config.default import DEFAULT_CONFIG
 from astrbot.core.message.components import Plain
 from astrbot.core.message.message_event_result import (
@@ -25,8 +28,6 @@ from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest
 from astrbot.core.star.star_handler import EventType
-from astrbot_plugin_meme_manager.mixins import event_handlers
-from test_meme_only_replies import reply_context as reply_context
 
 
 @pytest.mark.asyncio
@@ -59,7 +60,7 @@ async def test_plugin_stream_delivers_without_final_decoration(
         "hello", message, PlatformMetadata("qq_official", "test", "test"), "group"
     )
     event.is_at_or_wake_command = True
-    event.send = AsyncMock()
+    original_send = event.send = AsyncMock()
     event.send_typing = AsyncMock()
     event.stop_typing = AsyncMock()
     event.set_extra("meme_manager_semantic_mode", "tool" if semantic else "")
@@ -172,7 +173,7 @@ async def test_plugin_stream_delivers_without_final_decoration(
     await scheduler._process_stages(event)
 
     sender._send_meme_image.assert_awaited_once()
-    event.send.assert_not_awaited()
+    original_send.assert_not_awaited()
     assert not event.get_extra("found_emotions")
     assert not event.get_extra("meme_manager_semantic_selected_ids")
     assert "".join(output) == "Hello "

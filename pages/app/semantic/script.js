@@ -1,4 +1,10 @@
 import { PreviewClient } from "../shared/preview.js";
+import {
+  collectionAvailability,
+  collectionConfidence,
+  collectionReviewReason,
+  collectionStages,
+} from "../shared/collection-status.js";
 
 async function initSemanticPage() {
   const toastContainer = document.querySelector("#toast-container");
@@ -164,8 +170,8 @@ async function initSemanticPage() {
     concurrencyHint.textContent = queueIsActive
       ? `当前队列固定为 ${
           latestStatus?.concurrency || concurrencyInput.value || 1
-        } 并发；如需调整，请先清空队列后重新开始。`
-      : "同时提交给视觉模型的图片上限，建议按模型限流设置。";
+        } 并发；调整需先清空队列，再重新开始。`
+      : "同时提交给视觉模型的图片数，请按模型限流设置。";
     autoInboxSemanticize.disabled =
       requestRunning ||
       !latestStatus ||
@@ -290,12 +296,12 @@ async function initSemanticPage() {
     taskGuidance.textContent =
       data.status_message ||
       (data.task_status === "running"
-        ? "正在处理图片，进度每 3 秒自动更新；需要时可暂停任务。"
+        ? ""
         : data.can_resume
-        ? "任务已暂停或中断，点击“继续队列”接着处理。"
+        ? "已暂停，点击“继续队列”接着处理。"
         : data.can_retry
-        ? "部分图片处理失败，可筛选失败记录，或点击“重试失败项”。"
-        : "点击“一键完整语义化”开始。任务运行时每 3 秒自动更新。");
+        ? "存在失败项，可查看失败记录，或点击“重试失败项”。"
+        : "");
     statusBox.replaceChildren();
     renderMetricGroup(
       "任务进度",
@@ -410,14 +416,14 @@ async function initSemanticPage() {
       showNotice(data.status_message || "任务状态已更新");
     } else if (data.semantic_enabled && data.semantic_config_ready === false) {
       showNotice(
-        "语义检索已开启，但向量模型尚未就绪；当前仍使用分类逻辑。请前往设置中心的“语义与模型”检查配置。",
+        "向量模型未就绪，当前使用分类匹配；请到「设置中心 → 模式 → 语义数据准备」检查配置。",
         true,
       );
     } else if (!embeddingReady) {
       showNotice(
         data.embedding_configured_provider_id
-          ? `已配置 Embedding 模型「${data.embedding_configured_provider_id}」，但当前 Provider 不可用；请检查 Provider 是否启用或配置是否已加载。`
-          : "尚未选择向量模型，请前往设置中心的“语义与模型”完成配置。",
+          ? `向量模型「${data.embedding_configured_provider_id}」不可用，请检查提供商是否启用、配置是否已加载。`
+          : "尚未选择向量模型，请前往「设置中心 → 模式 → 语义数据准备」配置",
         true,
       );
     } else if (
@@ -425,16 +431,12 @@ async function initSemanticPage() {
       !["running", "paused"].includes(String(data.task_status || ""))
     ) {
       showNotice(
-        `已检测到 Embedding 模型「${
-          [data.embedding_provider_id, data.embedding_model]
-            .filter(Boolean)
-            .join(" / ") || "当前模型"
-        }」，但当前资源包还没有按此模型建立本机索引；请展开“高级维护”，点击“按当前维度重建向量”。`,
+        "当前表情包尚未按此模型建立索引，请在“高级维护”中点击“按当前维度重建向量”。",
         false,
       );
     } else if (!visionReady) {
       showNotice(
-        "未配置视觉模型，请前往设置中心的“语义与模型”选择图片描述模型。",
+        "未配置视觉模型，请到「设置中心 → 模式 → 语义数据准备」选择支持图片输入的建库图片描述模型。",
         true,
       );
     } else {
@@ -451,6 +453,13 @@ async function initSemanticPage() {
     autoInboxCount.textContent = String(pendingAutoInboxCount);
     autoInboxItems.replaceChildren();
     if (!visible) return;
+    const availability = collectionAvailability(data);
+    if (availability) {
+      const warning = document.createElement("p");
+      warning.className = "auto-inbox-review-required";
+      warning.textContent = availability;
+      autoInboxItems.append(warning);
+    }
     const items = Array.isArray(data?.items) ? data.items : [];
     if (!items.length) {
       const empty = document.createElement("p");
@@ -465,14 +474,35 @@ async function initSemanticPage() {
       const category = document.createElement("strong");
       category.textContent = item.suggested_category || "needs_review";
       const source = document.createElement("span");
-      const sourceLabel = item.source_kind === "group" ? "群聊" : "个人";
-      source.textContent = `${sourceLabel} ${item.source_id || "未知来源"}`;
+      const sourceLabel =
+        item.source_kind === "group"
+          ? "群聊"
+          : item.source_kind === "user"
+          ? "个人"
+          : "来源";
+      source.textContent = item.source_id
+        ? `${sourceLabel} ${item.source_id}`
+        : "未知来源";
       const receivedAt = document.createElement("time");
       const date = new Date(item.received_at || "");
       receivedAt.textContent = Number.isNaN(date.getTime())
         ? ""
         : date.toLocaleString();
       row.append(category, source, receivedAt);
+      const judgment = document.createElement("p");
+      judgment.className = "panel-hint";
+      judgment.textContent = `${collectionStages(
+        item,
+      )} · 分类 ${collectionConfidence(
+        item.category_confidence,
+      )} · 表情 ${collectionConfidence(item.meme_confidence)}`;
+      row.append(judgment);
+      if (item.review_required) {
+        const warning = document.createElement("p");
+        warning.className = "auto-inbox-review-required";
+        warning.textContent = `必须人工复核：${collectionReviewReason(item)}`;
+        row.append(warning);
+      }
       autoInboxItems.append(row);
     });
     if (pendingAutoInboxCount > 8) {
@@ -602,8 +632,8 @@ async function initSemanticPage() {
       empty.className = "empty";
       empty.textContent =
         recordsStatus === "all"
-          ? "还没有语义记录。选择资源包后，点击“一键完整语义化”开始处理。"
-          : "没有符合此筛选条件的记录，可切换为“全部”查看。";
+          ? "暂无记录，选择表情包后点击“开始语义化”处理。"
+          : "没有匹配的记录，可切换为“全部”查看。";
       recordsBox.append(empty);
       return;
     }
@@ -718,11 +748,11 @@ async function initSemanticPage() {
     statusError.classList.add("hidden");
     statusRetry.textContent = "刷新";
     if (!packs.length) {
-      packSelect.add(new Option("暂无资源包", ""));
-      taskState.textContent = "暂无资源包";
+      packSelect.add(new Option("暂无表情包", ""));
+      taskState.textContent = "暂无表情包";
       taskGuidance.textContent =
-        "请先在表情管理中创建资源包，或从资源广场导入。";
-      recordsBox.textContent = "暂无记录，请先添加资源包。";
+        "请先在表情包管理中创建表情包，或从资源广场安装。";
+      recordsBox.textContent = "暂无记录";
       recordsBox.classList.add("empty");
       recordsBox.setAttribute("aria-busy", "false");
       statusRefreshLabel.textContent = "暂无任务";

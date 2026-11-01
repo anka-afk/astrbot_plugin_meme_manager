@@ -2,172 +2,145 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
+import { describeSetup } from "../../pages/app/settings/setup-state.js";
 
 const source = await readFile(
   new URL("../../pages/app/settings/config.js", import.meta.url),
   "utf8",
 );
-const page = await readFile(
-  new URL("../../pages/app/settings/index.html", import.meta.url),
-  "utf8",
-);
 const declarations = source.slice(
-  source.indexOf("  const workflows = {"),
+  source.indexOf("  const combinationNames = {"),
   source.indexOf("  const labels = {"),
 );
-const {
-  workflows,
-  workspaceModes,
-  workspaceCommon,
-  workspaceCollection,
-  workspaceStorage,
-  groups,
-} = vm.runInNewContext(
-  `${declarations}; ({ workflows, workspaceModes, workspaceCommon, workspaceCollection, workspaceStorage, groups })`,
-);
-const collectionSteps = vm.runInNewContext(
-  `${source.slice(source.indexOf("  const collectionSteps = ["), source.indexOf("  for (const ["))}; collectionSteps`,
+const { groups } =
+  vm.runInNewContext(
+    `${declarations}; ({groups})`,
+  );
+const providers = {
+  chat: [
+    { id: "chat-main", model: "Chat" },
+    { id: "vision", model: "Vision" },
+  ],
+  embedding: [{ id: "embed", model: "Embedding" }],
+};
+const defaults = {
+  "semantic.enabled": false,
+  "generation.emotion.llm.enabled": false,
+  "generation.emotion.llm.backend": "chat",
+  "semantic.query.source": "generated",
+  "auto_collect.enabled": false,
+  "auto_collect.manual_review": true,
+  "decision_service.base_url": "https://system-one.dev/v1",
+};
+
+const describe = (values = {}, options = {}) => describeSetup(
+  { ...defaults, ...values },
+  { providers, tokenConfigured: false,
+    defaultPack: { id: "pack", name: "默认包" },
+    semanticStatus: { index_ready: true, semantic_caption_complete: true }, ...options },
 );
 
-test("collection workflow opens the group containing each linked setting", () => {
-  for (const [, , groupId, settings] of collectionSteps) {
-    const group = groups.find((item) => item.id === groupId);
-    assert.ok(group, groupId);
-    for (const [path] of settings) {
-      assert.ok(group.prefixes.includes(`auto_collect.${path}`), path);
+test("active consumers require their own models while inactive drafts stay editable", () => {
+  assert.equal(describe().selectionIssues.length, 0);
+  const values = { "generation.emotion.llm.enabled": true,
+    "generation.emotion.llm.backend": "decision" };
+  assert.deepEqual(describe(values).selectionIssues.map(item => item.path),
+    ["decision_service.token", "decision_service.model"]);
+  assert.equal(describe({ ...values, "decision_service.model": "model" },
+    { tokenConfigured: true }).selectionIssues.length, 0);
+  const semantic = { "semantic.enabled": true, "generation.emotion.llm.enabled": true,
+    "semantic.query.source": "reply_text", "semantic.query.provider_id": "hidden-missing",
+    "semantic.embedding_provider_id": "embed" };
+  assert.equal(describe(semantic).selectionIssues.length, 0);
+  assert.equal(describe(semantic, { semanticStatus: null }).preparationWarning, true);
+  assert.equal(describe({ ...semantic, "generation.emotion.llm.provider_id": "manual" },
+    { providers: {chat: [], embedding: []}, providerListErrors: ["chat", "embedding"] }
+  ).selectionIssues.length, 0);
+  const secret = "private-secret";
+  const feedback = describe({ ...values, "decision_service.token": secret,
+    "decision_service.base_url": `https://user:${secret}@example.test` });
+  assert.ok(!JSON.stringify(feedback).includes(secret));
+});
+
+test("every persisted field has exactly one editable group", async () => {
+  const schema = JSON.parse(
+    await readFile(new URL("../../_conf_schema.json", import.meta.url), "utf8"),
+  );
+  function visit(items, prefix = "") {
+    for (const [key, spec] of Object.entries(items)) {
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (spec.type === "object") visit(spec.items, path);
+      else
+        assert.equal(
+          groups.filter((group) =>
+            group.prefixes.some((part) =>
+              part.endsWith(".") ? path.startsWith(part) : path === part,
+            ),
+          ).length,
+          1,
+          path,
+        );
     }
   }
-  const recognition = collectionSteps.find((step) => step[2] === "collect-recognition");
-  assert.ok(recognition[3].some(([path]) => path === "content_review_enabled"));
-  assert.ok(recognition[3].some(([path]) => path === "content_review_prompt"));
+  visit(schema);
+
 });
 
-test("Tool trigger settings belong to Tool mode and default to autonomous calls", async () => {
-  const schema = JSON.parse(await readFile(new URL("../../_conf_schema.json", import.meta.url), "utf8"));
-  const tool = schema.semantic.items;
-  assert.equal(tool.tool_probability_enabled.type, "bool");
-  assert.equal(tool.tool_probability_enabled.default, false);
-  assert.equal(tool.tool_call_probability.default, 100);
-  assert.equal(tool.tool_call_probability.slider.min, 0);
-  assert.equal(schema.generation.items.emotion.items.probability.slider.min, 0);
-  const group = groups.find((item) => item.id === "tool-trigger");
-  assert.deepEqual([...group.modes], ["semantic-tool"]);
-  assert.ok(workspaceModes["semantic-tool"].primary.includes("tool-trigger"));
-});
-
-test("Tool trigger toggle records boolean changes and refreshes dependent visibility", () => {
-  const fields = new Map([["semantic.tool_probability_enabled", { type: "bool", value: false }]]);
-  const changes = new Map();
-  let input;
-  let updates = 0;
-  const handlerSource = source.slice(source.indexOf('  form.addEventListener("input",'), source.indexOf('  resetPrompts.addEventListener("click",'));
-  vm.runInNewContext(handlerSource, {
-    form: { addEventListener(type, handler) { assert.equal(type, "input"); input = handler; } },
-    fields, changes, updateState() {}, updateView() { updates++; },
-  });
-  input({ target: { dataset: { configPath: "semantic.tool_probability_enabled" }, checked: true } });
-  assert.equal(changes.get("semantic.tool_probability_enabled"), true);
-  assert.equal(updates, 1);
-  input({ target: { dataset: { configPath: "semantic.tool_probability_enabled" }, checked: false } });
-  assert.equal(changes.size, 0);
-  assert.equal(updates, 2);
-});
-
-test("every mode workflow exposes every configuration group", () => {
-  const all = groups.map((group) => group.id);
-  assert.equal(new Set(all).size, all.length);
-  for (const [mode, { primary, fallback }] of Object.entries(workspaceModes)) {
-    assert.equal(workflows[mode].length, 5);
-    assert.equal(workflows[mode][0][0], "选择表情包");
-    const attached = [
-      ...primary,
-      ...fallback,
-      ...workspaceCommon,
-      ...workspaceCollection,
-      ...workspaceStorage,
-    ];
-    assert.equal(new Set(attached).size, attached.length, mode);
-    const other = all.filter((id) => !attached.includes(id));
-    assert.deepEqual(new Set([...attached, ...other]), new Set(all), mode);
-  }
-});
-
-test("mode selection precedes the workflow and edits open in dialogs", () => {
-  assert.ok(
-    page.indexOf('id="selection-mode-panel"') <
-      page.indexOf('id="mode-workflow"'),
-  );
-  assert.ok(page.includes('id="config-flow-dialog"'));
-  assert.ok(page.includes('id="rules-flow-dialog"'));
-  assert.ok(!page.includes('id="mode-workspace"'));
-  assert.ok(source.includes('["表情包使用规则", ["@rules"]]'));
-  assert.ok(!source.includes('["导入与备份", ["@backup"]]'));
-});
-
-test("dialog edits the original configuration card and restores it on close", () => {
-  const original = [];
-  let focused = false;
-  const card = {
-    id: "config-group-appearance",
-    before(placeholder) {
-      original.splice(original.indexOf(card), 0, placeholder);
-      original.splice(original.indexOf(card), 1);
-    },
-    querySelector() {
-      return { focus: () => (focused = true) };
-    },
-  };
-  original.push(card);
-  const title = { textContent: "", focus: () => (focused = true) };
-  const body = {
-    children: [],
-    replaceChildren(...children) {
-      this.children = children;
-    },
-  };
-  const dialog = {
-    open: false,
-    showModal() {
-      this.open = true;
-    },
-    close() {
-      this.open = false;
-    },
-  };
-  const context = vm.createContext({
-    dialogCard: null,
-    dialogPlaceholder: null,
-    configDialog: dialog,
-    configDialogBody: body,
-    controls: new Map(),
-    document: {
-      createComment() {
-        return {
-          isConnected: true,
-          replaceWith(node) {
-            original.splice(original.indexOf(this), 1, node);
-          },
-        };
-      },
-      getElementById(id) {
-        return id === "config-flow-dialog-title" ? title : card;
-      },
-    },
-    updateView() {},
-  });
-  vm.runInContext(
-    `${source.slice(
-      source.indexOf("  function restoreDialogCard()"),
-      source.indexOf("  function updateView()"),
-    )}; openConfigDialog({ id: "appearance", title: "出现时机" }, { dataset: {} });`,
-    context,
-  );
-  assert.equal(dialog.open, true);
-  assert.equal(body.children[0], card);
-  assert.equal(title.textContent, "出现时机");
-  assert.equal(focused, true);
-  vm.runInContext("restoreDialogCard()", context);
-  assert.equal(dialog.open, false);
-  assert.equal(original[0], card);
-  assert.equal(body.children.length, 0);
+test("dimension edits preserve hidden drafts and revert the original persisted flags", () => {
+  const paths = ["semantic.enabled", "generation.emotion.llm.enabled"];
+  for (const savedSemantic of [false, true])
+    for (const savedPost of [false, true]) {
+      const fields = new Map(paths.map((path, index) =>
+        [path, { value: [savedSemantic, savedPost][index] }]));
+      const draft = ["semantic.query.provider_id", "draft-provider"];
+      const changes = new Map([draft]);
+      const method = {
+        name: "selection-method",
+        checked: true,
+        value: savedSemantic ? "semantic" : "category",
+      };
+      const timing = {
+        name: "selection-agent",
+        checked: true,
+        value: savedPost ? "assisted" : "reply",
+      };
+      const handlers = [];
+      method.addEventListener = timing.addEventListener = (_type, handler) =>
+        handlers.push(handler);
+      const context = vm.createContext({
+        dimensionInputs: [method, timing],
+        loaded: true,
+        configState: { busy: false },
+        modePaths: paths,
+        controls: new Map(paths.map((path) => [path, {}])),
+        fields,
+        changes,
+        updateState() {},
+        updateView() {},
+        form: {
+          querySelector: (selector) =>
+            selector.includes("selection-method") ? method : timing,
+        },
+      });
+      const start = source.lastIndexOf("  for (const input of dimensionInputs) {");
+      vm.runInContext(
+        source.slice(
+          start,
+          source.indexOf("  function applyLocationHash()", start),
+        ),
+        context,
+      );
+      for (const [index, input, changed, original] of [
+        [0, method, savedSemantic ? "category" : "semantic", savedSemantic ? "semantic" : "category"],
+        [1, timing, savedPost ? "reply" : "assisted", savedPost ? "assisted" : "reply"],
+      ]) {
+        input.value = changed;
+        handlers[index]();
+        assert.equal(changes.get(paths[index]), !fields.get(paths[index]).value);
+        assert.equal(changes.has(paths[1 - index]), false);
+        input.value = original;
+        handlers[index]();
+        assert.deepEqual([...changes], [draft]);
+      }
+    }
 });

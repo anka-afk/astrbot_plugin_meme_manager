@@ -6,6 +6,11 @@ from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from astrbot_plugin_meme_manager import main as plugin_main
+from astrbot_plugin_meme_manager.main import MemeSender
+from astrbot_plugin_meme_manager.mixins import event_handlers
+from test_meme_only_replies import reply_context as reply_context
+
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.message.components import Image, Plain
 from astrbot.core.message.message_event_result import (
@@ -14,10 +19,6 @@ from astrbot.core.message.message_event_result import (
     ResultContentType,
 )
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest
-from astrbot_plugin_meme_manager import main as plugin_main
-from astrbot_plugin_meme_manager.main import MemeSender
-from astrbot_plugin_meme_manager.mixins import event_handlers
-from test_meme_only_replies import reply_context as reply_context
 
 
 @pytest.fixture
@@ -425,6 +426,10 @@ async def test_auxiliary_selection_is_independent_of_zero_send_probability(
     )
     sender._build_emotion_llm_injection_suffix = lambda event: ""
     sender._build_emotion_semantic_query = AsyncMock(return_value="joy")
+    category_root = sender._get_runtime_memes_dir_for_event(event)
+    sender._get_category_meme_files = lambda ev, category: list(
+        (category_root / category).glob("*.png")
+    )
     if semantic:
         state.update(
             meme_manager_semantic_active=True,

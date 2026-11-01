@@ -473,6 +473,12 @@ class WebAPIMixin:
             "Read and update shared plugin configuration",
         )
         self._register_webui_api(
+            "settings/decision-models",
+            self._api_settings_decision_models,
+            ["POST"],
+            "Read the public decision model catalog without saving settings",
+        )
+        self._register_webui_api(
             "settings/targets",
             self._api_settings_targets,
             ["GET"],
@@ -3983,6 +3989,41 @@ class WebAPIMixin:
             logger.error(f"安装官方首个表情包失败: {e}", exc_info=True)
             return jsonify({"message": f"安装官方首个表情包失败: {str(e)}"}), 500
 
+    async def _api_settings_decision_models(self):
+        """Discover model choices using the draft URL without saving credentials.
+
+        Returns:
+            Model IDs and display names, or a sanitized discovery error.
+        """
+        from ..backend.decision import DecisionClient, DecisionError
+
+        data = await request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"message": "请求格式不正确。"}), 400
+        base_url = data.get("base_url")
+        if (
+            not isinstance(base_url, str)
+            or not base_url.strip()
+            or len(base_url) > 4096
+        ):
+            return jsonify({"message": "请填写完整的决策服务基础地址。"}), 400
+        client = DecisionClient({"base_url": base_url, "timeout": 8})
+        try:
+            models = await client.list_models()
+            return jsonify({"models": models}), 200
+        except DecisionError as error:
+            message = {
+                "invalid_base_url": "请检查决策服务基础地址。",
+                "timeout": "获取模型列表超时，可重试或直接填写模型 ID。",
+                "not_found": "该服务未提供模型列表，可直接填写模型 ID。",
+                "rate_limited": "获取列表过于频繁，请稍后重试或直接填写模型 ID。",
+            }.get(error.code, "暂时无法获取模型列表，可直接填写模型 ID。")
+            return jsonify(
+                {"message": message}
+            ), 400 if error.code == "invalid_base_url" else 502
+        finally:
+            await client.close()
+
     async def _api_settings_config(self):
         """Edit the same AstrBotConfig and reload through AstrBot's plugin manager.
 
@@ -3990,20 +4031,30 @@ class WebAPIMixin:
             A redacted configuration snapshot or a validation/conflict response.
         """
         try:
+            from ..backend.decision import DecisionClient
+
             data = await request.get_json() if request.method == "POST" else None
             snapshot, values = describe_settings(self.config)
-            if request.method == "GET":
-                providers = {"chat": [], "embedding": []}
-                for kind, getter in (
-                    ("chat", self.context.get_all_providers),
-                    ("embedding", self.context.get_all_embedding_providers),
-                ):
+            providers = {"chat": [], "embedding": []}
+            provider_list_errors = []
+            for kind, getter in (
+                ("chat", self.context.get_all_providers),
+                ("embedding", self.context.get_all_embedding_providers),
+            ):
+                try:
                     for provider in getter():
                         meta = provider.meta()
                         providers[kind].append(
                             {"id": meta.id, "model": meta.model or ""}
                         )
-                snapshot["providers"] = providers
+                except Exception:
+                    provider_list_errors.append(kind)
+            snapshot["providers"] = providers
+            snapshot["provider_list_errors"] = provider_list_errors
+            snapshot["decision_service_status"] = DecisionClient(
+                values.get("decision_service", {})
+            ).status()
+            if request.method == "GET":
                 return jsonify(snapshot), 200
             if not isinstance(data, dict):
                 return jsonify({"message": "请求格式不正确。"}), 400
@@ -4058,6 +4109,11 @@ class WebAPIMixin:
                 self.config.update(values)
                 raise
             snapshot, _ = describe_settings(self.config)
+            snapshot["providers"] = providers
+            snapshot["provider_list_errors"] = provider_list_errors
+            snapshot["decision_service_status"] = DecisionClient(
+                updated.get("decision_service", {})
+            ).status()
         except ValueError as error:
             return jsonify({"message": str(error)}), 400
         except Exception:

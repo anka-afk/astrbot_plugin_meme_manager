@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .decision import DecisionClient
+
 
 def describe_settings(config) -> tuple[dict, dict]:
     """Read the shared file and describe its editable fields without exposing secrets.
@@ -162,10 +164,42 @@ def validate_settings_changes(
                 raise ValueError(f"「{label}」超出允许范围。")
         if kind in {"string", "text"} and len(value) > 65536:
             raise ValueError(f"「{label}」内容过长。")
-        if path.endswith((".url", ".public_url", ".github_accelerator_url")) and value:
-            parsed = urlsplit(value)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        if (
+            path.endswith(
+                (".url", ".public_url", ".github_accelerator_url", ".base_url")
+            )
+            and value
+        ):
+            try:
+                parsed = urlsplit(value)
+                port = parsed.port
+                valid_url = (
+                    parsed.scheme in {"http", "https"}
+                    and parsed.hostname
+                    and (port is None or port > 0)
+                )
+                if path == "decision_service.base_url":
+                    valid_url = (
+                        valid_url
+                        and not parsed.username
+                        and not parsed.password
+                        and not parsed.query
+                        and not parsed.fragment
+                        and not any(char.isspace() for char in value)
+                    )
+            except ValueError:
+                valid_url = False
+            if not valid_url:
                 raise ValueError(f"「{label}」需要填写完整的 HTTP 或 HTTPS 地址。")
+        if path == "decision_service.token" and any(
+            ord(char) < 33 or ord(char) == 127 for char in value
+        ):
+            raise ValueError("决策服务密钥包含无效字符。")
+        if path == "decision_service.model" and (
+            len(value) > 128
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)
+        ):
+            raise ValueError("决策模型 ID 格式无效。")
         if path.endswith("content_cleanup_rule"):
             try:
                 re.compile(value)
@@ -176,4 +210,20 @@ def validate_settings_changes(
         for key in keys[:-1]:
             node = node[key]
         node[keys[-1]] = value
+    selection = updated.get("generation", {}).get("emotion", {}).get("llm", {})
+    collection = updated.get("auto_collect", {})
+    decision_used = (
+        selection.get("enabled") and selection.get("backend") == "decision"
+    ) or (
+        collection.get("enabled") and collection.get("judgment_backend") == "decision"
+    )
+    if decision_used:
+        status = DecisionClient(updated.get("decision_service", {})).status()
+        if not status["ready"]:
+            reason = {
+                "missing_base_url": "请填写决策服务基础地址。",
+                "missing_token": "请填写决策服务密钥。",
+                "missing_model": "请填写决策模型 ID。",
+            }.get(status["reason"], "请检查决策服务配置。")
+            raise ValueError(reason)
     return updated

@@ -1,4 +1,5 @@
 import { openStorageGuide } from "./storage-guide.js";
+import { describeSetup } from "./setup-state.js";
 
 const configState = { dirty: false, busy: false };
 window.MemeSettings = configState;
@@ -15,209 +16,99 @@ async function initPluginConfig() {
   const status = document.getElementById("config-save-status");
   const notice = document.getElementById("config-load-status");
   const tabs = [...document.querySelectorAll("[data-settings-tab]")];
+  const mobileNavigation = document.getElementById("settings-category");
+  for (const tab of tabs)
+    mobileNavigation.add(
+      new Option(tab.textContent.trim(), tab.dataset.settingsTab),
+    );
+  mobileNavigation.addEventListener("change", () =>
+    tabs
+      .find((tab) => tab.dataset.settingsTab === mobileNavigation.value)
+      ?.click(),
+  );
   const panels = [...document.querySelectorAll("[data-settings-panel]")];
   const modePanel = document.getElementById("selection-mode-panel");
-  const configDialog = document.getElementById("config-flow-dialog");
-  const configDialogBody = document.getElementById("config-flow-dialog-body");
-  const configDialogSave = document.getElementById("config-flow-dialog-save");
-  const configDialogReset = document.getElementById("config-flow-dialog-reset");
-  const configDialogStatus = document.getElementById(
-    "config-flow-dialog-status",
-  );
-  const rulesDialog = document.getElementById("rules-flow-dialog");
-  const rulesDialogBody = document.getElementById("rules-flow-dialog-body");
-  const rulesPanel = document.querySelector('[data-settings-panel="rules"]');
-  const modeInputs = [...form.querySelectorAll('input[name="selection-mode"]')];
+  const dimensionInputs = [
+    ...form.querySelectorAll(
+      'input[name="selection-method"], input[name="selection-agent"]',
+    ),
+  ];
   const modePaths = ["semantic.enabled", "generation.emotion.llm.enabled"];
   const workflow = document.getElementById("mode-workflow");
   const workflowSteps = document.getElementById("mode-workflow-steps");
   const collectionWorkflow = document.getElementById("collection-workflow");
-  const collectionSteps = [
-    [
-      "来源与目标",
-      "符合范围的聊天图片进入收集；目标包决定分类依据和收录位置。",
-      "collect",
-      [
-        ["enabled", "收集开关"],
-        ["scope", "来源范围"],
-        ["target_pack_id", "目标表情包"],
-      ],
-    ],
-    [
-      "采样与间隔",
-      "先限制每条消息的图片数，再抽样并检查来源冷却。抽样概率仅作用于平台表情；普通图片首次只记录，重复出现后逐步提高识别概率。",
-      "collect-limits",
-      [
-        ["max_images_per_message", "单条图片上限"],
-        ["sampling_probability", "平台表情抽样"],
-        ["cooldown_seconds", "来源冷却"],
-      ],
-    ],
-    [
-      "视觉识别",
-      "待审箱有容量才继续；无缓存时按每日额度识别。可开启内容审核，在同一次识别中按提示词过滤不适合收录的图片。",
-      "collect-recognition",
-      [
-        ["pending_limit", "待审核容量"],
-        ["daily_recognition_limit", "每日识别上限"],
-        ["vision_provider_id", "视觉模型"],
-        ["content_review_enabled", "内容审核"],
-        ["content_review_prompt", "审核提示词"],
-      ],
-    ],
-    [
-      "质量与分类",
-      "非表情或表情置信度不足时不收录；分类置信度决定自动入包时是否归入待分类。",
-      "collect-quality",
-      [
-        ["min_meme_confidence", "表情置信度"],
-        ["min_category_confidence", "分类置信度"],
-      ],
-    ],
-    [
-      "审核与入包",
-      "按审核开关决定由你确认，还是自动接收入包。",
-      "collect-review",
-      [["manual_review", "人工审核"]],
-    ],
-  ];
-  for (const [
-    index,
-    [title, description, group, settings],
-  ] of collectionSteps.entries()) {
-    const stepNumber = index + 1;
-    const item = document.createElement("li");
-    item.dataset.step = stepNumber;
-    const node = document.createElement("div");
-    node.className = "workflow-node collection-workflow-node";
-    const badge = document.createElement("div");
-    badge.className = "workflow-step-badge";
-    badge.textContent = stepNumber;
-    const heading = document.createElement("strong");
-    heading.textContent = title;
-    const detail = document.createElement("span");
-    detail.textContent = description;
-    node.append(badge, heading, detail);
-    const links = document.createElement("div");
-    links.className = "collection-workflow-links";
-    links.dataset.step = stepNumber;
-    for (const [path, label] of settings) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "ghost";
-      button.dataset.workflowTarget = group;
-      button.dataset.workflowField = `auto_collect.${path}`;
-      const icon = document.createElement("i");
-      icon.className = "fas fa-gear";
-      icon.setAttribute("aria-hidden", "true");
-      button.append(icon, document.createTextNode(` ${label}`));
-      links.append(button);
-    }
-    node.append(links);
-    item.append(node);
-    document.getElementById("collection-workflow-steps").append(item);
+  const configMask = document.getElementById("config-flow-mask");
+  const configDialog = document.getElementById("config-flow-dialog");
+  const configDialogBody = document.getElementById("config-flow-dialog-body");
+  const configDialogTitle = document.getElementById("config-flow-dialog-title");
+  const configDialogSave = document.getElementById("config-flow-dialog-save");
+  const configDialogReset = document.getElementById("config-flow-dialog-reset");
+  const rulesPanel = panels.find(
+    (panel) => panel.dataset.settingsPanel === "rules",
+  );
+  const combinationNames = {
+    "category-reply": "分类级标签 · 主模型自选",
+    "category-post": "分类级标签 · 额外模型辅助",
+    "semantic-reply": "图片级标签 · 主模型自选",
+    "semantic-post": "图片级标签 · 额外模型辅助",
+  };
+
+  function combinationKey(semantic, postReply) {
+    return `${semantic ? "semantic" : "category"}-${
+      postReply ? "post" : "reply"
+    }`;
   }
-  const workflows = {
-    "category-native": [
-      ["选择表情包", "按使用规则为当前会话选择表情包"],
-      ["决定是否配图", "按触发范围和数量控制"],
-      ["生成分类标签", "回复模型根据提示词和示例输出标签"],
-      ["匹配并取图", "识别标签，匹配当前图包分类并随机取图"],
-      ["发送表情", "通过独立发送概率门控后发送图片"],
-    ],
-    "category-auxiliary": [
-      ["选择表情包", "按使用规则为当前会话选择表情包"],
-      ["决定是否配图", "按触发范围和数量控制"],
-      ["辅助模型选分类", "根据回复选择分类标签"],
-      ["匹配并取图", "识别标签，匹配当前图包分类并随机取图"],
-      ["发送表情", "通过独立发送概率门控后发送图片"],
-    ],
-    "semantic-tool": [
-      ["选择表情包", "按使用规则为当前会话选择表情包"],
-      ["决定是否配图", "按触发范围和数量控制"],
-      ["发起搜索", "模型自主调用，或按独立调用概率触发检索"],
-      ["检索并选图", "从索引中查找候选并选择图片"],
-      ["发送表情", "通过独立发送概率门控后发送图片"],
-    ],
-    "semantic-auxiliary": [
-      ["选择表情包", "按使用规则为当前会话选择表情包"],
-      ["决定是否配图", "按触发范围和数量控制"],
-      ["辅助模型生成检索词", "根据回复提炼选图意图"],
-      ["检索并选图", "从索引中查找候选并选择图片"],
-      ["发送表情", "通过独立发送概率门控后发送图片"],
-    ],
-  };
-  const workspaceModes = {
-    "category-native": {
-      primary: [
-        "prompts",
-        "category-example",
-        "reply-example",
-        "matching",
-        "category-matching",
-      ],
-      fallback: [],
-    },
-    "category-auxiliary": {
-      primary: ["emotion-model", "matching", "category-matching"],
-      fallback: [],
-    },
-    "semantic-tool": {
-      primary: ["tool-trigger", "semantic", "semantic-models"],
-      fallback: [
-        "prompts",
-        "category-example",
-        "reply-example",
-        "matching",
-        "category-matching",
-      ],
-    },
-    "semantic-auxiliary": {
-      primary: ["semantic", "semantic-models", "emotion-model"],
-      fallback: ["matching", "category-matching"],
-    },
-  };
-  const workspaceCommon = ["quantity-guidance", "appearance", "delivery"];
-  const workspaceCollection = [
-    "collect",
-    "collect-limits",
-    "collect-recognition",
-    "collect-quality",
-    "collect-review",
-  ];
-  const workspaceStorage = [
-    "storage",
-    "r2",
-    "webdav",
-    "stardots",
-    "lsky",
-    "downloads",
-    "sync",
-    "preview",
-  ];
+
+  function selectionWorkflow({ semantic, postReply }) {
+    return [
+      {
+        title: "表情来源",
+        tab: "rules",
+      },
+      {
+        title: semantic ? "图片标签" : "分类标签",
+        group: semantic ? "semantic-models" : "category-matching",
+        links: semantic
+          ? [
+              ["semantic", "检索参数"],
+              ...(postReply ? [["semantic-query", "检索词来源"]] : []),
+            ]
+          : [],
+      },
+      {
+        title: postReply ? "辅助模型" : "主模型",
+        group: postReply
+          ? "emotion-model"
+          : semantic
+          ? "tool-trigger"
+          : "prompts",
+        links: postReply ? [["selection-context", "上下文与人格"]] : [],
+      },
+      {
+        title: "取图与发送",
+        group: "appearance",
+        links: [["delivery", "发送方式"]],
+      },
+    ];
+  }
   const categories = {
-    sending: ["表情发送", "控制表情何时出现，以及它在聊天中的呈现方式。"],
-    models: ["模式", "选择模式，并从流程图打开相关设置。"],
-    collect: ["自动收集", "从聊天中收集表情，用来源范围和频率控制收集节奏。"],
-    storage: ["存储与下载", "连接图床、管理同步，并设置资源下载方式。"],
-    prompts: [
-      "提示词模板",
-      "调整分类标签模式下，提供给回复模型的表情使用说明。",
-    ],
-    matching: [
-      "标签与匹配",
-      "设置表情标签的识别方式，让模型输出与表情分类对应。",
-    ],
+    sending: ["表情发送", ""],
+    models: ["模式", ""],
+    decision: ["决策服务", ""],
+    collect: ["自动收集", ""],
+    storage: ["存储与下载", ""],
+    prompts: ["提示词模板", ""],
+    matching: ["标签与匹配", ""],
   };
   const groups = [
     {
       id: "appearance",
       category: "sending",
       title: "出现时机",
-      description: "少一点打扰，多一点恰好。",
       prefixes: [
         "generation.trigger.",
         "generation.emotion.probability",
+        "generation.emotion.send_tool_enabled",
         "generation.emotion.max_memes_per_message",
       ],
     },
@@ -225,99 +116,125 @@ async function initPluginConfig() {
       id: "delivery",
       category: "sending",
       title: "发送方式",
-      description: "根据聊天平台选择适合的图片和消息格式。",
       prefixes: ["generation.message."],
     },
     {
       id: "tool-trigger",
-      modes: ["semantic-tool"],
+      when: "reply-semantic",
       category: "models",
       title: "Tool 调用策略",
-      description: "关闭时保留模型自主调用；开启概率触发可能增加一次当前回复模型的前置请求。发送概率始终独立。",
-      prefixes: ["semantic.tool_probability_enabled", "semantic.tool_call_probability"],
+      advanced: true,
+      prefixes: [
+        "semantic.tool_probability_enabled",
+        "semantic.tool_call_probability",
+      ],
     },
     {
       id: "semantic",
-      modes: ["semantic-tool", "semantic-auxiliary"],
+      when: "semantic",
       category: "models",
-      title: "语义检索",
-      description: "启用后，优先从已完成语义化的表情包中检索。",
+      title: "检索参数",
+      advanced: true,
       prefixes: ["semantic.enabled", "semantic.top_k", "semantic.min_score"],
     },
     {
       id: "semantic-models",
-      modes: ["semantic-tool", "semantic-auxiliary"],
+      when: "semantic",
       category: "models",
-      title: "语义化模型",
-      description: "视觉模型生成图片描述，向量模型用于相似度检索。",
+      title: "语义数据准备",
+      advanced: true,
       prefixes: [
         "semantic.vision_provider_id",
         "semantic.embedding_provider_id",
       ],
     },
     {
-      id: "emotion-model",
-      modes: ["category-auxiliary", "semantic-auxiliary"],
+      id: "semantic-query",
+      when: "post-semantic",
       category: "models",
-      title: "情感辅助",
-      description: "可由单独的模型负责选图，默认复用当前对话的回复模型。",
-      prefixes: ["generation.emotion.llm."],
+      title: "检索词来源",
+      advanced: true,
+      prefixes: ["semantic.query."],
+    },
+    {
+      id: "emotion-model",
+      when: "post",
+      category: "models",
+      title: "辅助选图模型",
+      prefixes: [
+        "generation.emotion.llm.enabled",
+        "generation.emotion.llm.backend",
+        "generation.emotion.llm.provider_id",
+      ],
+    },
+    {
+      id: "selection-context",
+      when: "post",
+      category: "models",
+      title: "上下文与人格",
+      advanced: true,
+      prefixes: [
+        "generation.emotion.llm.context_turns",
+        "generation.emotion.llm.inject_persona",
+      ],
+    },
+    {
+      id: "decision-service",
+      category: "decision",
+      title: "System One 接口",
+      prefixes: ["decision_service."],
+      advancedPaths: [
+        "decision_service.timeout",
+        "decision_service.max_concurrency",
+      ],
+      advancedTitle: "超时与并发（高级）",
     },
     {
       id: "collect",
       category: "collect",
-      title: "来源与目标",
-      description: "决定是否收集、从哪里收集，以及使用哪个表情包的分类。",
+      title: "来源与频率",
       prefixes: [
         "auto_collect.enabled",
         "auto_collect.scope",
         "auto_collect.target_pack_id",
-      ],
-    },
-    {
-      id: "collect-limits",
-      category: "collect",
-      title: "采样与间隔",
-      description: "限制消息中的候选图片数、平台表情抽样及同一来源的识别间隔。",
-      prefixes: [
         "auto_collect.max_images_per_message",
         "auto_collect.sampling_probability",
         "auto_collect.cooldown_seconds",
+        "auto_collect.daily_recognition_limit",
       ],
+      advancedPaths: [
+        "auto_collect.max_images_per_message",
+        "auto_collect.sampling_probability",
+        "auto_collect.cooldown_seconds",
+        "auto_collect.daily_recognition_limit",
+      ],
+      advancedTitle: "采样与用量（可选）",
     },
     {
       id: "collect-recognition",
       category: "collect",
-      title: "视觉识别与内容审核",
-      description:
-        "待审箱满时停止提交候选；没有缓存时按每日额度调用视觉模型。内容审核默认关闭，开启后在同一次识别中追加审核规则。",
+      title: "识别与分类",
       prefixes: [
-        "auto_collect.pending_limit",
-        "auto_collect.daily_recognition_limit",
+        "auto_collect.judgment_backend",
         "auto_collect.vision_provider_id",
         "auto_collect.content_review_enabled",
         "auto_collect.content_review_prompt",
-      ],
-    },
-    {
-      id: "collect-quality",
-      category: "collect",
-      title: "质量与分类",
-      description:
-        "表情置信度控制是否收录；分类置信度控制自动入包时的分类去向。",
-      prefixes: [
         "auto_collect.min_meme_confidence",
         "auto_collect.min_category_confidence",
       ],
+      advancedPaths: [
+        "auto_collect.min_meme_confidence",
+        "auto_collect.min_category_confidence",
+      ],
+      advancedTitle: "收录与分类阈值（高级）",
     },
     {
       id: "collect-review",
       category: "collect",
       title: "审核与入包",
-      description:
-        "开启后由你确认入包；关闭后仅新收集图片自动入包，已有待审核图片仍需处理。",
       prefixes: [
         "auto_collect.manual_review",
+        "auto_collect.pending_limit",
         "semantic.auto_collect_embedding",
       ],
     },
@@ -325,8 +242,6 @@ async function initPluginConfig() {
       id: "storage",
       category: "storage",
       title: "图床连接",
-      description:
-        "先选择服务，再填写下方连接参数。切换服务会保留已填写的配置。",
       icon: "fa-cloud",
       prefixes: ["storage.provider"],
     },
@@ -362,7 +277,6 @@ async function initPluginConfig() {
       id: "downloads",
       category: "storage",
       title: "资源下载",
-      description: "用于从 GitHub 安装社区表情包。",
       icon: "fa-download",
       prefixes: ["community."],
     },
@@ -370,7 +284,6 @@ async function initPluginConfig() {
       id: "sync",
       category: "storage",
       title: "同步状态",
-      description: "控制管理页同步状态的缓存时长。",
       icon: "fa-arrows-rotate",
       prefixes: ["sync."],
     },
@@ -378,25 +291,20 @@ async function initPluginConfig() {
       id: "preview",
       category: "storage",
       title: "页面预览",
-      description: "控制浏览图片时的加载并发。",
       icon: "fa-images",
       prefixes: ["webui."],
     },
     {
       id: "prompts",
-      modes: ["category-native"],
+      when: "reply-category",
       category: "prompts",
       title: "分类提示词",
-      description:
-        "前缀定义能力与发送格式，后缀规定内部资料边界和图片理解；中间自动插入分类列表。",
       prefixes: ["generation.prompt.head", "generation.prompt.tail"],
     },
     {
       id: "quantity-guidance",
       category: "prompts",
       title: "表情回复数量",
-      description:
-        "控制何时配图和单条回复选多少张，适用于分类、语义和情感辅助选图，与发送阶段的硬上限独立。",
       prefixes: [
         "generation.prompt.quantity_guidance_enabled",
         "generation.prompt.quantity_guidance",
@@ -404,11 +312,9 @@ async function initPluginConfig() {
     },
     {
       id: "category-example",
-      modes: ["category-native"],
+      when: "reply-category",
       category: "prompts",
       title: "分类使用示例",
-      description:
-        "用一组虚构分类演示如何选取分类键并生成标记。实际回复仍使用当前表情包的分类。",
       prefixes: [
         "generation.prompt.category_example_enabled",
         "generation.prompt.category_example",
@@ -416,11 +322,9 @@ async function initPluginConfig() {
     },
     {
       id: "reply-example",
-      modes: ["category-native"],
+      when: "reply-category",
       category: "prompts",
       title: "回复形式示例",
-      description:
-        "演示图文结合、纯文字和纯表情三种形式。可单独开启，也可与分类使用示例一起使用。",
       prefixes: [
         "generation.prompt.reply_example_enabled",
         "generation.prompt.reply_example",
@@ -430,45 +334,148 @@ async function initPluginConfig() {
       id: "matching",
       category: "matching",
       title: "标签识别",
-      description: "识别回复中的表情标记，并清理无法匹配的标签。",
       prefixes: ["generation.markup."],
     },
     {
       id: "category-matching",
-      modes: ["category-native", "category-auxiliary"],
+      when: "category",
       category: "matching",
       title: "分类匹配",
-      description: "自动使用当前会话所选表情包的分类，无需维护额外词表。",
       prefixes: ["generation.matching."],
     },
   ];
   const labels = {
+    "semantic.enabled": "标签粒度",
+    "generation.emotion.llm.enabled": "由谁选择表情包",
     "generation.trigger.scope": "应用范围",
     "generation.emotion.probability": "表情发送概率（%）",
-    "generation.emotion.llm.provider_id": "情感辅助模型",
+    "generation.emotion.send_tool_enabled": "启用主动发送表情工具",
+    "generation.emotion.llm.provider_id": "配图聊天模型",
+    "generation.emotion.llm.backend": "辅助模型类型",
+    "semantic.query.source": "检索词来源",
+    "semantic.query.provider_id": "检索词聊天模型",
+    "decision_service.base_url": "决策服务基础地址",
+    "decision_service.token": "决策服务密钥",
+    "decision_service.model": "决策模型 ID",
+    "auto_collect.judgment_backend": "收录与分类方式",
     "semantic.top_k": "每次检索候选数",
     "semantic.min_score": "最低相似度",
-    "semantic.vision_provider_id": "图片描述模型",
     "semantic.embedding_provider_id": "向量模型",
-    "auto_collect.vision_provider_id": "收集识别模型",
+    "auto_collect.vision_provider_id": "图片理解模型",
+    "auto_collect.manual_review": "人工确认入包",
+    "auto_collect.content_review_enabled": "内容规则筛选",
+    "semantic.vision_provider_id": "建库图片描述模型",
     "auto_collect.target_pack_id": "收集到的表情包",
     "generation.message.mixed_probability": "图文同条回复概率（%）",
   };
   const hints = {
-    "generation.emotion.probability":
-      "所有模式共用的发送门控，每轮只判定一次。0% 不发图，100% 允许发送；不影响模型或工具检索。",
-    "generation.emotion.llm.enabled":
-      "将选图交给情感辅助模型，回复模型只负责对话。",
-    "generation.emotion.llm.provider_id":
-      "留空时复用当前回复模型，也可以单独指定。",
-    "generation.trigger.scope":
-      "选择为哪些模型回复附加表情。指令和固定文本回复不受影响。",
-    "semantic.enabled":
-      "由回复模型检索表情；启用情感辅助后，改由辅助模型选图。",
+    "webui.preview_concurrency":
+      "每个页面同时加载的预览图片数，保存后刷新页面生效",
+    "storage.provider": "选择图片同步使用的图床服务；切换会保留已填参数",
+    "storage.providers.lsky.url":
+      "填写站点根地址，例如 https://img.example.com，不含 /api/v1；仅支持开源版 2.x。",
+    "storage.providers.lsky.strategy_id":
+      "0 使用默认策略，上传沿用账号默认相册。请关闭图片压缩、格式转换和覆盖式水印，保持原图内容。",
+    "storage.providers.lsky.namespace":
+      "所有表情包共用。修改后连接新空间，不搬迁旧图。",
+    "storage.providers.cloudflare_r2.prefix":
+      "仅同步此目录内的图片；修改后连接新目录，不搬迁旧文件。",
+    "storage.providers.webdav.base_path": "图片在 WebDAV 中的保存目录",
+    "sync.status_cache_ttl_seconds": "管理页同步状态的缓存时间，0 表示关闭",
+    "community.github_accelerator_url":
+      "下载 GitHub 资源时使用此前缀，留空直连",
+    "decision_service.base_url": "System One 的 v1 服务地址",
+    "decision_service.model": "System One 使用的模型 ID",
+    "decision_service.timeout": "单次决策任务的最长等待时间",
+    "decision_service.max_concurrency": "辅助配图与自动收集共享的请求并发上限",
+    "semantic.enabled": "开启后按图片语义检索，索引不可用时回退分类",
+    "semantic.query.source": "生成检索短语，或直接使用可见回复文本",
+    "semantic.query.provider_id": "留空跟随配图聊天模型；决策辅助时跟随主模型",
+    "semantic.top_k": "每次提供给选图模型的最大候选数量",
+    "semantic.min_score": "低于此相似度的图片不进入候选",
+    "semantic.tool_probability_enabled":
+      "关闭时由模型自主调用；开启后按概率主动触发检索，可能增加一次模型请求。",
+    "semantic.tool_call_probability":
+      "控制是否检索，与表情发送概率独立；0% 禁用，100% 每轮尝试",
+    "semantic.auto_collect_embedding":
+      "启用语义检索后，入包时增量生成向量；待分类或描述未完成的图片请先到语义化页面处理",
+    "semantic.vision_provider_id": "用于生成图库图片描述，需支持图片输入",
     "semantic.embedding_provider_id":
-      "留空时自动选择可用向量模型。更换模型后，可到语义化页面检查并重建索引。",
+      "留空自动选择可用向量模型；更换后请到语义化页面检查并重建索引",
+    "auto_collect.enabled": "按来源、频率和抽样规则收集聊天图片",
+    "auto_collect.judgment_backend": "视觉模型合并判断，或增加一次决策请求",
+    "auto_collect.vision_provider_id":
+      "用于识别和分类收集的图片，需支持图片输入",
+    "auto_collect.manual_review":
+      "开启后在表情包管理中预览、调整分类并接收；关闭后新图片可自动入包，决策不确定或失败时仍需人工复核，已有待审图片仍需处理",
+    "auto_collect.content_review_enabled":
+      "与人工确认入包独立；视觉模式随同次识别筛选，决策模式根据图片描述和可见文字初筛，可能增加一个计费问题",
+    "auto_collect.content_review_prompt":
+      "仅影响后续自动收集，不重新审核已有图库或待审图片；留空使用默认规则",
+    "auto_collect.pending_limit":
+      "每个表情包独立计算；满后暂停提交新图片，不会删除已有待审图片",
+    "auto_collect.scope":
+      "可填写原始 ID，或用 group:群ID、user:用户ID 区分群聊和私聊；留空表示全部来源",
     "auto_collect.target_pack_id":
-      "留空时跟随人设或会话规则；指定后使用该包的分类进行识别，收集的图片也归属该包。",
+      "指定后使用该包的分类识别并收录图片；留空跟随会话使用规则",
+    "auto_collect.sampling_probability":
+      "仅控制平台标记的表情；普通图片首次仅记录，重复出现后逐步提高识别概率。",
+    "auto_collect.max_images_per_message":
+      "优先处理平台标记的表情，其余按消息顺序处理，每条消息最多处理指定数量",
+    "auto_collect.cooldown_seconds":
+      "限制同一群聊或用户不同消息之间的识图间隔，同一消息可按图片上限处理多张",
+    "auto_collect.daily_recognition_limit":
+      "每日最多发起的视觉识别任务数，0 表示不限",
+    "auto_collect.min_meme_confidence":
+      "视觉路径低于此值不收录；决策路径按概率收录、拒收或复核",
+    "auto_collect.min_category_confidence":
+      "视觉模式：自动入包时低于阈值归入「待分类」，人工审核时保留建议分类；决策模式低于阈值需人工复核",
+    "generation.trigger.scope":
+      "仅为所选范围的 LLM 回复附加表情，指令和固定文本回复不触发",
+    "generation.emotion.llm.enabled": "开启后在回复生成后增加一次独立选图请求",
+    "generation.emotion.llm.backend":
+      "聊天 LLM 仅在分类模式可多选，决策服务单选",
+    "generation.emotion.llm.provider_id":
+      "辅助选图使用的聊天模型，留空跟随本轮主模型",
+    "generation.emotion.llm.context_turns": "提供最近 N 轮对话，0 表示不提供",
+    "generation.emotion.llm.inject_persona": "将当前人格设定提供给辅助选图模型",
+    "generation.emotion.max_memes_per_message":
+      "自动配图最多 N 张，负数不限，0 不自动附图；不限制 send_meme 主动发送工具",
+    "generation.emotion.probability":
+      "每轮按此概率允许自动附图；0% 不自动附图，不限制 send_meme 主动发送工具",
+    "generation.emotion.send_tool_enabled":
+      "向主模型提供 send_meme 工具，可按分类或本轮语义候选立即发图；由模型决定调用",
+    "generation.prompt.head": "定义表情工具和发送格式，分类列表自动接在末尾",
+    "generation.prompt.tail": "接在分类列表后，约束标签使用和选图方式",
+    "generation.prompt.quantity_guidance_enabled":
+      "仅向模型提供频率和数量偏好，不修改发送硬上限",
+    "generation.prompt.quantity_guidance": "填写频率和数量偏好，留空不添加",
+    "generation.prompt.category_example_enabled":
+      "追加虚构分类示例，不会新增可用分类",
+    "generation.prompt.category_example":
+      "演示分类标记；修改时保留虚构示例与真实分类的边界说明",
+    "generation.prompt.reply_example_enabled":
+      "追加虚构回复示例，不会新增可用分类",
+    "generation.prompt.reply_example":
+      "演示回复形式；修改时保留虚构示例与真实分类的边界说明",
+    "generation.markup.filter_all_tags":
+      "清理所有表情标记，可能误删代码或普通括号内容",
+    "generation.markup.enable_alternative": "将 :happy: 识别为 &&happy&&",
+    "generation.markup.remove_invalid_alternative":
+      "删除无法识别的 () 或 [] 标记；可能影响其他插件，出现标签丢失时可先关闭本项排查",
+    "generation.markup.enable_repeated_detection":
+      "合并 angryangryangry 这类重复标签",
+    "generation.matching.enable_loose_matching":
+      "使用当前会话表情包的分类，识别独占一行且没有标记包裹的分类名，无需额外词表",
+    "generation.message.convert_static_to_gif":
+      "部分微信接入需要转换后才能显示为表情气泡；其他平台通常无需开启，显示异常或体积变大时可关闭",
+    "generation.message.enable_mixed": "将文字和表情放在同一条消息中",
+    "generation.message.mixed_probability": "图文同条模式下按此概率发送",
+    "generation.message.streaming_compatibility":
+      "流式回复时将图片作为独立消息发送",
+    "generation.message.send_image_as_base64":
+      "将本地图片转为 base64://，适配不支持 file:// 的平台",
+    "generation.message.content_cleanup_rule": "按正则表达式清理分段后的文本",
   };
   const optionLabels = {
     cloudflare_r2: "Cloudflare R2",
@@ -477,6 +484,11 @@ async function initPluginConfig() {
     lsky: "兰空图床（开源版 2.x）",
     only_chat_llm: "仅普通聊天回复",
     chat_and_plugin_llm: "普通聊天与插件触发的回复",
+    chat: "聊天 LLM",
+    decision: "决策服务（System One）",
+    generated: "由聊天模型生成",
+    reply_text: "使用可见回复文本",
+    vision: "视觉模型合并判断",
   };
   const fields = new Map();
   const controls = new Map();
@@ -484,71 +496,216 @@ async function initPluginConfig() {
   let revision = "";
   let active = "models";
   let providers = { chat: [], embedding: [] };
+  let providerListErrors = [];
+  let decisionModels = [];
+  let decisionModelsBaseUrl = "";
+  let modelListRequest = 0;
   let packs = [];
   let loaded = false;
   let semanticStatus = null;
-  let applicationFailed = false;
-  let dialogOrigin = null;
-  let dialogCard = null;
+  let activeFlowGroup = "";
+  let pendingGroupAnchor = "";
+  let dialogContent = null;
   let dialogPlaceholder = null;
-  let rulesPlaceholder = null;
+  let dialogOrigin = null;
+  let dialogOriginGroup = "";
+  let dialogOriginTab = "";
+  let dialogFieldPath = "";
 
-  function restoreDialogCard() {
-    if (!dialogCard) return;
-    if (configDialog.open) configDialog.close();
-    if (dialogPlaceholder?.isConnected)
-      dialogPlaceholder.replaceWith(dialogCard);
-    dialogCard = null;
+  function restoreDialogContent() {
+    if (dialogContent && dialogPlaceholder?.isConnected)
+      dialogPlaceholder.replaceWith(dialogContent);
+    dialogContent = null;
     dialogPlaceholder = null;
     configDialogBody.replaceChildren();
   }
 
-  function openConfigDialog(group, origin) {
-    restoreDialogCard();
-    const card = document.getElementById(`config-group-${group.id}`);
-    dialogPlaceholder = document.createComment("");
-    card.before(dialogPlaceholder);
-    configDialogBody.replaceChildren(card);
-    dialogCard = card;
-    const title = document.getElementById("config-flow-dialog-title");
-    title.textContent = group.title;
-    configDialog.showModal();
+  function mountDialogContent(node) {
+    restoreDialogContent();
+    dialogPlaceholder = document.createComment("settings-dialog-content");
+    node.before(dialogPlaceholder);
+    configDialogBody.replaceChildren(node);
+    dialogContent = node;
+    node.hidden = false;
+    if (node.tagName === "DETAILS") node.open = true;
+  }
+
+  function closeSettingsDialog(restoreFocus = true) {
+    if (configState.busy) return;
+    restoreDialogContent();
+    configMask.classList.add("hidden");
+    configMask.setAttribute("aria-hidden", "true");
+    activeFlowGroup = "";
+    dialogFieldPath = "";
+    pendingGroupAnchor = "";
+    history.replaceState(
+      null,
+      "",
+      `${location.pathname}${location.search}#${active}`,
+    );
     updateView();
-    (controls.get(origin.dataset.workflowField) || title).focus({
-      preventScroll: true,
-    });
+    updateState();
+    if (!restoreFocus) return;
+    const origin =
+      dialogOrigin?.isConnected && !dialogOrigin.closest("[hidden], .hidden")
+        ? dialogOrigin
+        : [
+            ...form.querySelectorAll(
+              "[data-setting-group], [data-setting-tab]",
+            ),
+          ].find(
+            (node) =>
+              ((dialogOriginGroup &&
+                node.dataset.settingGroup === dialogOriginGroup) ||
+                (dialogOriginTab &&
+                  node.dataset.settingTab === dialogOriginTab)) &&
+              node.getClientRects().length &&
+              !node.closest("[hidden]"),
+          );
+    (
+      origin ||
+      (mobileNavigation.getClientRects().length
+        ? mobileNavigation
+        : document.querySelector(`[data-settings-tab="${active}"]`))
+    )?.focus();
+  }
+
+  function navigateToSetting(groupId, path = "", tabId = "", origin = null) {
+    const fallbackGroup =
+      tabId === "models"
+        ? "emotion-model"
+        : tabId === "collect"
+        ? "collect-recognition"
+        : "";
+    const group = groups.find((item) => item.id === (groupId || fallbackGroup));
+    const dimension = modePaths.indexOf(path);
+    const rules = tabId === "rules";
+    const node = rules
+      ? rulesPanel
+      : group
+      ? document.getElementById(`config-group-${group.id}`)
+      : null;
+    pendingGroupAnchor = "";
+    search.value = "";
+    if (dimension < 0 && node) {
+      if (!dialogContent || (origin && !configDialog.contains(origin))) {
+        dialogOrigin = origin || document.activeElement;
+        dialogOriginGroup = groupId || "";
+        dialogOriginTab = tabId || "";
+      }
+      activeFlowGroup = group?.id || "";
+      dialogFieldPath = path;
+      mountDialogContent(node);
+      configDialogTitle.textContent = rules ? "表情包使用规则" : group.title;
+      document.getElementById("config-flow-dialog-context").textContent = rules
+        ? "使用规则 · 单独保存"
+        : categories[group.category]?.[0] || "插件设置";
+      configMask.classList.remove("hidden");
+      configMask.setAttribute("aria-hidden", "false");
+      configDialogBody.scrollTop = 0;
+      history.replaceState(
+        null,
+        "",
+        `${location.pathname}${location.search}#config-group-${
+          rules ? "rules" : group.id
+        }`,
+      );
+      updateView();
+      updateState();
+      const target = controls.get(path) || configDialogTitle;
+      for (
+        let detail = target.closest("details");
+        detail && configDialog.contains(detail);
+        detail = detail.parentElement?.closest("details")
+      )
+        detail.open = true;
+      queueMicrotask(() => {
+        if (dialogContent !== node || configState.busy) return;
+        target.focus({ preventScroll: true });
+        if (path)
+          target.scrollIntoView({ block: "nearest", behavior: "instant" });
+      });
+      return;
+    }
+    if (dialogContent) closeSettingsDialog(false);
+    active = dimension >= 0 ? "models" : tabId || group?.category || "models";
+    history.replaceState(
+      null,
+      "",
+      `${location.pathname}${location.search}#${active}`,
+    );
+    updateView();
+    const target =
+      (dimension >= 0
+        ? form.querySelector(
+            `input[name="${
+              dimension === 0 ? "selection-method" : "selection-agent"
+            }"]:checked`,
+          )
+        : controls.get(path)) ||
+      (mobileNavigation.getClientRects().length
+        ? mobileNavigation
+        : document.querySelector(`[data-settings-tab="${active}"]`));
+    for (
+      let detail = target.closest("details");
+      detail;
+      detail = detail.parentElement?.closest("details")
+    )
+      detail.open = true;
+    if (path && dimension < 0 && target.closest("[hidden]")) {
+      search.value = path;
+      updateView();
+    }
+    target.focus();
+    if (group || path)
+      target.scrollIntoView({ block: "start", behavior: "instant" });
+  }
+
+  function showFieldError(path, message) {
+    const group = groups.find((item) =>
+      item.prefixes.some((prefix) =>
+        prefix.endsWith(".") ? path.startsWith(prefix) : prefix === path,
+      ),
+    );
+    navigateToSetting(group?.id, path);
+    const control = controls.get(path);
+    const row = control.closest(".config-field");
+    let error = row.querySelector(".config-field-error");
+    if (!error) {
+      error = document.createElement("p");
+      error.className = "config-field-error";
+      error.id = `${control.id}-error`;
+      row.append(error);
+    }
+    error.textContent = message;
+    control.setAttribute("aria-invalid", "true");
+    control.setAttribute("aria-describedby", `${control.id}-hint ${error.id}`);
+    updateState(message, true);
   }
 
   function updateView() {
+    mobileNavigation.value = active;
     const query = search.value.trim().toLocaleLowerCase();
-    const semantic = Boolean(
-      changes.get(modePaths[0]) ?? fields.get(modePaths[0])?.value,
-    );
-    const auxiliary = Boolean(
-      changes.get(modePaths[1]) ?? fields.get(modePaths[1])?.value,
-    );
-    const mode = semantic
-      ? auxiliary
-        ? "semantic-auxiliary"
-        : "semantic-tool"
-      : auxiliary
-      ? "category-auxiliary"
-      : "category-native";
-    const savedSemantic = Boolean(fields.get(modePaths[0])?.value);
-    const savedAuxiliary = Boolean(fields.get(modePaths[1])?.value);
-    const savedMode = savedSemantic
-      ? savedAuxiliary
-        ? "semantic-auxiliary"
-        : "semantic-tool"
-      : savedAuxiliary
-      ? "category-auxiliary"
-      : "category-native";
-    if (dialogCard && query) restoreDialogCard();
+    const currentValue = (path) =>
+      changes.has(path) ? changes.get(path) : fields.get(path)?.value;
+    const semantic = Boolean(currentValue(modePaths[0]));
+    const postReply = Boolean(currentValue(modePaths[1]));
+    const backend = currentValue("generation.emotion.llm.backend") || "chat";
+    const querySource = currentValue("semantic.query.source") || "generated";
+    const judgmentBackend =
+      currentValue("auto_collect.judgment_backend") || "vision";
+    const selectionDecision = postReply && backend === "decision";
+    const collectionDecision =
+      Boolean(currentValue("auto_collect.enabled")) &&
+      judgmentBackend === "decision";
+    const mode = combinationKey(semantic, postReply);
     modePanel.hidden =
       !loaded ||
       (query
         ? ![
-            "选图模式 原生 分类 标签 语义 检索 tool 情感 辅助 模型",
+            "配图 标签粒度 由谁选择表情包 由谁选标签 主模型 回复模型 自选 辅助 分类 图片 语义 检索 tool 聊天 决策 模型 选图方式 选择时机 回复时 回复后",
+            "原生分类标签 辅助模型分类标签 Tool 语义检索 辅助模型语义检索 情感辅助模型 模式",
+            ...Object.values(combinationNames),
             ...modePaths,
             ...modePaths.map((path) => fields.get(path)?.label || ""),
           ]
@@ -556,197 +713,167 @@ async function initPluginConfig() {
             .toLocaleLowerCase()
             .includes(query)
         : active !== "models");
-    for (const input of modeInputs) {
-      input.checked = input.value === mode;
+    for (const input of dimensionInputs) {
+      input.checked =
+        input.name === "selection-method"
+          ? input.value === (semantic ? "semantic" : "category")
+          : input.value === (postReply ? "assisted" : "reply");
       input.closest("label").classList.toggle("selected", input.checked);
     }
-    workflow.hidden = modePanel.hidden;
-    sections.hidden = !query && active === "models";
+    sections.hidden = !query && ["models", "collect"].includes(active);
+    workflow.hidden = !loaded || Boolean(query) || active !== "models";
     collectionWorkflow.hidden =
       !loaded || Boolean(query) || active !== "collect";
-    const collectionEnabled =
-      changes.get("auto_collect.enabled") ??
-      fields.get("auto_collect.enabled")?.value;
-    const manualReview =
-      changes.get("auto_collect.manual_review") ??
-      fields.get("auto_collect.manual_review")?.value;
-    const contentReviewEnabled =
-      changes.get("auto_collect.content_review_enabled") ??
-      fields.get("auto_collect.content_review_enabled")?.value;
-    document.getElementById(
-      "collection-workflow-state",
-    ).textContent = `当前选择：${collectionEnabled ? "开启" : "关闭"} · 内容审核${contentReviewEnabled ? "开启" : "关闭"}`;
-    document.getElementById("collection-workflow-result").textContent = `${
-      collectionEnabled ? "" : "自动收集处于关闭状态，以上展示启用后的流程。"
-    }${
-      manualReview
-        ? "当前选择：进入目标包的待审核列表 → 在表情包管理页预览、修正分类并接收。分类置信度不足时保留建议供你判断。"
-        : "当前选择：新收集图片自动入包；分类置信度不足时归入 needs_review（待分类）。已有待审核图片仍需处理，目标包忙碌时新图片也会暂留待审核。"
-    }`;
-    const selectedModeName = modeInputs
-      .find((input) => input.checked)
-      .closest("label")
-      .querySelector("strong").textContent;
-    document.getElementById(
-      "mode-workflow-title",
-    ).textContent = `${selectedModeName}流程`;
-    if (workflowSteps.dataset.mode !== mode) {
+    const workflowKey = [mode, backend, querySource, activeFlowGroup].join(":");
+    if (workflowSteps.dataset.state !== workflowKey) {
+      workflowSteps.dataset.state = workflowKey;
       workflowSteps.replaceChildren();
-      workflowSteps.dataset.mode = mode;
-      const selectionGroups = workspaceModes[mode].primary.filter(
-        (id) =>
-          ![
-            "matching",
-            "category-matching",
-            "semantic",
-            "semantic-models",
-          ].includes(id),
-      );
-      const retrievalGroups = workspaceModes[mode].primary.filter((id) =>
-        [
-          "matching",
-          "category-matching",
-          "semantic",
-          "semantic-models",
-        ].includes(id),
-      );
-      const linkedGroups = new Set([
-        ...workspaceModes[mode].primary,
-        ...workspaceModes[mode].fallback,
-        ...workspaceCommon,
-        ...workspaceCollection,
-        ...workspaceStorage,
-      ]);
-      const otherGroups = groups
-        .filter((group) => !linkedGroups.has(group.id))
-        .map((group) => group.id);
-      const branches = [
-        [
-          ["自动收集", workspaceCollection],
-          ["表情包使用规则", ["@rules"]],
-        ],
-        [["触发与数量", ["appearance", "quantity-guidance"]]],
-        [
-          ["当前模式", selectionGroups],
-          ["其他模式的设置", otherGroups],
-        ],
-        [
-          ["匹配与检索", retrievalGroups],
-          ["不可用时的回退", workspaceModes[mode].fallback],
-          ["图片来源与存储", workspaceStorage],
-        ],
-        [["发送方式", ["delivery"]]],
-      ];
-      for (const [index, [title, description]] of workflows[mode].entries()) {
-        const stepNumber = index + 1;
+      for (const step of selectionWorkflow({
+        semantic,
+        postReply,
+        backend,
+        querySource,
+      })) {
         const item = document.createElement("li");
-        item.dataset.step = stepNumber;
-        const row = document.createElement("div");
-        row.className = "mode-workflow-row";
-        const node = document.createElement("div");
+        const node = document.createElement("button");
+        node.type = "button";
         node.className = "workflow-node";
-        const badge = document.createElement("div");
-        badge.className = "workflow-step-badge";
-        badge.textContent = stepNumber;
-        const label = document.createElement("strong");
-        label.textContent = title;
-        const detail = document.createElement("span");
-        detail.textContent = description;
-        node.append(badge, label, detail);
-        const branchList = document.createElement("div");
-        branchList.className = "mode-workflow-branches";
-        for (const [headingText, targetIds] of branches[index]) {
-          if (!targetIds.length) continue;
-          const branch = document.createElement("details");
-          branch.className = "mode-workflow-branch";
-          branch.dataset.step = stepNumber;
-          // Always open all branches for better visibility
-          branch.open = true;
-          const heading = document.createElement("summary");
-          heading.textContent = headingText;
-          const links = document.createElement("div");
-          links.className = "collection-workflow-links";
-          for (const target of targetIds) {
-            const extra = target.startsWith("@");
-            const group = extra
-              ? { title: "编辑使用规则" }
-              : groups.find((item) => item.id === target);
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = "ghost";
-            if (extra) button.dataset.workflowExtra = target.slice(1);
-            else button.dataset.workflowTarget = target;
-            button.textContent = group.title;
-            links.append(button);
-          }
-          branch.append(heading, links);
-          branchList.append(branch);
+        if (step.group) node.dataset.settingGroup = step.group;
+        if (step.tab) node.dataset.settingTab = step.tab;
+        if (
+          groups.find((group) => group.id === step.group)?.category === "models"
+        ) {
+          node.setAttribute(
+            "aria-expanded",
+            String(activeFlowGroup === step.group),
+          );
+          node.setAttribute("aria-controls", `config-group-${step.group}`);
         }
-        row.append(node, branchList);
-        item.append(row);
+        const heading = document.createElement("strong");
+        heading.textContent = step.title;
+        const action = document.createElement("small");
+        action.textContent = "设置 →";
+        node.append(heading, action);
+        item.append(node);
+        {
+          const links = document.createElement("div");
+          links.className = "workflow-links";
+          for (const [group, title] of step.links || []) {
+            const link = document.createElement("button");
+            link.type = "button";
+            link.className = "ghost setup-link";
+            link.dataset.settingGroup = group;
+            link.textContent = title;
+            links.append(link);
+          }
+          item.append(links);
+        }
         workflowSteps.append(item);
       }
     }
-    const modeName = modeInputs
-      .find((input) => input.value === savedMode)
-      .closest("label")
-      .querySelector("strong").textContent;
-    document.getElementById(
-      "selection-mode-status",
-    ).textContent = `已保存：${modeName}${
-      mode !== savedMode ? "，已选择新模式，待保存" : ""
-    }${applicationFailed ? "，应用失败，请重新加载插件" : ""}`;
-    document.getElementById("selection-mode-readiness").hidden = !semantic;
-    const defaultPack = packs.find((pack) => pack.is_default);
-    let readiness = "暂未获取到默认表情包的就绪状态，可前往语义化页面检查。";
-    if (defaultPack && semanticStatus) {
-      const name = defaultPack.name || defaultPack.id;
-      readiness =
-        semanticStatus.semantic_caption_complete && semanticStatus.index_ready
-          ? `默认表情包「${name}」的语义数据与索引已就绪。`
-          : `默认表情包「${name}」的语义数据或索引未就绪，使用该包的会话将回退到${
-              auxiliary ? "辅助模型分类标签" : "原生分类标签"
-            }。`;
-    }
-    if (changes.has("semantic.embedding_provider_id"))
-      readiness = "向量模型已修改，保存后将重新检查默认表情包的索引状态。";
-    document.getElementById("selection-mode-readiness-text").textContent =
-      readiness;
-    document.getElementById("selection-mode-detail").textContent = auxiliary
-      ? "选图会额外调用辅助模型，默认复用当前对话的回复模型。切换模式会保留已填写的参数。"
-      : semantic
-      ? "模型自主调用保持原有行为；概率触发命中后尝试一次检索，失败时只回复文字，不切换其他模式补发。"
-      : "无需额外选图模型。可在「提示词模板」与「标签与匹配」中调整分类选图，在「表情发送」中调整公共发送设置。";
-    resetPrompts.hidden =
-      Boolean(query) ||
-      !(
-        active === "prompts" ||
-        (active === "models" &&
-          ["prompts", "category-example", "reply-example"].includes(
-            dialogCard?.id?.replace("config-group-", ""),
-          ))
-      );
-    configDialogReset.hidden = !(
-      dialogCard &&
-      ["prompts", "category-example", "reply-example"].includes(
-        dialogCard.id.replace("config-group-", ""),
-      )
+    document.getElementById("mode-workflow-title").textContent = "当前流程";
+    const values = Object.fromEntries(
+      [...fields].map(([path]) => [path, currentValue(path)]),
     );
+    const setup = describeSetup(values, {
+      providers,
+      tokenConfigured: changes.has("decision_service.token")
+        ? Boolean(changes.get("decision_service.token"))
+        : Boolean(fields.get("decision_service.token")?.configured),
+      semanticStatus,
+      defaultPack: packs.find((pack) => pack.is_default),
+      embeddingChanged: changes.has("semantic.embedding_provider_id"),
+      providerListErrors,
+    });
+    const readiness = document.getElementById("selection-readiness-note");
+    readiness.hidden = !semantic;
+    if (semantic) {
+      readiness.textContent = `${
+        setup.preparationWarning &&
+        setup.selectionIssues.some(
+          (item) => item.path === "semantic.embedding_provider_id",
+        )
+          ? "尚无可用向量模型"
+          : setup.rows.find((item) => item.label === "默认包准备").value
+      }。这里展示默认包状态；各会话按实际使用的表情包判断，语义数据或索引不可用时回退分类选图。`;
+      if (setup.preparationWarning) {
+        const link = document.createElement("button");
+        link.type = "button";
+        link.className = "ghost setup-link";
+        link.dataset.settingGroup = "semantic-models";
+        link.textContent = "检查语义数据准备";
+        readiness.append(link);
+      }
+    }
+    const issues =
+      active === "collect" ? setup.collectionIssues : setup.selectionIssues;
+    const selectionChecklist = document.getElementById("selection-required");
+    const collectionChecklist = document.getElementById("collection-required");
+    selectionChecklist.replaceChildren();
+    collectionChecklist.replaceChildren();
+    selectionChecklist.hidden = !setup.selectionIssues.length;
+    collectionChecklist.hidden = !setup.collectionIssues.length;
+    const checklist =
+      active === "collect" ? collectionChecklist : selectionChecklist;
+    for (const issue of issues) {
+      const item = document.createElement("li");
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "ghost setup-link";
+      link.textContent = issue.text;
+      if (issue.group) link.dataset.settingGroup = issue.group;
+      if (issue.tab) link.dataset.settingTab = issue.tab;
+      if (issue.path) link.dataset.settingPath = issue.path;
+      item.append(link);
+      checklist.append(item);
+    }
+    document.getElementById("collection-workflow-result").textContent =
+      setup.collectionRoute;
+    document.getElementById("collection-workflow-state").textContent =
+      currentValue("auto_collect.enabled") ? "已开启" : "未开启";
+    document.getElementById("collection-analysis-summary").textContent =
+      judgmentBackend === "decision" ? "视觉模型 + 决策服务" : "视觉模型";
+    document.getElementById("collection-review-summary").textContent =
+      currentValue("auto_collect.manual_review") ? "待审核后入包" : "自动入包";
+    for (const node of collectionWorkflow.querySelectorAll(".workflow-node"))
+      node.setAttribute(
+        "aria-expanded",
+        String(node.dataset.settingGroup === activeFlowGroup),
+      );
+    const reviewNote = document.getElementById("collection-route-note");
+    if (reviewNote) reviewNote.textContent = setup.collectionRoute;
+    const reference = document.getElementById("decision-service-reference");
+    if (reference) {
+      reference.hidden = !selectionDecision;
+      reference.textContent = `决策服务：${
+        currentValue("decision_service.model") || "未配置"
+      }。`;
+      const serviceLink = document.createElement("button");
+      serviceLink.type = "button";
+      serviceLink.className = "ghost compact setup-link";
+      serviceLink.textContent = "配置决策服务";
+      serviceLink.dataset.settingGroup = "decision-service";
+      reference.append(serviceLink);
+    }
+    document.getElementById("selection-mode-detail").textContent =
+      postReply || semantic ? setup.requestNote : "分类标签随机取图";
+    resetPrompts.hidden = Boolean(query) || active !== "prompts";
     const configVisible = Boolean(query) || Boolean(categories[active]);
     for (const panel of panels) {
+      if (panel === dialogContent) {
+        panel.hidden = false;
+        continue;
+      }
       panel.hidden = configVisible
         ? panel.dataset.settingsPanel !== "config"
         : panel.dataset.settingsPanel !== active;
-      if (panel === rulesPanel && rulesDialog.open) panel.hidden = false;
     }
     for (const tab of tabs) {
       if (!query && tab.dataset.settingsTab === active)
         tab.setAttribute("aria-current", "page");
       else tab.removeAttribute("aria-current");
     }
-    const title = query
-      ? ["搜索结果", "按名称或说明查找全部配置，也可搜索尚未启用的服务。"]
-      : categories[active];
+    const title = query ? ["搜索结果", ""] : categories[active];
     if (title) {
       document.getElementById("config-section-title").textContent = title[0];
       document.getElementById("config-section-description").textContent =
@@ -755,37 +882,88 @@ async function initPluginConfig() {
     const selectedProvider =
       changes.get("storage.provider") ?? fields.get("storage.provider")?.value;
     sections.classList.toggle("storage-layout", active === "storage" && !query);
-    let visibleCount = modePanel.hidden ? 0 : 1;
+    let visibleCount = modePanel.hidden && collectionWorkflow.hidden ? 0 : 1;
+    const conditions = {
+      semantic,
+      category: !semantic,
+      "reply-semantic": semantic && !postReply,
+      "post-semantic": semantic && postReply,
+      "reply-category": !semantic && !postReply,
+      post: postReply,
+      decision: selectionDecision || collectionDecision,
+    };
     for (const group of groups) {
       const card = document.getElementById(`config-group-${group.id}`);
       if (!card) continue;
+      const explicitlyOpened = group.id === activeFlowGroup;
       let matches = 0;
       for (const row of card.querySelectorAll(".config-field")) {
         row.hidden =
           row.dataset.modeSwitch === "true" ||
-          (row.dataset.path === "semantic.tool_call_probability" &&
-            !(changes.get("semantic.tool_probability_enabled") ??
-              fields.get("semantic.tool_probability_enabled")?.value)) ||
-          (row.dataset.path === "semantic.auto_collect_embedding" &&
-            !semantic) ||
+          (!query &&
+            row.dataset.path === "semantic.tool_call_probability" &&
+            !(
+              changes.get("semantic.tool_probability_enabled") ??
+              fields.get("semantic.tool_probability_enabled")?.value
+            )) ||
+          (!query &&
+            row.dataset.path === "generation.emotion.llm.provider_id" &&
+            backend === "decision") ||
+          (!query &&
+            row.dataset.path === "semantic.query.provider_id" &&
+            querySource !== "generated") ||
+          (!query &&
+            row.dataset.path === "auto_collect.content_review_prompt" &&
+            !currentValue("auto_collect.content_review_enabled")) ||
           (Boolean(query) && !row.dataset.search.includes(query));
+        if (card === dialogContent && row.dataset.path === dialogFieldPath)
+          row.hidden = false;
         if (!row.hidden) matches++;
       }
       card.hidden = query
         ? !matches
         : group.category !== active ||
-          Boolean(group.provider && group.provider !== selectedProvider);
-      if (!query && group.modes && !group.modes.includes(mode))
+          Boolean(
+            group.provider &&
+              group.provider !== selectedProvider &&
+              !explicitlyOpened,
+          );
+      if (!query && group.when && !conditions[group.when] && !explicitlyOpened)
         card.hidden = true;
-      if (card === dialogCard) card.hidden = false;
+      if (
+        !query &&
+        ["models", "collect"].includes(active) &&
+        group.category === active &&
+        group.id !== activeFlowGroup
+      )
+        card.hidden = true;
+      if (card === dialogContent) card.hidden = false;
       card.querySelector(".config-mode-inactive")?.remove();
-      if (!card.hidden && group.modes && !group.modes.includes(mode)) {
+      if (
+        !card.hidden &&
+        ((group.when && !conditions[group.when]) ||
+          (group.provider && group.provider !== selectedProvider))
+      ) {
         const inactive = document.createElement("p");
         inactive.className = "config-mode-inactive config-card-description";
-        inactive.textContent = workspaceModes[mode].fallback.includes(group.id)
-          ? "当前模式仅在回退到分类选图时使用这些设置。"
-          : "当前选图模式不使用这些设置；参数会保留。";
-        card.querySelector("header").append(inactive);
+        inactive.textContent = group.provider
+          ? "当前存储方式未使用；已填参数会保留，切换后保存生效"
+          : semantic &&
+            [
+              "prompts",
+              "category-example",
+              "reply-example",
+              "matching",
+              "category-matching",
+            ].includes(group.id)
+          ? "分类回退时使用"
+          : "当前模式未使用；已填参数会保留，切换后保存生效";
+        card.querySelector(".config-card-header").append(inactive);
+      }
+      if (!card.hidden && query) {
+        if (card.tagName === "DETAILS") card.open = true;
+        for (const detail of card.querySelectorAll("details"))
+          detail.open = true;
       }
       if (!card.hidden) visibleCount += matches;
     }
@@ -802,37 +980,112 @@ async function initPluginConfig() {
     reload.disabled = configState.busy;
     resetPrompts.disabled = !loaded || configState.busy;
     configDialogReset.disabled = !loaded || configState.busy;
-    configDialogSave.disabled = !loaded || !changes.size || configState.busy;
+    configDialogReset.hidden = ![
+      "config-group-prompts",
+      "config-group-category-example",
+      "config-group-reply-example",
+    ].includes(dialogContent?.id);
+    configDialogSave.disabled = save.disabled;
+    configDialogSave.hidden = dialogContent === rulesPanel;
+    configDialogSave.textContent = configState.busy
+      ? "正在处理…"
+      : "保存全部更改";
+    configDialogBody.inert = configState.busy;
+    for (const button of configDialog.querySelectorAll("[data-dialog-dismiss]"))
+      button.disabled = configState.busy;
     sections.inert = configState.busy;
     modePanel.inert = !loaded || configState.busy;
     workflow.inert = !loaded || configState.busy;
-    configDialogBody.inert = !loaded || configState.busy;
     collectionWorkflow.inert = !loaded || configState.busy;
     form.setAttribute("aria-busy", String(configState.busy));
-    save.textContent = configState.busy ? "正在处理…" : "保存并应用";
+    save.textContent = configState.busy ? "正在处理…" : "保存全部更改";
     status.textContent =
       message ||
       (changes.size
-        ? `有 ${changes.size} 项更改未保存`
+        ? `共 ${changes.size} 项配置更改待保存`
         : loaded
         ? "所有更改已保存"
         : "尚未读取配置");
     status.classList.toggle("error", error);
-    configDialogStatus.textContent = status.textContent;
-    configDialogStatus.classList.toggle("error", error);
+    const changedSections = [
+      ...new Set(
+        [...changes.keys()]
+          .map((path) => categories[fields.get(path)?.category]?.[0])
+          .filter(Boolean),
+      ),
+    ];
+    const saveScope = document.getElementById("config-save-scope");
+    saveScope.hidden = !changes.size;
+    saveScope.textContent = changes.size
+      ? `将保存：${changedSections.join("、")}`
+      : "";
+    const dialogStatus = document.getElementById("config-flow-dialog-status");
+    dialogStatus.classList.toggle("error", error);
+    dialogStatus.textContent =
+      dialogContent === rulesPanel
+        ? "使用规则单独保存"
+        : `${status.textContent}${
+            status.textContent.endsWith("。") ? "" : "。"
+          }${changes.size ? `将保存：${changedSections.join("、")}。` : ""}`;
+    document.getElementById("config-changes-review").hidden = !changes.size;
+    document.getElementById(
+      "config-changes-summary",
+    ).textContent = `查看 ${changes.size} 项待保存修改`;
+    const changedList = document.getElementById("config-changes-list");
+    changedList.replaceChildren();
+    for (const [path, value] of changes) {
+      const field = fields.get(path);
+      const item = document.createElement("li");
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "ghost setup-link";
+      link.dataset.settingPath = path;
+      link.dataset.settingGroup =
+        groups.find((group) =>
+          group.prefixes.some((prefix) =>
+            prefix.endsWith(".") ? path.startsWith(prefix) : prefix === path,
+          ),
+        )?.id || "";
+      const description =
+        path === modePaths[0]
+          ? value
+            ? "图片级标签（语义）"
+            : "分类级标签"
+          : path === modePaths[1]
+          ? value
+            ? "额外模型辅助选择"
+            : "主模型自行选择"
+          : field?.secret
+          ? value
+            ? "替换已保存密钥"
+            : "清除已保存密钥"
+          : typeof value === "boolean"
+          ? value
+            ? "开启"
+            : "关闭"
+          : Array.isArray(value)
+          ? `${value.length} 项`
+          : String(optionLabels[value] || value || "留空 / 自动选择");
+      link.textContent = `${
+        labels[path] || field?.label || path
+      }：${description}`;
+      item.append(link);
+      changedList.append(item);
+    }
     for (const tab of tabs) {
       const dot = tab.querySelector(".settings-dirty-dot");
       if (dot)
         dot.hidden = ![...changes.keys()].some(
-          (path) =>
-            fields.get(path)?.category === tab.dataset.settingsTab ||
-            tab.dataset.settingsTab === "models",
+          (path) => fields.get(path)?.category === tab.dataset.settingsTab,
         );
     }
   }
 
   function renderFields(snapshot) {
-    restoreDialogCard();
+    const dialogCardId =
+      dialogContent && dialogContent !== rulesPanel ? dialogContent.id : "";
+    if (dialogCardId) restoreDialogContent();
+    modelListRequest++;
     fields.clear();
     controls.clear();
     sections.replaceChildren();
@@ -841,11 +1094,28 @@ async function initPluginConfig() {
     const storageSecondary = document.createElement("div");
     storageSecondary.className = "storage-column storage-secondary";
     sections.append(storagePrimary, storageSecondary);
-    for (const group of groups) {
-      const card = document.createElement("section");
+    const modelOrder = [
+      "emotion-model",
+      "semantic-query",
+      "tool-trigger",
+      "semantic",
+      "semantic-models",
+      "selection-context",
+    ];
+    for (const group of [...groups].sort(
+      (a, b) =>
+        (modelOrder.includes(a.id) ? modelOrder.indexOf(a.id) : 100) -
+        (modelOrder.includes(b.id) ? modelOrder.indexOf(b.id) : 100),
+    )) {
+      const card = document.createElement(
+        group.advanced ? "details" : "section",
+      );
       card.className = "panel config-card";
+      if (group.advanced && group.id === activeFlowGroup) card.open = true;
       card.id = `config-group-${group.id}`;
-      const header = document.createElement("header");
+      const header = document.createElement(
+        group.advanced ? "summary" : "header",
+      );
       header.className = "config-card-header";
       const heading = document.createElement("h3");
       heading.id = `${card.id}-title`;
@@ -877,6 +1147,36 @@ async function initPluginConfig() {
       const body = document.createElement("div");
       body.className = "config-card-body";
       card.append(header, body);
+      if (group.advancedPaths) {
+        const details = document.createElement("details");
+        details.className = "config-advanced-fields";
+        const summary = document.createElement("summary");
+        summary.textContent = group.advancedTitle;
+        const container = document.createElement("div");
+        container.className = "config-advanced-body";
+        details.append(summary, container);
+        body.append(details);
+      }
+      if (group.id === "emotion-model") {
+        const reference = document.createElement("p");
+        reference.id = "decision-service-reference";
+        reference.className = "config-notice";
+        body.append(reference);
+      }
+      if (group.id === "collect-review") {
+        const route = document.createElement("p");
+        route.id = "collection-route-note";
+        route.className = "config-notice";
+        body.append(route);
+      }
+      if (group.id === "semantic-models") {
+        const link = document.createElement("a");
+        link.href = "../semantic/index.html";
+        link.dataset.navTarget = "../semantic/index.html";
+        link.textContent = "前往语义化 →";
+        link.className = "semantic-prepare-link";
+        header.append(link);
+      }
       if (group.category === "storage") {
         (group.provider || group.id === "storage"
           ? storagePrimary
@@ -918,12 +1218,15 @@ async function initPluginConfig() {
       const help = document.createElement("p");
       help.id = `${label.htmlFor}-hint`;
       help.className = "config-field-hint";
-      help.textContent = hints[field.path] || field.hint;
-      if (field.type === "list") help.textContent += " 每行填写一项。";
+      const baseHint = hints[field.path] || String(field.hint || "").trim();
+      help.dataset.baseHint = baseHint;
+      help.textContent = baseHint;
+      if (field.type === "list")
+        help.textContent = `${baseHint}${baseHint ? "；" : ""}每行一项`;
       if (field.secret)
-        help.textContent = field.configured
-          ? "已配置。留空保留原值，输入新值可替换。"
-          : "尚未配置。保存后不会回显密钥。";
+        help.textContent = `${baseHint}${baseHint ? "；" : ""}保存后不回显，${
+          field.configured ? "留空保留原值" : "尚未配置"
+        }`;
       copy.append(help);
       row.append(copy);
       const controlBox = document.createElement("div");
@@ -936,42 +1239,136 @@ async function initPluginConfig() {
         control.setAttribute("role", "switch");
         control.checked = Boolean(field.value);
       } else if (
-        field.options.length ||
         field.special.startsWith("select_provider") ||
+        field.path === "decision_service.model"
+      ) {
+        control = document.createElement("input");
+        control.type = "text";
+        control.value = field.value;
+        control.autocomplete = "off";
+        const choices = document.createElement("select");
+        choices.id = `${label.htmlFor}-choices`;
+        choices.className = "model-picker-options";
+        choices.setAttribute("aria-label", `从列表选择${label.textContent}`);
+        choices.append(new Option("从列表选择…", ""));
+        const picker = document.createElement("div");
+        picker.className = "model-picker-input";
+        picker.append(control, choices);
+        choices.addEventListener("change", () => {
+          if (!choices.value) return;
+          control.value = choices.value;
+          control.dispatchEvent(new Event("input", { bubbles: true }));
+          choices.value = "";
+        });
+        controlBox.classList.add("model-picker");
+        controlBox.append(picker);
+        const decisionModel = field.path === "decision_service.model";
+        const kind =
+          field.special === "select_provider_embedding" ? "embedding" : "chat";
+        if (decisionModel) {
+          control.maxLength = 128;
+          control.placeholder = "从列表选择或填写模型 ID";
+          help.textContent = `${baseHint}；可获取列表或手动填写`;
+          help.setAttribute("aria-live", "polite");
+          const baseUrl =
+            changes.get("decision_service.base_url") ??
+            snapshot.fields.find(
+              (item) => item.path === "decision_service.base_url",
+            )?.value;
+          if (String(baseUrl || "").trim() === decisionModelsBaseUrl)
+            for (const model of decisionModels)
+              choices.append(new Option(model.name || model.id, model.id));
+          const fetchModels = document.createElement("button");
+          fetchModels.type = "button";
+          fetchModels.className = "ghost compact fetch-models";
+          fetchModels.id = "fetch-decision-models";
+          fetchModels.textContent = "获取列表";
+          fetchModels.addEventListener("click", async () => {
+            const baseUrl = controls
+              .get("decision_service.base_url")
+              .value.trim();
+            if (!baseUrl) {
+              help.textContent = "请填写服务地址";
+              controls.get("decision_service.base_url").focus();
+              return;
+            }
+            const requestId = ++modelListRequest;
+            fetchModels.disabled = true;
+            fetchModels.textContent = "获取中…";
+            help.textContent = "正在获取模型列表";
+            try {
+              const result = await api.apiPost("settings/decision-models", {
+                base_url: baseUrl,
+              });
+              if (requestId !== modelListRequest || !control.isConnected)
+                return;
+              decisionModels = result.models || [];
+              decisionModelsBaseUrl = baseUrl;
+              choices.replaceChildren(new Option("从列表选择…", ""));
+              for (const model of decisionModels)
+                choices.append(new Option(model.name || model.id, model.id));
+              choices.disabled = !decisionModels.length;
+              help.textContent = decisionModels.length
+                ? `${decisionModels.length} 个模型`
+                : "模型列表为空，可填写模型 ID";
+            } catch (error) {
+              if (requestId !== modelListRequest || !control.isConnected)
+                return;
+              help.textContent = `${
+                error.message || "获取失败"
+              }，可填写模型 ID`;
+            } finally {
+              if (requestId === modelListRequest && control.isConnected) {
+                fetchModels.disabled = false;
+                fetchModels.textContent = "刷新列表";
+              }
+            }
+          });
+          controlBox.append(fetchModels);
+        } else {
+          for (const provider of providers[kind] || [])
+            choices.append(
+              new Option(
+                provider.model
+                  ? `${provider.id}（${provider.model}）`
+                  : provider.id,
+                provider.id,
+              ),
+            );
+          control.placeholder =
+            field.path === "generation.emotion.llm.provider_id"
+              ? "留空跟随本轮主模型"
+              : field.path === "semantic.query.provider_id"
+              ? "留空跟随当前选图流程的聊天模型"
+              : kind === "embedding"
+              ? "留空自动选择向量模型"
+              : "从列表选择或填写提供商 ID";
+          if (providerListErrors.includes(kind))
+            help.textContent += "；模型列表不可用，可手动填写";
+        }
+        choices.disabled = choices.options.length <= 1;
+      } else if (
+        field.options.length ||
         field.path === "auto_collect.target_pack_id"
       ) {
         control = document.createElement("select");
         if (field.options.length) {
           for (const option of field.options)
-            control.add(new Option(optionLabels[option] || option, option));
+            control.add(
+              new Option(
+                field.path === "auto_collect.judgment_backend" &&
+                option === "decision"
+                  ? "决策服务分项判断"
+                  : optionLabels[option] || option,
+                option,
+              ),
+            );
         } else {
-          let emptyLabel = "请选择模型";
-          let options = providers.chat.map((provider) => [
-            provider.model
-              ? `${provider.id}（${provider.model}）`
-              : provider.id,
-            provider.id,
-          ]);
-          if (field.special === "select_provider_embedding") {
-            emptyLabel = "自动选择可用向量模型";
-            options = providers.embedding.map((provider) => [
-              provider.model
-                ? `${provider.id}（${provider.model}）`
-                : provider.id,
-              provider.id,
-            ]);
-          } else if (field.path === "generation.emotion.llm.provider_id")
-            emptyLabel = "跟随当前对话的回复模型";
-          else if (field.path === "auto_collect.target_pack_id") {
-            emptyLabel = "跟随人设与会话规则";
-            options = packs.map((pack) => [
-              `${pack.name || pack.id} (${pack.id})`,
-              pack.id,
-            ]);
-          }
-          control.add(new Option(emptyLabel, ""));
-          for (const [name, value] of options)
-            control.add(new Option(name, value));
+          control.add(new Option("跟随人设与会话规则", ""));
+          for (const pack of packs)
+            control.add(
+              new Option(`${pack.name || pack.id} (${pack.id})`, pack.id),
+            );
         }
         if (
           field.value &&
@@ -1018,9 +1415,10 @@ async function initPluginConfig() {
         }
       }
       control.id = label.htmlFor;
+      control.setAttribute("form", "plugin-config-form");
       control.setAttribute("aria-describedby", help.id);
       control.dataset.configPath = field.path;
-      controlBox.append(control);
+      if (!control.parentElement) controlBox.prepend(control);
       controls.set(field.path, control);
       if (field.secret) {
         const clear = document.createElement("button");
@@ -1029,6 +1427,9 @@ async function initPluginConfig() {
         clear.textContent = "清除";
         clear.setAttribute("aria-label", `清除${label.textContent}`);
         clear.addEventListener("click", () => {
+          control.removeAttribute("aria-invalid");
+          row.querySelector(".config-field-error")?.remove();
+          control.setAttribute("aria-describedby", help.id);
           if (changes.has(field.path) && changes.get(field.path) === "") {
             changes.delete(field.path);
             clear.textContent = "清除";
@@ -1048,14 +1449,20 @@ async function initPluginConfig() {
             }`,
           );
           updateState();
+          updateView();
         });
         controlBox.append(clear);
       }
       row.append(controlBox);
-      document
-        .querySelector(`#config-group-${assigned.id} .config-card-body`)
-        .append(row);
+      const body = document.querySelector(
+        `#config-group-${assigned.id} .config-card-body`,
+      );
+      if (assigned.advancedPaths?.includes(field.path))
+        body.querySelector(".config-advanced-body").append(row);
+      else
+        body.insertBefore(row, body.querySelector("details, .config-notice"));
     }
+    if (dialogCardId) mountDialogContent(document.getElementById(dialogCardId));
     updateView();
   }
 
@@ -1071,6 +1478,7 @@ async function initPluginConfig() {
         api.apiGet("packs").catch(() => null),
       ]);
       providers = snapshot.providers || providers;
+      providerListErrors = snapshot.provider_list_errors || [];
       if (packResult) packs = packResult.packs || [];
       const defaultPack = packs.find((pack) => pack.is_default);
       semanticStatus = defaultPack
@@ -1081,6 +1489,7 @@ async function initPluginConfig() {
       revision = snapshot.revision;
       changes.clear();
       renderFields(snapshot);
+      await window.MemeUI.applySecureNavLinks();
       loaded = true;
       notice.hidden = true;
       updateView();
@@ -1092,12 +1501,15 @@ async function initPluginConfig() {
     } finally {
       configState.busy = false;
       updateState();
+      if (loaded && pendingGroupAnchor) applyLocationHash();
     }
   }
 
   for (const tab of tabs) {
     tab.addEventListener("click", () => {
+      if (dialogContent) closeSettingsDialog(false);
       active = tab.dataset.settingsTab;
+      pendingGroupAnchor = "";
       search.value = "";
       history.replaceState(
         null,
@@ -1109,51 +1521,42 @@ async function initPluginConfig() {
     });
   }
   search.addEventListener("input", updateView);
-  form.addEventListener("click", (event) => {
-    const trigger = event.target.closest(
-      "[data-workflow-target], [data-workflow-extra]",
-    );
-    if (!trigger || !loaded || configState.busy) return;
-    dialogOrigin = trigger;
-    if (trigger.dataset.workflowExtra === "rules") {
-      rulesPlaceholder = document.createComment("");
-      rulesPanel.before(rulesPlaceholder);
-      rulesDialogBody.replaceChildren(rulesPanel);
-      rulesDialog.showModal();
-      updateView();
-      return;
-    }
-    const group = groups.find(
-      (item) => item.id === trigger.dataset.workflowTarget,
-    );
-    if (group) openConfigDialog(group, trigger);
-  });
-  configDialog.addEventListener("click", (event) => {
-    if (event.target.closest("[data-flow-dialog-close]")) configDialog.close();
+  for (const container of [form, configDialog])
+    container.addEventListener("click", (event) => {
+      if (
+        dialogContent?.tagName === "DETAILS" &&
+        event.target.closest("summary") ===
+          dialogContent.querySelector("summary") &&
+        !event.target.closest("a, button")
+      )
+        event.preventDefault();
+      if (event.target.closest("[data-dialog-dismiss]")) {
+        closeSettingsDialog();
+        return;
+      }
+      const trigger = event.target.closest(
+        "[data-setting-group], [data-setting-tab]",
+      );
+      if (!trigger || !loaded || configState.busy) return;
+      navigateToSetting(
+        trigger.dataset.settingGroup,
+        trigger.dataset.settingPath,
+        trigger.dataset.settingTab,
+        trigger,
+      );
+    });
+  configMask.addEventListener("click", (event) => {
+    if (event.target === configMask) closeSettingsDialog();
   });
   configDialogReset.addEventListener("click", () => resetPrompts.click());
-  configDialog.addEventListener("close", () => {
-    restoreDialogCard();
-    updateView();
-    if (dialogOrigin?.isConnected) dialogOrigin.focus({ preventScroll: true });
-  });
-  rulesDialog.addEventListener("click", (event) => {
-    if (event.target.closest("[data-rules-dialog-close]")) rulesDialog.close();
-  });
-  rulesDialog.addEventListener("close", () => {
-    if (rulesPlaceholder?.isConnected) rulesPlaceholder.replaceWith(rulesPanel);
-    rulesPlaceholder = null;
-    rulesDialogBody.replaceChildren();
-    updateView();
-    if (dialogOrigin?.isConnected) dialogOrigin.focus({ preventScroll: true });
-  });
-  for (const input of modeInputs) {
+  for (const input of dimensionInputs) {
     input.addEventListener("change", () => {
       if (!loaded || configState.busy || !input.checked) return;
-      restoreDialogCard();
       const values = [
-        input.value.startsWith("semantic-"),
-        input.value.endsWith("-auxiliary"),
+        form.querySelector('input[name="selection-method"]:checked').value ===
+          "semantic",
+        form.querySelector('input[name="selection-agent"]:checked').value ===
+          "assisted",
       ];
       for (const [index, path] of modePaths.entries()) {
         controls.get(path).checked = values[index];
@@ -1165,58 +1568,96 @@ async function initPluginConfig() {
       updateView();
     });
   }
-  const initialTab = location.hash.slice(1);
-  if (tabs.some((tab) => tab.dataset.settingsTab === initialTab))
-    active = initialTab;
-  window.addEventListener("hashchange", () => {
-    const target = location.hash.slice(1);
-    if (tabs.some((tab) => tab.dataset.settingsTab === target)) {
-      active = target;
-      search.value = "";
+  function applyLocationHash() {
+    const raw = location.hash.slice(1);
+    const rules = raw === "config-group-rules";
+    const group = raw.startsWith("config-group-")
+      ? groups.find((item) => item.id === raw.slice("config-group-".length))
+      : null;
+    const nextTab = rules ? "rules" : group?.category || raw;
+    if (!tabs.some((tab) => tab.dataset.settingsTab === nextTab)) {
+      pendingGroupAnchor = "";
+      return;
+    }
+    active = nextTab;
+    search.value = "";
+    pendingGroupAnchor = group?.id || (rules ? "rules" : "");
+    if (configState.busy) {
+      pendingGroupAnchor ||= raw;
+      updateView();
+    } else if ((group || rules) && loaded)
+      navigateToSetting(group?.id, "", rules ? "rules" : "");
+    else {
+      if (dialogContent) closeSettingsDialog(false);
       updateView();
     }
-  });
-  form.addEventListener("input", (event) => {
-    const control = event.target;
-    const path = control.dataset.configPath;
-    const field = fields.get(path);
-    if (!field) return;
-    let value = control.value;
-    if (field.type === "bool") value = control.checked;
-    else if (["int", "float"].includes(field.type))
-      value = control.valueAsNumber;
-    else if (field.type === "list")
-      value = control.value
-        .split(/\r?\n/)
-        .map((item) => item.trim())
-        .filter(Boolean);
-    if (field.secret && value === "") changes.delete(path);
-    else if (JSON.stringify(value) === JSON.stringify(field.value))
-      changes.delete(path);
-    else changes.set(path, value);
-    if (field.secret) {
-      const clear = control.parentElement.querySelector("button");
-      clear.textContent = "清除";
-      clear.setAttribute("aria-label", `清除${labels[path] || field.label}`);
-      control.placeholder = field.configured
-        ? "已保存，输入新值可替换"
-        : "请输入";
-    }
-    updateState();
-    if (
-      path === "storage.provider" ||
-      path === "semantic.tool_probability_enabled" ||
-      path === "semantic.embedding_provider_id" ||
-      path.startsWith("auto_collect.")
-    )
+  }
+  applyLocationHash();
+  window.addEventListener("hashchange", applyLocationHash);
+  for (const container of [form, configDialog])
+    container.addEventListener("input", (event) => {
+      const control = event.target;
+      const path = control.dataset.configPath;
+      const field = fields.get(path);
+      if (!field) return;
+      if (path === "storage.provider") activeFlowGroup = "";
+      if (path === "decision_service.base_url") {
+        modelListRequest++;
+        decisionModels = [];
+        decisionModelsBaseUrl = "";
+        const choices = document.getElementById(
+          "config-decision_service-model-choices",
+        );
+        if (choices) {
+          choices.replaceChildren(new Option("从列表选择…", ""));
+          choices.disabled = true;
+        }
+        const button = document.getElementById("fetch-decision-models");
+        if (button) {
+          button.disabled = false;
+          button.textContent = "获取列表";
+          const modelHint = document.getElementById(
+            "config-decision_service-model-hint",
+          );
+          modelHint.textContent = `${modelHint.dataset.baseHint}；服务地址已修改`;
+        }
+      }
+      control.removeAttribute("aria-invalid");
+      control
+        .closest(".config-field")
+        ?.querySelector(".config-field-error")
+        ?.remove();
+      control.setAttribute("aria-describedby", `${control.id}-hint`);
+      let value = control.value;
+      if (field.type === "bool") value = control.checked;
+      else if (["int", "float"].includes(field.type))
+        value = control.valueAsNumber;
+      else if (field.type === "list")
+        value = control.value
+          .split(/\r?\n/)
+          .map((item) => item.trim())
+          .filter(Boolean);
+      if (field.secret && value === "") changes.delete(path);
+      else if (JSON.stringify(value) === JSON.stringify(field.value))
+        changes.delete(path);
+      else changes.set(path, value);
+      if (field.secret) {
+        const clear = control.parentElement.querySelector("button");
+        clear.textContent = "清除";
+        clear.setAttribute("aria-label", `清除${labels[path] || field.label}`);
+        control.placeholder = field.configured
+          ? "已保存，输入新值可替换"
+          : "请输入";
+      }
+      updateState();
       updateView();
-  });
+    });
   resetPrompts.addEventListener("click", async () => {
     if (!loaded || configState.busy) return;
     const confirmed = await window.MemeUI.confirm({
       title: "恢复默认模板",
       message:
-        "将前缀、后缀和两组示例恢复为当前版本的默认内容，保留各示例的开关选择。你可以检查、修改后再保存。",
+        "将前缀、后缀和示例恢复为默认内容，保留示例开关。填入后可检查修改，再保存生效。",
       confirmText: "填入默认模板",
     });
     if (!confirmed || configState.busy) return;
@@ -1247,18 +1688,39 @@ async function initPluginConfig() {
     for (const path of changes.keys()) {
       const control = controls.get(path);
       if (!control.checkValidity()) {
-        if (!configDialog.contains(control)) {
-          restoreDialogCard();
-          active = fields.get(path).category;
-          search.value = labels[path] || fields.get(path).label;
-          updateView();
-        }
-        control.focus();
-        control.reportValidity();
-        updateState(
+        showFieldError(
+          path,
           `请检查「${labels[path] || fields.get(path).label}」的填写内容。`,
-          true,
         );
+        return;
+      }
+    }
+    const value = (path) =>
+      changes.has(path) ? changes.get(path) : fields.get(path)?.value;
+    const decisionUsed =
+      (value("generation.emotion.llm.enabled") &&
+        value("generation.emotion.llm.backend") === "decision") ||
+      (value("auto_collect.enabled") &&
+        value("auto_collect.judgment_backend") === "decision");
+    if (decisionUsed) {
+      const missing = [
+        !value("decision_service.base_url") && [
+          "decision_service.base_url",
+          "请填写决策服务地址。",
+        ],
+        !(changes.has("decision_service.token")
+          ? changes.get("decision_service.token")
+          : fields.get("decision_service.token")?.configured) && [
+          "decision_service.token",
+          "请填写决策服务密钥。",
+        ],
+        !String(value("decision_service.model") || "").trim() && [
+          "decision_service.model",
+          "请填写决策模型 ID。",
+        ],
+      ].find(Boolean);
+      if (missing) {
+        showFieldError(...missing);
         return;
       }
     }
@@ -1267,16 +1729,28 @@ async function initPluginConfig() {
     updateState("正在保存并应用设置…");
     let message = "";
     let failed = false;
+    let errorPath = "";
+    const savedSections = [
+      ...new Set(
+        [...changes.keys()]
+          .map((path) => categories[fields.get(path)?.category]?.[0])
+          .filter(Boolean),
+      ),
+    ];
     try {
       const result = await api.apiPost("settings/config", {
         revision,
         changes: Object.fromEntries(changes),
       });
       revision = result.revision;
+      providers = result.providers || providers;
+      providerListErrors = result.provider_list_errors || [];
       changes.clear();
-      applicationFailed = result.applied === false;
       renderFields(result);
+      await window.MemeUI.applySecureNavLinks();
       message = result.message || "设置已保存并生效。";
+      if (result.applied !== false && savedSections.length)
+        message = `已保存并生效：${savedSections.join("、")}。`;
       if (result.applied === false) {
         notice.hidden = false;
         notice.classList.add("error");
@@ -1292,12 +1766,22 @@ async function initPluginConfig() {
     } catch (error) {
       failed = true;
       message = error.message || String(error);
+      errorPath =
+        [...changes.keys()].find((path) =>
+          [fields.get(path)?.label, labels[path]].some(
+            (label) => label && message.includes(label),
+          ),
+        ) || "";
       notice.hidden = false;
       notice.classList.add("error");
       notice.textContent = message;
     } finally {
       configState.busy = false;
       updateState(message, failed);
+      if (errorPath) showFieldError(errorPath, message);
+      else if (pendingGroupAnchor) applyLocationHash();
+      else if (dialogContent && !configDialog.contains(document.activeElement))
+        configDialogTitle.focus();
     }
   });
   updateView();

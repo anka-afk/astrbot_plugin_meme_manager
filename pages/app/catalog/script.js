@@ -415,16 +415,16 @@ async function initCatalogPage() {
     );
     const hasSemanticMetadata = Boolean(
       features.semantic_metadata ||
-      pack?.semantic_metadata ||
-      tags.has("semantic") ||
-      tags.has("semantic-v2") ||
-      tags.has("语义包"),
+        pack?.semantic_metadata ||
+        tags.has("semantic") ||
+        tags.has("semantic-v2") ||
+        tags.has("语义包"),
     );
     const isNewFormat = Boolean(
       hasSemanticMetadata ||
-      formatVersion >= 2 ||
-      tags.has("v2") ||
-      tags.has("new-format"),
+        formatVersion >= 2 ||
+        tags.has("v2") ||
+        tags.has("new-format"),
     );
 
     if (isNewFormat) {
@@ -432,7 +432,7 @@ async function initCatalogPage() {
         kind: "semantic",
         badge: hasSemanticMetadata ? "新版语义包" : "新版包",
         note: hasSemanticMetadata
-          ? "包含可复用语义描述；不会分发本机向量，安装后可按当前向量模型重建。"
+          ? "包含可复用的语义描述，不含向量；安装后可按当前向量模型建立索引。"
           : "采用新版包结构，兼容语义描述与本机向量重建流程。",
       };
     }
@@ -564,8 +564,8 @@ async function initCatalogPage() {
     installBtn.textContent = canUpdate
       ? "更新"
       : isInstalled
-        ? "已安装"
-        : "安装";
+      ? "已安装"
+      : "安装";
     installBtn.className = canUpdate
       ? "pack-update"
       : `pack-install${isInstalled ? " ghost" : ""}`;
@@ -747,7 +747,7 @@ async function initCatalogPage() {
         const message = document.createElement("p");
         message.textContent =
           total && (query || filter !== "all")
-            ? "没有符合条件的资源包，试试其他关键词或安装状态。"
+            ? "没有匹配的资源包，试试其他关键词或安装状态。"
             : `暂无${official ? "官方" : "社区"}包。`;
         grid.appendChild(message);
       } else {
