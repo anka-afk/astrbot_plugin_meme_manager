@@ -30,11 +30,7 @@ function fixture() {
     },
   };
   const card = {
-    id: "config-group-semantic-models",
-    tagName: "DETAILS",
-    hidden: true,
-    open: false,
-    home,
+    id: "config-group-semantic-models", tagName: "DETAILS", hidden: true, home,
     input: { value: "draft-provider" },
     before(marker) {
       marker.home = this.home;
@@ -51,27 +47,20 @@ function fixture() {
   let focused = false;
   const hidden = new Set();
   const context = vm.createContext({
-    dialogContent: null,
-    dialogPlaceholder: null,
-    configDialogBody: body,
+    dialogContent: null, dialogPlaceholder: null, configDialogBody: body,
     configMask: {
       classList: { add: (value) => hidden.add(value) },
       setAttribute() {},
     },
     configState: { busy: false },
-    active: "models",
-    activeFlowGroup: "semantic-models",
-    dialogFieldPath: "",
-    pendingGroupAnchor: "",
+    active: "models", activeFlowGroup: "semantic-models",
+    dialogFieldPath: "", pendingGroupAnchor: "",
     dialogOrigin: {
       isConnected: true,
       closest: () => null,
-      focus() {
-        focused = true;
-      },
+      focus() { focused = true; },
     },
-    dialogOriginGroup: "semantic-models",
-    dialogOriginTab: "",
+    dialogOriginGroup: "semantic-models", dialogOriginTab: "",
     form: { querySelectorAll: () => [] },
     mobileNavigation: { getClientRects: () => [] },
     changes: new Map([["semantic.vision_provider_id", "draft-provider"]]),
@@ -85,8 +74,7 @@ function fixture() {
         context.location.hash = url.slice(url.indexOf("#"));
       },
     },
-    updateView() {},
-    updateState() {},
+    updateView() {}, updateState() {},
     document: {
       createComment() {
         return {
@@ -109,34 +97,24 @@ function fixture() {
   return { context, home, body, card, rules, hidden, focused: () => focused };
 }
 
-test("modal mounts and restores the original settings component without cloning inputs", () => {
-  const { context, home, body, card } = fixture();
+test("switching modal panels restores the same components and preserves input drafts", () => {
+  const { context, home, body, card, rules } = fixture();
   const originalInput = card.input;
   context.mountDialogContent(card);
   assert.equal(body.children[0], card);
   assert.equal(card.open, true);
   assert.equal(home.includes(card), false);
   card.input.value = "edited-in-dialog";
-  context.restoreDialogContent();
+  context.mountDialogContent(rules);
   assert.equal(home[0], card);
   assert.equal(card.input, originalInput);
   assert.equal(card.input.value, "edited-in-dialog");
-  assert.equal(body.children.length, 0);
-});
-
-test("switching from a configuration card to rules restores each original component", () => {
-  const { context, home, body, card, rules } = fixture();
-  context.mountDialogContent(card);
-  context.mountDialogContent(rules);
-  assert.equal(home[0], card);
   assert.equal(body.children[0], rules);
   assert.equal(rules.input.value, "unsaved-rule");
   context.restoreDialogContent();
   assert.deepEqual(home, [card, rules]);
-  assert.equal(
-    context.changes.get("semantic.vision_provider_id"),
-    "draft-provider",
-  );
+  assert.equal(body.children.length, 0);
+  assert.equal(context.changes.get("semantic.vision_provider_id"), "draft-provider");
 });
 
 test("closing waits for an active save, then returns focus while preserving drafts", () => {

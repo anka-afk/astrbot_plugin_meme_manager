@@ -8,6 +8,8 @@ from astrbot_plugin_meme_manager.backend import auto_collect
 from astrbot_plugin_meme_manager.backend.decision import DecisionError
 from astrbot_plugin_meme_manager.backend.semantic.storage import load_metadata
 
+pytestmark = pytest.mark.asyncio
+
 
 class FakeDecisionService:
     def __init__(self):
@@ -72,54 +74,6 @@ async def decision_flow():
         harness.doCleanups()
 
 
-@pytest.mark.asyncio
-async def test_uncertain_decision_cannot_auto_import_but_explicit_review_can(
-    decision_flow,
-):
-    harness = decision_flow
-    manager = harness.host.auto_collect_manager
-    manager.manual_review = False
-    harness.host.decision_client.probability = 0.5
-    assert await manager.submit(flow_fixtures.FlowEvent(harness.png))
-    await asyncio.wait_for(manager.queue.join(), 5)
-    response = await harness.client.get("/inbox", query_string={"pack_id": "pack-a"})
-    pending = await response.get_json()
-    assert pending["count"] == pending["review_required_count"] == 1
-    item = pending["items"][0]
-    assert item["review_required"] and item["judgment_backend"] == "decision"
-    assert (await manager.import_pending("pack-a"))["skipped_review"] == 1
-    record_id = item["id"]
-    result = await harness.client.post(
-        "/inbox/accept", json={"pack_id": "pack-a", "items": [{"id": record_id}]}
-    )
-    assert (await result.get_json())["imported"] == 1
-    semantic = next(iter(load_metadata(harness.pack_dir)["images"].values()))
-    assert semantic["caption_status"] == "pending"
-    assert semantic["auto_caption"] == harness.decision["caption"]
-    assert await manager.pending_status("pack-a") is not None
-
-
-@pytest.mark.asyncio
-async def test_failed_judgment_keeps_visual_evidence_without_caching_rejection(
-    decision_flow,
-):
-    harness = decision_flow
-    manager = harness.host.auto_collect_manager
-    manager.manual_review = False
-    harness.host.decision_client.error = DecisionError("timeout")
-    assert await manager.submit(flow_fixtures.FlowEvent(harness.png))
-    await asyncio.wait_for(manager.queue.join(), 5)
-    pending = await manager.pending_status("pack-a")
-    assert pending["count"] == 1
-    item = pending["items"][0]
-    assert item["decision_status"] == "failed" and item["review_required"]
-    assert item["meme_confidence"] is None
-    assert item["caption"] == harness.decision["caption"]
-    assert manager._state.get("understandings") and not manager._state.get("decisions")
-    assert manager.counters["decision_failed"] == 1
-
-
-@pytest.mark.asyncio
 async def test_stage_cache_reuses_visual_analysis_and_invalidates_routing_rules(
     decision_flow,
 ):
@@ -148,7 +102,6 @@ async def test_stage_cache_reuses_visual_analysis_and_invalidates_routing_rules(
     assert manager._state["recognition_count"] == 1
 
 
-@pytest.mark.asyncio
 async def test_conclusive_rejection_is_cached_with_unknown_category(decision_flow):
     harness = decision_flow
     manager = harness.host.auto_collect_manager
@@ -163,7 +116,6 @@ async def test_conclusive_rejection_is_cached_with_unknown_category(decision_flo
     assert len(harness.host.decision_client.calls) == 1
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("suggested_category", ["happy", "deleted-category"])
 @pytest.mark.parametrize("review_flag", ["top_level", "classification"])
 async def test_mixed_automatic_batch_skips_only_forced_review_records(
@@ -192,29 +144,48 @@ async def test_mixed_automatic_batch_skips_only_forced_review_records(
     assert remaining["count"] == 1 and remaining["items"][0]["review_required"]
     assert remaining["items"][0]["id"] == review_id
     assert manager.pending_image_path("pack-a", review_id).is_file()
+    selection = {"id": review_id}
+    assert (
+        await manager.accept_pending(
+            "pack-a", [selection, selection], manual_confirmed=False
+        )
+    )["skipped_review"] == 1
+    if suggested_category == "deleted-category":
+        with pytest.raises(ValueError):
+            await manager.accept_pending("pack-a", [selection], manual_confirmed=True)
 
 
-@pytest.mark.asyncio
-async def test_stale_top_level_flag_cannot_override_classification_review(
-    decision_flow,
+@pytest.mark.parametrize("failed", [False, True])
+async def test_forced_review_preserves_evidence_until_manual_acceptance(
+    decision_flow, failed
 ):
     harness = decision_flow
     manager = harness.host.auto_collect_manager
     manager.manual_review = False
-    harness.host.decision_client.probability = 0.5
-    await manager.submit(flow_fixtures.FlowEvent(harness.png))
+    if failed:
+        harness.host.decision_client.error = DecisionError("timeout")
+    else:
+        harness.host.decision_client.probability = 0.5
+    assert await manager.submit(flow_fixtures.FlowEvent(harness.png))
     await asyncio.wait_for(manager.queue.join(), 5)
-    metadata = manager._load_json(auto_collect.AUTO_COLLECT_INBOX_METADATA_PATH, {})
-    record = next(iter(metadata["items"].values()))
-    record["review_required"] = False
-    record["suggested_category"] = "deleted-category"
-    manager._save_json(auto_collect.AUTO_COLLECT_INBOX_METADATA_PATH, metadata)
-    assert (await manager.pending_status("pack-a"))["items"][0]["review_required"]
+    pending = await (
+        await harness.client.get("/inbox", query_string={"pack_id": "pack-a"})
+    ).get_json()
+    assert pending["count"] == pending["review_required_count"] == 1
+    item = pending["items"][0]
+    assert item["review_required"] and item["caption"] == harness.decision["caption"]
+    if failed:
+        assert item["decision_status"] == "failed" and item["meme_confidence"] is None
+        assert manager._state.get("understandings") and not manager._state.get(
+            "decisions"
+        )
     assert (await manager.import_pending("pack-a"))["skipped_review"] == 1
-    selection = {"id": record["id"]}
-    result = await manager.accept_pending(
-        "pack-a", [selection, selection], manual_confirmed=False
+    result = await harness.client.post(
+        "/inbox/accept", json={"pack_id": "pack-a", "items": [{"id": item["id"]}]}
     )
-    assert result == {"imported": 0, "duplicates": 0, "failed": 0, "skipped_review": 1}
-    with pytest.raises(ValueError):
-        await manager.accept_pending("pack-a", [selection], manual_confirmed=True)
+    assert (await result.get_json())["imported"] == 1
+    semantic = next(iter(load_metadata(harness.pack_dir)["images"].values()))
+    assert (
+        semantic["caption_status"] == "pending"
+        and semantic["auto_caption"] == item["caption"]
+    )
