@@ -12,9 +12,7 @@
     <header class="page-header">
       <div class="page-header-main">
         <div class="page-title-block">
-          <p class="eyebrow">Meme Pack Manager</p>
           <h1><i class="fas fa-face-grin-beam icon"></i>表情包管理</h1>
-          <p class="page-subtitle">整理每一种心情，让表情随手可用。</p>
         </div>
       </div>
       <nav class="nav-actions" aria-label="页面导航"></nav>
@@ -80,9 +78,11 @@
     >
       <div class="collection-review-heading">
         <div>
-          <p class="eyebrow">Collection Review</p>
-          <h2 id="collection-review-title" class="ui-dialog-title text-h3 pa-4 pb-0 pl-6">
-            审核收集到的表情包
+          <h2
+            id="collection-review-title"
+            class="ui-dialog-title text-h3 pa-4 pb-0 pl-6"
+          >
+            待审核表情
           </h2>
           <p id="collection-review-pack"></p>
         </div>
@@ -97,7 +97,7 @@
         </button>
       </div>
       <p class="collection-review-hint">
-        预览后选择接收，图片才会加入当前表情包。分类可逐张调整；默认优先展示把握较高的图片。
+        接收后图片才会入包，分类可逐张调整；默认优先展示分类把握较高的图片。
       </p>
       <div class="collection-review-toolbar">
         <label
@@ -129,10 +129,7 @@
         </button>
       </div>
       <details id="collection-review-stats" class="collection-review-stats">
-        <summary>最近收集状态</summary>
-        <p class="collection-review-hint">
-          当前运行期间的全局统计，包含其他表情包；重启后重新计数。
-        </p>
+        <summary>收集统计</summary>
         <dl id="collection-review-counters"></dl>
       </details>
       <p id="collection-review-status" role="status" aria-live="polite"></p>
@@ -273,7 +270,7 @@
                 同名冲突或待确认：<span id="conflict-count">0</span> 个
               </summary>
               <p class="hint">
-                增量同步会保留这些图片。检查后，可在高级同步中选择以本地或云端为准。首次升级时，没有内容校验记录的同名图片也会列在这里。
+                增量同步保留这些文件；缺少校验记录的同名文件也会列在这里。检查后可在高级同步中选择覆盖方向。
               </p>
               <ul id="img-host-conflict-files"></ul>
             </details>
@@ -296,9 +293,7 @@
             </button>
             <details class="manage-maintenance">
               <summary>高级同步</summary>
-              <p class="hint">
-                强制同步会覆盖同名图片并删除目标端多出的图片，请先检查差异。
-              </p>
+              <p class="hint">覆盖同名文件，并删除目标端多出的文件。</p>
               <button id="force-upload-sync-btn" class="danger">
                 <i class="fas fa-triangle-exclamation icon"></i>强制同步云端
               </button>
@@ -389,9 +384,7 @@
           aria-label="分类审核筛选"
         >
           <div class="semantic-review-toolbar-copy">
-            <p class="eyebrow">Category Review</p>
             <h2>分类审核</h2>
-            <p>按审核状态筛选，快速找到需要复核的图片。</p>
           </div>
           <div
             id="semantic-review-stats"
@@ -453,9 +446,8 @@
             表情包维护
           </summary>
           <div class="maintenance-warning">
-            <strong>请先备份，再执行以下操作。</strong>
-            <p>清空图片：删除当前包内的全部图片，保留分类。</p>
-            <p>删除表情包：移除当前整个包及其内容。</p>
+            <strong>这些操作无法撤销。</strong>
+            <p>操作前建议先导出备份。</p>
           </div>
           <div class="button-row">
             <button id="clear-all-btn" class="danger" type="button">
@@ -530,11 +522,8 @@
         aria-modal="true"
         aria-labelledby="move-target-modal-title"
       >
-        <p class="move-target-modal-eyebrow">批量移动</p>
         <h2 id="move-target-modal-title">选择目标分类</h2>
-        <p id="move-target-modal-description">
-          选择一个分类，将已选表情包批量移动过去。
-        </p>
+        <p id="move-target-modal-description"></p>
         <input
           id="move-target-search"
           type="search"
@@ -562,11 +551,8 @@
         aria-modal="true"
         aria-labelledby="category-edit-modal-title"
       >
-        <p class="category-edit-modal-eyebrow">类别编辑</p>
         <h2 id="category-edit-modal-title">编辑类别</h2>
-        <p id="category-edit-modal-description">
-          修改类别名称和描述，保存后立即生效。
-        </p>
+        <p id="category-edit-modal-description">保存后立即生效。</p>
         <div class="category-edit-form-panel">
           <label for="category-edit-name-input">类别名称</label>
           <input
@@ -624,14 +610,12 @@
         <p class="danger-modal-eyebrow">危险操作</p>
         <h2 id="danger-modal-title">请确认操作</h2>
         <p id="danger-modal-description"></p>
-        <p>此操作无法撤销，请确认已备份需要保留的内容。</p>
+        <p>此操作无法撤销。</p>
         <label class="danger-modal-check" for="danger-modal-ack">
           <input type="checkbox" id="danger-modal-ack" />
           <span>我已理解该操作不可恢复</span>
         </label>
-        <p id="danger-modal-stage-text" class="danger-modal-stage-text">
-          请先勾选已理解，再进入 5 秒倒计时的最终确认。
-        </p>
+        <p id="danger-modal-stage-text" class="danger-modal-stage-text"></p>
         <div class="danger-modal-actions">
           <button id="danger-modal-cancel-btn" class="secondary">取消</button>
           <button id="danger-modal-confirm-btn" class="danger" disabled>
@@ -692,8 +676,12 @@
       class="ui-dialog"
       aria-labelledby="pack-transfer-title"
     >
-      <h2 id="pack-transfer-title" class="ui-dialog-title text-h3 pa-4 pb-0 pl-6">移到其他表情包</h2>
-      <p>选定目标表情包，再决定这些图片如何归类。</p>
+      <h2
+        id="pack-transfer-title"
+        class="ui-dialog-title text-h3 pa-4 pb-0 pl-6"
+      >
+        移到其他表情包
+      </h2>
       <fieldset id="pack-transfer-fields">
         <label>目标表情包<select id="pack-transfer-pack"></select></label>
         <label
@@ -770,7 +758,6 @@
         >
           <div class="image-preview-semantic-header">
             <div>
-              <p class="image-preview-semantic-eyebrow">Semantic Detail</p>
               <h2>图片语义</h2>
             </div>
             <span
@@ -914,7 +901,7 @@
                 id="image-preview-review-rewrite-status"
                 class="image-preview-review-rewrite-status"
               >
-                模型会重写语义并自动选择分类；只生成候选，不会直接保存或移动。
+                生成语义和分类建议，检查并保存后才会修改图片数据或移动分类。
               </p>
             </div>
             <div class="image-preview-edit-field">
@@ -968,12 +955,9 @@
               <select id="image-preview-target-category">
                 <option value="">保持当前分类</option>
               </select>
-              <small>
-                视觉模型重写后会自动填入建议分类，你只需检查。选择新分类后，请点击“保存、移动并更新该图向量”；其他同内容图片不变。
-              </small>
             </div>
             <p id="image-preview-edit-scope" class="image-preview-edit-scope">
-              只修改当前路径的图片。
+              仅修改当前图片，其他同内容图片不变。
             </p>
             <div class="image-preview-edit-actions">
               <button
@@ -1005,10 +989,13 @@
       aria-labelledby="create-pack-title"
     >
       <form id="create-pack-form">
-        <h2 id="create-pack-title" class="ui-dialog-title text-h3 pa-4 pb-0 pl-6">
-          创建新表情包
+        <h2
+          id="create-pack-title"
+          class="ui-dialog-title text-h3 pa-4 pb-0 pl-6"
+        >
+          新建表情包
         </h2>
-        <p>创建后会自动切换到新包，可立即上传表情或从其他包移入。</p>
+        <p>创建后自动切换到新包，可上传图片或从其他包移入。</p>
         <fieldset id="create-pack-fields">
           <label
             >表情包名称

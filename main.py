@@ -12,6 +12,7 @@ from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star
 
 from .backend.auto_collect import AutoCollectManager
+from .backend.decision import DecisionClient
 from .backend.packs.categories import CategoryManager
 from .backend.packs.images import IMAGE_EXTENSIONS
 from .backend.packs.resolver import get_pack_paths
@@ -185,6 +186,10 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         # 上传与待发送状态
         self.upload_states = {}
         self.pending_images = {}
+        decision_config = self._read_path(("decision_service",), {})
+        self.decision_client = DecisionClient(
+            decision_config if isinstance(decision_config, dict) else {}
+        )
         auto_collect_config = self._read_path(("auto_collect",), {})
         self.auto_collect_manager = AutoCollectManager(
             self,
@@ -238,6 +243,16 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             ("generation", "emotion", "llm", "provider_id"),
             default="",
         )
+        self.selection_backend = str(
+            self._read_path(("generation", "emotion", "llm", "backend"), "chat")
+            or "chat"
+        )
+        self.semantic_query_source = str(
+            self._read_path(("semantic", "query", "source"), "generated") or "generated"
+        )
+        self.semantic_query_provider_id = str(
+            self._read_path(("semantic", "query", "provider_id"), "") or ""
+        ).strip()
         emotion_llm_context_turns = self._read_config_value(
             ("generation", "emotion", "llm", "context_turns"),
             default=0,
@@ -923,6 +938,18 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             event.set_extra("meme_manager_stream_filtered", False)
             event.set_extra("meme_manager_reply_provider_id", "")
             event.set_extra("meme_manager_reply_model", "")
+            event.set_extra(
+                "meme_manager_selection_backend",
+                getattr(self, "selection_backend", "chat"),
+            )
+            event.set_extra(
+                "meme_manager_selection_timing",
+                "after_reply" if self.emotion_llm_enabled else "during_reply",
+            )
+            event.set_extra(
+                "meme_manager_selection_method",
+                "semantic" if semantic_active else "category",
+            )
         if semantic_mode == "tool":
             req.system_prompt = self._strip_meme_prompt(
                 req.system_prompt
@@ -1072,6 +1099,8 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
     async def terminate(self):
         if getattr(self, "auto_collect_manager", None):
             await self.auto_collect_manager.close()
+        if getattr(self, "decision_client", None):
+            await self.decision_client.close()
         install_tasks = list(getattr(self, "_community_install_tasks", set()))
         install_tasks.extend(getattr(self, "_community_update_tasks", set()))
         for task in install_tasks:

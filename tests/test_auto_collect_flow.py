@@ -227,7 +227,8 @@ class AutoCollectFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(accepted.status_code, 200)
         self.assertEqual(
-            await accepted.get_json(), {"imported": 2, "duplicates": 0, "failed": 0}
+            await accepted.get_json(),
+            {"imported": 2, "duplicates": 0, "failed": 0, "skipped_review": 0},
         )
         self.assertEqual(self.host.reload_count, 1)
         self.assertEqual(

@@ -227,7 +227,10 @@ class AutoCollectReviewTests(unittest.IsolatedAsyncioTestCase):
                 [{"id": blue_id}, {"id": green_id}, {"id": red_id}],
             )
 
-        self.assertEqual(result, {"imported": 1, "duplicates": 1, "failed": 1})
+        self.assertEqual(
+            result,
+            {"imported": 1, "duplicates": 1, "failed": 1, "skipped_review": 0},
+        )
         pending_items = (await self.manager.pending_status("pack-a"))["items"]
         self.assertEqual([item["id"] for item in pending_items], [red_id])
         self.assertEqual(len(list((pack_dir / "memes").rglob("*.png"))), 2)
@@ -254,7 +257,10 @@ class AutoCollectReviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(summary["semantic_caption_total"], 2)
 
         result = await self.manager.accept_pending("pack-a", [{"id": red_id}])
-        self.assertEqual(result, {"imported": 1, "duplicates": 0, "failed": 0})
+        self.assertEqual(
+            result,
+            {"imported": 1, "duplicates": 0, "failed": 0, "skipped_review": 0},
+        )
         await asyncio.wait_for(self.manager._embedding_tasks["pack-a"], 10)
         self.assertNotIn("pack-a", self.manager._embedding_tasks)
 

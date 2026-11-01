@@ -40,6 +40,10 @@ backend/
 │   ├── types.py
 │   └── text_safety.py
 ├── auto_collect.py
+├── collection_analysis.py # Independent evidence and collection judgments
+├── decision.py           # Shared System One transport
+├── selection.py          # Post-reply candidate selection
+├── delivery_history.py   # Bounded confirmed-delivery references
 └── plugin_settings.py
 ```
 
@@ -52,6 +56,26 @@ backend/
 插件参数保存在 AstrBot 的 `data/config/astrbot_plugin_meme_manager_config.json`。插件设置中心与 AstrBot 的配置页读写同一份配置；设置中心保存后通过 AstrBot 重载插件。配置字段定义在 `_conf_schema.json`，设置中心的分类与控件逻辑在 `pages/app/settings/config.js`。
 
 当前只读取分组配置，不保留旧的平铺字段和别名。增加配置时，同时检查 schema、运行时读取、设置中心分组与配置接口测试。
+
+配图设置按标签粒度与选择者组合。`semantic.enabled` 映射分类级／图片级标签，`generation.emotion.llm.enabled` 映射主模型自选／额外辅助；不新增重复模式字段。“主模型”是原界面的“回复模型”，始终指本轮实际生成回复的 Provider/model，不等同于全局默认模型。`generation.emotion.llm.backend` 仅决定辅助选图的后端，仍在内容生成后执行。`semantic.query` 独立配置查询来源和聊天 Provider，`decision_service` 保存共享服务参数，`auto_collect.judgment_backend` 单独选择收集判断路径。旧缺省值分别为 chat、generated、vision。
+
+设置页以可点击流程图为配图与收集参数入口，所有参数节点统一打开 `config-flow-dialog`，主流程与侧栏保持原位置。弹窗通过注释占位搬移原设置卡片或使用规则面板，关闭时恢复，禁止复制控件或维护另一份草稿。`activeFlowGroup` 标识当前弹窗分组；`config.js` 维护唯一的 fields/controls/changes 状态，保存重建表单时先恢复原组件，再搬入新组件。表单控件显式关联 `plugin-config-form`，事件同时委托给表单及弹窗；规则面板复用自身事件与独立保存按钮。公共 overlay 负责焦点约束、Escape 与滚动锁定，兼容嵌套确认弹窗；关闭后恢复流程触发点焦点，保存失败保留草稿并定位错误字段。
+
+固定 `#decision` 导航供独立服务配置，`#models` 旧链接保持有效。`setup-state.js` 从当前草稿生成模型角色、缺项及准备状态，不发送请求或序列化密钥。配图和自动收集缺项分别显示在流程内的 `selection-required`、`collection-required`，保留原字段定位；两页均不展示独立的模型状态卡片。决策服务直接展示接口参数，语义准备提醒独立显示。保存全部更改包含所有插件配置分区，使用规则保持独立；密钥修改清单只显示替换或清除状态。
+
+设置支持 `#config-group-<group.id>`：`applyLocationHash` 校验目标所属分区，通过 `navigateToSetting` 打开弹窗并聚焦标题或指定字段，保留卡片 fragment 及鉴权查询参数。`#config-group-rules` 打开使用规则弹窗，`#rules` 仍进入独立分区。首次加载或保存期间仅记录待跳转目标，在解除 `busy/inert` 后处理；加载失败保留目标供重试，切换普通分区或无效锚点会取消待跳转。显式打开尚未启用的模块时展示未使用说明，不自动修改功能开关；存储提供商卡片也可预先配置。保存后重建表单保留当前弹窗。语义化页模型设置链接直达 `semantic-models`，文案统一为“配图 → 语义数据准备”。
+
+`backend/selection.py` 规范化分类／图片候选和 selected、abstained、failed 结果；`backend/decision.py` 通过异步 HTTP 执行 System One 请求，不调用 AstrBot 聊天接口，不请求流式，不自动重试。会话／事件候选校验和真实资源权限仍在调用方执行。客户端延迟创建、并发有界、取消传播，插件关闭时释放 session；返回错误只暴露稳定原因码，密钥及服务原始错误不进入页面或日志。
+
+`POST settings/decision-models` 是插件页面 bridge 接口，仅接收草稿 `base_url`，读取公开 `GET <base>/models`，不保存配置、不重载、不转发密钥或发起推理。使用 8 秒超时、响应大小上限及禁止重定向；兼容基础地址末尾已有 `/systemone`。解析官方 `{models:[{name,displayName,...}]}`，按 `name` 返回精确 ID，去重并跳过无效条目、明确不支持 Choice 的条目。前端通过请求序号与节点连接状态丢弃改地址或重建后的迟到结果；仅用户选择才修改模型值。聊天／向量提供商列表读取异常不阻断配置 GET／POST，`provider_list_errors` 提供非敏感提示，模型输入保留手填 Provider ID。此接口由插件原生 JS 调用，不使用宿主 dashboard 的生成式 API 客户端。
+
+隔离预览增加 `preview_model_list_failure`、`preview_model_list_empty`、`preview_provider_list_failure` 场景；均只使用模拟目录，不连接实际服务。模型列表入口与手填保存可在 `#decision` 检查。
+
+`backend/semantic/query_builder.py` 只构造检索词。决策后端的查询生成仍使用聊天 Provider，不把决策模型当成自由文本生成器；显式 Provider 不继承回复模型覆盖。回复后选择忽略原回复中意外残留的选图标记，主动弃选不能被这些标记绕过。
+
+近期配图参考来自实际成功发送记录，按会话有界保存。宿主 after_message_sent 钩子可能在发送异常被吞掉后执行，不能仅凭该钩子写成功记录；使用成功返回的 event.send／独立图片发送边界，兼容混合消息、格式转换和部分成功。
+
+自动收集的默认视觉路径继续一次请求完成识别、审核、分类及描述。决策路径先进行独立图片理解，再进行收录／分类判断；两阶段缓存分别以分析版本、Provider 配置、图片内容及规则／分类指纹隔离。不确定与决策失败产生强制人工复核记录，所有自动接收入口均检查该状态。新描述未满足语义分类锚定契约时只保存草稿，不标为已完成；人工改分类后重新核对复用条件。旧待审记录的新增来源、复核和概率字段允许缺失。
 
 运行数据位于 `data/plugin_data/meme_manager/`。启动时不再探测或迁移旧的全局表情目录，也不维护固定的默认表情目录别名；资源路径由 `backend/packs/resolver.py` 按当前规则动态解析。已有目录不会因移除旧机制而被删除。
 
@@ -152,6 +176,8 @@ node tests/frontend/preview.mjs
 
 预览使用模拟接口，仅用于布局和交互检查，不能代替真实 AstrBot 联调。URL 可添加 `?theme=light` 或 `?theme=dark` 模拟宿主的初始主题，预览工具中的按钮可以实时切换深浅色；这些控件仅存在于模拟预览中。
 
+设置预览可组合 `preview_selection=category-reply|category-post|semantic-reply|semantic-post`、`preview_backend=decision`、`preview_query_source=reply_text`。`preview_no_models` 模拟缺模型，`preview_service_missing` 模拟服务不完整，`preview_apply_failure` 模拟已保存但应用失败，`preview_conflict` 模拟 revision 冲突。管理与语义页面共享待审字段样例，包括旧记录、未知概率、决策失败及强制人工复核；预览数据在页面内存中保存，刷新页面后重置，绝不保存真实凭据。
+
 ## Python 验证
 
 在安装了 AstrBot 与插件依赖的环境中，从插件根目录运行：
@@ -172,7 +198,6 @@ node --test tests/frontend/collection-review.test.mjs
 ```
 
 流程测试使用临时 PNG/GIF 文件、真实后台队列、审核 API、表情包写入及语义存储，覆盖消息临时文件释放、处理中去重、改分类接收、拒收后重启、两种模式自动接收及模型失败恢复。仅外部视觉模型返回值使用可控替身，不会调用真实模型或写入运行中的图库；模型识别质量和平台实际消息格式仍需真实环境验证。
-
 
 ## 概率门控回归验证
 

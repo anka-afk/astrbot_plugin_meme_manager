@@ -82,6 +82,13 @@
   font-size: var(--font-caption);
   overflow-wrap: anywhere;
 }
+
+.auto-inbox-review-required {
+  color: var(--warning-fg);
+  font-size: var(--font-label);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
 .status-header-tools,
 .records-toolbar {
   display: flex;

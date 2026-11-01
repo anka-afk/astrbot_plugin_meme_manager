@@ -11,11 +11,7 @@
   <body>
     <header class="page-header">
       <div>
-        <p class="eyebrow">Semantic Meme Workspace</p>
-        <h1><i class="fas fa-wand-magic-sparkles icon"></i>语义表情包</h1>
-        <p class="subtitle">
-          为图片生成描述和向量索引，让回复模型按语义选择更合适的表情包。
-        </p>
+        <h1><i class="fas fa-wand-magic-sparkles icon"></i>语义化</h1>
       </div>
       <nav class="nav-actions" aria-label="页面导航"></nav>
     </header>
@@ -25,19 +21,17 @@
         <div class="panel-header">
           <div>
             <h2><i class="fas fa-gears icon"></i>语义化任务</h2>
-            <p class="panel-hint">
-              选择资源包，生成图片描述并建立向量索引。已有描述会保留，只处理缺失或失败的图片。
-            </p>
+            <p class="panel-hint">生成图片描述并建立向量索引。</p>
           </div>
           <div class="control-fields">
             <div class="field-row pack-field">
-              <label for="pack">资源包</label>
-              <select id="pack" aria-label="选择资源包" disabled>
-                <option value="">正在加载资源包…</option>
+              <label for="pack">表情包</label>
+              <select id="pack" aria-label="选择表情包" disabled>
+                <option value="">正在加载表情包…</option>
               </select>
             </div>
             <div class="field-row concurrency-field">
-              <label for="concurrency">模型调用并发上限</label>
+              <label for="concurrency">并发上限</label>
               <input
                 id="concurrency"
                 type="number"
@@ -48,7 +42,7 @@
                 aria-describedby="concurrency-hint"
               />
               <small id="concurrency-hint"
-                >同时提交给视觉模型的图片上限，建议按模型限流设置。</small
+                >同时提交给视觉模型的图片数，请按模型限流设置。</small
               >
             </div>
           </div>
@@ -56,12 +50,12 @@
         <div class="button-row action-row">
           <a
             class="nav-link"
-            href="../settings/index.html#models"
-            data-nav-target="../settings/index.html#models"
+            href="../settings/index.html#config-group-semantic-models"
+            data-nav-target="../settings/index.html#config-group-semantic-models"
             >模型设置</a
           >
           <button type="button" data-action="start" disabled>
-            <i class="fas fa-play icon"></i>一键完整语义化
+            <i class="fas fa-play icon"></i>开始语义化
           </button>
           <button type="button" class="secondary" data-action="resume" disabled>
             <i class="fas fa-forward icon"></i>继续队列
@@ -74,10 +68,10 @@
           </button>
         </div>
         <details class="advanced-actions">
-          <summary>高级维护 <span>索引、队列与重新生成</span></summary>
+          <summary>高级维护</summary>
           <div class="maintenance-group">
             <p class="panel-hint">
-              描述已完成后，可单独修复索引；更换向量模型或维度后，请重建向量。
+              已有描述时可单独修复索引；更换向量模型或维度后，请按当前维度重建向量。
             </p>
             <div class="button-row">
               <button
@@ -99,9 +93,6 @@
             </div>
           </div>
           <div class="maintenance-group destructive-actions">
-            <p class="panel-hint">
-              以下操作会清理队列或覆盖语义数据，执行前会说明影响并请你确认。
-            </p>
             <div class="button-row">
               <button type="button" class="danger" data-action="clear" disabled>
                 <i class="fas fa-broom icon"></i>清空当前任务队列
@@ -131,14 +122,11 @@
       <section id="auto-inbox-panel" class="panel auto-inbox-panel hidden">
         <div class="panel-header">
           <div>
-            <p class="eyebrow">Auto Collection Inbox</p>
             <h2>
-              <i class="fas fa-inbox icon"></i>自动收集待审核
+              <i class="fas fa-inbox icon"></i>待审核
               <span class="badge" id="auto-inbox-count">0</span>
             </h2>
-            <p class="panel-hint">
-              请前往表情包管理预览图片、调整分类并接收。接收后可在本页启动语义化。
-            </p>
+            <p class="panel-hint">在表情包管理中预览、调整分类并接收。</p>
           </div>
           <button type="button" id="auto-inbox-semanticize">
             <i class="fas fa-wand-magic-sparkles icon"></i>前往审核
@@ -172,9 +160,7 @@
             value="0"
             aria-label="描述生成进度"
           ></progress>
-          <p id="task-guidance" class="panel-hint">
-            任务运行时每 3 秒自动更新。
-          </p>
+          <p id="task-guidance" class="panel-hint"></p>
         </div>
         <div id="status" class="status-grid"></div>
       </section>

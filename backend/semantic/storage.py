@@ -1434,6 +1434,7 @@ def save_collected_image_semantic(
     reusable = bool(
         caption
         and tags
+        and str(decision.get("judgment_backend") or "vision") == "vision"
         and decision.get("semantic_prompt_version") == PROMPT_VERSION
         and decision.get("semantic_category") == item.category
         and item.category != REVIEW_CATEGORY
@@ -1458,6 +1459,8 @@ def save_collected_image_semantic(
         item.tags = ensure_category_tag([], item.category)
         item.visible_text = ""
         item.caption_status = "pending"
+        if decision.get("judgment_backend") == "decision":
+            item.prompt_version = ""
     if manual_confirmed and item.category != REVIEW_CATEGORY:
         item.category_fit = "match"
         item.category_review_status = "manual_confirmed"

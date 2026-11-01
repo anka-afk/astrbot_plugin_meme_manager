@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
+import { collectionAvailability, collectionConfidence, collectionReviewReason, collectionStages } from "../../pages/app/shared/collection-status.js";
 
 const script = await readFile(
   new URL("../../pages/app/a_manage/script.js", import.meta.url),
@@ -69,6 +70,7 @@ function setup(
     apiGet,
     apiPost: async () => ({}),
     showToast() {},
+    collectionAvailability, collectionConfidence, collectionReviewReason, collectionStages,
     refreshUi: async () => {},
     activeManagePackId: "pack-a",
     managePackSelect: new Element("select"),
@@ -157,6 +159,20 @@ test("classification confidence orders highest first, and descriptions remain pl
   context.review.sort.value = "asc";
   context.renderCollectionReview();
   assert.match(context.review.grid.children[0].children[3].textContent, /20%/);
+});
+
+test("forced review preserves evidence, unknown probabilities and explicit human confirmation", () => {
+  const context = setup();
+  context.review.items = [{ id: "failure", caption: "visible evidence", judgment_backend: "decision",
+    review_required: true, review_reasons: ["decision_failed"], category_confidence: null,
+    meme_confidence: null, stage_status: {understanding: "completed", judgment: "failed"} }];
+  context.review.selected.add("failure");
+  context.renderCollectionReview();
+  const card = context.review.grid.children[0];
+  assert.equal(card.children[3].textContent, "分类把握 未知，表情把握 未知");
+  assert.match(card.children[5].textContent, /图片理解：完成.*决策：失败/);
+  assert.match(card.children[6].textContent, /必须人工复核.*已人工确认/);
+  assert.equal(context.review.accept.disabled, false);
 });
 
 test("select all operates on filtered results and preserves selections from other categories", () => {

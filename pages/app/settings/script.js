@@ -267,10 +267,10 @@ async function initSettingsPage() {
           .filter(Boolean)
           .join("；");
         vectorBackupHint.textContent = available
-          ? `包含完整本机向量${
+          ? `包含本机向量${
               modelHint ? `（${modelHint}）` : ""
-            }，适合迁回相同模型环境。`
-          : "当前没有完整向量；完成语义化并建立索引后才可导出。";
+            }，适用于相同向量模型和维度的环境。`
+          : "尚无完整向量，完成语义化并建立索引后可导出。";
       }
     } catch (error) {
       if (requestId !== exportCapabilityRequestId) {
@@ -578,9 +578,15 @@ async function initSettingsPage() {
   }
 
   function getRulePackIds(rule) {
-    const values = Array.isArray(rule.pack_ids) && rule.pack_ids.length
-      ? rule.pack_ids : [rule.pack_id];
-    return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
+    const values =
+      Array.isArray(rule.pack_ids) && rule.pack_ids.length
+        ? rule.pack_ids
+        : [rule.pack_id];
+    return [
+      ...new Set(
+        values.map((value) => String(value || "").trim()).filter(Boolean),
+      ),
+    ];
   }
 
   function createRulePackPicker(rule, index) {
@@ -666,7 +672,10 @@ async function initSettingsPage() {
               ordered.splice(current, 1);
             } else {
               const next = current + (action === "up" ? -1 : 1);
-              [ordered[current], ordered[next]] = [ordered[next], ordered[current]];
+              [ordered[current], ordered[next]] = [
+                ordered[next],
+                ordered[current],
+              ];
             }
             rule.pack_id = ordered[0] || "";
             updateRuleFromInput(index, "pack_ids", ordered);
@@ -849,7 +858,11 @@ async function initSettingsPage() {
       }
       if (!packIds.length) {
         errors.push(`${position} 尚未选择表情包`);
-      } else if (packIds.some((id) => !installedPacks.some((pack) => String(pack.id) === id))) {
+      } else if (
+        packIds.some(
+          (id) => !installedPacks.some((pack) => String(pack.id) === id),
+        )
+      ) {
         errors.push(`${position} 的表情包已不存在，请重新选择`);
       }
 
