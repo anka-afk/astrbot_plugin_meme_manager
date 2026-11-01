@@ -13,6 +13,7 @@ from astrbot.api.star import Context, Star
 
 from .backend.auto_collect import AutoCollectManager
 from .backend.decision import DecisionClient
+from .backend.manual_collect import ManualCollectManager
 from .backend.packs.categories import CategoryManager
 from .backend.packs.images import IMAGE_EXTENSIONS
 from .backend.packs.resolver import get_pack_paths
@@ -207,6 +208,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 ),
             },
         )
+        self.manual_collect_manager = ManualCollectManager(self.auto_collect_manager)
 
         # 配置项
         self.prompt_head = self._read_config_value(
@@ -368,6 +370,13 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
 
     @filter.event_message_type(EventMessageType.ALL)
     async def handle_upload_image(self, event: AstrMessageEvent):
+        manual_manager = getattr(self, "manual_collect_manager", None)
+        if manual_manager is not None:
+            response = await manual_manager.consume(event)
+            if response is not None:
+                if response:
+                    yield event.plain_result(response)
+                return
         user_key = f"{event.session_id}_{event.get_sender_id()}"
         manual_upload_pending = user_key in self.upload_states
         async for result in self._handle_upload_image_impl(event):
@@ -1181,6 +1190,8 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         return await self._send_meme_tool_impl(event, target)
 
     async def terminate(self):
+        if getattr(self, "manual_collect_manager", None):
+            await self.manual_collect_manager.close()
         if getattr(self, "auto_collect_manager", None):
             await self.auto_collect_manager.close()
         if getattr(self, "decision_client", None):

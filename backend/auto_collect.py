@@ -94,6 +94,7 @@ class AutoCollectJob:
         categories: 用于识别分类的运行时分类描述。
         source_kind: 来源类型，值为 ``group`` 或 ``user``。
         source_id: 原始群聊或个人用户 ID。
+        completion: Optional future for the final processing outcome.
     """
 
     snapshot_path: Path
@@ -102,6 +103,7 @@ class AutoCollectJob:
     source_kind: str
     source_id: str
     digest: str = ""
+    completion: asyncio.Future[str] | None = None
 
 
 class AutoCollectManager:
@@ -241,14 +243,17 @@ class AutoCollectManager:
             "model": str(getattr(client, "model", "") or ""),
         }
 
-    async def start(self, *, defer_missing_provider: bool = False) -> None:
+    async def start(
+        self, *, defer_missing_provider: bool = False, manual: bool = False
+    ) -> None:
         """Validate both required backends and start one background worker.
 
         Args:
             defer_missing_provider: Skip unregistered providers during plugin
                 initialization; the core-loaded hook will retry after loading.
+            manual: Start on demand even when passive collection is disabled.
         """
-        if not self.enabled or self._worker_task is not None:
+        if (not self.enabled and not manual) or self._worker_task is not None:
             return
         if not self.vision_provider_id:
             self._unavailable_reason = "missing_vision_provider"
@@ -346,6 +351,8 @@ class AutoCollectManager:
             except asyncio.QueueEmpty:
                 break
             self._inflight.discard(f"{job.target_pack_id}:{job.digest}")
+            if job.completion is not None and not job.completion.done():
+                job.completion.cancel()
             job.snapshot_path.unlink(missing_ok=True)
             self.queue.task_done()
 
@@ -373,6 +380,71 @@ class AutoCollectManager:
             str(getattr(event, "unified_msg_origin", "") or "").strip(),
         }
         return bool(self.scope.intersection(candidates)), source_kind, source_id
+
+    async def prepare_manual(self, event: Any) -> tuple[str, dict[str, str]]:
+        """Validate collection backends and resolve one writable target pack.
+
+        Args:
+            event: Command event used to resolve the primary pack.
+
+        Returns:
+            Target pack ID and its own category mapping.
+
+        Raises:
+            ValueError: A backend or target pack is unavailable.
+        """
+        await self.start(manual=True)
+        if not self._ready:
+            raise ValueError(
+                "收集服务尚未就绪，请在设置中心 → 自动收集配置支持图片输入的模型"
+                f"及所选判断后端（{self._unavailable_reason}）。"
+            )
+        context = (
+            {}
+            if self.target_pack_id
+            else self.plugin._resolve_runtime_pack_context(event=event)
+        )
+        pack_id = validate_pack_id(
+            self.target_pack_id or str(context.get("pack_id") or ""), "收集目标表情包"
+        )
+        if not (PACKS_DIR / pack_id).is_dir():
+            raise ValueError("收集目标表情包不存在，请检查使用规则或收集目标设置。")
+        categories = await asyncio.to_thread(load_pack_category_mapping, pack_id)
+        if not categories:
+            raise ValueError("收集目标表情包没有分类，请先添加分类。")
+        return pack_id, categories
+
+    async def submit_manual(
+        self, event: Any, images: list[Image], pack_id: str, categories: dict[str, str]
+    ) -> list[asyncio.Future[str]]:
+        """Snapshot explicit images before event-owned files are released.
+
+        Args:
+            event: Source command or upload event.
+            images: Direct image components, without recursively following replies.
+            pack_id: Target fixed when the collection began.
+            categories: Categories belonging to that target pack.
+
+        Returns:
+            Futures reporting each image's actual processing outcome.
+        """
+        _, source_kind, source_id = self._source_allowed(event)
+        completions = []
+        seen: set[str] = set()
+        for image in images:
+            completion = asyncio.get_running_loop().create_future()
+            completions.append(completion)
+            await self._snapshot_and_enqueue(
+                image,
+                pack_id,
+                categories,
+                source_kind,
+                source_id,
+                manual=True,
+                completion=completion,
+                message_seen=seen,
+            )
+        return completions
 
     async def submit(self, event: Any) -> bool:
         """过滤消息，并将符合条件的直接图片按单条消息上限加入队列。
@@ -663,6 +735,8 @@ class AutoCollectManager:
         marked: bool = True,
         message_key: str = "",
         message_seen: set[str] | None = None,
+        manual: bool = False,
+        completion: asyncio.Future[str] | None = None,
     ) -> bool:
         """先为候选图片创建快照并预留摘要，再检查冷却时间。
 
@@ -676,6 +750,8 @@ class AutoCollectManager:
             marked: 平台是否明确将图片标为表情。
             message_key: 用于排除平台重复投递的消息标识。
             message_seen: 同一消息已经处理过的图片摘要。
+            manual: Bypass passive sampling and cooldown for explicit submissions.
+            completion: Optional future receiving the actual outcome.
 
         Returns:
             快照是否成功进入识别队列。
@@ -685,6 +761,7 @@ class AutoCollectManager:
         record_id: str | None = None
         reserved = False
         queued = False
+        outcome = "failed"
         try:
             local_path = Path(
                 await asyncio.wait_for(image.convert_to_file_path(), timeout=30)
@@ -721,6 +798,7 @@ class AutoCollectManager:
             record_id = f"{target_pack_id}:{digest}"
             if message_seen is not None:
                 if record_id in message_seen:
+                    outcome = "duplicate"
                     self.counters["same_message_duplicate"] = (
                         self.counters.get("same_message_duplicate", 0) + 1
                     )
@@ -741,6 +819,11 @@ class AutoCollectManager:
                 or record_id in metadata.get("items", {})
                 or digest in self._state.get("rejected", {}).get(target_pack_id, [])
             ):
+                outcome = (
+                    "rejected"
+                    if digest in self._state.get("rejected", {}).get(target_pack_id, [])
+                    else "duplicate"
+                )
                 self.counters["duplicate_or_rejected"] = (
                     self.counters.get("duplicate_or_rejected", 0) + 1
                 )
@@ -759,7 +842,7 @@ class AutoCollectManager:
                     digest[:12],
                 )
                 return False
-            if marked:
+            if not manual and marked:
                 if not probability_hit(self.sampling_probability):
                     self.counters["sampling"] = self.counters.get("sampling", 0) + 1
                     logger.info(
@@ -769,7 +852,7 @@ class AutoCollectManager:
                         digest[:12],
                     )
                     return False
-            else:
+            elif not manual:
                 if self._cached_model_rejection(digest, target_pack_id, categories):
                     self.counters["model_rejected_cached"] = (
                         self.counters.get("model_rejected_cached", 0) + 1
@@ -793,7 +876,8 @@ class AutoCollectManager:
             cooldown_key = f"{source_kind}:{source_id}"
             now = time.monotonic()
             if (
-                not same_message
+                not manual
+                and not same_message
                 and now - self._cooldowns.get(cooldown_key, 0.0) < self.cooldown_seconds
             ):
                 self.counters["cooldown"] = self.counters.get("cooldown", 0) + 1
@@ -814,16 +898,19 @@ class AutoCollectManager:
                     source_kind=source_kind,
                     source_id=source_id,
                     digest=digest,
+                    completion=completion,
                 )
             )
             queued = True
-            self._cooldowns[cooldown_key] = now
+            if not manual:
+                self._cooldowns[cooldown_key] = now
             return True
         except asyncio.CancelledError:
             if copy_task is not None and not copy_task.done():
                 await asyncio.gather(copy_task, return_exceptions=True)
             raise
         except asyncio.QueueFull:
+            outcome = "queue_full"
             self.counters["queue_full"] = self.counters.get("queue_full", 0) + 1
             logger.info(
                 "[meme_manager] 自动收集跳过图片：入队时队列已满，表情包：%s",
@@ -838,6 +925,8 @@ class AutoCollectManager:
             return False
         finally:
             if not queued:
+                if completion is not None and not completion.done():
+                    completion.set_result(outcome)
                 if reserved and record_id is not None:
                     self._inflight.discard(record_id)
                 if snapshot_path is not None:
@@ -847,8 +936,9 @@ class AutoCollectManager:
         """串行处理队列中的图片，以限制视觉模型负载。"""
         while True:
             job = await self.queue.get()
+            outcome = "failed"
             try:
-                await self._process_job(job)
+                outcome = await self._process_job(job)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -859,6 +949,11 @@ class AutoCollectManager:
                     exc_info=True,
                 )
             finally:
+                if job.completion is not None and not job.completion.done():
+                    if self._closing:
+                        job.completion.cancel()
+                    else:
+                        job.completion.set_result(outcome)
                 self._inflight.discard(f"{job.target_pack_id}:{job.digest}")
                 job.snapshot_path.unlink(missing_ok=True)
                 self.queue.task_done()
@@ -1476,7 +1571,7 @@ class AutoCollectManager:
         extension: str,
         category: str,
         decision: dict[str, Any],
-    ) -> None:
+    ) -> str:
         """将已收集图片保存到所属表情包的独立待审箱。
 
         Args:
@@ -1486,6 +1581,9 @@ class AutoCollectManager:
             extension: 可信的扩展名。
             category: 建议的目标分类。
             decision: 已规范化的视觉识别结果。
+
+        Returns:
+            Saved, duplicate, or capacity-limited outcome.
         """
         async with self._inbox_lock:
             metadata = self._load_json(
@@ -1503,7 +1601,7 @@ class AutoCollectManager:
                     job.target_pack_id,
                     digest[:12],
                 )
-                return
+                return "duplicate"
             if (
                 sum(
                     isinstance(item, dict)
@@ -1518,7 +1616,7 @@ class AutoCollectManager:
                     job.target_pack_id,
                     digest[:12],
                 )
-                return
+                return "inbox_full"
             AUTO_COLLECT_INBOX_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
             filename = f"{job.target_pack_id}__{digest}{extension}"
             target = AUTO_COLLECT_INBOX_IMAGES_DIR / filename
@@ -1555,12 +1653,16 @@ class AutoCollectManager:
             job.target_pack_id,
             category,
         )
+        return "pending"
 
-    async def _process_job(self, job: AutoCollectJob) -> None:
+    async def _process_job(self, job: AutoCollectJob) -> str:
         """下载、去重、分类并路由一张队列中的图片。
 
         Args:
             job: 自动收集任务快照。
+
+        Returns:
+            The processing outcome used by manual collection summaries.
         """
         content = await asyncio.to_thread(job.snapshot_path.read_bytes)
         extension = await asyncio.to_thread(self._validate_image, content)
@@ -1583,7 +1685,11 @@ class AutoCollectManager:
                 job.target_pack_id,
                 digest[:12],
             )
-            return
+            return (
+                "duplicate"
+                if f"{job.target_pack_id}:{digest}" in metadata.get("items", {})
+                else "rejected"
+            )
         if (
             sum(
                 isinstance(item, dict)
@@ -1598,7 +1704,7 @@ class AutoCollectManager:
                 job.target_pack_id,
                 digest[:12],
             )
-            return
+            return "inbox_full"
         if await asyncio.to_thread(
             self._pack_contains_digest, job.target_pack_id, digest
         ):
@@ -1610,14 +1716,14 @@ class AutoCollectManager:
                 job.target_pack_id,
                 digest[:12],
             )
-            return
+            return "duplicate"
 
         if self.judgment_backend == "decision":
             decision = await self._analyze_with_decision(
                 content, extension, job, digest
             )
             if decision is None:
-                return
+                return "quota"
             if self._explicit_decision_rejection(decision):
                 self.counters["model_rejected"] = (
                     self.counters.get("model_rejected", 0) + 1
@@ -1628,7 +1734,7 @@ class AutoCollectManager:
                     decision.get("rejection_reason"),
                     digest[:12],
                 )
-                return
+                return "rejected"
             category = str(decision.get("category") or "").strip()
             if category not in job.categories:
                 category = REVIEW_CATEGORY
@@ -1644,7 +1750,7 @@ class AutoCollectManager:
                         job.target_pack_id,
                         digest[:12],
                     )
-                    return
+                    return "quota"
                 decision = await self._classify(content, extension, job.categories)
                 self._remember_decision(cache_key, decision)
             if (
@@ -1666,7 +1772,7 @@ class AutoCollectManager:
                     job.target_pack_id,
                     digest[:12],
                 )
-                return
+                return "rejected"
             category = str(decision.get("category") or "").strip()
             if category not in job.categories or (
                 not self.manual_review
@@ -1689,14 +1795,24 @@ class AutoCollectManager:
                     )
                 ).replace("\\", "/"),
             }
-        await self._save_to_inbox(job, content, digest, extension, category, decision)
+        saved = await self._save_to_inbox(
+            job, content, digest, extension, category, decision
+        )
+        if saved != "pending":
+            return saved
         if not self.manual_review and not bool(decision.get("review_required", False)):
             try:
-                await self.accept_pending(
+                accepted = await self.accept_pending(
                     job.target_pack_id,
                     [{"id": f"{job.target_pack_id}:{digest}"}],
                     manual_confirmed=False,
                 )
+                if accepted["imported"]:
+                    return "imported"
+                if accepted["duplicates"]:
+                    return "duplicate"
+                if accepted["failed"]:
+                    return "pending_failed"
             except RuntimeError:
                 self.counters["pack_busy"] = self.counters.get("pack_busy", 0) + 1
                 logger.info("[meme_manager] 表情包正在处理，已收集图片保留在待审箱")
@@ -1709,6 +1825,8 @@ class AutoCollectManager:
                         self._retry_auto_accept(job.target_pack_id),
                         name=f"meme_manager_auto_accept_{job.target_pack_id}",
                     )
+                return "waiting_import"
+        return "pending"
 
     async def pending_status(self, pack_id: str) -> dict[str, Any]:
         """List candidates with nullable probabilities and review provenance.
