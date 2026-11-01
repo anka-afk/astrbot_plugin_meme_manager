@@ -4,11 +4,15 @@ import asyncio
 import json
 from threading import Event
 from types import MethodType, SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from astrbot_plugin_meme_manager.backend.packs import storage as pack_storage
+from astrbot_plugin_meme_manager.backend.semantic import query as semantic_query
 from astrbot_plugin_meme_manager.mixins.event_handlers import EventHandlerMixin
 from test_meme_only_replies import reply_context as reply_context
+from test_multi_pack import runtime as runtime
+from test_multi_pack import semantic_runtime as semantic_runtime
 from test_probability_gates import tool_reply as tool_reply
 
 from astrbot.core.agent.tool import FunctionTool
@@ -21,13 +25,14 @@ from astrbot.core.provider.entities import LLMResponse
 from astrbot.core.provider.register import llm_tools
 
 
-def test_registered_tool_exposes_only_category_and_describes_its_effect_and_result():
+def test_registered_tool_exposes_one_target_and_describes_its_effect_and_result():
     tool = llm_tools.get_func("send_meme")
     assert tool is not None
-    assert set(tool.parameters["properties"]) == {"category"}
-    parameter = tool.parameters["properties"]["category"]
+    assert set(tool.parameters["properties"]) == {"target"}
+    parameter = tool.parameters["properties"]["target"]
     assert parameter["type"] == "string"
-    assert "Exact key" in parameter["description"]
+    assert "Exact category key" in parameter["description"]
+    assert "candidate ID" in parameter["description"]
     assert "explicitly asks" in tool.description
     assert "proactively" in tool.description
     assert "already used meme tags" in tool.description
@@ -46,6 +51,199 @@ def direct_sender(reply_context):
     sender.context = SimpleNamespace(send_message=AsyncMock(return_value=True))
     sender._send_meme_image = MethodType(EventHandlerMixin._send_meme_image, sender)
     return sender, event, state, root
+
+
+@pytest.fixture
+def semantic_sender(semantic_runtime):
+    sender, event, state, context = semantic_runtime
+    sender.send_meme_tool_enabled = True
+    sender.emotions_probability = 0
+    sender.max_memes_per_message = 0
+    state["meme_manager_send_tool_available"] = True
+    event.unified_msg_origin = "test:group:semantic"
+    sender.context = SimpleNamespace(send_message=AsyncMock(return_value=True))
+    sender._send_meme_image = MethodType(EventHandlerMixin._send_meme_image, sender)
+    sender._get_category_meme_files = Mock(
+        side_effect=AssertionError(
+            "Semantic IDs must not fall back to random categories"
+        )
+    )
+    return sender, event, state, context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("candidate_index", [0, 1])
+async def test_search_then_send_delivers_exact_candidate_from_its_bound_pack(
+    semantic_sender, candidate_index
+):
+    sender, event, _, context = semantic_sender
+    result = json.loads(await sender.search_memes_tool(event, "celebrate"))
+    candidate = result["candidates"][candidate_index]
+    response = json.loads(await sender.send_meme_tool(event, target=candidate["id"]))
+    assert response == {"ok": True, "status": "sent", "sent_count": 1}
+    chain = sender.context.send_message.await_args.args[1]
+    expected = (
+        context["pack_dirs"][candidate["_source_pack_id"]] / "memes/happy/meme.png"
+    )
+    assert expected.as_posix() in chain.chain[0].file.replace("\\", "/")
+    record = sender._delivery_history.recent(event.unified_msg_origin)[0]
+    assert record["candidate_id"] == candidate["id"]
+    assert record["category"] == "happy"
+    sender._get_category_meme_files.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation", ["unknown", "other_turn", "changed", "missing", "review", "unbound"]
+)
+async def test_semantic_tool_rejects_invalid_candidates_without_random_fallback(
+    semantic_sender, mutation
+):
+    sender, event, state, context = semantic_sender
+    result = json.loads(await sender.search_memes_tool(event, "celebrate"))
+    candidate = result["candidates"][0]
+    target = candidate["id"]
+    pack = context["pack_dirs"][candidate["_source_pack_id"]]
+    source = pack / "memes/happy/meme.png"
+    if mutation == "unknown":
+        target = "meme:" + "f" * 12
+    elif mutation == "other_turn":
+        state["meme_manager_semantic_candidates"] = {}
+    elif mutation == "changed":
+        source.write_bytes(b"changed")
+    elif mutation == "missing":
+        source.unlink()
+    elif mutation == "review":
+        record = next(iter(semantic_query.load_metadata(pack)["images"].values()))
+        record["category"] = semantic_query.REVIEW_CATEGORY
+    else:
+        pack_storage.save_selection_rules(
+            [{"id": "default", "scope": "default", "pack_ids": ["pack-a"]}]
+        )
+    response = json.loads(await sender.send_meme_tool(event, target=target))
+    assert response == {
+        "ok": False,
+        "reason": "semantic_unavailable"
+        if mutation == "unbound"
+        else "invalid_candidate",
+    }
+    sender.context.send_message.assert_not_awaited()
+    sender._get_category_meme_files.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_semantic_candidate_is_revalidated_after_conversion(semantic_sender):
+    sender, event, _, context = semantic_sender
+    result = json.loads(await sender.search_memes_tool(event, "celebrate"))
+    candidate = result["candidates"][0]
+    source = context["pack_dirs"][candidate["_source_pack_id"]] / "memes/happy/meme.png"
+    converted = source.parent / "converted.gif"
+
+    def convert(path):
+        converted.write_bytes(b"converted")
+        source.write_bytes(b"changed during conversion")
+        return str(converted)
+
+    sender._convert_to_gif = convert
+    response = json.loads(await sender.send_meme_tool(event, candidate["id"]))
+    assert response == {"ok": False, "reason": "candidate_changed"}
+    assert not converted.exists()
+    sender.context.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_multiple_semantic_candidates_can_be_sent_with_zero_attachment_limit(
+    semantic_sender,
+):
+    sender, event, _, _ = semantic_sender
+    result = json.loads(await sender.search_memes_tool(event, "celebrate"))
+    for candidate in result["candidates"]:
+        assert json.loads(await sender.send_meme_tool(event, candidate["id"]))["ok"]
+    assert sender.context.send_message.await_count == len(result["candidates"]) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger_probability", [0, 100])
+async def test_prefetched_candidate_sending_preserves_the_existing_search_strategy(
+    tool_reply, trigger_probability
+):
+    sender, event, state, request, shared, provider, search = tool_reply
+    sender.tool_call_probability = trigger_probability
+    sender.emotions_probability = 0
+    sender.max_memes_per_message = 0
+    shared.add_tool(
+        FunctionTool(
+            name="send_meme", description="Send", parameters={"type": "object"}
+        )
+    )
+    sender._get_category_meme_files = lambda event, category: ["fixture.png"]
+    sender.context.send_message = AsyncMock(return_value=True)
+    sender._send_meme_image = MethodType(EventHandlerMixin._send_meme_image, sender)
+    await sender._inject_meme_prompt_impl(event, request)
+    assert request.func_tool.get_tool("search_memes") is None
+    assert (
+        provider.text_chat.await_count
+        == search.await_count
+        == int(trigger_probability > 0)
+    )
+    result = json.loads(await sender.send_meme_tool(event, "meme:0123456789ab"))
+    assert result["ok"] is (trigger_probability > 0)
+    assert sender.context.send_message.await_count == int(trigger_probability > 0)
+    if not trigger_probability:
+        assert result["reason"] == "invalid_candidate"
+    assert state["meme_manager_semantic_search_completed"]
+
+
+@pytest.mark.asyncio
+async def test_semantic_send_tool_does_not_require_a_category_catalog(tool_reply):
+    sender, event, state, request, shared, _, _ = tool_reply
+    sender.tool_probability_enabled = False
+    shared.add_tool(
+        FunctionTool(
+            name="send_meme", description="Send", parameters={"type": "object"}
+        )
+    )
+    sender._get_category_meme_files = lambda event, category: []
+    await sender._inject_meme_prompt_impl(event, request)
+    assert state["meme_manager_send_tool_available"]
+    assert request.func_tool.get_tool("send_meme") is not None
+    assert request.func_tool.get_tool("search_memes") is not None
+    assert "本轮 search_memes 返回的完整 meme:... 候选 ID" in request.system_prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["chat", "decision"])
+@pytest.mark.parametrize("search_permission", ["granted", "missing", "inactive"])
+async def test_auxiliary_semantic_mode_keeps_only_granted_direct_search_tools(
+    tool_reply, backend, search_permission
+):
+    sender, event, state, request, shared, _, search = tool_reply
+    sender.emotion_llm_enabled = True
+    sender.emotion_llm_provider_id = "selector"
+    sender.selection_backend = backend
+    state["selected_provider"] = "actual-reply"
+    shared.add_tool(
+        FunctionTool(
+            name="send_meme", description="Send", parameters={"type": "object"}
+        )
+    )
+    sender._get_category_meme_files = lambda event, category: ["fixture.png"]
+    if search_permission == "missing":
+        shared.remove_tool("search_memes")
+    elif search_permission == "inactive":
+        shared.get_tool("search_memes").active = False
+    await sender._inject_meme_prompt_impl(event, request)
+    granted = search_permission == "granted"
+    assert state["meme_manager_direct_search_available"] is granted
+    assert bool(request.func_tool.get_tool("search_memes")) is granted
+    assert request.func_tool.get_tool("send_meme") is not None
+    assert request.func_tool.get_tool("other_tool") is not None
+    result = json.loads(await sender.search_memes_tool(event, "celebrate"))
+    assert bool(result.get("ok")) is granted
+    assert search.await_count == int(granted)
+    if granted:
+        assert not json.loads(await sender.search_memes_tool(event, "again"))["ok"]
+        search.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -309,6 +507,7 @@ async def test_restricted_send_tool_is_removed_from_only_the_current_request(
         provider.provider_config["modalities"] = ["text"]
     elif restriction == "empty":
         sender._get_category_meme_files = lambda event, category: []
+        sender._semantic_pack_ready = lambda **kwargs: False
     else:
         state["meme_manager_llm_request_origin"] = "plugin"
     await sender._inject_meme_prompt_impl(event, request)

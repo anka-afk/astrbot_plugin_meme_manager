@@ -1312,6 +1312,7 @@ class EventHandlerMixin:
             and self._reply_model_supports_tools(event)
         )
         event.set_extra("meme_manager_send_tool_available", send_tool_available)
+        search_tool = get_tool("search_memes") if callable(get_tool) else None
         if send_tool_available:
             context = self._resolve_runtime_pack_context(event=event, req=req)
             mapping = runtime_category_mapping(context.get("category_mapping") or {})
@@ -1320,14 +1321,24 @@ class EventHandlerMixin:
                 for key, description in mapping.items()
                 if self._get_category_meme_files(event, key)
             }
-            if catalog:
+            semantic_send = bool(
+                self._semantic_mode_active(event)
+                and (
+                    (search_tool and getattr(search_tool, "active", True))
+                    or event.get_extra("meme_manager_semantic_candidates")
+                )
+            )
+            if catalog or semantic_send:
                 req.system_prompt += (
                     f"\n\n{SEND_TOOL_PROMPT_MARKER_START}\n"
                     "[主动发送表情工具]\n"
                     "用户明确要求发表情时，应调用 send_meme；平时也可以按对话需要主动调用。"
                     "标签与工具二选一：本轮已经使用发送标签时，不再调用该工具；"
-                    "调用该工具后，不再输出发送标签。category 原样取自下方分类键。"
-                    "每次调用立即从分类随机发送一张图，结果返回后再判断是否发送成功。"
+                    "调用该工具后，不再输出发送标签。target 可以是下方分类键，"
+                    "也可以是本轮 search_memes 返回的完整 meme:... 候选 ID，不加 &&。"
+                    "语义模式优先检索候选并选择具体图片，已有候选时直接使用，不能编造 ID；"
+                    "当前没有语义搜索工具或候选时，可按下方分类发送。"
+                    "分类键随机取一张图，候选 ID 发送对应的具体图片；结果返回后再判断是否发送成功。"
                     "此工具由你决定是否使用，不受自动配图的概率和数量上限约束。"
                     "用户要求纯文字或不发图时不要调用；没有贴切分类时正常回复。"
                     "调用后不要再输出 &&分类&& 或 &&meme:...&& 标记；"
@@ -1341,6 +1352,15 @@ class EventHandlerMixin:
                 event.set_extra("meme_manager_send_tool_available", False)
         if not send_tool_available and send_tool is not None:
             self._remove_meme_tool(req, "send_meme")
+        direct_search = bool(
+            send_tool_available
+            and event.get_extra("meme_manager_semantic_mode") == "llm"
+            and search_tool
+            and getattr(search_tool, "active", True)
+        )
+        event.set_extra("meme_manager_direct_search_available", direct_search)
+        if event.get_extra("meme_manager_semantic_mode") == "llm" and not direct_search:
+            self._remove_meme_tool(req)
         if not self.emotion_llm_enabled:
             return
 
@@ -2210,12 +2230,12 @@ class EventHandlerMixin:
         finally:
             event.set_extra("found_emotions", None)
 
-    async def _send_meme_tool_impl(self, event: AstrMessageEvent, category: str) -> str:
-        """Send a model-selected category independently of attachment gates.
+    async def _send_meme_tool_impl(self, event: AstrMessageEvent, target: str) -> str:
+        """Send a category or a verified semantic candidate independently of gates.
 
         Args:
             event: Current chat event whose tools have passed request filtering.
-            category: Exact category in the currently bound packs.
+            target: Exact bound category or a candidate ID retrieved this turn.
 
         Returns:
             JSON indicating an adapter-confirmed send or a stable failure reason.
@@ -2235,14 +2255,26 @@ class EventHandlerMixin:
             or event.get_extra("meme_manager_semantic_selected_ids")
         ):
             return json.dumps({"ok": False, "reason": "tag_delivery_selected"})
+        if not isinstance(target, str) or not target:
+            return json.dumps({"ok": False, "reason": "invalid_target"})
         context = self._resolve_runtime_pack_context(event=event)
-        mapping = runtime_category_mapping(context.get("category_mapping") or {})
-        if not isinstance(category, str) or category not in mapping:
-            return json.dumps({"ok": False, "reason": "invalid_category"})
-        files = self._get_category_meme_files(event, category)
-        if not files:
-            return json.dumps({"ok": False, "reason": "no_images"})
-        source = random.choice(files)
+        semantic = target.startswith("meme:")
+        if semantic:
+            if not self._semantic_mode_active(event):
+                return json.dumps({"ok": False, "reason": "semantic_unavailable"})
+            source = validate_selected_id(event, target, context)
+            if source is None:
+                return json.dumps({"ok": False, "reason": "invalid_candidate"})
+            category = source.parent.name
+        else:
+            mapping = runtime_category_mapping(context.get("category_mapping") or {})
+            if target not in mapping:
+                return json.dumps({"ok": False, "reason": "invalid_category"})
+            category = target
+            files = self._get_category_meme_files(event, category)
+            if not files:
+                return json.dumps({"ok": False, "reason": "no_images"})
+            source = random.choice(files)
         event.set_extra("meme_manager_direct_send_attempted", True)
         final_path = str(source)
         conversion = None
@@ -2252,12 +2284,20 @@ class EventHandlerMixin:
             )
             final_path = await asyncio.shield(conversion)
             current = self._resolve_runtime_pack_context(event=event)
-            if current.get("pack_ids") != context.get(
-                "pack_ids"
-            ) or source not in self._get_category_meme_files(event, category):
+            if current.get("pack_ids") != context.get("pack_ids") or (
+                validate_selected_id(event, target, current) != source
+                if semantic
+                else source not in self._get_category_meme_files(event, category)
+            ):
                 return json.dumps({"ok": False, "reason": "candidate_changed"})
             image = Image.fromFileSystem(final_path)
-            self._track_prepared_meme(event, image, source, category=category)
+            self._track_prepared_meme(
+                event,
+                image,
+                source,
+                category=category,
+                candidate_id=target if semantic else "",
+            )
             await self._send_meme_image(event, image)
             return json.dumps({"ok": True, "status": "sent", "sent_count": 1})
         except asyncio.CancelledError:
