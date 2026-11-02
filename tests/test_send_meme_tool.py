@@ -1,6 +1,9 @@
 """Exercise immediate model-driven sends without external model or platform calls."""
 
 import asyncio
+import base64
+import copy
+import io
 import json
 from threading import Event
 from types import MethodType, SimpleNamespace
@@ -9,7 +12,9 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from astrbot_plugin_meme_manager.backend.packs import storage as pack_storage
 from astrbot_plugin_meme_manager.backend.semantic import query as semantic_query
+from astrbot_plugin_meme_manager.mixins import event_handlers
 from astrbot_plugin_meme_manager.mixins.event_handlers import EventHandlerMixin
+from PIL import Image as PillowImage
 from test_meme_only_replies import reply_context as reply_context
 from test_multi_pack import runtime as runtime
 from test_multi_pack import semantic_runtime as semantic_runtime
@@ -22,6 +27,7 @@ from astrbot.core.message.message_event_result import (
     ResultContentType,
 )
 from astrbot.core.provider.entities import LLMResponse
+from astrbot.core.provider.register import llm_tools
 
 pytestmark = pytest.mark.asyncio
 
@@ -132,11 +138,26 @@ async def test_prefetched_candidate_sending_preserves_the_existing_search_strate
     sender._send_meme_image = MethodType(EventHandlerMixin._send_meme_image, sender)
     await sender._inject_meme_prompt_impl(event, request)
     assert request.func_tool.get_tool("search_memes") is None
+    assert request.system_prompt.count("标签与工具二选一") == 1
     assert (
         provider.text_chat.await_count
         == search.await_count
         == int(trigger_probability > 0)
     )
+    candidates = state["meme_manager_semantic_candidates"].copy()
+    sender.emotion_llm_provider_id = "selector"
+    for auxiliary in (True, False):
+        sender.emotion_llm_enabled = auxiliary
+        for _ in range(2):
+            await sender._inject_meme_prompt_impl(event, request)
+            assert state["meme_manager_semantic_candidates"] == candidates
+            assert state["meme_manager_semantic_search_completed"]
+            assert request.system_prompt.count("标签与工具二选一") == int(not auxiliary)
+        assert (
+            provider.text_chat.await_count
+            == search.await_count
+            == int(trigger_probability > 0)
+        )
     result = json.loads(await sender.send_meme_tool(event, "meme:0123456789ab"))
     assert result["ok"] is (trigger_probability > 0)
     assert sender.context.send_message.await_count == int(trigger_probability > 0)
@@ -151,31 +172,40 @@ async def test_auxiliary_semantic_mode_keeps_only_granted_direct_search_tools(
     tool_reply, backend, search_permission
 ):
     sender, event, state, request, shared, _, search = tool_reply
+    sender.tool_probability_enabled = False
     sender.emotion_llm_enabled = True
     sender.emotion_llm_provider_id = "selector"
     sender.selection_backend = backend
     state["selected_provider"] = "actual-reply"
-    shared.add_tool(
-        FunctionTool(
-            name="send_meme", description="Send", parameters={"type": "object"}
-        )
-    )
+    for name in ("search_memes", "send_meme"):
+        shared.add_tool(copy.copy(llm_tools.get_func(name)))
     sender._get_category_meme_files = lambda event, category: ["fixture.png"]
     if search_permission == "missing":
         shared.remove_tool("search_memes")
     elif search_permission == "inactive":
         shared.get_tool("search_memes").active = False
     await sender._inject_meme_prompt_impl(event, request)
+    guidance = request.system_prompt + json.dumps(request.func_tool.openai_schema())
+    assert all(word not in guidance for word in ("&&", "标记", "二选一", "meme tags"))
     granted = search_permission == "granted"
     assert state["meme_manager_direct_search_available"] is granted
     assert bool(request.func_tool.get_tool("search_memes")) is granted
     assert request.func_tool.get_tool("send_meme") is not None
     assert request.func_tool.get_tool("other_tool") is not None
     result = json.loads(await sender.search_memes_tool(event, "celebrate"))
+    assert all(
+        word not in json.dumps(result, ensure_ascii=False)
+        for word in ("&&", "标记", "二选一")
+    )
     assert bool(result.get("ok")) is granted
     assert search.await_count == int(granted)
     if granted:
         assert not json.loads(await sender.search_memes_tool(event, "again"))["ok"]
+        for auxiliary in (False, True):
+            sender.emotion_llm_enabled = auxiliary
+            request.func_tool = shared
+            await sender._inject_meme_prompt_impl(event, request)
+            assert not json.loads(await sender.search_memes_tool(event, "again"))["ok"]
         search.assert_awaited_once()
 
 
@@ -413,3 +443,119 @@ async def test_request_tool_permissions_preserve_shared_tools(tool_reply, restri
     assert request.func_tool.get_tool("other_tool") is not None
     await sender._inject_meme_prompt_impl(event, request)
     assert request.system_prompt.count("[主动发送表情工具]") == int(allowed)
+    assert request.system_prompt.count("标签与工具二选一") == int(allowed)
+    if not allowed:
+        assert "send_meme" not in request.system_prompt
+
+
+@pytest.mark.parametrize("semantic", [False, True])
+async def test_prompt_mode_switch_preserves_user_text_and_shared_tool_schemas(
+    tool_reply, semantic
+):
+    sender, event, state, request, shared, _, _ = tool_reply
+    sender.tool_probability_enabled = False
+    sender._semantic_pack_ready = lambda **kwargs: semantic
+    sender.emotion_llm_provider_id = "selector"
+    sender.prompt_head, sender.prompt_tail = "User head", "User tail\n&&happy&&"
+    sender.prompt_examples = []
+    context = sender._resolve_runtime_pack_context()
+    context.update(memes_dir=context["pack_dir"], pack_dirs={})
+    sender._resolve_runtime_pack_context = lambda **kwargs: context
+    for name in ("search_memes", "send_meme"):
+        shared.add_tool(copy.copy(llm_tools.get_func(name)))
+    original_schema = shared.openai_schema()
+    user_prompt = "User head: my instructions. User tail\n\n"
+    request.system_prompt = user_prompt
+    for auxiliary in (False, True, False):
+        sender.emotion_llm_enabled = auxiliary
+        request.func_tool = shared
+        for _ in range(2):
+            await sender._inject_meme_prompt_impl(event, request)
+            assert request.system_prompt.count("标签与工具二选一") == int(not auxiliary)
+            assert ("&&" in request.system_prompt) is (not auxiliary)
+            assert sender._strip_meme_prompt(request.system_prompt) == user_prompt
+            assert shared.openai_schema() == original_schema
+    original_prompt = request.system_prompt
+    other_state = {"meme_manager_llm_request_origin": "chat"}
+    other_event, other_request = copy.copy(event), copy.copy(request)
+    other_event.get_extra = other_state.get
+    other_event.set_extra = lambda key, value: other_state.update({key: value})
+    other_request.system_prompt = "Another session"
+    sender.emotion_llm_enabled = True
+    await sender._inject_meme_prompt_impl(other_event, other_request)
+    assert "&&" not in other_request.system_prompt
+    assert request.system_prompt == original_prompt
+    assert state["meme_manager_selection_timing"] == "during_reply"
+
+
+@pytest.mark.parametrize("as_base64", [False, True])
+async def test_concurrent_gifs_survive_delayed_reads_and_clean_only_owned_files(
+    direct_sender, monkeypatch, as_base64
+):
+    sender, first, state, root = direct_sender
+    sender.convert_static_to_gif = True
+    sender.send_image_as_base64 = as_base64
+    temp_dir = root / "temp"
+    monkeypatch.setattr(event_handlers, "get_astrbot_temp_path", lambda: str(temp_dir))
+    monkeypatch.setattr(event_handlers.time, "time", lambda: 1234567890)
+    monkeypatch.setattr(event_handlers.random, "randint", lambda *args: 1000)
+    second = copy.copy(first)
+    second_state = state.copy()
+    second.get_extra = second_state.get
+    second.set_extra = lambda key, value: second_state.update({key: value})
+    second.unified_msg_origin += "-second"
+    for category, color in (("happy", "red"), ("sad", "blue")):
+        PillowImage.new("RGB", (2, 2), color).save(root / category / "meme.png")
+    arrived = asyncio.Queue()
+    gates = {event.unified_msg_origin: asyncio.Event() for event in (first, second)}
+    received = {}
+
+    async def delayed_send(umo, chain):
+        image = chain.chain[0]
+        received[umo] = image
+        await arrived.put(umo)
+        await gates[umo].wait()
+        data = base64.b64decode(await image.convert_to_base64())
+        with PillowImage.open(io.BytesIO(data)) as gif:
+            expected = (255, 0, 0) if umo == first.unified_msg_origin else (0, 0, 255)
+            assert gif.convert("RGB").getpixel((0, 0)) == expected
+        if umo == first.unified_msg_origin:
+            raise OSError("simulated adapter failure")
+        return True
+
+    sender.context.send_message.side_effect = delayed_send
+    tasks = [
+        asyncio.create_task(sender.send_meme_tool(first, "happy")),
+        asyncio.create_task(sender.send_meme_tool(second, "sad")),
+    ]
+    try:
+        for _ in tasks:
+            await asyncio.wait_for(arrived.get(), timeout=3)
+        owned = set(temp_dir.glob("*.gif"))
+        assert len(owned) == 2
+
+        def fail_save(image, output, *args, **kwargs):
+            output.write(b"partial GIF")
+            raise OSError("simulated conversion failure")
+
+        with monkeypatch.context() as failing:
+            failing.setattr(PillowImage.Image, "save", fail_save)
+            source = str(root / "happy/meme.png")
+            assert await asyncio.to_thread(sender._convert_to_gif, source) == source
+        assert set(temp_dir.glob("*.gif")) == owned
+        gates[first.unified_msg_origin].set()
+        assert json.loads(await tasks[0])["reason"] == "send_failed"
+        assert len(list(temp_dir.glob("*.gif"))) == 1
+        gates[second.unified_msg_origin].set()
+        assert json.loads(await tasks[1])["status"] == "sent"
+        assert not list(temp_dir.glob("*.gif"))
+        if as_base64:
+            assert all(
+                image.file.startswith("base64://") for image in received.values()
+            )
+            for image in received.values():
+                assert await image.convert_to_base64()
+    finally:
+        for gate in gates.values():
+            gate.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
