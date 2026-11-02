@@ -144,6 +144,20 @@ async def test_prefetched_candidate_sending_preserves_the_existing_search_strate
         == search.await_count
         == int(trigger_probability > 0)
     )
+    candidates = state["meme_manager_semantic_candidates"].copy()
+    sender.emotion_llm_provider_id = "selector"
+    for auxiliary in (True, False):
+        sender.emotion_llm_enabled = auxiliary
+        for _ in range(2):
+            await sender._inject_meme_prompt_impl(event, request)
+            assert state["meme_manager_semantic_candidates"] == candidates
+            assert state["meme_manager_semantic_search_completed"]
+            assert request.system_prompt.count("标签与工具二选一") == int(not auxiliary)
+        assert (
+            provider.text_chat.await_count
+            == search.await_count
+            == int(trigger_probability > 0)
+        )
     result = json.loads(await sender.send_meme_tool(event, "meme:0123456789ab"))
     assert result["ok"] is (trigger_probability > 0)
     assert sender.context.send_message.await_count == int(trigger_probability > 0)
@@ -158,6 +172,7 @@ async def test_auxiliary_semantic_mode_keeps_only_granted_direct_search_tools(
     tool_reply, backend, search_permission
 ):
     sender, event, state, request, shared, _, search = tool_reply
+    sender.tool_probability_enabled = False
     sender.emotion_llm_enabled = True
     sender.emotion_llm_provider_id = "selector"
     sender.selection_backend = backend
@@ -186,6 +201,11 @@ async def test_auxiliary_semantic_mode_keeps_only_granted_direct_search_tools(
     assert search.await_count == int(granted)
     if granted:
         assert not json.loads(await sender.search_memes_tool(event, "again"))["ok"]
+        for auxiliary in (False, True):
+            sender.emotion_llm_enabled = auxiliary
+            request.func_tool = shared
+            await sender._inject_meme_prompt_impl(event, request)
+            assert not json.loads(await sender.search_memes_tool(event, "again"))["ok"]
         search.assert_awaited_once()
 
 

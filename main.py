@@ -928,14 +928,17 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         initialized = event is not None and event.get_extra(
             "meme_manager_request_initialized"
         )
-        if initialized and self.emotion_llm_enabled != (
+        mode_changed = initialized and self.emotion_llm_enabled != (
             event.get_extra("meme_manager_selection_timing") == "after_reply"
-        ):
-            initialized = False
-        if initialized:
+        )
+        if initialized and not mode_changed:
             semantic_mode = str(event.get_extra("meme_manager_semantic_mode") or "")
         semantic_active = bool(semantic_mode)
-        if event is not None and hasattr(event, "set_extra") and not initialized:
+        if (
+            event is not None
+            and hasattr(event, "set_extra")
+            and (not initialized or mode_changed)
+        ):
             event.set_extra("meme_manager_request_initialized", True)
             event.set_extra("meme_manager_semantic_active", semantic_active)
             event.set_extra("meme_manager_semantic_mode", semantic_mode)
@@ -945,15 +948,16 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 "meme_manager_semantic_verified_pack_ids",
                 ",".join(runtime_pack_ids) if semantic_active else "",
             )
-            event.set_extra("meme_manager_semantic_selected_ids", [])
-            event.set_extra("meme_manager_semantic_candidates", {})
-            event.set_extra("meme_manager_semantic_query", "")
-            event.set_extra("meme_manager_semantic_search_completed", False)
-            event.set_extra("meme_manager_semantic_response_processed", False)
-            event.set_extra("meme_manager_image_only_reply", False)
-            event.set_extra("meme_manager_stream_filtered", False)
-            event.set_extra("meme_manager_reply_provider_id", "")
-            event.set_extra("meme_manager_reply_model", "")
+            if not initialized:
+                event.set_extra("meme_manager_semantic_selected_ids", [])
+                event.set_extra("meme_manager_semantic_candidates", {})
+                event.set_extra("meme_manager_semantic_query", "")
+                event.set_extra("meme_manager_semantic_search_completed", False)
+                event.set_extra("meme_manager_semantic_response_processed", False)
+                event.set_extra("meme_manager_image_only_reply", False)
+                event.set_extra("meme_manager_stream_filtered", False)
+                event.set_extra("meme_manager_reply_provider_id", "")
+                event.set_extra("meme_manager_reply_model", "")
             event.set_extra(
                 "meme_manager_selection_backend",
                 getattr(self, "selection_backend", "chat"),
