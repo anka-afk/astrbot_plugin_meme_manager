@@ -26,18 +26,33 @@ async def test_shared_assets_resolve_through_astrbot_page_service(monkeypatch):
         "page_name": "app",
     }
     shared_urls = {}
-    base = service.build_plugin_page_view_content_path(
-        "meme_manager", "app", "test-token"
-    )
+    if hasattr(service, "build_plugin_page_view_content_path"):
+        base = service.build_plugin_page_view_content_path(
+            "meme_manager", "app", "test-token"
+        )
+    else:
+        base = service.build_plugin_page_content_path("meme_manager", "app")
     for source in APP.rglob("*"):
         if source.suffix not in {".html", ".css", ".js"}:
             continue
         relative = source.relative_to(APP).as_posix()
         content = source.read_text("utf-8")
         if source.suffix == ".html":
-            content = service.process_plugin_page_html(
-                content, theme=None, extra_query_params={"asset_token": "test-token"}
-            )
+            if hasattr(service, "process_plugin_page_html"):
+                content = service.process_plugin_page_html(
+                    content,
+                    theme=None,
+                    extra_query_params={"asset_token": "test-token"},
+                )
+            else:
+                content = service.rewrite_plugin_page_html(
+                    content,
+                    "meme_manager",
+                    "app",
+                    relative,
+                    theme=None,
+                    extra_query_params={"asset_token": "test-token"},
+                )
             urls = re.findall(r"(?:src|href)=[\"']([^\"']+)", content)
         elif source.suffix == ".css":
             urls = re.findall(r"url\([\"']?([^\)\"']+)", content)

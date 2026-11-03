@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import ntpath
 import os
 import tempfile
 from collections.abc import Iterable
@@ -27,6 +28,7 @@ def normalize_relative_path(value: str) -> str:
     """
     value = str(value).replace("\\", "/")
     parts = value.split("/")
+    is_reserved = getattr(ntpath, "isreserved", None)
     if (
         not value
         or PureWindowsPath(value).drive
@@ -34,7 +36,11 @@ def normalize_relative_path(value: str) -> str:
             part.casefold() in {"", ".", "..", ".sync-state"}
             or part.rstrip(" .") != part
             or any(ord(char) < 32 or char in '<>:"|?*' for char in part)
-            or PureWindowsPath(part).is_reserved()
+            or (
+                is_reserved(part)
+                if is_reserved is not None
+                else PureWindowsPath(part).is_reserved()
+            )
             for part in parts
         )
     ):

@@ -1,18 +1,9 @@
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from astrbot.core.utils.astrbot_path import get_astrbot_data_path
-
-try:
-    from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
-except ImportError:
-    # AstrBot 4.5.6 尚未提供这个接口，保持与新版插件的数据目录约定一致。
-    def get_astrbot_plugin_data_path() -> str:
-        return os.path.realpath(os.path.join(get_astrbot_data_path(), "plugin_data"))
-
+from .astrbot_compat import get_astrbot_plugin_data_path
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 DEFAULT_PLUGIN_NAME = "meme_manager"

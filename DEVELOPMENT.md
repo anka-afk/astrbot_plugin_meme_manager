@@ -160,6 +160,8 @@ node tests/frontend/preview.mjs
 
 ## Python 验证
 
+开发和测试环境需要 Python 3.12 或更新版本，以及 AstrBot 4.28.2 或更新版本。
+
 在安装了 AstrBot 与插件依赖的环境中，从插件根目录运行：
 
 ```sh

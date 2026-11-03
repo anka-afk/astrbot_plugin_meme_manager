@@ -4,10 +4,11 @@ import asyncio
 import copy
 import random
 
-from astrbot.core.agent.tool import FunctionTool
-from astrbot.core.message.components import Plain
-from astrbot.core.message.message_event_result import MessageChain
-from astrbot.core.platform.message_session import MessageSession
+from astrbot.api import FunctionTool
+from astrbot.api.event import MessageChain
+from astrbot.api.message_components import Plain
+
+from ..astrbot_compat import MessageSession
 
 
 class OutgoingEvent:

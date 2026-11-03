@@ -9,7 +9,7 @@ help: 功能：1. AI自动发送表情包 2. WebUI插件页面管理与资源广
 version: 5.3.1
 author: anka
 repo: https://github.com/anka-afk/astrbot_plugin_meme_manager
-astrbot_version: ">=4.17.0"
+astrbot_version: ">=4.28.2"
 social_link: https://github.com/anka-afk
 tags:
   - 表情包
