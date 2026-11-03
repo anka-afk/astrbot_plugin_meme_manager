@@ -16,9 +16,11 @@ from astrbot.core.message.message_event_result import (
     MessageEventResult,
     ResultContentType,
 )
+
+# Resolve the exported stage first so older cores initialize its submodules.
+from astrbot.core.pipeline import ProcessStage
 from astrbot.core.pipeline.process_stage.method import star_request
 from astrbot.core.pipeline.process_stage.method.agent_sub_stages import internal
-from astrbot.core.pipeline.process_stage.stage import ProcessStage
 from astrbot.core.pipeline.respond import stage as respond
 from astrbot.core.pipeline.result_decorate import stage as decorate
 from astrbot.core.pipeline.scheduler import PipelineScheduler
@@ -115,11 +117,22 @@ async def test_plugin_stream_delivers_without_final_decoration(
     monkeypatch.setattr(internal, "_record_internal_agent_stats", AsyncMock())
     monkeypatch.setattr(internal.Metric, "upload", AsyncMock())
     monkeypatch.setattr(internal.InternalAgentSubStage, "_save_to_history", AsyncMock())
-    monkeypatch.setattr(
-        internal.SessionServiceManager,
-        "should_process_llm_request",
-        AsyncMock(return_value=True),
-    )
+    if hasattr(internal, "SessionServiceManager"):
+        monkeypatch.setattr(
+            internal.SessionServiceManager,
+            "should_process_llm_request",
+            AsyncMock(return_value=True),
+        )
+    if hasattr(internal, "_select_provider"):
+        # Older cores prepare the request before the mocked agent builder.
+        monkeypatch.setattr(
+            internal, "_select_provider", AsyncMock(return_value=provider)
+        )
+        monkeypatch.setattr(
+            internal,
+            "collect_initial_request",
+            AsyncMock(return_value=(request, None)),
+        )
 
     async def hook(ev, kind, *args):
         if kind == EventType.OnWaitingLLMRequestEvent:

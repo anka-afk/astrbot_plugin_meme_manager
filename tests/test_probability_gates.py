@@ -228,12 +228,11 @@ async def test_preflight_preserves_provider_model_and_request(tool_reply):
 async def test_preflight_uses_core_image_fallback_provider(
     tool_reply, primary_tools, fallback_tools
 ):
-    from astrbot.core.astr_main_agent import (
-        _get_fallback_chat_providers,
-        _select_image_chat_provider,
-    )
+    from astrbot_plugin_meme_manager.astrbot_compat import get_image_chat_routing
+
     from astrbot.core.provider.provider import Provider
 
+    _get_fallback_chat_providers, _select_image_chat_provider = get_image_chat_routing()
     sender, event, state, request, _, primary, search = tool_reply
     primary.provider_config = {
         "id": "primary",

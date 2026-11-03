@@ -13,12 +13,14 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_plugin_data_path,
     get_astrbot_temp_path,
 )
+from astrbot.core.utils.session_waiter import SessionFilter
 
 __all__ = [
     "ContextWrapper",
     "MessageSession",
     "CommandFilter",
     "CommandGroupFilter",
+    "SessionFilter",
     "get_astrbot_plugin_data_path",
     "get_astrbot_temp_path",
     "get_star_handlers_registry",
@@ -39,17 +41,28 @@ def get_star_handlers_registry():
 
 
 def get_image_chat_routing():
-    """Load private image routing functions when the feature is needed.
+    """Resolve image routing across monolithic and split main-agent modules.
 
     Returns:
         Fallback provider resolver and image provider selector.
     """
-    from astrbot.core.astr_main_agent import (
-        _get_fallback_chat_providers,
-        _select_image_chat_provider,
-    )
+    try:
+        from astrbot.core.astr_main_agent.providers import (
+            resolve_fallback_providers,
+            select_image_provider,
+        )
+    except ModuleNotFoundError as exc:
+        # Only a missing split module identifies a supported older core.
+        # Missing dependencies inside the new module must retain their errors.
+        if exc.name != "astrbot.core.astr_main_agent.providers":
+            raise
+        from astrbot.core.astr_main_agent import (
+            _get_fallback_chat_providers,
+            _select_image_chat_provider,
+        )
 
-    return _get_fallback_chat_providers, _select_image_chat_provider
+        return _get_fallback_chat_providers, _select_image_chat_provider
+    return resolve_fallback_providers, select_image_provider
 
 
 def is_builtin_message_tool(tool):

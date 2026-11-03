@@ -1,8 +1,10 @@
 """Contracts shared by the supported old and new AstrBot releases."""
 
 import ast
+import builtins
 from pathlib import Path
 
+import pytest
 from astrbot_plugin_meme_manager import astrbot_compat
 from astrbot_plugin_meme_manager.backend import manual_collect, message_tool
 from astrbot_plugin_meme_manager.mixins import event_handlers
@@ -32,6 +34,22 @@ def test_session_and_context_contract():
     assert session.message_type is MessageType.GROUP_MESSAGE
     assert astrbot_compat.ContextWrapper(context=session).context is session
     assert astrbot_compat.get_star_handlers_registry() is not None
+
+
+def test_image_routing_does_not_mask_missing_dependencies(monkeypatch):
+    original_import = builtins.__import__
+
+    def import_with_missing_dependency(name, *args, **kwargs):
+        if name == "astrbot.core.astr_main_agent.providers":
+            raise ModuleNotFoundError(
+                "Missing routing dependency", name="routing_dependency"
+            )
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_with_missing_dependency)
+    with pytest.raises(ModuleNotFoundError) as error:
+        astrbot_compat.get_image_chat_routing()
+    assert error.value.name == "routing_dependency"
 
 
 def test_internal_imports_stay_in_compat_module():

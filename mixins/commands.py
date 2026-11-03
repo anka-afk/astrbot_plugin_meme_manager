@@ -1,13 +1,15 @@
 import asyncio
+import json
 import os
 import re
 import time
 from pathlib import Path
 
 from astrbot.api import logger
-from astrbot.api.all import *
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.util import session_waiter
 
+from ..astrbot_compat import SessionFilter
 from ..backend.packs.categories import resolve_safe_category_directory
 from ..backend.packs.images import (
     clear_all_emojis,
@@ -18,6 +20,29 @@ from ..backend.packs.resolver import get_pack_paths, load_pack_category_mapping
 from ..backend.packs.storage import install_first_official_pack_from_index
 from ..backend.semantic.storage import invalidate_semantic_metadata
 from ..config import COMMUNITY_INDEX_URL
+
+
+class CategoryCreationCancelled(Exception):
+    """Signal that the sender cancelled category creation."""
+
+
+class ConfirmationCancelled(Exception):
+    """Signal that the sender cancelled a pending operation."""
+
+
+class SenderScopedSessionFilter(SessionFilter):
+    """Keep interactive commands scoped to their original sender and session."""
+
+    def filter(self, event: AstrMessageEvent) -> str:
+        """Build an unambiguous key for the waiting sender.
+
+        Args:
+            event: Incoming event whose session and sender identify the waiter.
+
+        Returns:
+            Serialized session and sender identifiers.
+        """
+        return json.dumps([event.unified_msg_origin, str(event.get_sender_id())])
 
 
 class CommandMixin:

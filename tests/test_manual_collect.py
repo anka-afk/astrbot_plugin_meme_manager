@@ -40,7 +40,7 @@ class ManualCollectTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.flow = flow.AutoCollectFlowTests()
         self.flow.setUp()
-        self.addCleanup(self.flow.doCleanups)
+        self.addCleanup(self.flow.stack.close)
         self.host = self.flow.host
         self.pipeline = self.host.auto_collect_manager
         self.manager = manual_collect.ManualCollectManager(self.pipeline)
