@@ -20,7 +20,7 @@ from typing import Any
 from PIL import Image as PILImage
 
 from astrbot.api import logger
-from astrbot.core.message.components import Image
+from astrbot.api.message_components import Image
 
 from ..config import PACKS_DIR, PLUGIN_DATA_DIR, TEMP_DIR
 from ..utils import probability_hit

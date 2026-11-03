@@ -13,18 +13,19 @@ from typing import Any
 
 from PIL import Image as PILImage
 
-from astrbot.api import logger
-from astrbot.api.all import *
-from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import *
+from astrbot.api import ToolSet, logger
+from astrbot.api.event import AstrMessageEvent, MessageChain, ResultContentType, filter
+from astrbot.api.message_components import Image, Plain
+from astrbot.api.platform import MessageType
 from astrbot.api.provider import LLMResponse, ProviderRequest
-from astrbot.core.agent.run_context import ContextWrapper
-from astrbot.core.agent.tool import ToolSet
-from astrbot.core.message.components import Image, Plain
-from astrbot.core.message.message_event_result import MessageChain, ResultContentType
-from astrbot.core.platform.message_type import MessageType
-from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
+from ..astrbot_compat import (
+    ContextWrapper,
+    MessageSession,
+    get_astrbot_temp_path,
+    get_image_chat_routing,
+    is_builtin_message_tool,
+)
 from ..backend.delivery_history import DeliveryHistory
 from ..backend.meme_parser import MemeParser
 from ..backend.meme_parser.text_safety import (
@@ -1061,8 +1062,6 @@ class EventHandlerMixin:
         message: str | list | MessageChain,
     ) -> dict:
         """对外兼容接口：清理消息中的表情标记并准备待发送表情图片。"""
-        from astrbot.core.platform.message_session import MessageSession
-
         origin = str(getattr(event, "unified_msg_origin", "") or "")
         local = OutgoingEvent(
             event, MessageSession.from_str(origin) if origin else None
@@ -1470,7 +1469,7 @@ class EventHandlerMixin:
             message_tool is not None
             and getattr(message_tool, "active", True)
             and not isinstance(message_tool, MemeMessageTool)
-            and type(message_tool).__module__ == "astrbot.core.tools.message_tools"
+            and is_builtin_message_tool(message_tool)
         ):
             get_full = getattr(tool_set, "get_full_tool_set", None)
             local_tools = get_full() if callable(get_full) else copy.copy(tool_set)
@@ -1664,10 +1663,10 @@ class EventHandlerMixin:
                                 # request to a fallback before this hook. Reuse
                                 # its selection policy without changing the event.
                                 try:
-                                    from astrbot.core.astr_main_agent import (
+                                    (
                                         _get_fallback_chat_providers,
                                         _select_image_chat_provider,
-                                    )
+                                    ) = get_image_chat_routing()
                                 except ImportError:
                                     # Older cores do not perform this image routing.
                                     pass

@@ -7,10 +7,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from astrbot.api import logger
-from astrbot.core.message.components import Image, Reply
-from astrbot.core.star.filter.command import CommandFilter
-from astrbot.core.star.filter.command_group import CommandGroupFilter
+from astrbot.api.message_components import Image, Reply
 
+from ..astrbot_compat import CommandFilter, CommandGroupFilter
 from .auto_collect import AutoCollectManager
 
 IDLE_TIMEOUT_SECONDS = 600

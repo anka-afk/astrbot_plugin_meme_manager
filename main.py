@@ -4,13 +4,12 @@ import re
 from pathlib import Path
 
 from astrbot.api import llm_tool, logger
-from astrbot.api.all import *
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import EventMessageType
-from astrbot.api.message_components import *
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star
 
+from .astrbot_compat import get_star_handlers_registry
 from .backend.auto_collect import AutoCollectManager
 from .backend.decision import DecisionClient
 from .backend.manual_collect import ManualCollectManager
@@ -350,7 +349,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
     def _normalize_mixin_handler_module_paths(cls):
         """兼容尚未原生支持 Mixin 指令处理器的 AstrBot 版本。"""
         try:
-            from astrbot.core.star.star_handler import star_handlers_registry
+            star_handlers_registry = get_star_handlers_registry()
         except (ImportError, AttributeError):
             return
 

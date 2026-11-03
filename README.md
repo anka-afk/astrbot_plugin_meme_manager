@@ -3,11 +3,11 @@
 # 🌟 AstrBot 表情包管理器
 
 ![Banner](.github/img/Banner.png)
-[![AstrBot](https://img.shields.io/badge/AstrBot-4.17.0%2B-27a7d8)](https://github.com/AstrBotDevs/AstrBot)
+[![AstrBot](https://img.shields.io/badge/AstrBot-4.28.2%2B-27a7d8)](https://github.com/AstrBotDevs/AstrBot)
 [![Release](https://img.shields.io/github/v/release/anka-afk/astrbot_plugin_meme_manager?color=27a7d8&label=Release)](https://github.com/anka-afk/astrbot_plugin_meme_manager/releases/latest)
 [![Stars](https://img.shields.io/github/stars/anka-afk/astrbot_plugin_meme_manager?style=flat&color=e9b949)](https://github.com/anka-afk/astrbot_plugin_meme_manager/stargazers)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-![Python Version](https://img.shields.io/badge/Python-3.10.14%2B-blue)
+![Python Version](https://img.shields.io/badge/Python-3.12%2B-blue)
 [![PRs Welcome](https://img.shields.io/badge/PRs-Welcome-brightgreen)](DEVELOPMENT.md)
 [![Contributors](https://img.shields.io/github/contributors/anka-afk/astrbot_plugin_meme_manager?color=green)](https://github.com/anka-afk/astrbot_plugin_meme_manager/graphs/contributors)
 [![Last Commit](https://img.shields.io/github/last-commit/anka-afk/astrbot_plugin_meme_manager)](https://github.com/anka-afk/astrbot_plugin_meme_manager/commits/main)
@@ -236,7 +236,7 @@ Cloudflare R2 使用 MinIO Python SDK 接入 S3 API，不依赖 `boto3` / `botoc
 
 ## ⚠️ 兼容性
 
-需要 **AstrBot 4.17.0 或更新版本**。
+需要 **AstrBot 4.28.2 或更新版本**，以及 **Python 3.12 或更新版本**。更新插件前，请先确认 AstrBot 及其实际运行的 Python 环境满足要求。
 
 部分微信 4.x 接入中，JPG/PNG 可能显示为普通图片而非表情气泡，可尝试开启**设置中心 → 表情发送 → 静态图转 GIF 发送**。该选项默认关闭，仅在发送时转换，不修改图库原文件；其他平台通常无需开启。
 
