@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import uuid
 from urllib.parse import urlsplit
 
@@ -12,6 +13,22 @@ MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_QUESTIONS = 32
 MAX_OPTIONS = 255
+
+CLOUDFLARE_BASE_URL = "https://api.cloudflare.com/client/v4"
+CLOUDFLARE_MODELS = {
+    "clef-flash": "Clef Flash · 快速 9B",
+    "clef": "Clef · 27B",
+    "clef-omni": "Clef Omni · 音视频输入",
+}
+CLOUDFLARE_MAX_QUESTIONS = 64
+CLOUDFLARE_REQUEST_BYTES = 13 * 1024 * 1024
+CLOUDFLARE_ACCOUNT_ID = re.compile(r"^[0-9a-fA-F]{32}$")
+CLOUDFLARE_QUESTION_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
+# 仅映射可稳定识别的错误码，其余按 HTTP 状态处理，避免暴露上游细节。
+CLOUDFLARE_ERROR_CODES = {
+    10000: "unauthorized",
+    2021: "insufficient_credits",
+}
 
 
 class DecisionError(Exception):
@@ -33,15 +50,20 @@ class DecisionAnswers(dict):
 
 
 class DecisionClient:
-    """Share one bounded System One transport between independent tasks."""
+    """为独立任务共享有界传输，统一 System One 与 Cloudflare 的决策契约。"""
 
     def __init__(self, config: dict):
-        """Initialize configuration without starting a session or inference.
+        """初始化配置，不建立会话或发起推理。
 
         Args:
-            config: Service URL, token, model, timeout, and concurrency settings.
+            config: 提供方、服务地址或账户 ID、密钥、模型、超时和并发设置。
         """
         values = config if isinstance(config, dict) else {}
+        provider = str(values.get("provider") or "systemone").strip().casefold()
+        supported = {"systemone", "cloudflare"}
+        self.provider = provider if provider in supported else "systemone"
+        self._provider_valid = provider == self.provider
+        self.account_id = str(values.get("account_id") or "").strip()
         self.base_url = (
             str(values.get("base_url", "https://system-one.dev/v1") or "")
             .strip()
@@ -49,6 +71,7 @@ class DecisionClient:
         )
         self.token = str(values.get("token") or "").strip()
         self.model = str(values.get("model") or "").strip()
+        self._choice_min = 2 if self.provider == "cloudflare" else 1
         self.timeout, self._timeout_valid = self._read_timeout(
             values.get("timeout", 15)
         )
@@ -103,20 +126,32 @@ class DecisionClient:
     def _reason(self) -> str:
         if self._closed:
             return "closed"
-        if not self.base_url:
-            return "missing_base_url"
-        if not self._base_url_valid():
-            return "invalid_base_url"
+        if not self._provider_valid:
+            return "invalid_provider"
         if not self.token:
             return "missing_token"
         if any(ord(char) < 33 or ord(char) == 127 for char in self.token):
             return "invalid_token"
-        if not self.model:
-            return "missing_model"
-        if len(self.model) > 128 or any(
-            ord(char) < 32 or ord(char) == 127 for char in self.model
-        ):
-            return "invalid_model"
+        if self.provider == "cloudflare":
+            if not self.account_id:
+                return "missing_account_id"
+            if not CLOUDFLARE_ACCOUNT_ID.fullmatch(self.account_id):
+                return "invalid_account_id"
+            if not self.model:
+                return "missing_model"
+            if self.model not in CLOUDFLARE_MODELS:
+                return "unsupported_model"
+        else:
+            if not self.base_url:
+                return "missing_base_url"
+            if not self._base_url_valid():
+                return "invalid_base_url"
+            if not self.model:
+                return "missing_model"
+            if len(self.model) > 128 or any(
+                ord(char) < 32 or ord(char) == 127 for char in self.model
+            ):
+                return "invalid_model"
         if not self._timeout_valid:
             return "invalid_timeout"
         if not self._concurrency_valid:
@@ -138,12 +173,18 @@ class DecisionClient:
         return {
             "ready": reason == "ready",
             "reason": reason,
+            "provider": self.provider,
+            "backend": self.provider,
             "model": self.model,
-            "backend": "systemone",
             "requests_started": dict(self.request_counts),
         }
 
     def _endpoint(self) -> str:
+        if self.provider == "cloudflare":
+            return (
+                f"{CLOUDFLARE_BASE_URL}/accounts/{self.account_id}"
+                f"/ai/run/@cf/cloudflare/{self.model}"
+            )
         if self.base_url.endswith("/systemone"):
             return self.base_url
         return f"{self.base_url}/systemone"
@@ -161,15 +202,21 @@ class DecisionClient:
             return self._session
 
     async def list_models(self) -> list[dict[str, str]]:
-        """Read the public catalog without credentials or an inference request.
+        """读取模型候选，不发送凭据或发起推理。
 
         Returns:
-            Exact model IDs and display names, preserving catalog order.
+            按目录顺序排列的模型 ID 和名称。Cloudflare 直接返回本地固定目录。
 
         Raises:
-            DecisionError: The URL, connection, response size, or catalog is invalid.
-            asyncio.CancelledError: The owning discovery request was cancelled.
+            DecisionError: 地址、连接、响应大小或目录格式无效。
+            asyncio.CancelledError: 模型发现请求被取消。
         """
+        if not self._provider_valid:
+            raise DecisionError("invalid_provider")
+        if self.provider == "cloudflare":
+            return [
+                {"id": model, "name": name} for model, name in CLOUDFLARE_MODELS.items()
+            ]
         if not self._base_url_valid():
             raise DecisionError("invalid_base_url")
         base_url = self.base_url.removesuffix("/systemone")
@@ -230,8 +277,7 @@ class DecisionClient:
             )
         return models
 
-    @staticmethod
-    def _question_options(question: dict) -> list[str]:
+    def _question_options(self, question: dict) -> list[str]:
         """Validate documented question criteria and return distribution keys.
 
         Args:
@@ -241,7 +287,7 @@ class DecisionClient:
             Allowed probability keys for the selected primitive.
 
         Raises:
-            DecisionError: The request does not follow the System One contract.
+            DecisionError: The request does not follow the provider's contract.
         """
         kind = question.get("type")
         criteria = question.get("criteria")
@@ -259,7 +305,7 @@ class DecisionClient:
         if kind != "choice" or not isinstance(criteria, dict):
             raise DecisionError("invalid_request")
         options = list(criteria)
-        if not 1 <= len(options) <= MAX_OPTIONS:
+        if not self._choice_min <= len(options) <= MAX_OPTIONS:
             raise DecisionError("invalid_request")
         if any(
             not isinstance(item, str)
@@ -274,7 +320,10 @@ class DecisionClient:
     def _encode_request(self, state, questions: dict) -> bytes:
         if not isinstance(state, (str, dict, list)) or not isinstance(questions, dict):
             raise DecisionError("invalid_request")
-        if not 1 <= len(questions) <= MAX_QUESTIONS:
+        max_questions = (
+            CLOUDFLARE_MAX_QUESTIONS if self.provider == "cloudflare" else MAX_QUESTIONS
+        )
+        if not 1 <= len(questions) <= max_questions:
             raise DecisionError("invalid_request")
         for name, question in questions.items():
             if (
@@ -282,6 +331,10 @@ class DecisionClient:
                 or not name
                 or len(name) > 128
                 or not isinstance(question, dict)
+            ):
+                raise DecisionError("invalid_request")
+            if self.provider == "cloudflare" and not CLOUDFLARE_QUESTION_NAME.fullmatch(
+                name
             ):
                 raise DecisionError("invalid_request")
             self._question_options(question)
@@ -294,7 +347,11 @@ class DecisionClient:
             ).encode("utf-8")
         except (TypeError, ValueError, UnicodeError):
             raise DecisionError("invalid_request") from None
-        if len(body) > MAX_REQUEST_BYTES:
+        if len(body) > (
+            CLOUDFLARE_REQUEST_BYTES
+            if self.provider == "cloudflare"
+            else MAX_REQUEST_BYTES
+        ):
             raise DecisionError("request_too_large")
         return body
 
@@ -324,8 +381,7 @@ class DecisionClient:
             for value in distribution.values():
                 cls._probability(value)
 
-    @classmethod
-    def _validate_answers(cls, questions: dict, answers) -> dict:
+    def _validate_answers(self, questions: dict, answers) -> dict:
         """Validate the complete answer set before exposing any partial result.
 
         Args:
@@ -347,12 +403,12 @@ class DecisionClient:
             kind = question["type"]
             if answer.get("type") != kind:
                 raise DecisionError("invalid_response")
-            options = cls._question_options(question)
+            options = self._question_options(question)
             if kind == "choice":
                 if answer.get("choice") not in options:
                     raise DecisionError("invalid_response")
             elif kind == "noul":
-                cls._probability(answer.get("noul"))
+                self._probability(answer.get("noul"))
             else:
                 value = answer.get("score")
                 if (
@@ -362,7 +418,7 @@ class DecisionClient:
                     or not 0 <= value <= len(options) - 1
                 ):
                     raise DecisionError("invalid_response")
-            cls._validate_answer_numbers(answer, options)
+            self._validate_answer_numbers(answer, options)
         return answers
 
     @staticmethod
@@ -435,6 +491,58 @@ class DecisionClient:
             return DecisionError("server_error")
         return DecisionError("http_error")
 
+    async def _cloudflare_error(
+        self, response: aiohttp.ClientResponse
+    ) -> DecisionError:
+        """将 Cloudflare v4 错误信封映射为稳定错误码。
+
+        Args:
+            response: Workers AI 的失败响应，可能包含错误信封。
+
+        Returns:
+            不含上游消息细节的稳定错误。
+        """
+        code = None
+        try:
+            body = await self._read_bounded(response)
+            payload = json.loads(body.decode("utf-8"))
+        except (aiohttp.ClientError, UnicodeError, ValueError, TypeError):
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("errors"), list):
+            errors = payload["errors"]
+            if errors and isinstance(errors[0], dict):
+                raw = errors[0].get("code")
+                if isinstance(raw, int) and not isinstance(raw, bool):
+                    code = raw
+        if code in CLOUDFLARE_ERROR_CODES:
+            return DecisionError(CLOUDFLARE_ERROR_CODES[code])
+        return self._http_error(response.status)
+
+    @staticmethod
+    def _cloudflare_payload(payload) -> dict:
+        """将 Workers AI v4 信封解包为统一的答案结构。
+
+        Args:
+            payload: Workers AI 成功响应解码后的 JSON。
+
+        Returns:
+            顶层包含 answers、model 和 usage 的结果。
+
+        Raises:
+            DecisionError: 信封格式错误或上游报告失败。
+        """
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            raise DecisionError("invalid_response")
+        result = payload.get("result")
+        if isinstance(result, dict) and "answers" not in result:
+            # 经网关计费的决策模型可能在 result 内再包一层结果。
+            inner = result.get("result")
+            if isinstance(inner, dict) and "answers" in inner:
+                result = inner
+        if not isinstance(result, dict) or "answers" not in result:
+            raise DecisionError("invalid_response")
+        return result
+
     async def evaluate(self, state: dict, questions: dict) -> dict:
         """Execute one inference without retrying or changing its model.
 
@@ -455,10 +563,11 @@ class DecisionClient:
         body = self._encode_request(state, questions)
         headers = {
             "Authorization": f"Bearer {self.token}",
-            "Idempotency-Key": str(uuid.uuid4()),
             "Content-Type": "application/json; charset=utf-8",
             "Accept": "application/json",
         }
+        if self.provider != "cloudflare":
+            headers["Idempotency-Key"] = str(uuid.uuid4())
 
         async def request_once():
             """Return one bounded response within the caller's total deadline."""
@@ -480,9 +589,11 @@ class DecisionClient:
                     allow_redirects=False,
                     timeout=aiohttp.ClientTimeout(total=self.timeout),
                 ) as response:
-                    if response.status == 409:
-                        raise DecisionError(await self._conflict_reason(response))
                     if not 200 <= response.status <= 299:
+                        if self.provider == "cloudflare":
+                            raise await self._cloudflare_error(response)
+                        if response.status == 409:
+                            raise DecisionError(await self._conflict_reason(response))
                         raise self._http_error(response.status)
                     return (
                         await self._read_bounded(response),
@@ -503,6 +614,8 @@ class DecisionClient:
             payload = json.loads(response_body.decode("utf-8"))
         except (UnicodeError, ValueError):
             raise DecisionError("invalid_response") from None
+        if self.provider == "cloudflare":
+            payload = self._cloudflare_payload(payload)
         if not isinstance(payload, dict):
             raise DecisionError("invalid_response")
         answers = self._validate_answers(questions, payload.get("answers"))

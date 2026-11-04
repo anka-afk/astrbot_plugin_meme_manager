@@ -181,7 +181,7 @@ async function initPluginConfig() {
     {
       id: "decision-service",
       category: "decision",
-      title: "System One 接口",
+      title: "决策服务接口",
       prefixes: ["decision_service."],
       advancedPaths: [
         "decision_service.timeout",
@@ -354,6 +354,8 @@ async function initPluginConfig() {
     "generation.emotion.llm.backend": "辅助模型类型",
     "semantic.query.source": "检索词来源",
     "semantic.query.provider_id": "检索词聊天模型",
+    "decision_service.provider": "服务提供方",
+    "decision_service.account_id": "Cloudflare 账户 ID",
     "decision_service.base_url": "决策服务基础地址",
     "decision_service.token": "决策服务密钥",
     "decision_service.model": "决策模型 ID",
@@ -384,8 +386,14 @@ async function initPluginConfig() {
     "sync.status_cache_ttl_seconds": "管理页同步状态的缓存时间，0 表示关闭",
     "community.github_accelerator_url":
       "下载 GitHub 资源时使用此前缀，留空直连",
-    "decision_service.base_url": "System One 的 v1 服务地址",
-    "decision_service.model": "System One 使用的模型 ID",
+    "decision_service.provider":
+      "systemone 使用 System One 决策服务；cloudflare 使用 Workers AI 的 clef 系列决策模型",
+    "decision_service.account_id":
+      "REST 地址 /accounts/{账户ID}/ 中的 32 位十六进制账户 ID；仅 Cloudflare 提供方必填",
+    "decision_service.base_url":
+      "仅 System One 使用：v1 服务地址；Cloudflare 提供方忽略此字段",
+    "decision_service.model":
+      "System One 填写模型 ID；Cloudflare 填写 clef、clef-flash 或 clef-omni；「测试连接」发送一次极小请求",
     "decision_service.timeout": "单次决策任务的最长等待时间",
     "decision_service.max_concurrency": "辅助配图与自动收集共享的请求并发上限",
     "semantic.enabled": "开启后按图片语义检索，索引不可用时回退分类",
@@ -485,7 +493,9 @@ async function initPluginConfig() {
     only_chat_llm: "仅普通聊天回复",
     chat_and_plugin_llm: "普通聊天与插件触发的回复",
     chat: "聊天 LLM",
-    decision: "决策服务（System One）",
+    decision: "决策服务",
+    systemone: "System One 决策服务",
+    cloudflare: "Cloudflare Workers AI",
     generated: "由聊天模型生成",
     reply_text: "使用可见回复文本",
     vision: "视觉模型合并判断",
@@ -500,6 +510,12 @@ async function initPluginConfig() {
   let decisionModels = [];
   let decisionModelsBaseUrl = "";
   let modelListRequest = 0;
+  let decisionHintRequest = 0;
+  const cloudflareDecisionModels = [
+    { id: "clef-flash", name: "Clef Flash · 快速 9B" },
+    { id: "clef", name: "Clef · 27B" },
+    { id: "clef-omni", name: "Clef Omni · 音视频输入" },
+  ];
   let packs = [];
   let loaded = false;
   let semanticStatus = null;
@@ -511,6 +527,64 @@ async function initPluginConfig() {
   let dialogOriginGroup = "";
   let dialogOriginTab = "";
   let dialogFieldPath = "";
+
+  function decisionProvider() {
+    return String(
+      changes.get("decision_service.provider") ??
+        fields.get("decision_service.provider")?.value ??
+        "systemone",
+    );
+  }
+
+  function invalidateDecisionTest() {
+    // 修改配置后，已完成的提示和仍在等待的响应都不再有效。
+    decisionHintRequest++;
+    const help = document.getElementById("config-decision_service-model-hint");
+    if (help) {
+      help.dataset.state = "";
+      help.textContent = help.dataset.baseHint;
+    }
+  }
+
+  function updateDecisionModelControl(provider) {
+    const cloudflare = (provider ?? decisionProvider()) === "cloudflare";
+    const control = controls.get("decision_service.model");
+    const choices = document.getElementById(
+      "config-decision_service-model-choices",
+    );
+    const help = document.getElementById("config-decision_service-model-hint");
+    const button = document.getElementById("fetch-decision-models");
+    if (control)
+      control.placeholder = cloudflare
+        ? "clef、clef-flash 或 clef-omni"
+        : "从列表选择或填写模型 ID";
+    if (choices) {
+      choices.replaceChildren(new Option("从列表选择…", ""));
+      const baseUrl = String(
+        changes.get("decision_service.base_url") ??
+          fields.get("decision_service.base_url")?.value ??
+          "",
+      ).trim();
+      const models = cloudflare
+        ? cloudflareDecisionModels
+        : baseUrl === decisionModelsBaseUrl
+        ? decisionModels
+        : [];
+      for (const model of models)
+        choices.append(new Option(model.name || model.id, model.id));
+      choices.disabled = choices.options.length <= 1;
+    }
+    if (button) {
+      button.hidden = cloudflare;
+      button.disabled = false;
+      button.textContent = "获取列表";
+    }
+    if (help)
+      help.textContent = cloudflare
+        ? `${help.dataset.baseHint}；从列表选择或手动填写`
+        : `${help.dataset.baseHint}；可获取列表或手动填写`;
+    if (help) help.dataset.state = "";
+  }
 
   function restoreDialogContent() {
     if (dialogContent && dialogPlaceholder?.isConnected)
@@ -780,6 +854,9 @@ async function initPluginConfig() {
       tokenConfigured: changes.has("decision_service.token")
         ? Boolean(changes.get("decision_service.token"))
         : Boolean(fields.get("decision_service.token")?.configured),
+      accountIdConfigured:
+        !changes.has("decision_service.account_id") &&
+        Boolean(fields.get("decision_service.account_id")?.configured),
       semanticStatus,
       defaultPack: packs.find((pack) => pack.is_default),
       embeddingChanged: changes.has("semantic.embedding_provider_id"),
@@ -915,6 +992,12 @@ async function initPluginConfig() {
           (!query &&
             row.dataset.path === "auto_collect.content_review_prompt" &&
             !currentValue("auto_collect.content_review_enabled")) ||
+          (!query &&
+            row.dataset.path === "decision_service.account_id" &&
+            decisionProvider() !== "cloudflare") ||
+          (!query &&
+            row.dataset.path === "decision_service.base_url" &&
+            decisionProvider() === "cloudflare") ||
           (Boolean(query) && !row.dataset.search.includes(query));
         if (card === dialogContent && row.dataset.path === dialogFieldPath)
           row.hidden = false;
@@ -1086,6 +1169,7 @@ async function initPluginConfig() {
       dialogContent && dialogContent !== rulesPanel ? dialogContent.id : "";
     if (dialogCardId) restoreDialogContent();
     modelListRequest++;
+    invalidateDecisionTest();
     fields.clear();
     controls.clear();
     sections.replaceChildren();
@@ -1267,17 +1351,7 @@ async function initPluginConfig() {
           field.special === "select_provider_embedding" ? "embedding" : "chat";
         if (decisionModel) {
           control.maxLength = 128;
-          control.placeholder = "从列表选择或填写模型 ID";
-          help.textContent = `${baseHint}；可获取列表或手动填写`;
           help.setAttribute("aria-live", "polite");
-          const baseUrl =
-            changes.get("decision_service.base_url") ??
-            snapshot.fields.find(
-              (item) => item.path === "decision_service.base_url",
-            )?.value;
-          if (String(baseUrl || "").trim() === decisionModelsBaseUrl)
-            for (const model of decisionModels)
-              choices.append(new Option(model.name || model.id, model.id));
           const fetchModels = document.createElement("button");
           fetchModels.type = "button";
           fetchModels.className = "ghost compact fetch-models";
@@ -1293,11 +1367,14 @@ async function initPluginConfig() {
               return;
             }
             const requestId = ++modelListRequest;
+            const hintRequest = ++decisionHintRequest;
             fetchModels.disabled = true;
             fetchModels.textContent = "获取中…";
+            help.dataset.state = "";
             help.textContent = "正在获取模型列表";
             try {
               const result = await api.apiPost("settings/decision-models", {
+                provider: "systemone",
                 base_url: baseUrl,
               });
               if (requestId !== modelListRequest || !control.isConnected)
@@ -1308,11 +1385,16 @@ async function initPluginConfig() {
               for (const model of decisionModels)
                 choices.append(new Option(model.name || model.id, model.id));
               choices.disabled = !decisionModels.length;
-              help.textContent = decisionModels.length
-                ? `${decisionModels.length} 个模型`
-                : "模型列表为空，可填写模型 ID";
+              if (hintRequest === decisionHintRequest)
+                help.textContent = decisionModels.length
+                  ? `${decisionModels.length} 个模型`
+                  : "模型列表为空，可填写模型 ID";
             } catch (error) {
-              if (requestId !== modelListRequest || !control.isConnected)
+              if (
+                requestId !== modelListRequest ||
+                hintRequest !== decisionHintRequest ||
+                !control.isConnected
+              )
                 return;
               help.textContent = `${
                 error.message || "获取失败"
@@ -1325,6 +1407,54 @@ async function initPluginConfig() {
             }
           });
           controlBox.append(fetchModels);
+          const testService = document.createElement("button");
+          testService.type = "button";
+          testService.className = "ghost compact fetch-models";
+          testService.id = "test-decision-service";
+          testService.textContent = "测试连接";
+          testService.addEventListener("click", async () => {
+            if (testService.disabled || configState.busy) return;
+            const requestId = ++decisionHintRequest;
+            const draft = {};
+            for (const name of [
+              "provider",
+              "account_id",
+              "base_url",
+              "token",
+              "model",
+              "timeout",
+            ]) {
+              const path = `decision_service.${name}`;
+              const field = fields.get(path);
+              if (changes.has(path)) draft[name] = changes.get(path);
+              else if (field && !field.secret) draft[name] = field.value;
+            }
+            testService.disabled = true;
+            testService.textContent = "测试中…";
+            help.dataset.state = "";
+            help.textContent =
+              "正在发送一次极小的测试请求，可能产生少量额度消耗…";
+            try {
+              const result = await api.apiPost("settings/decision-test", draft);
+              if (requestId !== decisionHintRequest || !control.isConnected)
+                return;
+              help.dataset.state = result.ok ? "ok" : "error";
+              help.textContent = result.message;
+            } catch (error) {
+              if (requestId !== decisionHintRequest || !control.isConnected)
+                return;
+              help.dataset.state = "error";
+              help.textContent = `${
+                error.message || "测试失败"
+              }，请检查网络后重试。`;
+            } finally {
+              if (control.isConnected) {
+                testService.disabled = false;
+                testService.textContent = "测试连接";
+              }
+            }
+          });
+          controlBox.append(testService);
         } else {
           for (const provider of providers[kind] || [])
             choices.append(
@@ -1427,6 +1557,8 @@ async function initPluginConfig() {
         clear.textContent = "清除";
         clear.setAttribute("aria-label", `清除${label.textContent}`);
         clear.addEventListener("click", () => {
+          if (field.path.startsWith("decision_service."))
+            invalidateDecisionTest();
           control.removeAttribute("aria-invalid");
           row.querySelector(".config-field-error")?.remove();
           control.setAttribute("aria-describedby", help.id);
@@ -1462,6 +1594,7 @@ async function initPluginConfig() {
       else
         body.insertBefore(row, body.querySelector("details, .config-notice"));
     }
+    updateDecisionModelControl();
     if (dialogCardId) mountDialogContent(document.getElementById(dialogCardId));
     updateView();
   }
@@ -1600,8 +1733,12 @@ async function initPluginConfig() {
       const path = control.dataset.configPath;
       const field = fields.get(path);
       if (!field) return;
+      if (path.startsWith("decision_service.")) invalidateDecisionTest();
       if (path === "storage.provider") activeFlowGroup = "";
-      if (path === "decision_service.base_url") {
+      if (
+        path === "decision_service.base_url" &&
+        decisionProvider() !== "cloudflare"
+      ) {
         modelListRequest++;
         decisionModels = [];
         decisionModelsBaseUrl = "";
@@ -1621,6 +1758,13 @@ async function initPluginConfig() {
           );
           modelHint.textContent = `${modelHint.dataset.baseHint}；服务地址已修改`;
         }
+      }
+      if (path === "decision_service.provider") {
+        modelListRequest++;
+        decisionModels = [];
+        decisionModelsBaseUrl = "";
+        // 草稿稍后才写入，先使用当前控件值更新模型候选。
+        updateDecisionModelControl(control.value);
       }
       control.removeAttribute("aria-invalid");
       control
@@ -1695,34 +1839,27 @@ async function initPluginConfig() {
         return;
       }
     }
-    const value = (path) =>
-      changes.has(path) ? changes.get(path) : fields.get(path)?.value;
-    const decisionUsed =
-      (value("generation.emotion.llm.enabled") &&
-        value("generation.emotion.llm.backend") === "decision") ||
-      (value("auto_collect.enabled") &&
-        value("auto_collect.judgment_backend") === "decision");
-    if (decisionUsed) {
-      const missing = [
-        !value("decision_service.base_url") && [
-          "decision_service.base_url",
-          "请填写决策服务地址。",
-        ],
-        !(changes.has("decision_service.token")
-          ? changes.get("decision_service.token")
-          : fields.get("decision_service.token")?.configured) && [
-          "decision_service.token",
-          "请填写决策服务密钥。",
-        ],
-        !String(value("decision_service.model") || "").trim() && [
-          "decision_service.model",
-          "请填写决策模型 ID。",
-        ],
-      ].find(Boolean);
-      if (missing) {
-        showFieldError(...missing);
-        return;
-      }
+    const setup = describeSetup(
+      Object.fromEntries(
+        [...fields].map(([path, field]) => [
+          path,
+          changes.has(path) ? changes.get(path) : field.value,
+        ]),
+      ),
+      {
+        providers,
+        tokenConfigured: changes.has("decision_service.token")
+          ? Boolean(changes.get("decision_service.token"))
+          : Boolean(fields.get("decision_service.token")?.configured),
+        accountIdConfigured:
+          !changes.has("decision_service.account_id") &&
+          Boolean(fields.get("decision_service.account_id")?.configured),
+      },
+    );
+    if (setup.consumers.length && setup.serviceIssues.length) {
+      const issue = setup.serviceIssues[0];
+      showFieldError(issue.path, issue.text);
+      return;
     }
     configState.busy = true;
     notice.hidden = true;

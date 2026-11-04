@@ -3,6 +3,7 @@ export function describeSetup(
   {
     providers,
     tokenConfigured,
+    accountIdConfigured = false,
     semanticStatus,
     defaultPack,
     embeddingChanged = false,
@@ -41,8 +42,25 @@ export function describeSetup(
     decision && "辅助配图",
     collectionEnabled && collectionDecision && "自动收集",
   ].filter(Boolean);
+  const cloudflare = values["decision_service.provider"] === "cloudflare";
 
-  if (!values["decision_service.base_url"])
+  if (cloudflare) {
+    const accountId = String(
+      values["decision_service.account_id"] || "",
+    ).trim();
+    if (!accountId && !accountIdConfigured)
+      serviceIssues.push({
+        text: "填写 Cloudflare 账户 ID",
+        group: "decision-service",
+        path: "decision_service.account_id",
+      });
+    else if (accountId && !/^[0-9a-fA-F]{32}$/.test(accountId))
+      serviceIssues.push({
+        text: "检查 Cloudflare 账户 ID（32 位十六进制）",
+        group: "decision-service",
+        path: "decision_service.account_id",
+      });
+  } else if (!values["decision_service.base_url"])
     serviceIssues.push({
       text: "填写决策服务地址",
       group: "decision-service",
@@ -74,9 +92,19 @@ export function describeSetup(
       group: "decision-service",
       path: "decision_service.token",
     });
-  if (!String(values["decision_service.model"] || "").trim())
+  const decisionModel = String(values["decision_service.model"] || "").trim();
+  if (!decisionModel)
     serviceIssues.push({
-      text: "填写决策模型 ID",
+      text: cloudflare ? "填写 Cloudflare 决策模型 ID" : "填写决策模型 ID",
+      group: "decision-service",
+      path: "decision_service.model",
+    });
+  else if (
+    cloudflare &&
+    !["clef", "clef-flash", "clef-omni"].includes(decisionModel)
+  )
+    serviceIssues.push({
+      text: "决策模型 ID 仅支持 clef、clef-flash、clef-omni",
       group: "decision-service",
       path: "decision_service.model",
     });

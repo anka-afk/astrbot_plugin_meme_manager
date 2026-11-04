@@ -203,27 +203,40 @@
     }
   },
   "decision_service": {
-    "description": "决策服务（System One）",
+    "description": "决策服务（System One / Cloudflare）",
     "type": "object",
     "hint": "辅助配图与自动收集共用一份服务配置，分别决定是否使用；打开或保存设置不会发起收费推理",
     "items": {
+      "provider": {
+        "description": "服务提供方",
+        "type": "string",
+        "default": "systemone",
+        "options": ["systemone", "cloudflare"],
+        "hint": "systemone 使用 System One 决策服务；cloudflare 使用 Workers AI 的 clef 系列决策模型"
+      },
+      "account_id": {
+        "description": "Cloudflare 账户 ID",
+        "type": "string",
+        "default": "",
+        "hint": "REST 地址 /accounts/{账户ID}/ 中的 32 位十六进制账户 ID；仅 cloudflare 提供方必填，保存后不回显"
+      },
       "base_url": {
         "description": "服务基础地址",
         "type": "string",
         "default": "https://system-one.dev/v1",
-        "hint": "填写 v1 基础地址，客户端追加 systemone；不使用聊天 completions 接口"
+        "hint": "仅 System One 使用：填写 v1 基础地址，客户端追加 systemone；Cloudflare 提供方忽略此字段"
       },
       "token": {
         "description": "服务密钥",
         "type": "string",
         "default": "",
-        "hint": "使用服务商提供的 API 密钥；设置中心保存后不回显"
+        "hint": "System One API 密钥或 Cloudflare API 令牌（需 Workers AI 运行权限）；设置中心保存后不回显，「测试连接」留空时沿用已保存的密钥"
       },
       "model": {
         "description": "决策模型 ID",
         "type": "string",
         "default": "",
-        "hint": "填写服务当前支持的准确模型 ID；不根据名称推断能力或自动切换模型"
+        "hint": "System One 填写目录中的准确模型 ID；Cloudflare 填写 clef、clef-flash 或 clef-omni；不根据名称推断能力或自动切换模型。「测试连接」会用当前填写值发送一次极小请求"
       },
       "timeout": {
         "description": "单次任务总超时（秒）",

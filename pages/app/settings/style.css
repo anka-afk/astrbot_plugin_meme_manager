@@ -829,6 +829,12 @@ button.workflow-node[aria-expanded="true"] {
   min-height: var(--control-normal);
   white-space: nowrap;
 }
+.config-field-hint[data-state="ok"] {
+  color: var(--success-fg);
+}
+.config-field-hint[data-state="error"] {
+  color: var(--danger-fg);
+}
 
 .config-control input,
 .config-control select,

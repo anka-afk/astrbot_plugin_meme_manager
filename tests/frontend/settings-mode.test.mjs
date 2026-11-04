@@ -86,6 +86,34 @@ test("every persisted field has exactly one editable group", async () => {
 
 });
 
+test("脱敏账户允许再次保存，清除或错误草稿仍被拦截", () => {
+  const fields = new Map(Object.entries({
+    ...defaults,
+    "generation.emotion.llm.enabled": true,
+    "generation.emotion.llm.backend": "decision",
+    "decision_service.provider": "cloudflare",
+    "decision_service.account_id": "",
+    "decision_service.token": "",
+    "decision_service.model": "clef-flash",
+  }).map(([path, value]) => [path, {value, configured: true}]));
+  const start = source.indexOf("    const setup = describeSetup(", source.indexOf('form.addEventListener("submit"'));
+  const end = source.indexOf("    configState.busy = true;", start);
+  for (const [path, value, expected] of [
+    ["decision_service.timeout", 20, ""],
+    ["decision_service.account_id", "", "decision_service.account_id"],
+    ["decision_service.account_id", "   ", "decision_service.account_id"],
+    ["decision_service.account_id", "bad-id", "decision_service.account_id"],
+    ["decision_service.token", "", "decision_service.token"],
+  ]) {
+    let error = "";
+    vm.runInNewContext(`(() => {${source.slice(start, end)}})()`, {
+      fields, changes: new Map([[path, value]]), providers, describeSetup,
+      showFieldError: (path) => { error = path; },
+    });
+    assert.equal(error, expected);
+  }
+});
+
 test("dimension edits preserve hidden drafts and revert the original persisted flags", () => {
   const paths = ["semantic.enabled", "generation.emotion.llm.enabled"];
   for (const savedSemantic of [false, true])
