@@ -596,11 +596,19 @@ class WebAPIMixin:
         )
 
     def _register_webui_api(self, route, handler, methods, desc):
+        """Register an API handler with status-based request logging.
+
+        Args:
+            route: API path relative to the plugin prefix.
+            handler: Asynchronous request handler.
+            methods: HTTP methods supported by the handler.
+            desc: Description passed to the WebUI API registry.
+        """
         route_path = f"/{PLUGIN_NAME}/{route.strip('/')}"
 
         async def logged_handler(*args, **kwargs):
             started_at = time.monotonic()
-            logger.info(f"{WEBUI_LOG_PREFIX} {request.method} {route_path} 开始")
+            logger.debug(f"{WEBUI_LOG_PREFIX} {request.method} {route_path} started")
             try:
                 response = await handler(*args, **kwargs)
                 if route in {
@@ -614,14 +622,20 @@ class WebAPIMixin:
             except Exception:
                 elapsed_ms = int((time.monotonic() - started_at) * 1000)
                 logger.error(
-                    f"{WEBUI_LOG_PREFIX} {request.method} {route_path} 失败 耗时={elapsed_ms}ms",
+                    f"{WEBUI_LOG_PREFIX} {request.method} {route_path} failed elapsed={elapsed_ms}ms",
                     exc_info=True,
                 )
                 raise
             elapsed_ms = int((time.monotonic() - started_at) * 1000)
             status_code = self._get_webui_response_status(response)
-            logger.info(
-                f"{WEBUI_LOG_PREFIX} {request.method} {route_path} 完成 状态={status_code} 耗时={elapsed_ms}ms"
+            log_response = logger.debug
+            if isinstance(status_code, int):
+                if status_code >= 500:
+                    log_response = logger.error
+                elif status_code >= 400:
+                    log_response = logger.warning
+            log_response(
+                f"{WEBUI_LOG_PREFIX} {request.method} {route_path} completed status={status_code} elapsed={elapsed_ms}ms"
             )
             return response
 
