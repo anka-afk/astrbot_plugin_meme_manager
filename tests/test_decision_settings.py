@@ -147,7 +147,7 @@ def test_cloudflare_provider_accepts_clef_without_base_url(shared_config):
     assert service["account_id"] == "a1b2c3d4e5f60718293a4b5c6d7e8f90"
     assert service["token"] == "cf-token"
     assert service["model"] == "clef-flash"
-    # Cloudflare 提供方下 base_url 不再参与校验，可保留残留值或留空。
+    # Cloudflare ignores the unused System One URL, including an empty value.
     updated = validate_settings_changes(
         values,
         snapshot["fields"],
@@ -182,7 +182,7 @@ def test_cloudflare_provider_rejects_invalid_service_config(
 
 @pytest.mark.asyncio
 async def test_decision_models_endpoint_returns_cloudflare_catalog():
-    api = SimpleNamespace()  # 端点只读取请求体，不触碰插件实例状态。
+    api = SimpleNamespace()  # Catalog discovery does not access plugin state.
     status, body = await settings_call(
         api, "decision_models", {"provider": "cloudflare"}
     )
@@ -234,10 +234,12 @@ async def test_decision_test_uses_draft_values_and_saved_key(settings_api, monke
             "model": "clef-flash",
         }
     )
+    settings_api.config.save_config()
+    before = describe_settings(settings_api.config)[0]["revision"]
     status, body = await settings_call(
         settings_api,
         "decision_test",
-        {"provider": "cloudflare", "account_id": "a" * 32, "model": "clef-flash"},
+        {"provider": "cloudflare", "model": "clef-flash"},
     )
     assert status == 200 and body["ok"] is True
     assert observed == [
@@ -256,7 +258,8 @@ async def test_decision_test_uses_draft_values_and_saved_key(settings_api, monke
     assert body["choice"] == "pong" and body["confidence"] == 0.91
     assert body["latency_ms"] >= 0
     assert "saved-secret" not in json.dumps(body)
-    # 测试只读草稿并发送一次请求，不保存设置、不重载插件。
+    # The probe must not persist its draft or reload the plugin.
+    assert describe_settings(settings_api.config)[0]["revision"] == before
     assert settings_api.config["decision_service"]["token"] == "saved-secret"
     settings_api.context._star_manager.reload.assert_not_called()
 
@@ -274,6 +277,7 @@ async def test_decision_test_prefers_typed_key_and_caps_timeout(
     monkeypatch.setattr(DecisionClient, "evaluate", evaluate)
     settings_api.config["decision_service"].update({"token": "saved-secret"})
     settings_api.config["decision_service"]["timeout"] = 300
+    settings_api.config.save_config()
     status, body = await settings_call(
         settings_api,
         "decision_test",
@@ -292,6 +296,7 @@ async def test_decision_test_prefers_typed_key_and_caps_timeout(
 @pytest.mark.asyncio
 async def test_decision_test_does_not_fall_back_when_key_cleared(settings_api):
     settings_api.config["decision_service"]["token"] = "saved-secret"
+    settings_api.config.save_config()
     status, body = await settings_call(
         settings_api,
         "decision_test",
@@ -300,10 +305,9 @@ async def test_decision_test_does_not_fall_back_when_key_cleared(settings_api):
             "base_url": "https://service.test/v1",
             "model": "some-model",
             "token": "",
-            "token_cleared": True,
         },
     )
-    # 清除密钥后不再回退到已保存值，也不会发出计费请求。
+    # An explicit empty key must fail before any billable request starts.
     assert status == 200 and body["ok"] is False
     assert body["reason"] == "missing_token" and "密钥" in body["message"]
 
@@ -330,3 +334,90 @@ async def test_decision_test_maps_upstream_failure_without_details(
     assert body["reason"] == "insufficient_credits"
     assert "余额" in body["message"]
     assert "cf-token" not in json.dumps(body)
+
+
+@pytest.mark.parametrize(
+    "provider,field,reason",
+    [
+        ("cloudflare", "account_id", "missing_account_id"),
+        ("cloudflare", "model", "missing_model"),
+        ("cloudflare", "token", "missing_token"),
+        ("systemone", "base_url", "missing_base_url"),
+        ("systemone", "model", "missing_model"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_decision_test_preserves_explicit_empty_drafts(
+    settings_api, monkeypatch, provider, field, reason
+):
+    settings_api.config["decision_service"].update(
+        provider=provider,
+        account_id="a" * 32,
+        base_url="https://service.test/v1",
+        token="saved-secret",
+        model="clef-flash" if provider == "cloudflare" else "some-model",
+    )
+    settings_api.config.save_config()
+
+    async def unexpected_request(client):
+        pytest.fail("Invalid drafts must not start a network request")
+
+    monkeypatch.setattr(DecisionClient, "_get_session", unexpected_request)
+    status, body = await settings_call(settings_api, "decision_test", {field: ""})
+    assert status == 200 and body["ok"] is False
+    assert body["reason"] == reason
+    assert settings_api.config["decision_service"][field]
+
+
+@pytest.mark.parametrize("value", [None, False, 123, {}, []])
+@pytest.mark.asyncio
+async def test_decision_test_rejects_non_text_fields(settings_api, value):
+    status, body = await settings_call(
+        settings_api, "decision_test", {"token": value}
+    )
+    assert status == 400 and body["ok"] is False
+
+
+@pytest.mark.parametrize("timeout,expected", [(3, 3.0), (60, 20.0)])
+@pytest.mark.asyncio
+async def test_decision_test_uses_draft_timeout(
+    settings_api, monkeypatch, timeout, expected
+):
+    observed = []
+
+    async def evaluate(client, state, questions):
+        observed.append(client.timeout)
+        return DecisionAnswers({"ping": {"type": "choice", "choice": "pong"}})
+
+    monkeypatch.setattr(DecisionClient, "evaluate", evaluate)
+    status, body = await settings_call(
+        settings_api, "decision_test", {"timeout": timeout}
+    )
+    assert status == 200 and body["ok"] is True
+    assert observed == [expected]
+
+
+@pytest.mark.parametrize("timeout", [0, -1, True, None, "invalid", 301])
+@pytest.mark.asyncio
+async def test_decision_test_does_not_mask_invalid_timeouts(settings_api, timeout):
+    status, body = await settings_call(
+        settings_api,
+        "decision_test",
+        {
+            "base_url": "https://service.test/v1",
+            "token": "draft-secret",
+            "model": "some-model",
+            "timeout": timeout,
+        },
+    )
+    assert status == 200 and body["ok"] is False
+    assert body["reason"] == "invalid_timeout"
+
+
+@pytest.mark.parametrize("provider", ["unknown", None, 123])
+@pytest.mark.asyncio
+async def test_decision_models_rejects_invalid_providers(provider):
+    status, _ = await settings_call(
+        SimpleNamespace(), "decision_models", {"provider": provider}
+    )
+    assert status == 400

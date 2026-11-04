@@ -382,21 +382,21 @@ async def test_cloudflare_request_limits_differ_from_systemone():
         for index in range(33)
     }
     async with client_for(cloudflare_handler, **CLOUDFLARE_CONFIG) as client:
-        # 33 个问题超出 System One 的 32 问上限，但处于 clef 的 64 问内。
+        # Clef accepts 33 questions, exceeding System One's 32-question limit.
         await client.evaluate({}, wide_questions)
-        # clef 的 choice 至少需要两个选项。
+        # Clef choice questions require at least two options.
         with pytest.raises(DecisionError, match="invalid_request"):
             await client.evaluate(
                 {}, {"solo": {"type": "choice", "criteria": {"a": "x"}}}
             )
-        # 问题名超出 clef 允许的字符集。
+        # Reject question names outside Clef's allowed character set.
         with pytest.raises(DecisionError, match="invalid_request"):
             await client.evaluate(
                 {}, {"选图": {"type": "choice", "criteria": {"a": "x", "b": "y"}}}
             )
 
     async with client_for(systemone_handler) as systemone_client:
-        # 同样的 33 个问题按 System One 规则被拒绝，单选项问题保持合法。
+        # System One rejects 33 questions but still accepts single-option choices.
         with pytest.raises(DecisionError, match="invalid_request"):
             await systemone_client.evaluate({}, wide_questions)
         await systemone_client.evaluate(
