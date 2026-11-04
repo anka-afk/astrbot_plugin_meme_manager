@@ -1,7 +1,12 @@
 import json
+from types import SimpleNamespace
 
 import pytest
-from astrbot_plugin_meme_manager.backend.decision import DecisionClient
+from astrbot_plugin_meme_manager.backend.decision import (
+    DecisionAnswers,
+    DecisionClient,
+    DecisionError,
+)
 from astrbot_plugin_meme_manager.backend.plugin_settings import (
     describe_settings,
     validate_settings_changes,
@@ -120,3 +125,208 @@ async def test_save_redacts_secrets_and_survives_provider_catalog_failure(settin
     assert "test-secret" not in json.dumps(
         body
     ) and "private provider detail" not in json.dumps(body)
+
+
+CLOUDFLARE_CHANGES = {
+    "generation.emotion.llm.enabled": True,
+    "generation.emotion.llm.backend": "decision",
+    "decision_service.provider": "cloudflare",
+    "decision_service.account_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "decision_service.token": "cf-token",
+    "decision_service.model": "clef-flash",
+}
+
+
+def test_cloudflare_provider_accepts_clef_without_base_url(shared_config):
+    snapshot, values = describe_settings(shared_config)
+    updated = validate_settings_changes(
+        values, snapshot["fields"], CLOUDFLARE_CHANGES, shared_config.schema
+    )
+    service = updated["decision_service"]
+    assert service["provider"] == "cloudflare"
+    assert service["account_id"] == "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    assert service["token"] == "cf-token"
+    assert service["model"] == "clef-flash"
+    # Cloudflare 提供方下 base_url 不再参与校验，可保留残留值或留空。
+    updated = validate_settings_changes(
+        values,
+        snapshot["fields"],
+        {**CLOUDFLARE_CHANGES, "decision_service.base_url": ""},
+        shared_config.schema,
+    )
+    assert not updated["decision_service"]["base_url"]
+
+
+@pytest.mark.parametrize(
+    "override,message",
+    [
+        ({"decision_service.account_id": ""}, "账户 ID"),
+        ({"decision_service.account_id": "xyz"}, "32 位"),
+        ({"decision_service.model": "gpt-4"}, "clef"),
+    ],
+)
+def test_cloudflare_provider_rejects_invalid_service_config(
+    shared_config, override, message
+):
+    snapshot, values = describe_settings(shared_config)
+    before = json.dumps(values, sort_keys=True)
+    with pytest.raises(ValueError, match=message):
+        validate_settings_changes(
+            values,
+            snapshot["fields"],
+            {**CLOUDFLARE_CHANGES, **override},
+            shared_config.schema,
+        )
+    assert json.dumps(values, sort_keys=True) == before
+
+
+@pytest.mark.asyncio
+async def test_decision_models_endpoint_returns_cloudflare_catalog():
+    api = SimpleNamespace()  # 端点只读取请求体，不触碰插件实例状态。
+    status, body = await settings_call(
+        api, "decision_models", {"provider": "cloudflare"}
+    )
+    assert status == 200
+    assert [model["id"] for model in body["models"]] == [
+        "clef-flash",
+        "clef",
+        "clef-omni",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_decision_models_endpoint_still_requires_url_for_systemone():
+    api = SimpleNamespace()
+    status, body = await settings_call(api, "decision_models", {"base_url": " "})
+    assert status == 400 and "基础地址" in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_decision_test_uses_draft_values_and_saved_key(settings_api, monkeypatch):
+    observed = []
+
+    async def evaluate(client, state, questions):
+        observed.append(
+            (
+                client.provider,
+                client.account_id,
+                client.model,
+                client.token,
+                client.timeout,
+                state["task"],
+                questions["ping"]["type"],
+                sorted(questions["ping"]["criteria"]),
+            )
+        )
+        return DecisionAnswers(
+            {"ping": {"type": "choice", "choice": "pong", "confidence": 0.91}},
+            model="clef-flash",
+            usage={"input_tokens": 12},
+            credits=None,
+        )
+
+    monkeypatch.setattr(DecisionClient, "evaluate", evaluate)
+    settings_api.config["decision_service"].update(
+        {
+            "provider": "cloudflare",
+            "account_id": "a" * 32,
+            "token": "saved-secret",
+            "model": "clef-flash",
+        }
+    )
+    status, body = await settings_call(
+        settings_api,
+        "decision_test",
+        {"provider": "cloudflare", "account_id": "a" * 32, "model": "clef-flash"},
+    )
+    assert status == 200 and body["ok"] is True
+    assert observed == [
+        (
+            "cloudflare",
+            "a" * 32,
+            "clef-flash",
+            "saved-secret",
+            15.0,
+            "connectivity_check",
+            "choice",
+            ["pong", "unavailable"],
+        )
+    ]
+    assert "clef-flash" in body["message"] and "ms" in body["message"]
+    assert body["choice"] == "pong" and body["confidence"] == 0.91
+    assert body["latency_ms"] >= 0
+    assert "saved-secret" not in json.dumps(body)
+    # 测试只读草稿并发送一次请求，不保存设置、不重载插件。
+    assert settings_api.config["decision_service"]["token"] == "saved-secret"
+    settings_api.context._star_manager.reload.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_decision_test_prefers_typed_key_and_caps_timeout(
+    settings_api, monkeypatch
+):
+    observed = []
+
+    async def evaluate(client, state, questions):
+        observed.append((client.token, client.timeout, client.max_concurrency))
+        return DecisionAnswers({"ping": {"type": "choice", "choice": "pong"}})
+
+    monkeypatch.setattr(DecisionClient, "evaluate", evaluate)
+    settings_api.config["decision_service"].update({"token": "saved-secret"})
+    settings_api.config["decision_service"]["timeout"] = 300
+    status, body = await settings_call(
+        settings_api,
+        "decision_test",
+        {
+            "provider": "systemone",
+            "base_url": "https://service.test/v1",
+            "model": "some-model",
+            "token": "typed-key",
+        },
+    )
+    assert status == 200 and body["ok"] is True
+    assert observed == [("typed-key", 20.0, 1)]
+    assert "typed-key" not in json.dumps(body)
+
+
+@pytest.mark.asyncio
+async def test_decision_test_does_not_fall_back_when_key_cleared(settings_api):
+    settings_api.config["decision_service"]["token"] = "saved-secret"
+    status, body = await settings_call(
+        settings_api,
+        "decision_test",
+        {
+            "provider": "systemone",
+            "base_url": "https://service.test/v1",
+            "model": "some-model",
+            "token": "",
+            "token_cleared": True,
+        },
+    )
+    # 清除密钥后不再回退到已保存值，也不会发出计费请求。
+    assert status == 200 and body["ok"] is False
+    assert body["reason"] == "missing_token" and "密钥" in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_decision_test_maps_upstream_failure_without_details(
+    settings_api, monkeypatch
+):
+    async def evaluate(client, state, questions):
+        raise DecisionError("insufficient_credits")
+
+    monkeypatch.setattr(DecisionClient, "evaluate", evaluate)
+    status, body = await settings_call(
+        settings_api,
+        "decision_test",
+        {
+            "provider": "cloudflare",
+            "account_id": "b" * 32,
+            "model": "clef-flash",
+            "token": "cf-token",
+        },
+    )
+    assert status == 200 and body["ok"] is False
+    assert body["reason"] == "insufficient_credits"
+    assert "余额" in body["message"]
+    assert "cf-token" not in json.dumps(body)

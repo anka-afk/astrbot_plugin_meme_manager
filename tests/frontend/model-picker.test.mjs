@@ -4,8 +4,9 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = await readFile(new URL("../../pages/app/settings/config.js", import.meta.url), "utf8");
-const start = source.indexOf('          fetchModels.addEventListener("click", async () => {');
-const handler = source.slice(start, source.indexOf("          controlBox.append(fetchModels);", start));
+const marker = 'fetchModels.addEventListener("click", async () => {';
+const start = source.indexOf(marker);
+const handler = source.slice(start, source.indexOf("controlBox.append(fetchModels);", start));
 
 function fixture(apiPost) {
   let click;
@@ -36,7 +37,7 @@ for (const outcome of ["catalog", "empty", "error"]) {
       return { models: outcome === "empty" ? [] : [{ id: "exact-id", name: "Readable" }] };
     });
     await state.click();
-    assert.deepEqual(JSON.parse(JSON.stringify(state.calls)), [["settings/decision-models", { base_url: state.address.value }]]);
+    assert.deepEqual(JSON.parse(JSON.stringify(state.calls)), [["settings/decision-models", { provider: "systemone", base_url: state.address.value }]]);
     assert.equal(state.context.control.value, "manual-id");
     assert.equal(state.context.fetchModels.disabled, false);
     if (outcome === "catalog") assert.equal(state.context.choices.items[1].value, "exact-id");

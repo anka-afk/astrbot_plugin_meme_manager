@@ -181,7 +181,7 @@ async function initPluginConfig() {
     {
       id: "decision-service",
       category: "decision",
-      title: "System One 接口",
+      title: "决策服务接口",
       prefixes: ["decision_service."],
       advancedPaths: [
         "decision_service.timeout",
@@ -354,6 +354,8 @@ async function initPluginConfig() {
     "generation.emotion.llm.backend": "辅助模型类型",
     "semantic.query.source": "检索词来源",
     "semantic.query.provider_id": "检索词聊天模型",
+    "decision_service.provider": "服务提供方",
+    "decision_service.account_id": "Cloudflare 账户 ID",
     "decision_service.base_url": "决策服务基础地址",
     "decision_service.token": "决策服务密钥",
     "decision_service.model": "决策模型 ID",
@@ -384,8 +386,14 @@ async function initPluginConfig() {
     "sync.status_cache_ttl_seconds": "管理页同步状态的缓存时间，0 表示关闭",
     "community.github_accelerator_url":
       "下载 GitHub 资源时使用此前缀，留空直连",
-    "decision_service.base_url": "System One 的 v1 服务地址",
-    "decision_service.model": "System One 使用的模型 ID",
+    "decision_service.provider":
+      "systemone 使用 System One 决策服务；cloudflare 使用 Workers AI 的 clef 系列决策模型",
+    "decision_service.account_id":
+      "REST 地址 /accounts/{账户ID}/ 中的 32 位十六进制账户 ID；仅 Cloudflare 提供方必填",
+    "decision_service.base_url":
+      "仅 System One 使用：v1 服务地址；Cloudflare 提供方忽略此字段",
+    "decision_service.model":
+      "System One 填写模型 ID；Cloudflare 填写 clef、clef-flash 或 clef-omni；「测试连接」发送一次极小请求",
     "decision_service.timeout": "单次决策任务的最长等待时间",
     "decision_service.max_concurrency": "辅助配图与自动收集共享的请求并发上限",
     "semantic.enabled": "开启后按图片语义检索，索引不可用时回退分类",
@@ -485,7 +493,9 @@ async function initPluginConfig() {
     only_chat_llm: "仅普通聊天回复",
     chat_and_plugin_llm: "普通聊天与插件触发的回复",
     chat: "聊天 LLM",
-    decision: "决策服务（System One）",
+    decision: "决策服务",
+    systemone: "System One 决策服务",
+    cloudflare: "Cloudflare Workers AI",
     generated: "由聊天模型生成",
     reply_text: "使用可见回复文本",
     vision: "视觉模型合并判断",
@@ -500,6 +510,11 @@ async function initPluginConfig() {
   let decisionModels = [];
   let decisionModelsBaseUrl = "";
   let modelListRequest = 0;
+  const cloudflareDecisionModels = [
+    { id: "clef-flash", name: "Clef Flash · 快速 9B" },
+    { id: "clef", name: "Clef · 27B" },
+    { id: "clef-omni", name: "Clef Omni · 音视频输入" },
+  ];
   let packs = [];
   let loaded = false;
   let semanticStatus = null;
@@ -511,6 +526,45 @@ async function initPluginConfig() {
   let dialogOriginGroup = "";
   let dialogOriginTab = "";
   let dialogFieldPath = "";
+
+  function decisionProvider() {
+    return String(
+      changes.get("decision_service.provider") ??
+        fields.get("decision_service.provider")?.value ??
+        "systemone",
+    );
+  }
+
+  function updateDecisionModelControl(provider) {
+    const cloudflare = (provider ?? decisionProvider()) === "cloudflare";
+    const control = controls.get("decision_service.model");
+    const choices = document.getElementById(
+      "config-decision_service-model-choices",
+    );
+    const help = document.getElementById("config-decision_service-model-hint");
+    const button = document.getElementById("fetch-decision-models");
+    if (control)
+      control.placeholder = cloudflare
+        ? "clef、clef-flash 或 clef-omni"
+        : "从列表选择或填写模型 ID";
+    if (choices) {
+      choices.replaceChildren(new Option("从列表选择…", ""));
+      if (cloudflare)
+        for (const model of cloudflareDecisionModels)
+          choices.append(new Option(model.name || model.id, model.id));
+      choices.disabled = choices.options.length <= 1;
+    }
+    if (button) {
+      button.hidden = cloudflare;
+      button.disabled = false;
+      button.textContent = "获取列表";
+    }
+    if (help)
+      help.textContent = cloudflare
+        ? `${help.dataset.baseHint}；从列表选择或手动填写`
+        : `${help.dataset.baseHint}；可获取列表或手动填写`;
+    if (help) help.dataset.state = "";
+  }
 
   function restoreDialogContent() {
     if (dialogContent && dialogPlaceholder?.isConnected)
@@ -915,6 +969,12 @@ async function initPluginConfig() {
           (!query &&
             row.dataset.path === "auto_collect.content_review_prompt" &&
             !currentValue("auto_collect.content_review_enabled")) ||
+          (!query &&
+            row.dataset.path === "decision_service.account_id" &&
+            decisionProvider() !== "cloudflare") ||
+          (!query &&
+            row.dataset.path === "decision_service.base_url" &&
+            decisionProvider() === "cloudflare") ||
           (Boolean(query) && !row.dataset.search.includes(query));
         if (card === dialogContent && row.dataset.path === dialogFieldPath)
           row.hidden = false;
@@ -1267,22 +1327,31 @@ async function initPluginConfig() {
           field.special === "select_provider_embedding" ? "embedding" : "chat";
         if (decisionModel) {
           control.maxLength = 128;
-          control.placeholder = "从列表选择或填写模型 ID";
-          help.textContent = `${baseHint}；可获取列表或手动填写`;
           help.setAttribute("aria-live", "polite");
-          const baseUrl =
-            changes.get("decision_service.base_url") ??
-            snapshot.fields.find(
-              (item) => item.path === "decision_service.base_url",
-            )?.value;
-          if (String(baseUrl || "").trim() === decisionModelsBaseUrl)
-            for (const model of decisionModels)
+          const cloudflare = decisionProvider() === "cloudflare";
+          if (cloudflare) {
+            control.placeholder = "clef、clef-flash 或 clef-omni";
+            help.textContent = `${baseHint}；从列表选择或手动填写`;
+            for (const model of cloudflareDecisionModels)
               choices.append(new Option(model.name || model.id, model.id));
+          } else {
+            control.placeholder = "从列表选择或填写模型 ID";
+            help.textContent = `${baseHint}；可获取列表或手动填写`;
+            const baseUrl =
+              changes.get("decision_service.base_url") ??
+              snapshot.fields.find(
+                (item) => item.path === "decision_service.base_url",
+              )?.value;
+            if (String(baseUrl || "").trim() === decisionModelsBaseUrl)
+              for (const model of decisionModels)
+                choices.append(new Option(model.name || model.id, model.id));
+          }
           const fetchModels = document.createElement("button");
           fetchModels.type = "button";
           fetchModels.className = "ghost compact fetch-models";
           fetchModels.id = "fetch-decision-models";
           fetchModels.textContent = "获取列表";
+          fetchModels.hidden = cloudflare;
           fetchModels.addEventListener("click", async () => {
             const baseUrl = controls
               .get("decision_service.base_url")
@@ -1298,6 +1367,7 @@ async function initPluginConfig() {
             help.textContent = "正在获取模型列表";
             try {
               const result = await api.apiPost("settings/decision-models", {
+                provider: "systemone",
                 base_url: baseUrl,
               });
               if (requestId !== modelListRequest || !control.isConnected)
@@ -1325,6 +1395,45 @@ async function initPluginConfig() {
             }
           });
           controlBox.append(fetchModels);
+          const testService = document.createElement("button");
+          testService.type = "button";
+          testService.className = "ghost compact fetch-models";
+          testService.id = "test-decision-service";
+          testService.textContent = "测试连接";
+          testService.addEventListener("click", async () => {
+            const draft = (path) =>
+              changes.get(path) ?? fields.get(path)?.value ?? "";
+            const tokenChange = changes.get("decision_service.token");
+            testService.disabled = true;
+            testService.textContent = "测试中…";
+            help.dataset.state = "";
+            help.textContent = "正在发送一次极小的测试请求，可能产生少量额度消耗…";
+            try {
+              const result = await api.apiPost("settings/decision-test", {
+                provider: draft("decision_service.provider"),
+                account_id: draft("decision_service.account_id"),
+                base_url: draft("decision_service.base_url"),
+                model: draft("decision_service.model"),
+                token: tokenChange || "",
+                token_cleared: tokenChange === "",
+              });
+              if (!control.isConnected) return;
+              help.dataset.state = result.ok ? "ok" : "error";
+              help.textContent = result.message;
+            } catch (error) {
+              if (!control.isConnected) return;
+              help.dataset.state = "error";
+              help.textContent = `${
+                error.message || "测试失败"
+              }，请检查网络后重试。`;
+            } finally {
+              if (control.isConnected) {
+                testService.disabled = false;
+                testService.textContent = "测试连接";
+              }
+            }
+          });
+          controlBox.append(testService);
         } else {
           for (const provider of providers[kind] || [])
             choices.append(
@@ -1600,6 +1709,14 @@ async function initPluginConfig() {
       const path = control.dataset.configPath;
       const field = fields.get(path);
       if (!field) return;
+      // 配置一旦改动，上一次的连通性测试结果就不再可信。
+      const testHint = document.getElementById(
+        "config-decision_service-model-hint",
+      );
+      if (path.startsWith("decision_service.") && testHint?.dataset.state) {
+        testHint.dataset.state = "";
+        testHint.textContent = testHint.dataset.baseHint;
+      }
       if (path === "storage.provider") activeFlowGroup = "";
       if (path === "decision_service.base_url") {
         modelListRequest++;
@@ -1621,6 +1738,13 @@ async function initPluginConfig() {
           );
           modelHint.textContent = `${modelHint.dataset.baseHint}；服务地址已修改`;
         }
+      }
+      if (path === "decision_service.provider") {
+        modelListRequest++;
+        decisionModels = [];
+        decisionModelsBaseUrl = "";
+        // changes 稍后才写入，这里用控件当前值刷新模型选择。
+        updateDecisionModelControl(control.value);
       }
       control.removeAttribute("aria-invalid");
       control
@@ -1703,21 +1827,34 @@ async function initPluginConfig() {
       (value("auto_collect.enabled") &&
         value("auto_collect.judgment_backend") === "decision");
     if (decisionUsed) {
+      const cloudflare = decisionProvider() === "cloudflare";
+      const model = String(value("decision_service.model") || "").trim();
       const missing = [
-        !value("decision_service.base_url") && [
-          "decision_service.base_url",
-          "请填写决策服务地址。",
-        ],
+        cloudflare
+          ? !String(value("decision_service.account_id") || "").trim() && [
+              "decision_service.account_id",
+              "请填写 Cloudflare 账户 ID。",
+            ]
+          : !value("decision_service.base_url") && [
+              "decision_service.base_url",
+              "请填写决策服务地址。",
+            ],
         !(changes.has("decision_service.token")
           ? changes.get("decision_service.token")
           : fields.get("decision_service.token")?.configured) && [
           "decision_service.token",
           "请填写决策服务密钥。",
         ],
-        !String(value("decision_service.model") || "").trim() && [
+        !model && [
           "decision_service.model",
-          "请填写决策模型 ID。",
+          cloudflare ? "请填写 Cloudflare 决策模型 ID。" : "请填写决策模型 ID。",
         ],
+        cloudflare &&
+          model &&
+          !["clef", "clef-flash", "clef-omni"].includes(model) && [
+            "decision_service.model",
+            "决策模型 ID 仅支持 clef、clef-flash、clef-omni。",
+          ],
       ].find(Boolean);
       if (missing) {
         showFieldError(...missing);

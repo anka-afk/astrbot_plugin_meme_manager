@@ -8,7 +8,11 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .decision import DecisionClient
+from .decision import (
+    CLOUDFLARE_ACCOUNT_ID,
+    CLOUDFLARE_MODELS,
+    DecisionClient,
+)
 
 
 def describe_settings(config) -> tuple[dict, dict]:
@@ -61,6 +65,7 @@ def describe_settings(config) -> tuple[dict, dict]:
                 "secret",
                 "password",
                 "token",
+                "account_id",
                 "access_key_id",
                 "secret_access_key",
             }
@@ -168,6 +173,7 @@ def validate_settings_changes(
             path.endswith(
                 (".url", ".public_url", ".github_accelerator_url", ".base_url")
             )
+            and path != "decision_service.base_url"
             and value
         ):
             try:
@@ -178,15 +184,6 @@ def validate_settings_changes(
                     and parsed.hostname
                     and (port is None or port > 0)
                 )
-                if path == "decision_service.base_url":
-                    valid_url = (
-                        valid_url
-                        and not parsed.username
-                        and not parsed.password
-                        and not parsed.query
-                        and not parsed.fragment
-                        and not any(char.isspace() for char in value)
-                    )
             except ValueError:
                 valid_url = False
             if not valid_url:
@@ -210,6 +207,38 @@ def validate_settings_changes(
         for key in keys[:-1]:
             node = node[key]
         node[keys[-1]] = value
+    # 决策服务基础地址是否校验取决于最终提供方，需在全部更改应用后判断。
+    decision = updated.get("decision_service", {})
+    provider = str(decision.get("provider") or "systemone").strip().casefold()
+    if provider == "systemone":
+        base_url = str(decision.get("base_url") or "")
+        if base_url:
+            try:
+                parsed = urlsplit(base_url)
+                port = parsed.port
+                valid_url = (
+                    parsed.scheme in {"http", "https"}
+                    and parsed.hostname
+                    and (port is None or port > 0)
+                    and not parsed.username
+                    and not parsed.password
+                    and not parsed.query
+                    and not parsed.fragment
+                    and not any(char.isspace() for char in base_url)
+                )
+            except ValueError:
+                valid_url = False
+            if not valid_url:
+                raise ValueError(
+                    "「决策服务基础地址」需要填写完整的 HTTP 或 HTTPS 地址。"
+                )
+    if provider == "cloudflare":
+        account_id = str(decision.get("account_id") or "").strip()
+        if account_id and not CLOUDFLARE_ACCOUNT_ID.fullmatch(account_id):
+            raise ValueError("Cloudflare 账户 ID 需为 32 位十六进制字符。")
+        model = str(decision.get("model") or "").strip()
+        if model and model not in CLOUDFLARE_MODELS:
+            raise ValueError("决策模型 ID 仅支持 clef、clef-flash、clef-omni。")
     selection = updated.get("generation", {}).get("emotion", {}).get("llm", {})
     collection = updated.get("auto_collect", {})
     decision_used = (
@@ -224,6 +253,10 @@ def validate_settings_changes(
                 "missing_base_url": "请填写决策服务基础地址。",
                 "missing_token": "请填写决策服务密钥。",
                 "missing_model": "请填写决策模型 ID。",
+                "missing_account_id": "请填写 Cloudflare 账户 ID。",
+                "invalid_account_id": "Cloudflare 账户 ID 需为 32 位十六进制字符。",
+                "unsupported_model": "决策模型 ID 仅支持 clef、clef-flash、clef-omni。",
+                "invalid_provider": "决策服务提供方仅支持 systemone 或 cloudflare。",
             }.get(status["reason"], "请检查决策服务配置。")
             raise ValueError(reason)
     return updated

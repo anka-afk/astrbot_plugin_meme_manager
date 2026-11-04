@@ -99,6 +99,54 @@ PACK_IMPORT_SESSION_TTL_SECONDS = 60 * 60
 MAX_PACK_ARCHIVE_BYTES = 1024 * 1024 * 1024
 MAX_PACK_UPLOAD_REQUEST_BYTES = MAX_PACK_ARCHIVE_BYTES + 1024 * 1024
 COMMUNITY_INSTALL_JOB_TTL_SECONDS = 30 * 60
+# 决策服务连通性测试的稳定文案；上游细节与凭据都不会出现在其中。
+DECISION_TEST_MESSAGES = {
+    "invalid_provider": "请选择有效的决策服务提供方。",
+    "missing_base_url": "请填写决策服务基础地址。",
+    "invalid_base_url": "决策服务基础地址需要填写完整的 HTTP 或 HTTPS 地址。",
+    "missing_account_id": "请填写 Cloudflare 账户 ID。",
+    "invalid_account_id": "Cloudflare 账户 ID 需为 32 位十六进制字符。",
+    "missing_token": "请填写决策服务密钥。",
+    "invalid_token": "决策服务密钥包含无效字符。",
+    "missing_model": "请填写决策模型 ID。",
+    "invalid_model": "决策模型 ID 包含无效字符。",
+    "unsupported_model": "决策模型 ID 仅支持 clef、clef-flash、clef-omni。",
+    "invalid_timeout": "决策服务超时时间无效。",
+    "invalid_max_concurrency": "决策服务并发上限无效。",
+    "unauthorized": "鉴权失败：请检查密钥是否有效并具备该模型权限。",
+    "forbidden": "服务拒绝了该请求：请检查密钥权限或账户状态。",
+    "insufficient_credits": "Cloudflare 账户余额不足，或尚未启用 Workers AI。",
+    "not_found": "未找到该服务或模型：请检查服务地址与模型 ID。",
+    "bad_request": "服务拒绝了测试请求：请确认模型 ID 与服务类型匹配。",
+    "invalid_request": "测试请求不符合该服务的接口约定。",
+    "rate_limited": "请求过于频繁，请稍后再试。",
+    "request_timeout": "服务处理超时，请稍后重试。",
+    "timeout": "连接超时：请检查网络或服务地址是否可访问。",
+    "network_error": "无法连接到服务：请检查地址、网络或代理设置。",
+    "server_error": "服务端错误，请稍后重试。",
+    "invalid_response": "服务返回了无法识别的结果：请确认服务类型与模型 ID。",
+    "response_too_large": "服务返回内容过大，已中止读取。",
+    "closed": "决策服务客户端已关闭，请刷新页面后重试。",
+}
+DECISION_TEST_FALLBACK = "决策服务测试失败，请检查配置与服务日志。"
+
+
+def _decision_test_timeout(value) -> float:
+    """把配置的超时收敛到适合单次探活的区间。
+
+    Args:
+        value: 已保存的决策服务超时配置，可能缺失或非法。
+
+    Returns:
+        5 秒到 20 秒之间的探活超时秒数。
+    """
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        timeout = 15.0
+    if timeout != timeout or timeout in {float("inf"), float("-inf")}:
+        timeout = 15.0
+    return min(max(timeout, 5.0), 20.0)
 
 
 def _parse_int(value, default: int = -1) -> int:
@@ -477,6 +525,12 @@ class WebAPIMixin:
             self._api_settings_decision_models,
             ["POST"],
             "Read the public decision model catalog without saving settings",
+        )
+        self._register_webui_api(
+            "settings/decision-test",
+            self._api_settings_decision_test,
+            ["POST"],
+            "Verify the draft decision service with one minimal inference request",
         )
         self._register_webui_api(
             "settings/targets",
@@ -3990,24 +4044,31 @@ class WebAPIMixin:
             return jsonify({"message": f"安装官方首个表情包失败: {str(e)}"}), 500
 
     async def _api_settings_decision_models(self):
-        """Discover model choices using the draft URL without saving credentials.
+        """Discover model choices without saving credentials or inferring.
 
         Returns:
-            Model IDs and display names, or a sanitized discovery error.
+            Model IDs and display names, or a sanitized discovery error. The
+            Cloudflare clef catalog is fixed and returned without a request.
         """
         from ..backend.decision import DecisionClient, DecisionError
 
         data = await request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"message": "请求格式不正确。"}), 400
-        base_url = data.get("base_url")
-        if (
-            not isinstance(base_url, str)
-            or not base_url.strip()
-            or len(base_url) > 4096
-        ):
-            return jsonify({"message": "请填写完整的决策服务基础地址。"}), 400
-        client = DecisionClient({"base_url": base_url, "timeout": 8})
+        provider = str(data.get("provider") or "systemone").strip().casefold()
+        if provider not in {"systemone", "cloudflare"}:
+            provider = "systemone"
+        config = {"provider": provider, "timeout": 8}
+        if provider == "systemone":
+            base_url = data.get("base_url")
+            if (
+                not isinstance(base_url, str)
+                or not base_url.strip()
+                or len(base_url) > 4096
+            ):
+                return jsonify({"message": "请填写完整的决策服务基础地址。"}), 400
+            config["base_url"] = base_url
+        client = DecisionClient(config)
         try:
             models = await client.list_models()
             return jsonify({"models": models}), 200
@@ -4023,6 +4084,104 @@ class WebAPIMixin:
             ), 400 if error.code == "invalid_base_url" else 502
         finally:
             await client.close()
+
+    async def _api_settings_decision_test(self):
+        """Verify the draft decision service with one minimal inference.
+
+        The API key is never echoed: an empty draft key falls back to the
+        saved one unless the page reports that it cleared the field.
+
+        Returns:
+            Whether one tiny choice request succeeded, with latency, model,
+            usage, or a stable failure reason instead of upstream details.
+        """
+        from ..backend.decision import DecisionClient, DecisionError
+
+        data = await request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"ok": False, "message": "请求格式不正确。"}), 400
+        try:
+            _, values = describe_settings(self.config)
+        except Exception:
+            logger.exception("读取决策服务配置失败")
+            return jsonify({"ok": False, "message": "读取配置失败，请重试。"}), 500
+        saved = values.get("decision_service")
+        saved = saved if isinstance(saved, dict) else {}
+        draft = {
+            "provider": data.get("provider") or saved.get("provider"),
+            "account_id": data.get("account_id") or saved.get("account_id"),
+            "base_url": data.get("base_url") or saved.get("base_url"),
+            "model": data.get("model") or saved.get("model"),
+            "timeout": _decision_test_timeout(saved.get("timeout")),
+            "max_concurrency": 1,
+        }
+        token = data.get("token")
+        if isinstance(token, str) and token.strip():
+            draft["token"] = token
+        elif not data.get("token_cleared"):
+            draft["token"] = saved.get("token")
+        client = DecisionClient(draft)
+        started = time.monotonic()
+        try:
+            answers = await client.evaluate(
+                {"task": "connectivity_check"},
+                {
+                    "ping": {
+                        "type": "choice",
+                        "instructions": (
+                            "这是一次插件设置页发起的连通性测试。"
+                            "收到请求并能正常作答时请选择 pong。"
+                        ),
+                        "criteria": {
+                            "pong": "已收到测试请求并能正常作答。",
+                            "unavailable": "当前无法完成本次测试。",
+                        },
+                    }
+                },
+            )
+        except DecisionError as error:
+            return jsonify(
+                {
+                    "ok": False,
+                    "reason": error.code,
+                    "message": DECISION_TEST_MESSAGES.get(
+                        error.code, DECISION_TEST_FALLBACK
+                    ),
+                }
+            ), 200
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("决策服务连通性测试失败")
+            return jsonify({"ok": False, "message": DECISION_TEST_FALLBACK}), 200
+        finally:
+            await client.close()
+        latency_ms = int(round((time.monotonic() - started) * 1000))
+        model = answers.model or client.model
+        message = f"连接成功：{model}，用时 {latency_ms} ms"
+        if answers.credits is not None:
+            message += f"，消耗 {answers.credits:g} 积分"
+        elif isinstance(answers.usage, dict):
+            input_tokens = answers.usage.get("input_tokens")
+            if type(input_tokens) in {int, float}:
+                message += f"，输入 {input_tokens:g} tokens"
+        answer = answers.get("ping")
+        confidence = answer.get("confidence") if isinstance(answer, dict) else None
+        return jsonify(
+            {
+                "ok": True,
+                "message": f"{message}。",
+                "provider": client.provider,
+                "model": model,
+                "latency_ms": latency_ms,
+                "choice": answer.get("choice") if isinstance(answer, dict) else "",
+                "confidence": (
+                    confidence if type(confidence) in {int, float} else None
+                ),
+                "usage": answers.usage,
+                "credits": answers.credits,
+            }
+        ), 200
 
     async def _api_settings_config(self):
         """Edit the same AstrBotConfig and reload through AstrBot's plugin manager.

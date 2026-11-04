@@ -176,7 +176,7 @@ Cloudflare R2 使用 MinIO Python SDK 接入 S3 API，不依赖 `boto3` / `botoc
 
 旧配置保持原行为。图片级标签需先生成描述与向量索引；索引未就绪时回退对应分类方式，Tool 不可用时回退主模型分类自选。无候选、主动弃选或运行失败时不补发。
 
-额外辅助支持聊天模型或 [System One](https://docs.system-one.dev/zh-CN/docs/api) 决策服务，均增加请求。聊天模型留空跟随主模型；决策服务需配置地址、密钥和模型 ID，单选或不发送，失败保留文字。语义检索默认由聊天模型生成检索词，也可直接使用回复文本。
+额外辅助支持聊天模型或决策服务，均增加请求。聊天模型留空跟随主模型；决策服务可选 [System One](https://docs.system-one.dev/zh-CN/docs/api) 或 Cloudflare Workers AI 的 `clef` 系列模型（`clef-flash`、`clef`、`clef-omni`），需按提供方配置地址或账户 ID、密钥和模型 ID，填好后可点「测试连接」确认可用（会消耗一次极小请求），单选或不发送，失败保留文字。语义检索默认由聊天模型生成检索词，也可直接使用回复文本。
 
 **发送概率与 Tool 调用策略**
 
