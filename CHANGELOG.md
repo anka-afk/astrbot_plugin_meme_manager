@@ -2,10 +2,14 @@
 
 本文件记录 AstrBot 表情包管理器的主要版本更新，最新版本排在最前。
 
-## 未发布
+## v5.3.4
 
 - 决策服务新增 Cloudflare Workers AI，支持 `clef`、`clef-flash`、`clef-omni`，供辅助配图与自动收集共用；默认仍使用 System One。
 - 设置中心可切换提供方并测试当前草稿，显示模型、耗时、用量或失败原因。账户 ID 与密钥保存后不回显，留空保留、清除才移除；测试不保存配置，修改后旧结果失效。
+- 降低 WebUI 请求日志噪声：请求开始及成功响应（包括缩略图 304 缓存命中）使用 DEBUG，4xx 使用 WARNING，5xx 与异常使用 ERROR，并保留异常堆栈（[#205](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/205)）。
+- 统一插件后端、前端、测试工具和开发示例中的日志、注释及文档字符串为中文，保留配置键、协议字段、工具参数名及诊断上下文。
+
+升级后请重载插件并刷新管理页面。最低要求仍为 AstrBot 4.28.2、Python 3.12；已有配置继续使用。Cloudflare Workers AI 为可选决策后端，需自行配置账户与密钥；排查正常 WebUI 请求时可将插件日志级别调为 DEBUG。
 
 ## v5.3.3
 
