@@ -1,4 +1,4 @@
-"""Lsky Pro open-source 2.x adapter using reversible, scoped original names."""
+"""兰空图床开源版 2.x 适配器，使用可逆且限定范围的原始名称。"""
 
 import base64
 import hashlib
@@ -19,7 +19,7 @@ from ..interfaces.image_host import ImageHostInterface, ImageInfo
 
 
 class LskyProvider(ImageHostInterface):
-    """Keep unrelated account images outside the synchronization namespace."""
+    """将账户中的无关图片排除在同步命名空间之外。"""
 
     def __init__(self, config: dict):
         self.local_dir = Path(config["local_dir"]).resolve()
@@ -57,18 +57,18 @@ class LskyProvider(ImageHostInterface):
         )
 
     def _request(self, method: str, path: str, **kwargs) -> dict:
-        """Perform one API operation without replaying ambiguous uploads.
+        """执行一次 API 操作，不重放结果不确定的上传。
 
         Args:
-            method: HTTP method.
-            path: Relative API route.
-            **kwargs: Request body or query parameters.
+            method: HTTP 方法。
+            path: 相对 API 路由。
+            **kwargs: 请求体或查询参数。
 
         Returns:
-            Successful response data.
+            成功响应的数据。
 
         Raises:
-            ValueError: Authentication, transport or response validation failed.
+            ValueError: 身份验证、传输或响应校验失败。
         """
         try:
             with self.session.request(
@@ -92,13 +92,13 @@ class LskyProvider(ImageHostInterface):
             ) from None
 
     def get_image_list(self) -> list[ImageInfo]:
-        """Traverse all albums because uploads use the account's default album.
+        """遍历全部相册，因为上传使用账户的默认相册。
 
         Returns:
-            Complete inventory of images in this plugin namespace.
+            本插件命名空间内的完整图片清单。
 
         Raises:
-            ValueError: Pagination, managed metadata or paths are invalid.
+            ValueError: 分页、受管元数据或路径无效。
         """
         self._inventory = None
         images = []
@@ -204,16 +204,16 @@ class LskyProvider(ImageHostInterface):
         return images
 
     def upload_image(self, file_path: Path) -> ImageInfo:
-        """Upload and verify a replacement before deleting its previous record.
+        """先上传并验证替代图片，再删除先前记录。
 
         Args:
-            file_path: Image under the configured local root.
+            file_path: 已配置本地根目录下的图片。
 
         Returns:
-            Verified remote metadata.
+            已验证的远端元数据。
 
         Raises:
-            ValueError: The server transformed the image or returned invalid metadata.
+            ValueError: 服务器修改了图片或返回无效元数据。
         """
         relative = normalize_relative_path(
             file_path.resolve().relative_to(self.local_dir).as_posix()
@@ -278,13 +278,13 @@ class LskyProvider(ImageHostInterface):
         return uploaded
 
     def delete_image(self, image_id: str) -> bool:
-        """Delete an opaque key returned by a managed listing or upload.
+        """删除受管清单或上传结果返回的不透明键。
 
         Args:
-            image_id: Lsky image key.
+            image_id: 兰空图床图片键。
 
         Returns:
-            True after confirmation from the server.
+            服务器确认后返回 True。
         """
         if not re.fullmatch(r"[A-Za-z0-9]+", image_id):
             raise ValueError("Invalid Lsky image key")
@@ -293,14 +293,14 @@ class LskyProvider(ImageHostInterface):
         return True
 
     def download_image(self, image_info: ImageInfo, save_path: Path) -> bool:
-        """Validate original bytes before publishing, without sending API credentials.
+        """发布前校验原始字节，不发送 API 凭据。
 
         Args:
-            image_info: Managed remote metadata.
-            save_path: Local destination.
+            image_info: 受管远端元数据。
+            save_path: 本地目标路径。
 
         Returns:
-            True after checksum verification and atomic replacement.
+            校验和验证与原子替换完成后返回 True。
         """
         url = str(image_info.get("url") or "")
         parsed = urlsplit(url)
@@ -342,5 +342,5 @@ class LskyProvider(ImageHostInterface):
         return True
 
     def close(self) -> None:
-        """Release the API connection pool."""
+        """释放 API 连接池。"""
         self.session.close()

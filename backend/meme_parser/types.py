@@ -1,11 +1,11 @@
-"""Immutable parser output with original-source coordinates."""
+"""不可变的解析结果，包含原始来源坐标。"""
 
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class MemeToken:
-    """A consumed marker with character offsets into the original response."""
+    """已消费的标记，附带其在原始回复中的字符偏移。"""
 
     start: int
     end: int
@@ -17,7 +17,7 @@ class MemeToken:
 
 @dataclass(frozen=True)
 class ParseResult:
-    """Visible text, consumed tokens, and explicit resource-limit diagnostics."""
+    """可见文本、已消费标记及明确的资源限制诊断信息。"""
 
     text: str
     tokens: tuple[MemeToken, ...]
@@ -25,5 +25,5 @@ class ParseResult:
 
     @property
     def selections(self) -> tuple[str, ...]:
-        """Return valid selections in source order, without duplicates."""
+        """按来源顺序返回有效且去重的选择结果。"""
         return tuple(dict.fromkeys(token.value for token in self.tokens if token.valid))

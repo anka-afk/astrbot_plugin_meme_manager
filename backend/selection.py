@@ -18,7 +18,7 @@ MAX_CHAT_RESPONSE_CHARS = 64 * 1024
 
 @dataclass
 class SelectionTask:
-    """Data required for one post-reply candidate selection."""
+    """回复后进行一次候选选择所需的数据。"""
 
     kind: str
     reply: str
@@ -29,7 +29,7 @@ class SelectionTask:
 
 @dataclass
 class SelectionResult:
-    """Keep successful choice, deliberate abstention, and failure distinct."""
+    """区分成功选中、主动放弃与失败。"""
 
     status: str
     selected_ids: list[str]
@@ -80,7 +80,7 @@ def _normalize_task(
             description = item.get("description", "")
             if not isinstance(description, str):
                 raise _SelectionError("invalid_task")
-            # Category descriptions have no storage limit; bound model input only.
+            # 分类描述存储不限制长度，仅限制模型输入长度。
             candidates.append(
                 {
                     "id": candidate_id,
@@ -89,7 +89,7 @@ def _normalize_task(
             )
             continue
         tags = item.get("tags", [])
-        # Manual semantics allow 50 ordinary tags plus one fixed category tag.
+        # 手动语义允许 50 个普通标签，另加一个固定分类标签。
         if not isinstance(tags, list) or len(tags) > 51:
             raise _SelectionError("invalid_candidates")
         candidates.append(
@@ -282,19 +282,19 @@ async def select_candidates(
     generate: Callable[[str], Awaitable[Any]],
     decision_client: DecisionClient | None,
 ) -> SelectionResult:
-    """Select from known candidates using a chat or a decision backend.
+    """通过聊天或决策后端从已知候选中选择。
 
     Args:
-        task: Visible reply, allowed candidates, and optional reference data.
-        backend: chat or decision, independent of category/semantic retrieval.
-        generate: Chat callback, unused by the decision backend.
-        decision_client: Shared service client, unused by the chat backend.
+        task: 可见回复、允许的候选及可选参考数据。
+        backend: chat 或 decision，独立于分类或语义检索方式。
+        generate: 聊天生成回调，决策后端不使用。
+        decision_client: 共享服务客户端，聊天后端不使用。
 
     Returns:
-        A validated choice, deliberate abstention, or stable failure result.
+        已校验的选择结果、主动放弃结果或稳定的失败结果。
 
     Raises:
-        asyncio.CancelledError: The owning reply was cancelled.
+        asyncio.CancelledError: 所属回复已被取消。
     """
     started = time.monotonic()
 

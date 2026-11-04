@@ -1,4 +1,4 @@
-"""Exercise real spawned workers against an isolated HTTP WebDAV fixture."""
+"""使用隔离的 HTTP WebDAV 测试环境验证实际启动的工作进程。"""
 
 import hashlib
 import threading

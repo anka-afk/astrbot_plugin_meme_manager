@@ -1,4 +1,4 @@
-"""Cover pack boundaries, restore failures and external archive handling."""
+"""覆盖表情包边界、恢复失败及外部压缩文件处理。"""
 
 import base64
 import json

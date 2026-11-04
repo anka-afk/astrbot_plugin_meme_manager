@@ -23,7 +23,7 @@ from astrbot.core.message.message_event_result import MessageChain
 
 
 class FakeEvent:
-    """Minimal event used by the real command and upload handler."""
+    """供真实命令与上传处理器使用的最小事件。"""
 
     def __init__(self, message, session_id="session-1", sender_id="user-1"):
         self.session_id = session_id

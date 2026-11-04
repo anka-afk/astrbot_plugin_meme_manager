@@ -1,4 +1,4 @@
-"""Portable paths, fingerprints and atomic writes shared by storage adapters."""
+"""存储适配器共用的跨平台路径、指纹及原子写入。"""
 
 import hashlib
 import json
@@ -15,16 +15,16 @@ MAX_IMAGE_BYTES = 1024 * 1024 * 1024
 
 
 def normalize_relative_path(value: str) -> str:
-    """Validate a path without silently changing its meaning.
+    """校验路径，不悄然改变其含义。
 
     Args:
-        value: Relative image path using either platform's separators.
+        value: 可使用任一平台分隔符的相对图片路径。
 
     Returns:
-        A portable POSIX path.
+        可跨平台使用的 POSIX 路径。
 
     Raises:
-        ValueError: The path escapes its namespace or aliases a Windows filename.
+        ValueError: 路径超出命名空间或形成 Windows 文件名别名。
     """
     value = str(value).replace("\\", "/")
     parts = value.split("/")
@@ -49,16 +49,16 @@ def normalize_relative_path(value: str) -> str:
 
 
 def file_fingerprint(file_path: Path) -> dict:
-    """Hash a stable file using bounded memory.
+    """使用有限内存计算稳定文件的哈希。
 
     Args:
-        file_path: File to read.
+        file_path: 待读取的文件。
 
     Returns:
-        Its size, SHA-256 digest and nanosecond modification timestamp.
+        文件大小、SHA-256 摘要及纳秒级修改时间戳。
 
     Raises:
-        OSError: The file changed during reading or could not be read.
+        OSError: 读取期间文件变化或无法读取。
     """
     before = file_path.stat()
     digest = hashlib.sha256()
@@ -80,14 +80,14 @@ def file_fingerprint(file_path: Path) -> dict:
 
 
 def write_json_atomic(target: Path, data: dict) -> None:
-    """Persist state without exposing partially written JSON.
+    """持久保存状态，避免暴露未完整写入的 JSON。
 
     Args:
-        target: State file to replace.
-        data: Serializable state.
+        target: 待替换的状态文件。
+        data: 可序列化的状态。
 
     Raises:
-        OSError: The new state could not be durably written.
+        OSError: 无法将新状态持久写入。
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -116,17 +116,17 @@ def save_image_stream(
     expected_size: int | None = None,
     expected_sha256: str = "",
 ) -> None:
-    """Validate a streamed image before atomically publishing it.
+    """校验流式下载的图片后，再原子发布。
 
     Args:
-        chunks: Downloaded byte chunks.
-        save_path: Final destination.
-        expected_size: Exact byte length, if supplied by the provider.
-        expected_sha256: Content checksum, if supplied by the provider.
+        chunks: 下载的字节分块。
+        save_path: 最终目标路径。
+        expected_size: 提供方给出的确切字节长度（如有）。
+        expected_sha256: 提供方给出的内容校验和（如有）。
 
     Raises:
-        ValueError: The transfer is truncated, too large or not an image.
-        OSError: Reading or saving fails; the existing target remains intact.
+        ValueError: 传输被截断、文件过大或内容不是图片。
+        OSError: 读取或保存失败，现有目标保持完整。
     """
     if expected_size is not None and not 0 < expected_size <= MAX_IMAGE_BYTES:
         raise ValueError("Remote image size is outside the supported range")
@@ -164,7 +164,7 @@ def save_image_stream(
 
 
 class FileHandler:
-    """Scan complete local inventories and resolve safe image destinations."""
+    """扫描完整本地清单，并解析安全的图片目标路径。"""
 
     SUPPORTED_FORMATS = SUPPORTED_FORMATS
 
@@ -173,14 +173,14 @@ class FileHandler:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def scan_local_images(self) -> list[dict]:
-        """Return a complete, deterministic inventory with content fingerprints.
+        """返回完整、确定且包含内容指纹的文件清单。
 
         Returns:
-            Local images and their paths, categories, sizes and checksums.
+            本地图片及其路径、分类、大小和校验和。
 
         Raises:
-            OSError: Any directory or image cannot be read.
-            ValueError: A symlink or ambiguous path makes mirroring unsafe.
+            OSError: 任一目录或图片无法读取。
+            ValueError: 符号链接或存在歧义的路径导致镜像操作不安全。
         """
         images = []
         directories = [self.base_dir]
@@ -215,18 +215,18 @@ class FileHandler:
     def get_file_path(
         self, category: str, filename: str, *, create_parent: bool = True
     ) -> Path:
-        """Resolve a remote name inside the local root.
+        """在本地根目录内解析远端名称。
 
         Args:
-            category: Relative category, optionally nested.
-            filename: Single filename.
-            create_parent: Whether to create the destination directory.
+            category: 相对分类，可包含嵌套层级。
+            filename: 单个文件名。
+            create_parent: 是否创建目标目录。
 
         Returns:
-            A safe absolute destination.
+            安全的绝对目标路径。
 
         Raises:
-            ValueError: A name or existing filesystem link escapes the root.
+            ValueError: 名称或现有文件系统链接超出根目录。
         """
         filename = normalize_relative_path(filename)
         if "/" in filename:

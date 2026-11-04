@@ -13,7 +13,7 @@ from astrbot.core.message.components import Image, Plain, Reply
 
 
 class Event(flow.FlowEvent):
-    """Supply command, identity, and reply methods to the real collection flow."""
+    """为真实收集流程提供命令、身份与回复方法。"""
 
     def __init__(self, components=(), sender="admin", chat="100"):
         self.session_id = chat

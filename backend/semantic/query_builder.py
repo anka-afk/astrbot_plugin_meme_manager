@@ -1,4 +1,4 @@
-"""Build a semantic query independently of candidate selection."""
+"""独立于候选选择构造语义查询。"""
 
 import asyncio
 import json
@@ -15,16 +15,16 @@ async def build_semantic_query(
     reference: str = "",
     generate: Callable[[str], Awaitable[Any]],
 ) -> str:
-    """Use visible text or a chat model to construct a bounded search query.
+    """使用可见文本或聊天模型构造长度受限的搜索词。
 
     Args:
-        reply: Visible assistant reply, with internal text already removed.
-        source: Either reply_text or generated.
-        reference: Optional bounded context encoded as reference data.
-        generate: Chat generation callback; never a decision model.
+        reply: 可见的助手回复，已移除内部文本。
+        source: reply_text 或 generated。
+        reference: 可选的长度受限上下文，以参考数据形式编码。
+        generate: 聊天生成回调，不使用决策模型。
 
     Returns:
-        A compact query, falling back to visible reply on generation failure.
+        简短查询词；生成失败时回退到可见回复。
     """
     fallback = compact_semantic_query(reply)
     if source == "reply_text":

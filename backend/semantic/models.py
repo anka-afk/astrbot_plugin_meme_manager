@@ -138,17 +138,17 @@ def category_analysis_is_current(item: Any) -> bool:
 
 
 def semantic_caption_is_complete(item: Any) -> bool:
-    """Return whether an image already has reusable semantic text.
+    """返回图片是否已有可复用的语义文本。
 
-    Caption reuse deliberately does not depend on the prompt version or category
-    review version. Those fields describe how the text was produced, while a
-    non-forced semantic run must preserve existing text and only rebuild vectors.
+    描述复用不依赖提示词版本或分类审核版本。
+    这些字段仅说明文本的生成方式，
+    非强制语义任务必须保留已有文本，仅重建向量。
 
     Args:
-        item: Raw semantic image record.
+        item: 原始语义图片记录。
 
     Returns:
-        True when the record has a completed caption and at least one tag.
+        记录的描述已完成且至少有一个标签时返回 True。
     """
     return bool(
         isinstance(item, dict)
@@ -306,13 +306,13 @@ def parse_meme_id(value: str) -> str:
 
 
 def extract_and_clean_semantic_meme_references(text: str) -> tuple[str, list[str]]:
-    """Extract semantic markers through the shared context-aware parser.
+    """通过共享的上下文感知解析器提取语义标记。
 
     Args:
-        text: Complete original response.
+        text: 原始完整回复。
 
     Returns:
-        Visible text and unique semantic references in source order.
+        可见文本及按来源顺序去重的语义引用。
     """
     result = MemeParser.parse(str(text or ""), semantic=True)
     return result.text, list(result.selections)

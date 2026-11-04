@@ -1,4 +1,4 @@
-"""Contracts shared by the supported old and new AstrBot releases."""
+"""受支持的新旧 AstrBot 版本共用的协议约定。"""
 
 import ast
 import builtins

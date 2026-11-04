@@ -173,15 +173,15 @@ def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
 def _protected_reference_spans(
     text: str, *, protect_inline_code: bool = True
 ) -> list[tuple[int, int]]:
-    """Locate references and optionally same-line code examples.
+    """定位引用及可选的同一行代码示例。
 
     Args:
-        text: Source text to inspect.
-        protect_inline_code: Include approximate code spans for legacy callers.
-            Stateful scanners handle backtick runs themselves instead.
+        text: 待检查的来源文本。
+        protect_inline_code: 为旧调用方提供近似代码区间。
+            有状态的扫描器会自行处理反引号序列。
 
     Returns:
-        Merged protected source intervals.
+        合并后的受保护来源区间。
     """
     spans = [
         match.span()

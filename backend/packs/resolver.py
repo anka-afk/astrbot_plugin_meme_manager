@@ -40,13 +40,13 @@ def _pack_exists(pack_id: str) -> bool:
 
 
 def _normalize_pack_ids(raw_value) -> list[str]:
-    """Normalize pack_id or pack_ids field into a list of pack IDs.
+    """将 pack_id 或 pack_ids 字段规范为表情包 ID 列表。
 
     Args:
-        raw_value: Either a string (single pack_id) or list (pack_ids).
+        raw_value: 字符串（单个 pack_id）或列表（pack_ids）。
 
     Returns:
-        List of non-empty pack ID strings.
+        非空表情包 ID 字符串列表。
     """
     if isinstance(raw_value, str):
         pack_id = raw_value.strip()
@@ -64,17 +64,17 @@ def _normalize_pack_ids(raw_value) -> list[str]:
 def resolve_pack_ids(
     session_id: str | None = None, persona_id: str | None = None
 ) -> list[str]:
-    """Resolve pack IDs by selection rules and fallback strategy.
+    """根据选包规则与回退策略解析表情包 ID。
 
-    Supports both single-pack (pack_id: str) and multi-pack (pack_ids: list)
-    rules for backward compatibility. Returns enabled and existing packs only.
+    同时支持单包（pack_id: str）与多包（pack_ids: list）
+    规则以兼容旧配置，仅返回已启用且存在的表情包。
 
     Args:
-        session_id: Optional session identifier for session-scoped rules.
-        persona_id: Optional persona identifier for persona-scoped rules.
+        session_id: 可选的会话标识符，用于会话范围的规则。
+        persona_id: 可选的人格标识符，用于人格范围的规则。
 
     Returns:
-        List of resolved pack IDs, ordered by priority.
+        按优先级排列的已解析表情包 ID 列表。
     """
     selection_data = _load_json(SELECTION_RULES_PATH, {})
     registry_data = _load_json(REGISTRY_PATH, {})
@@ -87,7 +87,7 @@ def resolve_pack_ids(
                 continue
             scope = str(rule.get("scope") or "").strip().lower()
 
-            # Support both pack_id (legacy) and pack_ids (multi-pack).
+            # 同时支持旧版 pack_id 与多包 pack_ids。
             candidate_ids = _normalize_pack_ids(
                 rule.get("pack_ids") or rule.get("pack_id")
             )
@@ -102,7 +102,7 @@ def resolve_pack_ids(
             if not target:
                 continue
 
-            # Validate all candidates are enabled and exist.
+            # 校验所有候选表情包均已启用且存在。
             valid_ids = [
                 pack_id
                 for pack_id in candidate_ids
@@ -134,11 +134,11 @@ def resolve_pack_ids(
     if valid_defaults:
         return valid_defaults
 
-    # Fall back to the built-in default only when no selected pack is usable.
+    # 仅在所选表情包均不可用时回退到内置默认包。
     if _pack_exists(DEFAULT_PACK_ID):
         return [DEFAULT_PACK_ID]
 
-    # Last resort: first enabled pack in registry.
+    # 最后回退到注册表中第一个启用的表情包。
     installed = (
         registry_data.get("installed_packs", [])
         if isinstance(registry_data, dict)
@@ -162,14 +162,14 @@ def resolve_pack_ids(
 def resolve_pack_id(
     session_id: str | None = None, persona_id: str | None = None
 ) -> str:
-    """Resolve a single pack ID (backward compatibility wrapper).
+    """解析单个表情包 ID，作为向后兼容的包装接口。
 
     Args:
-        session_id: Optional session identifier for session-scoped rules.
-        persona_id: Optional persona identifier for persona-scoped rules.
+        session_id: 可选的会话标识符，用于会话范围的规则。
+        persona_id: 可选的人格标识符，用于人格范围的规则。
 
     Returns:
-        The highest-priority resolved pack ID.
+        已解析结果中优先级最高的表情包 ID。
     """
     pack_ids = resolve_pack_ids(session_id=session_id, persona_id=persona_id)
     return pack_ids[0] if pack_ids else DEFAULT_PACK_ID
@@ -189,17 +189,17 @@ def get_pack_paths(pack_id: str) -> dict[str, Path]:
 
 
 def resolve_pack_paths(pack_id: str) -> dict[str, Path]:
-    """Resolve an existing pack without allowing paths outside the pack root.
+    """解析现有表情包，并禁止路径超出表情包根目录。
 
     Args:
-        pack_id: Protocol-compatible pack identifier.
+        pack_id: 符合协议的表情包标识符。
 
     Returns:
-        Absolute paths for the pack, images, category metadata and manifest.
+        表情包、图片、分类元数据及清单的绝对路径。
 
     Raises:
-        ValueError: The ID is invalid or escapes the pack root.
-        FileNotFoundError: The requested pack directory does not exist.
+        ValueError: ID 无效或路径超出表情包根目录。
+        FileNotFoundError: 请求的表情包目录不存在。
     """
     normalized = validate_pack_id(pack_id)
     pack_dir = (PACKS_DIR / normalized).resolve()
@@ -249,24 +249,24 @@ def resolve_pack_context(
     session_id: str | None = None,
     persona_id: str | None = None,
 ) -> dict[str, object]:
-    """Resolve pack context with multi-pack support.
+    """解析支持多包的表情包上下文。
 
-    When multiple packs are bound, merges their category mappings.
-    Returns primary pack paths with merged categories.
+    绑定多个表情包时合并其分类映射。
+    返回主表情包路径及合并后的分类。
 
     Args:
-        session_id: Optional session identifier for session-scoped rules.
-        persona_id: Optional persona identifier for persona-scoped rules.
+        session_id: 可选的会话标识符，用于会话范围的规则。
+        persona_id: 可选的人格标识符，用于人格范围的规则。
 
     Returns:
-        Context dict with pack_id, pack_ids, paths, and merged category_mapping.
+        包含 pack_id、pack_ids、路径及合并后 category_mapping 的上下文字典。
     """
     pack_ids = resolve_pack_ids(session_id=session_id, persona_id=persona_id)
     primary_pack_id = pack_ids[0] if pack_ids else DEFAULT_PACK_ID
     paths = get_pack_paths(primary_pack_id)
     pack_dirs = {pack_id: get_pack_paths(pack_id)["pack_dir"] for pack_id in pack_ids}
 
-    # Merge category mappings from all packs (primary takes precedence).
+    # 合并全部表情包的分类映射，主表情包优先。
     merged_mapping = {}
     for pack_id in reversed(pack_ids):
         pack_mapping = load_pack_category_mapping(pack_id)

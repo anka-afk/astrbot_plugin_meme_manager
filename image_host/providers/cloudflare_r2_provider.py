@@ -1,4 +1,4 @@
-"""Cloudflare R2 storage with portable object paths and bounded S3 requests."""
+"""Cloudflare R2 存储，使用跨平台对象路径与受限的 S3 请求。"""
 
 import mimetypes
 import os
@@ -19,11 +19,11 @@ from ..interfaces.image_host import ImageHostInterface, ImageInfo
 
 
 class CloudflareR2Error(Exception):
-    """R2 adapter error."""
+    """R2 适配器错误。"""
 
 
 class CloudflareR2Provider(ImageHostInterface):
-    """Preserve full paths relative to the selected local image library."""
+    """完整保留相对于所选本地图片库的路径。"""
 
     def __init__(self, config: dict):
         required = {"account_id", "access_key_id", "secret_access_key", "bucket_name"}
@@ -63,13 +63,13 @@ class CloudflareR2Provider(ImageHostInterface):
         self.s3_client.disable_virtual_style_endpoint()
 
     def upload_image(self, file_path: Path) -> ImageInfo:
-        """Stream an image to R2 with a content fingerprint.
+        """将图片流式上传到 R2，并附带内容指纹。
 
         Args:
-            file_path: Local image under the configured root.
+            file_path: 已配置根目录下的本地图片。
 
         Returns:
-            Confirmed object metadata, including its ETag and SHA-256.
+            已确认的对象元数据，含 ETag 与 SHA-256。
         """
         relative = normalize_relative_path(
             file_path.resolve().relative_to(self.local_dir).as_posix()
@@ -96,28 +96,28 @@ class CloudflareR2Provider(ImageHostInterface):
             "url": self._get_public_url(key),
             "size": fingerprint["size"],
             "sha256": fingerprint["sha256"],
-            # Keep the quoted wire format used by existing sync baselines.
+            # 保留已有同步基线所使用的带引号传输格式。
             "etag": f'"{response.etag}"' if response.etag else "",
         }
 
     def delete_image(self, image_id: str) -> bool:
-        """Delete a validated object ID inside the configured prefix.
+        """删除已配置前缀内经过校验的对象 ID。
 
         Args:
-            image_id: Full R2 object key returned by this adapter.
+            image_id: 此适配器返回的完整 R2 对象键。
 
         Returns:
-            Whether the S3 delete request completed.
+            S3 删除请求是否完成。
         """
         self._parse_s3_key(image_id)
         self.s3_client.remove_object(self.bucket_name, image_id)
         return True
 
     def get_image_list(self) -> list[ImageInfo]:
-        """List all pages; propagate failures instead of returning a partial result.
+        """列出所有分页；发生失败时向上传播，不返回部分结果。
 
         Returns:
-            Complete image metadata from the selected prefix.
+            所选前缀下的完整图片元数据。
         """
         images = []
         for obj in self.s3_client.list_objects(
@@ -144,14 +144,14 @@ class CloudflareR2Provider(ImageHostInterface):
         return images
 
     def download_image(self, image_info: ImageInfo, save_path: Path) -> bool:
-        """Download a specific object version and validate before replacement.
+        """下载指定对象版本，并在替换前校验。
 
         Args:
-            image_info: R2 object metadata.
-            save_path: Local destination.
+            image_info: R2 对象元数据。
+            save_path: 本地目标路径。
 
         Returns:
-            True once the complete image has been published.
+            完整图片发布后返回 True。
         """
         key = image_info["id"]
         self._parse_s3_key(key)
@@ -173,13 +173,13 @@ class CloudflareR2Provider(ImageHostInterface):
         return True
 
     def _generate_s3_key(self, file_path: Path) -> str:
-        """Build an object key preserving nested categories.
+        """构造对象键并保留嵌套分类。
 
         Args:
-            file_path: Image inside the local root.
+            file_path: 本地根目录内的图片。
 
         Returns:
-            A key inside the configured prefix.
+            已配置前缀内的对象键。
         """
         relative = normalize_relative_path(
             file_path.resolve().relative_to(self.local_dir).as_posix()
@@ -187,13 +187,13 @@ class CloudflareR2Provider(ImageHostInterface):
         return f"{self.prefix}/{relative}"
 
     def _get_category_from_path(self, file_path: Path) -> str:
-        """Resolve the full category relative to the selected image library.
+        """解析相对于所选图片库的完整分类。
 
         Args:
-            file_path: Local image.
+            file_path: 本地图片。
 
         Returns:
-            Relative category, or an empty string for root images.
+            相对分类；根目录图片返回空字符串。
         """
         relative = normalize_relative_path(
             file_path.resolve().relative_to(self.local_dir).as_posix()
@@ -201,16 +201,16 @@ class CloudflareR2Provider(ImageHostInterface):
         return relative.rpartition("/")[0]
 
     def _parse_s3_key(self, s3_key: str) -> tuple[str, str]:
-        """Check object namespace boundaries and decode its portable path.
+        """检查对象命名空间边界，并解码跨平台路径。
 
         Args:
-            s3_key: Full object key.
+            s3_key: 完整对象键。
 
         Returns:
-            Category and filename.
+            分类与文件名。
 
         Raises:
-            ValueError: The key falls outside the configured namespace.
+            ValueError: 对象键不在已配置命名空间内。
         """
         prefix = f"{self.prefix}/"
         if not s3_key.startswith(prefix):
@@ -220,16 +220,16 @@ class CloudflareR2Provider(ImageHostInterface):
         return category, filename
 
     def _get_public_url(self, s3_key: str) -> str:
-        """Build an encoded URL only when a real public endpoint is configured.
+        """仅在配置了实际公开端点时构造编码后的 URL。
 
         Args:
-            s3_key: Full R2 object key.
+            s3_key: 完整 R2 对象键。
 
         Returns:
-            Public URL, or an empty string for private buckets.
+            公开 URL；私有存储桶返回空字符串。
         """
         return f"{self.public_url}/{quote(s3_key, safe='/')}" if self.public_url else ""
 
     def close(self) -> None:
-        """Release the S3 connection pool."""
+        """释放 S3 连接池。"""
         self._http.clear()

@@ -1,4 +1,4 @@
-"""StarDots adapter preserving opaque filenames and complete pagination."""
+"""StarDots 适配器，保留不透明文件名并完整处理分页。"""
 
 import hashlib
 import mimetypes
@@ -18,27 +18,27 @@ from ..interfaces.image_host import ImageHostInterface, ImageInfo
 
 
 class StarDotsError(Exception):
-    """StarDots adapter error."""
+    """StarDots 适配器错误。"""
 
 
 class AuthenticationError(StarDotsError):
-    """StarDots rejected request authentication."""
+    """StarDots 拒绝了请求身份验证。"""
 
 
 class NetworkError(StarDotsError):
-    """A StarDots request failed."""
+    """StarDots 请求失败。"""
 
 
 class RateLimitError(StarDotsError):
-    """StarDots rate limit was reached."""
+    """已达到 StarDots 请求频率限制。"""
 
 
 class InvalidResponseError(StarDotsError):
-    """StarDots returned incomplete or unexpected metadata."""
+    """StarDots 返回了不完整或不符合预期的元数据。"""
 
 
 class StarDotsProvider(ImageHostInterface):
-    """Encode categories at the API boundary and retain the exact remote ID."""
+    """在 API 边界编码分类，并保留确切的远端 ID。"""
 
     BASE_URL = "https://api.stardots.io"
     CATEGORY_SEPARATOR = "@@CAT@@"
@@ -67,10 +67,10 @@ class StarDotsProvider(ImageHostInterface):
         self.session.verify = True
 
     def _generate_headers(self) -> dict[str, str]:
-        """Sign a fresh request without a timezone-dependent timestamp offset.
+        """为新请求签名，不添加依赖时区的时间戳偏移。
 
         Returns:
-            StarDots authentication headers.
+            StarDots 身份验证请求头。
         """
         timestamp = str(int(time.time() + self.server_time_offset))
         nonce = secrets.token_hex(10)
@@ -87,18 +87,18 @@ class StarDotsProvider(ImageHostInterface):
         }
 
     def _make_request(self, method: str, url: str, **kwargs) -> dict:
-        """Retry transient failures with fresh signatures and bounded backoff.
+        """使用新签名及有界退避重试临时失败。
 
         Args:
-            method: HTTP method.
-            url: API URL.
-            **kwargs: JSON, multipart body or query parameters.
+            method: HTTP 方法。
+            url: API 请求地址。
+            **kwargs: JSON、分段请求体或查询参数。
 
         Returns:
-            A validated successful API response.
+            已校验的成功 API 响应。
 
         Raises:
-            StarDotsError: Authentication, rate limiting or transport failure.
+            StarDotsError: 身份验证、频率限制或传输失败。
         """
         extra_headers = kwargs.pop("headers", {})
         for attempt in range(3):
@@ -180,13 +180,13 @@ class StarDotsProvider(ImageHostInterface):
         raise NetworkError("StarDots retries exhausted")
 
     def _encode_category(self, category: str) -> str:
-        """Encode a validated category into a StarDots filename.
+        """将已校验分类编码到 StarDots 文件名中。
 
         Args:
-            category: Relative category.
+            category: 相对分类。
 
         Returns:
-            Encoded category, or an empty string for root images.
+            编码后的分类；根目录图片返回空字符串。
         """
         return (
             normalize_relative_path(category).replace("/", "@@DIR@@")
@@ -195,13 +195,13 @@ class StarDotsProvider(ImageHostInterface):
         )
 
     def _decode_category(self, encoded: str) -> str:
-        """Decode a category without remapping root images to a default category.
+        """解码分类，不将根目录图片重新映射到默认分类。
 
         Args:
-            encoded: StarDots category prefix.
+            encoded: StarDots 分类前缀。
 
         Returns:
-            Relative category.
+            相对分类。
         """
         return (
             normalize_relative_path(encoded.replace("@@DIR@@", "/")) if encoded else ""
@@ -209,13 +209,13 @@ class StarDotsProvider(ImageHostInterface):
 
     @staticmethod
     def _extract_image_size(image_info: dict) -> int | None:
-        """Read StarDots' byteSize field; its size field may contain formatted text.
+        """读取 StarDots 的 byteSize 字段；size 字段可能是格式化文本。
 
         Args:
-            image_info: API file metadata.
+            image_info: API 文件元数据。
 
         Returns:
-            Exact byte count when available.
+            确切字节数（如可获取）。
         """
         for key in ("byteSize", "fileSize", "file_size", "bytes", "length", "size"):
             value = image_info.get(key)
@@ -231,13 +231,13 @@ class StarDotsProvider(ImageHostInterface):
 
     @staticmethod
     def _is_rate_limit_error(message: str) -> bool:
-        """Recognize API rate-limit responses.
+        """识别 API 请求频率限制响应。
 
         Args:
-            message: API error text.
+            message: API 错误文本。
 
         Returns:
-            Whether it describes a rate limit.
+            是否表示请求频率限制。
         """
         lowered = str(message or "").lower()
         return any(
@@ -253,13 +253,13 @@ class StarDotsProvider(ImageHostInterface):
         )
 
     def upload_image(self, file_path: Path) -> ImageInfo:
-        """Upload an image using the same category encoding used by listings.
+        """使用与清单相同的分类编码上传图片。
 
         Args:
-            file_path: Image within the local root.
+            file_path: 本地根目录内的图片。
 
         Returns:
-            Confirmed image metadata with the exact server filename.
+            已确认的图片元数据，包含服务器上的确切文件名。
         """
         relative = normalize_relative_path(
             file_path.resolve().relative_to(self.local_dir).as_posix()
@@ -311,13 +311,13 @@ class StarDotsProvider(ImageHostInterface):
         }
 
     def delete_image(self, image_id: str) -> bool:
-        """Delete the server filename, keeping category separators intact.
+        """删除服务器文件名，完整保留分类分隔符。
 
         Args:
-            image_id: Opaque filename returned by StarDots.
+            image_id: StarDots 返回的不透明文件名。
 
         Returns:
-            True after the API confirms deletion.
+            API 确认删除后返回 True。
         """
         normalize_relative_path(image_id)
         self._make_request(
@@ -328,13 +328,13 @@ class StarDotsProvider(ImageHostInterface):
         return True
 
     def get_image_list(self) -> list[ImageInfo]:
-        """Fetch every page and fail closed if pagination changes or is interrupted.
+        """读取全部分页；分页变化或中断时按失败处理。
 
         Returns:
-            Complete image metadata with opaque IDs and portable relative paths.
+            完整图片元数据，包含不透明 ID 与跨平台相对路径。
 
         Raises:
-            StarDotsError: Any page fails or the inventory changes during traversal.
+            StarDotsError: 任一分页失败或遍历期间清单变化。
         """
         images = []
         seen = set()
@@ -405,14 +405,14 @@ class StarDotsProvider(ImageHostInterface):
         )
 
     def download_image(self, image_info: ImageInfo, save_path: Path) -> bool:
-        """Request a fresh ticket and atomically save the validated response.
+        """请求新票据，并原子保存已校验响应。
 
         Args:
-            image_info: StarDots image metadata.
-            save_path: Local destination.
+            image_info: StarDots 图片元数据。
+            save_path: 本地目标路径。
 
         Returns:
-            True once the image has been validated and saved.
+            图片校验并保存后返回 True。
         """
         remote_name = image_info["id"]
         normalize_relative_path(remote_name)
@@ -453,5 +453,5 @@ class StarDotsProvider(ImageHostInterface):
         return True
 
     def close(self) -> None:
-        """Close the HTTP connection pool."""
+        """关闭 HTTP 连接池。"""
         self.session.close()

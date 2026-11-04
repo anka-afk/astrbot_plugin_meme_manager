@@ -32,7 +32,7 @@ CLOUDFLARE_ERROR_CODES = {
 
 
 class DecisionError(Exception):
-    """Expose a stable error code without credentials or upstream detail."""
+    """提供不含凭据或上游详情的稳定错误码。"""
 
     def __init__(self, code: str):
         self.code = str(code)
@@ -40,7 +40,7 @@ class DecisionError(Exception):
 
 
 class DecisionAnswers(dict):
-    """Keep per-request metadata without adding keys to the answer mapping."""
+    """保留每次请求的元信息，不向答案映射添加额外键。"""
 
     def __init__(self, answers, *, model="", usage=None, credits=None):
         super().__init__(answers)
@@ -160,14 +160,14 @@ class DecisionClient:
 
     @property
     def ready(self) -> bool:
-        """Whether the local configuration is valid and the client is open."""
+        """本地配置是否有效且客户端是否处于打开状态。"""
         return self._reason() == "ready"
 
     def status(self) -> dict:
-        """Return local readiness only, without making a request or exposing secrets.
+        """仅返回本地就绪状态，不发起请求或泄露密钥。
 
         Returns:
-            Redacted service configuration status, not a connectivity guarantee.
+            已隐藏敏感信息的服务配置状态，不保证网络连通性。
         """
         reason = self._reason()
         return {
@@ -278,16 +278,16 @@ class DecisionClient:
         return models
 
     def _question_options(self, question: dict) -> list[str]:
-        """Validate documented question criteria and return distribution keys.
+        """校验文档规定的问题条件，并返回概率分布键。
 
         Args:
-            question: A Choice, Noul, or Score question with fixed instructions.
+            question: 包含固定指令的 Choice、Noul 或 Score 问题。
 
         Returns:
-            Allowed probability keys for the selected primitive.
+            所选基础问题类型允许使用的概率键。
 
         Raises:
-            DecisionError: The request does not follow the provider's contract.
+            DecisionError: 请求不符合提供方的协议约定。
         """
         kind = question.get("type")
         criteria = question.get("criteria")
@@ -382,17 +382,17 @@ class DecisionClient:
                 cls._probability(value)
 
     def _validate_answers(self, questions: dict, answers) -> dict:
-        """Validate the complete answer set before exposing any partial result.
+        """在提供任何部分结果前校验完整答案集合。
 
         Args:
-            questions: Exact questions sent to the service.
-            answers: Service-provided answer object.
+            questions: 实际发送给服务的问题。
+            answers: 服务返回的答案对象。
 
         Returns:
-            Validated answers with optional statistics kept intact.
+            已校验的答案，并完整保留可选统计信息。
 
         Raises:
-            DecisionError: Any answer, type, selection, or probability is invalid.
+            DecisionError: 任一答案、类型、选择或概率无效。
         """
         if not isinstance(answers, dict) or set(answers) != set(questions):
             raise DecisionError("invalid_response")
@@ -423,16 +423,16 @@ class DecisionClient:
 
     @staticmethod
     async def _read_bounded(response: aiohttp.ClientResponse) -> bytes:
-        """Read all response chunks while enforcing a total byte limit.
+        """读取全部响应分块，并限制总字节数。
 
         Args:
-            response: Successful HTTP response, possibly chunked.
+            response: 成功的 HTTP 响应，可能采用分块传输。
 
         Returns:
-            Complete response bytes.
+            完整的响应字节。
 
         Raises:
-            DecisionError: The complete response exceeds its allowed size.
+            DecisionError: 完整响应超出允许的大小。
         """
         content_length = response.headers.get("Content-Length")
         if content_length:
@@ -544,18 +544,18 @@ class DecisionClient:
         return result
 
     async def evaluate(self, state: dict, questions: dict) -> dict:
-        """Execute one inference without retrying or changing its model.
+        """执行一次推理，不重试或切换模型。
 
         Args:
-            state: Shared task data, independent of the fixed question instructions.
-            questions: Named questions using the documented criteria contract.
+            state: 共享任务数据，独立于固定的问题指令。
+            questions: 使用文档约定条件的具名问题。
 
         Returns:
-            The fully validated answers object.
+            已完整校验的答案对象。
 
         Raises:
-            DecisionError: Configuration, protocol, HTTP, or deadline failure.
-            asyncio.CancelledError: The owning task was cancelled.
+            DecisionError: 配置、协议、HTTP 或截止时间错误。
+            asyncio.CancelledError: 所属任务已被取消。
         """
         reason = self._reason()
         if reason != "ready":
@@ -570,7 +570,7 @@ class DecisionClient:
             headers["Idempotency-Key"] = str(uuid.uuid4())
 
         async def request_once():
-            """Return one bounded response within the caller's total deadline."""
+            """在调用方的总截止时间内返回一个大小受限的响应。"""
             async with self._semaphore:
                 session = await self._get_session()
                 task_name = state.get("task") if isinstance(state, dict) else "other"
@@ -644,7 +644,7 @@ class DecisionClient:
         return DecisionAnswers(answers, model=model, usage=usage, credits=credits)
 
     async def close(self) -> None:
-        """Prevent further requests and close the shared HTTP session."""
+        """停止接受后续请求，并关闭共享 HTTP 会话。"""
         self._closed = True
         async with self._session_lock:
             session = self._session

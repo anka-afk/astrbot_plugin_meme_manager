@@ -28,18 +28,18 @@ async def search_memes_multi_pack(
     top_k: int = 5,
     min_score: float = 0.25,
 ) -> dict[str, Any]:
-    """Search across multiple packs with complete semantic indexing.
+    """跨多个语义索引完整的表情包进行搜索。
 
     Args:
-        pack_contexts: List of pack contexts, each with pack_id and pack_dir.
-        plugin_data_dir: Plugin data directory containing semantic indexes.
-        query: Semantic query text.
-        resolve_embedding_provider: Resolve the embedding provider for each pack.
-        top_k: Maximum number of candidates to return (total across all packs).
-        min_score: Minimum cosine similarity score required for candidates.
+        pack_contexts: 表情包上下文列表，每项含 pack_id 与 pack_dir。
+        plugin_data_dir: 包含语义索引的插件数据目录。
+        query: 语义查询文本。
+        resolve_embedding_provider: 为每个表情包解析向量提供方。
+        top_k: 最多返回的候选总数（跨全部表情包）。
+        min_score: 候选所需的最低余弦相似度分数。
 
     Returns:
-        Search result with validated candidates from all packs.
+        包含全部表情包已校验候选的搜索结果。
     """
     if not str(query or "").strip():
         return {"ok": True, "candidates": [], "reason": "查询词不能为空"}
@@ -81,10 +81,10 @@ async def search_memes_multi_pack(
                 pack_dir=pack_dir,
             )
         except Exception:
-            logger.warning("Semantic search failed for pack %s", pack_id, exc_info=True)
+            logger.warning("表情包 %s 的语义搜索失败", pack_id, exc_info=True)
             continue
 
-        # Tag each candidate with source pack_id for traceability.
+        # 为每个候选标记来源 pack_id，以便追踪。
         for item in candidates:
             item["_source_pack_id"] = pack_id
             item.pop("content_sha256", None)
@@ -103,7 +103,7 @@ async def search_memes_multi_pack(
             "reason": f"没有找到足够匹配的表情包{reason_suffix}",
         }
 
-    # Sort by score descending and take top_k across all packs.
+    # 按分数降序排列，并跨全部表情包选取 top_k 项。
     all_candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
     id_map = build_id_map(all_entry_ids)
     top_candidates = []
@@ -117,7 +117,7 @@ async def search_memes_multi_pack(
         top_candidates.append(item)
     top_candidates = top_candidates[: max(0, int(top_k))]
 
-    # Remove score field from final output.
+    # 从最终输出中移除 score 字段。
     for item in top_candidates:
         item.pop("score", None)
 
@@ -229,14 +229,14 @@ def candidate_records(
 def candidate_records_multi_pack(
     pack_contexts: list[dict[str, Any]], candidates: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Restore full semantic keys and content hashes for multi-pack candidates.
+    """为多包候选恢复完整语义键与内容哈希。
 
     Args:
-        pack_contexts: List of pack contexts with pack_id and pack_dir.
-        candidates: Candidates returned by search_memes_multi_pack.
+        pack_contexts: 含 pack_id 与 pack_dir 的表情包上下文列表。
+        candidates: search_memes_multi_pack 返回的候选。
 
     Returns:
-        Enriched candidate records with entry_id and content_sha256.
+        补全 entry_id 与 content_sha256 后的候选记录。
     """
     pack_dirs = {ctx["pack_id"]: ctx["pack_dir"] for ctx in pack_contexts}
     records = []
@@ -295,15 +295,15 @@ def remember_candidates(event: Any, candidates: list[dict[str, Any]]) -> None:
 def validate_selected_id(
     event: Any, value: str, pack_dir: Path | str | dict[str, Any]
 ) -> Path | None:
-    """Validate a candidate against its currently bound source pack.
+    """根据当前绑定的来源表情包校验候选。
 
     Args:
-        event: Event containing the candidates returned by this turn's search.
-        value: The exact public candidate ID selected by the model.
-        pack_dir: Current runtime context, or a directory for single-pack callers.
+        event: 包含本轮搜索候选的事件。
+        value: 模型选中的确切公开候选 ID。
+        pack_dir: 当前运行时上下文，或单包调用方使用的目录。
 
     Returns:
-        The verified image path, or None for stale or invalid selections.
+        已验证的图片路径；选择过时或无效时返回 None。
     """
     prefix = parse_meme_id(value)
     if not prefix:

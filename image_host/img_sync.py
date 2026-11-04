@@ -1,4 +1,4 @@
-"""Process lifecycle and durable progress for image synchronization."""
+"""图片同步的进程生命周期与持久进度。"""
 
 import asyncio
 import hashlib
@@ -23,7 +23,7 @@ from .providers import (
 
 
 class ImageSync:
-    """Bind one local image library to one explicitly selected remote destination."""
+    """将一个本地图片库绑定到一个明确选定的远端目标。"""
 
     def __init__(
         self, config: dict, local_dir: str | Path, provider_type: str = "stardots"
@@ -88,25 +88,25 @@ class ImageSync:
         self._last_progress: dict = {}
 
     def check_status(self) -> dict:
-        """Return a complete content comparison for the current destination.
+        """返回当前目标的完整内容比较结果。
 
         Returns:
-            Planned incremental transfers, conflicts and mirror candidates.
+            规划中的增量传输项、冲突项及镜像候选项。
         """
         return self.sync_manager.check_sync_status()
 
     async def start_sync(self, task: str) -> bool:
-        """Start a guarded worker and await the captured process outside the event loop.
+        """启动受保护的工作进程，并在事件循环外等待捕获的进程。
 
         Args:
-            task: Sync operation.
+            task: 同步操作。
 
         Returns:
-            Whether the worker completed successfully.
+            工作进程是否成功完成。
 
         Raises:
-            RuntimeError: Another operation is already running.
-            asyncio.CancelledError: The caller cancelled the task.
+            RuntimeError: 已有其他操作正在运行。
+            asyncio.CancelledError: 调用方取消了任务。
         """
         process = self._start_sync_process(task)
         waiter = asyncio.create_task(asyncio.to_thread(process.join))
@@ -123,11 +123,11 @@ class ImageSync:
                 self._sync_task = None
 
     def stop_sync(self, expected_process=None) -> None:
-        """Request cooperative cancellation, then reap an unresponsive worker.
+        """请求协作取消，随后回收无响应的工作进程。
 
         Args:
-            expected_process: Optional captured worker; an old waiter must not
-                cancel a newer task that has already started.
+            expected_process: 可选的已捕获工作进程；旧等待者不得
+                取消已经启动的新任务。
         """
         with self._process_lock:
             process = self.sync_process
@@ -148,26 +148,26 @@ class ImageSync:
                 self.sync_process = None
 
     def upload_to_remote(self) -> multiprocessing.Process:
-        """Start an incremental upload task.
+        """启动增量上传任务。
 
         Returns:
-            The guarded worker process.
+            受保护的工作进程。
         """
         return self._start_sync_process("upload")
 
     def download_to_local(self) -> multiprocessing.Process:
-        """Start an incremental download task.
+        """启动增量下载任务。
 
         Returns:
-            The guarded worker process.
+            受保护的工作进程。
         """
         return self._start_sync_process("download")
 
     def sync_all(self) -> bool:
-        """Merge nonconflicting changes using one inventory and one worker.
+        """使用一个文件清单和一个工作进程合并无冲突变更。
 
         Returns:
-            Whether the operation succeeded.
+            操作是否成功。
         """
         process = self._start_sync_process("sync_all")
         process.join()
@@ -175,17 +175,17 @@ class ImageSync:
         return process.exitcode == 0
 
     def get_remote_files(self) -> list[dict]:
-        """Return the complete remote image inventory."""
+        """返回完整的远端图片清单。"""
         return self.provider.get_image_list()
 
     def delete_remote_file(self, image_id: str) -> bool:
-        """Delete an opaque remote ID when no sync worker is running.
+        """没有同步工作进程运行时，删除不透明的远端 ID。
 
         Args:
-            image_id: Provider ID returned by the remote inventory.
+            image_id: 远端清单返回的提供方 ID。
 
         Returns:
-            Whether deletion succeeded.
+            删除是否成功。
         """
         with self._process_lock:
             if self.sync_process and self.sync_process.is_alive():
@@ -193,17 +193,17 @@ class ImageSync:
             return self.provider.delete_image(image_id)
 
     def _start_sync_process(self, task: str) -> multiprocessing.Process:
-        """Serialize all worker entry points, including WebUI and chat commands.
+        """串行化所有工作进程入口，包括 WebUI 与聊天命令。
 
         Args:
-            task: Supported sync operation.
+            task: 支持的同步操作。
 
         Returns:
-            Started worker process.
+            已启动的工作进程。
 
         Raises:
-            ValueError: Unsupported operation.
-            RuntimeError: A task is already running.
+            ValueError: 不支持的操作。
+            RuntimeError: 已有任务正在运行。
         """
         if task not in SYNC_TASKS:
             raise ValueError(f"Unsupported sync task: {task}")
@@ -245,10 +245,10 @@ class ImageSync:
             return process
 
     def get_task_status(self) -> dict:
-        """Read bounded progress and derive completion from the real process.
+        """读取大小受限的进度，并根据实际进程判断完成状态。
 
         Returns:
-            Progress compatible with the WebUI task-status and SSE endpoints.
+            兼容 WebUI 任务状态与 SSE 接口的进度。
         """
         if self._task_id and not (
             self.sync_process is None and self._last_progress.get("completed")
@@ -292,7 +292,7 @@ class ImageSync:
         return progress
 
     def close(self) -> None:
-        """Stop workers and release the provider's connection pools."""
+        """停止工作进程并释放提供方的连接池。"""
         self.stop_sync()
         self.provider.close()
 
@@ -306,16 +306,16 @@ def run_sync_process(
     task_id: str = "",
     cancel_event=None,
 ):
-    """Run one locked sync job and persist failures even when planning fails.
+    """运行持锁的同步任务，即使规划失败也保存失败状态。
 
     Args:
-        config: Provider configuration.
-        local_dir: Local image library.
-        task: Sync operation.
-        provider_type: Explicit provider selection.
-        progress_path: Durable task-progress file.
-        task_id: Parent-generated task identifier.
-        cancel_event: Cooperative cancellation signal.
+        config: 提供方配置。
+        local_dir: 本地图片库。
+        task: 同步操作。
+        provider_type: 明确选择的提供方。
+        progress_path: 持久保存任务进度的文件。
+        task_id: 父进程生成的任务标识符。
+        cancel_event: 协作取消信号。
     """
     sync = None
     lock_stream = None
@@ -343,10 +343,10 @@ def run_sync_process(
         if progress_path:
 
             def publish(progress: dict) -> None:
-                """Write worker progress for the parent's active task.
+                """为父进程的当前任务写入工作进程进度。
 
                 Args:
-                    progress: Current sync execution counters and errors.
+                    progress: 当前同步执行计数与错误。
                 """
                 write_json_atomic(
                     Path(progress_path), {**progress, "task_id": task_id, "task": task}

@@ -1,4 +1,4 @@
-"""Regression coverage for multi-pack rules, retrieval and delivery."""
+"""多包规则、检索与投递的回归覆盖。"""
 
 import hashlib
 import json
@@ -6,12 +6,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from astrbot.api.provider import LLMResponse
-from astrbot.core.message.components import Plain
-from astrbot.core.message.message_event_result import (
-    MessageEventResult,
-    ResultContentType,
-)
 from astrbot_plugin_meme_manager import main as plugin_main
 from astrbot_plugin_meme_manager.backend.packs import resolver, storage
 from astrbot_plugin_meme_manager.backend.semantic import index as semantic_index
@@ -25,6 +19,13 @@ from astrbot_plugin_meme_manager.mixins.event_handlers import (
 from astrbot_plugin_meme_manager.mixins.web_api import WebAPIMixin
 from PIL import Image as PillowImage
 from quart import Quart
+
+from astrbot.api.provider import LLMResponse
+from astrbot.core.message.components import Plain
+from astrbot.core.message.message_event_result import (
+    MessageEventResult,
+    ResultContentType,
+)
 
 
 @pytest.fixture

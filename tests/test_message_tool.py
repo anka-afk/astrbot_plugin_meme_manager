@@ -1,4 +1,4 @@
-"""Exercise the real builtin's validation and the invocation-local send adapter."""
+"""验证真实内置工具的校验及本次调用独立的发送适配器。"""
 
 import asyncio
 import copy
@@ -25,15 +25,15 @@ REMOTE = "test:FriendMessage:456"
 
 
 def wire(sender, event, state):
-    """Attach a realistic builtin context without running a platform or model.
+    """附加接近真实的内置上下文，不运行平台或模型。
 
     Args:
-        sender: Fixture plugin instance.
-        event: Fixture event.
-        state: Fixture event extras.
+        sender: 测试插件实例。
+        event: 测试事件。
+        state: 测试事件扩展属性。
 
     Returns:
-        The wrapped tool, its agent context, and the adapter's captured sends.
+        包装后的工具、Agent 上下文及适配器捕获的发送记录。
     """
     event.unified_msg_origin = ORIGIN
     event.session_id = "123"
@@ -184,7 +184,7 @@ async def test_multiple_calls_share_probability_budget_and_do_not_repeat_choices
         await tool.call(
             context, messages=[{"type": "plain", "text": f"Hello &&{tag}&&"}]
         )
-    assert len(sent) == 6  # Four text sends, two image sends.
+    assert len(sent) == 6  # 四次文本发送，两次图片发送。
     assert state["meme_manager_automatic_sent_count"] == 2
     assert state["meme_manager_send_probability_hit"] is True
 
@@ -422,7 +422,7 @@ async def test_real_agent_context_and_executor_keep_original_identity(reply_cont
     )
     for key, value in state.items():
         event.set_extra(key, value)
-    # Preserve the real event's extra store while wiring its platform dependencies.
+    # 连接平台依赖时保留真实事件的扩展属性存储。
     real_get, real_set = event.get_extra, event.set_extra
     tool, _, sent = wire(sender, event, state)
     event.get_extra, event.set_extra = real_get, real_set
@@ -465,7 +465,7 @@ async def test_identical_base64_images_only_confirm_the_component_actually_sent(
     sender, event, state, _ = reply_context
     tool, context, _ = wire(sender, event, state)
     sender.send_image_as_base64 = True
-    # Fixture category files have equal bytes, producing equal Image values.
+    # 测试分类文件的字节相同，因此生成的 Image 值也相同。
     sender.context.send_message.side_effect = [True, True, False]
     result = await tool.call(
         context, messages=[{"type": "plain", "text": "Hi &&happy&& &&sad&&"}]

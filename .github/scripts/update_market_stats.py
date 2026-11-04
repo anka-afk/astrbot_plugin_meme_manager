@@ -1,4 +1,4 @@
-"""Generate README cards from the official AstrBot marketplace snapshot."""
+"""根据 AstrBot 官方市场快照生成 README 统计卡片。"""
 
 import json
 from datetime import datetime, timezone
@@ -12,17 +12,17 @@ OUTPUT_DIR = Path(__file__).resolve().parents[1] / "img" / "stats"
 
 
 def update_cards(market: dict, output_dir: Path) -> dict:
-    """Validate a snapshot and generate three dated, accessible SVG cards.
+    """校验快照并生成三张带日期和无障碍说明的 SVG 卡片。
 
     Args:
-        market: Official marketplace JSON, including its metadata.
-        output_dir: Directory for generated cards and their source summary.
+        market: 官方市场 JSON 数据及其元信息。
+        output_dir: 生成卡片及其来源摘要的目录。
 
     Returns:
-        The counts, ranks, and source timestamp used for the cards.
+        卡片使用的数量、排名和来源时间戳。
 
     Raises:
-        ValueError: If the snapshot is incomplete or the plugin is ambiguous.
+        ValueError: 快照不完整或无法唯一确定插件。
     """
     updated_at = market.get("$meta", {}).get("updated_at", "")
     timestamp = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
@@ -52,7 +52,7 @@ def update_cards(market: dict, output_dir: Path) -> dict:
         + sum(entry["download_count"] > plugin["download_count"] for entry in entries),
         "star_rank": 1 + sum(entry["stars"] > plugin["stars"] for entry in entries),
     }
-    # Rank ties share a position; only strictly greater values precede this entry.
+    # 同分项共享排名，仅严格大于当前值的条目排在前面。
     date_label = timestamp.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     cards = (
         (
@@ -89,7 +89,7 @@ def update_cards(market: dict, output_dir: Path) -> dict:
 </svg>
 """
     files["snapshot.json"] = json.dumps(stats, ensure_ascii=False, indent=2) + "\n"
-    # Validate and render everything before replacing the last successful snapshot.
+    # 先完成全部校验和渲染，再替换上次成功的快照。
     output_dir.mkdir(parents=True, exist_ok=True)
     for filename, content in files.items():
         (output_dir / filename).write_text(content, encoding="utf-8")

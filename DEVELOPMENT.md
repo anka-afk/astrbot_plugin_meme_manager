@@ -90,16 +90,16 @@ from astrbot.core.message.message_event_result import MessageChain
 
 
 async def send_with_meme_manager(context, event, text: str):
-    # Get the registered plugin instance.
+    # 获取已注册的插件实例。
     md = context.get_registered_star("meme_manager")
     plugin = md.star_cls if md and md.star_cls else None
 
     if not plugin:
-        # Send normally when the plugin is unavailable.
+        # 插件不可用时正常发送。
         await event.send(MessageChain([Plain(text)]))
         return
 
-    # Parse and send the text and selected images.
+    # 解析并发送文本及所选图片。
     await plugin.compat_send_message(event, text)
 ```
 
@@ -115,12 +115,12 @@ async def send_in_two_steps(context, event, chain: MessageChain):
 
     prepared = await plugin.compat_prepare_message(event, chain)
 
-    # Send the prepared text and components.
+    # 发送准备好的文本与组件。
     cleaned_chain = prepared["cleaned_chain"]
     if cleaned_chain.chain:
         await event.send(cleaned_chain)
 
-    # Send prepared images through the public API.
+    # 通过公开 API 发送准备好的图片。
     await plugin.compat_send_prepared_message(
         event,
         prepared,
@@ -159,6 +159,8 @@ node tests/frontend/preview.mjs
 预览使用模拟接口，仅用于布局和交互检查，不能代替真实 AstrBot 联调。URL 可添加 `?theme=light` 或 `?theme=dark` 模拟宿主的初始主题，预览工具中的按钮可以实时切换深浅色；这些控件仅存在于模拟预览中。
 
 ## Python 验证
+
+代码注释、文档字符串和面向开发者的日志统一使用中文。文档字符串保留 Google 风格的 `Args:`、`Returns:`、`Raises:` 等结构标签；配置键、协议字段、工具参数名、日志占位符、检查器指令和第三方许可声明保留原文。
 
 开发和测试环境需要 Python 3.12 或更新版本，以及 AstrBot 4.28.2 或更新版本。
 

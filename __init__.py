@@ -1,4 +1,4 @@
-"""Meme manager plugin runtime requirements."""
+"""表情包管理器的运行环境要求。"""
 
 import sys
 

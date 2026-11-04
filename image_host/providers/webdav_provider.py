@@ -1,4 +1,4 @@
-"""WebDAV adapter with complete traversal and strict namespace boundaries."""
+"""WebDAV 适配器，完整遍历并严格校验命名空间边界。"""
 
 import mimetypes
 import posixpath
@@ -19,23 +19,23 @@ from ..interfaces.image_host import ImageHostInterface, ImageInfo
 
 
 class WebDAVError(Exception):
-    """WebDAV adapter error."""
+    """WebDAV 适配器错误。"""
 
 
 class AuthenticationError(WebDAVError):
-    """WebDAV rejected the configured credentials."""
+    """WebDAV 拒绝了配置的凭据。"""
 
 
 class NetworkError(WebDAVError):
-    """A WebDAV request could not be completed."""
+    """WebDAV 请求无法完成。"""
 
 
 class InvalidResponseError(WebDAVError):
-    """The server did not return a complete, valid WebDAV response."""
+    """服务器未返回完整有效的 WebDAV 响应。"""
 
 
 class WebDAVProvider(ImageHostInterface):
-    """Use namespace-relative IDs for WebDAV objects."""
+    """为 WebDAV 对象使用相对于命名空间的 ID。"""
 
     SUPPORTED_EXTENSIONS = SUPPORTED_FORMATS
 
@@ -79,13 +79,13 @@ class WebDAVProvider(ImageHostInterface):
         self.session.mount("http://", HTTPAdapter(max_retries=retry))
 
     def upload_image(self, file_path: Path) -> ImageInfo:
-        """Upload a file under its complete relative category.
+        """在完整相对分类下上传文件。
 
         Args:
-            file_path: Image within the local root.
+            file_path: 本地根目录内的图片。
 
         Returns:
-            Confirmed remote metadata.
+            已确认的远端元数据。
         """
         relative = self._get_remote_id(file_path)
         remote_path = self._remote_id_to_path(relative)
@@ -119,13 +119,13 @@ class WebDAVProvider(ImageHostInterface):
             response.close()
 
     def delete_image(self, image_id: str) -> bool:
-        """Delete the exact relative ID; never strip a legitimate category prefix.
+        """删除确切的相对 ID，绝不去掉有效的分类前缀。
 
         Args:
-            image_id: Relative ID returned by this adapter.
+            image_id: 此适配器返回的相对 ID。
 
         Returns:
-            Whether the file is absent after the request.
+            请求完成后文件是否已不存在。
         """
         response = self._request(
             "DELETE", self._url_for_path(self._remote_id_to_path(image_id))
@@ -136,13 +136,13 @@ class WebDAVProvider(ImageHostInterface):
             response.close()
 
     def get_image_list(self) -> list[ImageInfo]:
-        """Traverse Depth: 1 listings without creating remote directories.
+        """遍历 Depth: 1 清单，不创建远端目录。
 
         Returns:
-            A complete list of images.
+            完整的图片列表。
 
         Raises:
-            InvalidResponseError: Any subtree is inaccessible or outside the root.
+            InvalidResponseError: 任一子树不可访问或超出根目录。
         """
         images = []
         pending = [self.base_path]
@@ -194,14 +194,14 @@ class WebDAVProvider(ImageHostInterface):
         return images
 
     def download_image(self, image_info: ImageInfo, save_path: Path) -> bool:
-        """Stream a conditional GET into a validated atomic image write.
+        """将条件 GET 响应流式写入经过校验的原子图片写入流程。
 
         Args:
-            image_info: Remote metadata.
-            save_path: Local destination.
+            image_info: 远端元数据。
+            save_path: 本地目标路径。
 
         Returns:
-            True when the image is complete and validated.
+            图片完整且通过校验时返回 True。
         """
         headers = {"If-Match": image_info["etag"]} if image_info.get("etag") else {}
         response = self._request(
@@ -229,14 +229,14 @@ class WebDAVProvider(ImageHostInterface):
         return True
 
     def _propfind(self, remote_path: str, depth: int = 1) -> requests.Response:
-        """Request image metadata without modifying the remote filesystem.
+        """请求图片元数据，不修改远端文件系统。
 
         Args:
-            remote_path: Directory to list.
-            depth: WebDAV traversal depth.
+            remote_path: 待列出的目录。
+            depth: WebDAV 遍历深度。
 
         Returns:
-            Response to parse and close.
+            待解析并关闭的响应。
         """
         response = self._request(
             "PROPFIND",
@@ -257,17 +257,17 @@ class WebDAVProvider(ImageHostInterface):
     def _parse_propfind_response(
         self, xml_text: str, requested_path: str
     ) -> list[dict]:
-        """Require successful resource types and preserve optional metadata.
+        """要求资源类型状态成功，并保留可选元数据。
 
         Args:
-            xml_text: WebDAV multistatus XML.
-            requested_path: Directory whose immediate children were requested.
+            xml_text: WebDAV 多状态 XML。
+            requested_path: 请求直接子项的目录。
 
         Returns:
-            Validated entries.
+            已校验的条目。
 
         Raises:
-            InvalidResponseError: The response is malformed or incomplete.
+            InvalidResponseError: 响应格式错误或不完整。
         """
         try:
             root = ET.fromstring(xml_text)
@@ -312,10 +312,10 @@ class WebDAVProvider(ImageHostInterface):
         return entries
 
     def _ensure_remote_dirs(self, remote_dir: str) -> None:
-        """Create each directory needed for an upload.
+        """创建上传所需的各级目录。
 
         Args:
-            remote_dir: Namespace-qualified directory path.
+            remote_dir: 包含命名空间的目录路径。
         """
         current = ""
         for part in remote_dir.split("/") if remote_dir else []:
@@ -330,19 +330,19 @@ class WebDAVProvider(ImageHostInterface):
                 response.close()
 
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
-        """Apply bounded timeouts, certificate settings and authentication checks.
+        """应用有界超时、证书设置与身份验证检查。
 
         Args:
-            method: HTTP method.
-            url: WebDAV request URL.
-            **kwargs: Request body, headers and streaming options.
+            method: HTTP 方法。
+            url: WebDAV 请求 URL。
+            **kwargs: 请求体、请求头及流式选项。
 
         Returns:
-            Response owned by the caller.
+            由调用方负责管理的响应。
 
         Raises:
-            AuthenticationError: Credentials were rejected.
-            NetworkError: The request failed.
+            AuthenticationError: 凭据被拒绝。
+            NetworkError: 请求失败。
         """
         kwargs.setdefault("timeout", (min(10, self.timeout), self.timeout))
         kwargs.setdefault("verify", self.verify_ssl)
@@ -362,13 +362,13 @@ class WebDAVProvider(ImageHostInterface):
         return response
 
     def _url_for_path(self, remote_path: str) -> str:
-        """Build an escaped request URL.
+        """构造经过转义的请求 URL。
 
         Args:
-            remote_path: Namespace-qualified path.
+            remote_path: 包含命名空间的路径。
 
         Returns:
-            WebDAV request URL.
+            WebDAV 请求 URL。
         """
         remote_path = self._normalize_path(remote_path)
         return (
@@ -378,13 +378,13 @@ class WebDAVProvider(ImageHostInterface):
         )
 
     def _public_url_for_id(self, remote_id: str) -> str:
-        """Build an escaped public URL or the authenticated DAV URL.
+        """构造经过转义的公开 URL 或需身份验证的 DAV URL。
 
         Args:
-            remote_id: Relative image ID.
+            remote_id: 相对图片 ID。
 
         Returns:
-            Image URL.
+            图片 URL。
         """
         remote_id = normalize_relative_path(remote_id)
         if self.public_url:
@@ -392,41 +392,41 @@ class WebDAVProvider(ImageHostInterface):
         return self._url_for_path(self._remote_id_to_path(remote_id))
 
     def _get_remote_id(self, file_path: Path) -> str:
-        """Preserve the full relative path and reject files outside the library.
+        """保留完整相对路径，并拒绝图片库之外的文件。
 
         Args:
-            file_path: Local image.
+            file_path: 本地图片。
 
         Returns:
-            Portable relative image ID.
+            可跨平台使用的相对图片 ID。
         """
         return normalize_relative_path(
             file_path.resolve().relative_to(self.local_dir).as_posix()
         )
 
     def _remote_id_to_path(self, remote_id: str) -> str:
-        """Attach the configured remote namespace exactly once.
+        """只添加一次配置的远端命名空间。
 
         Args:
-            remote_id: Relative image ID.
+            remote_id: 相对图片 ID。
 
         Returns:
-            Namespace-qualified path.
+            包含命名空间的路径。
         """
         relative = normalize_relative_path(remote_id)
         return f"{self.base_path}/{relative}" if self.base_path else relative
 
     def _strip_base_path(self, remote_path: str) -> str:
-        """Remove the namespace from a validated listing path.
+        """从已校验的清单路径中移除命名空间。
 
         Args:
-            remote_path: Namespace-qualified path.
+            remote_path: 包含命名空间的路径。
 
         Returns:
-            Relative path.
+            相对路径。
 
         Raises:
-            ValueError: The listing escaped the configured namespace.
+            ValueError: 清单路径超出已配置的命名空间。
         """
         if remote_path == self.base_path:
             return ""
@@ -438,17 +438,17 @@ class WebDAVProvider(ImageHostInterface):
         return normalize_relative_path(remote_path[len(prefix) :])
 
     def _path_from_href(self, href: str, requested_path: str) -> str:
-        """Resolve DAV hrefs with exact origin and URL path boundaries.
+        """解析 DAV href，严格检查来源与 URL 路径边界。
 
         Args:
-            href: Entry URL or relative href.
-            requested_path: Directory being listed.
+            href: 条目 URL 或相对 href。
+            requested_path: 正在列出的目录。
 
         Returns:
-            Validated namespace-qualified path.
+            经过校验且包含命名空间的路径。
 
         Raises:
-            InvalidResponseError: The href points outside the configured endpoint.
+            InvalidResponseError: href 指向配置端点之外。
         """
         endpoint = urlparse(self.base_url)
         resolved = urlparse(
@@ -466,26 +466,26 @@ class WebDAVProvider(ImageHostInterface):
         return normalize_relative_path(path)
 
     def _normalize_path(self, value: str | Path | None) -> str:
-        """Validate a configured DAV path.
+        """校验配置中的 DAV 路径。
 
         Args:
-            value: Path with optional leading and trailing slashes.
+            value: 可带前导或尾部斜杠的路径。
 
         Returns:
-            Normalized path, or the DAV root.
+            规范化路径，或 DAV 根目录。
         """
         value = str(value or "").replace("\\", "/").strip("/")
         return normalize_relative_path(value) if value else ""
 
     @staticmethod
     def _parse_bool(value) -> bool:
-        """Interpret configuration boolean values.
+        """解释配置中的布尔值。
 
         Args:
-            value: Boolean or textual configuration value.
+            value: 布尔值或文本形式的配置值。
 
         Returns:
-            Parsed boolean.
+            解析后的布尔值。
         """
         return (
             value.strip().lower() not in {"0", "false", "no", "off", "否"}
@@ -494,5 +494,5 @@ class WebDAVProvider(ImageHostInterface):
         )
 
     def close(self) -> None:
-        """Close the authenticated HTTP session."""
+        """关闭经过身份验证的 HTTP 会话。"""
         self.session.close()

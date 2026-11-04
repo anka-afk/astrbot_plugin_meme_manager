@@ -1596,17 +1596,17 @@ class SemanticTaskManager:
     async def rebuild_index(
         self, pack_id: str, *, force: bool = False
     ) -> dict[str, Any]:
-        """Build vectors for ready descriptions, reusing the current index by default.
+        """为已有描述构建向量，默认复用当前索引。
 
         Args:
-            pack_id: Pack to update.
-            force: Regenerate every vector; requires all descriptions to be complete.
+            pack_id: 待更新的表情包。
+            force: 重新生成全部向量，要求所有描述均已完成。
 
         Returns:
-            Index generation statistics.
+            索引生成统计信息。
 
         Raises:
-            RuntimeError: The pack is busy, the provider changed, or no images are ready.
+            RuntimeError: 表情包忙碌、提供方变化，或没有可处理的图片。
         """
         pack_id = self._validate_pack_id(pack_id)
         pack_dir = self._pack_dir(pack_id)

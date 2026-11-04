@@ -8,13 +8,13 @@ from quart import Quart, Response
 
 @pytest.fixture
 def webui_api(monkeypatch):
-    """Create an API registry with isolated log capture.
+    """创建 API 注册表并隔离日志捕获。
 
     Args:
-        monkeypatch: Fixture used to replace the plugin logger.
+        monkeypatch: 用于替换插件日志器的测试夹具。
 
     Returns:
-        The mixin, Quart app, and isolated logger.
+        Mixin、Quart 应用及隔离的日志器。
     """
     app = Quart(__name__)
     app.config["TESTING"] = True
@@ -66,9 +66,9 @@ async def test_request_log_levels_and_response_preservation(
         assert response.headers["Cache-Control"] == "no-store"
     records = [record for record in caplog.records if record.name == logger.name]
     assert [record.levelno for record in records] == [logging.DEBUG, level]
-    assert f"GET /meme_manager/{route} started" in records[0].message
-    assert f"GET /meme_manager/{route} completed status={status}" in records[1].message
-    assert "elapsed=" in records[1].message
+    assert f"GET /meme_manager/{route} 开始" in records[0].message
+    assert f"GET /meme_manager/{route} 完成 状态={status}" in records[1].message
+    assert "耗时=" in records[1].message
 
 
 @pytest.mark.asyncio
@@ -110,6 +110,6 @@ async def test_request_exception_keeps_traceback_and_propagates(webui_api, caplo
     records = [record for record in caplog.records if record.name == logger.name]
     assert len(records) == 1
     assert records[0].levelno == logging.ERROR
-    assert "POST /meme_manager/packs failed elapsed=" in records[0].message
+    assert "POST /meme_manager/packs 失败 耗时=" in records[0].message
     assert records[0].exc_info[1] is error
     assert records[0].exc_info[2] is not None

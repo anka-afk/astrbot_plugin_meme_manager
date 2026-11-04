@@ -1,4 +1,4 @@
-// All fixture mutations are confined to memory and reset on navigation.
+// 所有测试数据变更仅保存在内存中，页面跳转时重置。
 (() => {
   const params = new URLSearchParams(location.search);
   document.addEventListener("DOMContentLoaded", () => {

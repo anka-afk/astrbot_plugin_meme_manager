@@ -1,4 +1,4 @@
-"""Schema-driven editing of the configuration shared with AstrBot's dashboard."""
+"""按配置结构编辑与 AstrBot 仪表盘共享的配置。"""
 
 import copy
 import hashlib
@@ -16,16 +16,16 @@ from .decision import (
 
 
 def describe_settings(config) -> tuple[dict, dict]:
-    """Read the shared file and describe its editable fields without exposing secrets.
+    """读取共享文件并描述可编辑字段，不暴露密钥。
 
     Args:
-        config: The AstrBotConfig instance supplied to the plugin by AstrBot.
+        config: AstrBot 传入插件的 AstrBotConfig 实例。
 
     Returns:
-        A public snapshot and the complete private configuration used for merging.
+        公开快照及用于合并的完整私有配置。
 
     Raises:
-        ValueError: The configuration file or schema is unavailable or malformed.
+        ValueError: 配置文件或结构不可用、格式错误。
     """
     config_path = getattr(config, "config_path", None)
     schema = getattr(config, "schema", None)
@@ -90,19 +90,19 @@ def describe_settings(config) -> tuple[dict, dict]:
 def validate_settings_changes(
     values: dict, fields: list[dict], changes: dict, schema: dict
 ) -> dict:
-    """Validate a partial edit and preserve the current schema's other settings.
+    """校验局部编辑，保留当前配置结构中的其他设置。
 
     Args:
-        values: The latest contents of the shared configuration file.
-        fields: Editable field descriptions derived from the plugin schema.
-        changes: A mapping of dotted field paths to explicitly changed values.
-        schema: The plugin schema, including empty informational groups.
+        values: 共享配置文件的最新内容。
+        fields: 由插件配置结构生成的可编辑字段描述。
+        changes: 点分字段路径到明确修改值的映射。
+        schema: 插件配置结构，包含空的信息分组。
 
     Returns:
-        A new complete configuration containing only declared schema fields.
+        仅含配置结构已声明字段的完整新配置。
 
     Raises:
-        ValueError: A path, type, option, range, URL or regular expression is invalid.
+        ValueError: 路径、类型、选项、范围、URL 或正则表达式无效。
     """
     if not isinstance(changes, dict) or not changes:
         raise ValueError("没有需要保存的配置更改。")

@@ -32,7 +32,7 @@ OUTCOME_LABELS = {
 
 @dataclass
 class ManualCollection:
-    """Keep the target and outcomes of one explicit collection operation."""
+    """保存一次显式收集操作的目标与结果。"""
 
     pack_id: str
     categories: dict[str, str]
@@ -46,10 +46,10 @@ class ManualCollection:
     expiry_task: asyncio.Task | None = None
 
     def summary(self) -> str:
-        """Return completed outcomes separately from outstanding work.
+        """分别返回已完成结果与待处理任务。
 
         Returns:
-            A summary suitable for a chat response.
+            适合聊天回复的汇总信息。
         """
         parts = [f"本次收到 {self.total} 张，目标表情包「{self.pack_id}」"]
         parts.extend(
@@ -63,13 +63,13 @@ class ManualCollection:
 
 
 class ManualCollectManager:
-    """Coordinate quoted images and sender-scoped continuous collection."""
+    """协调引用图片收集与按发送者隔离的连续收集。"""
 
     def __init__(self, collection: AutoCollectManager):
-        """Initialize transient state without starting background work.
+        """初始化临时状态，不启动后台任务。
 
         Args:
-            collection: Shared bounded classification and storage pipeline.
+            collection: 共享的有限分类与存储处理管线。
         """
         self.collection = collection
         self.sessions: dict[tuple[str, str], ManualCollection] = {}
@@ -78,13 +78,13 @@ class ManualCollectManager:
 
     @staticmethod
     def key(event: Any) -> tuple[str, str]:
-        """Identify a collector across platform, chat, and sender.
+        """根据平台、聊天与发送者识别收集会话。
 
         Args:
-            event: Incoming message event.
+            event: 收到的消息事件。
 
         Returns:
-            Conversation identity and sender ID.
+            会话标识与发送者 ID。
         """
         return (
             str(getattr(event, "unified_msg_origin", "") or event.session_id),
@@ -92,13 +92,13 @@ class ManualCollectManager:
         )
 
     async def start(self, event: Any) -> str:
-        """Start receiving direct images from this sender in this chat.
+        """开始接收此发送者在当前聊天中直接发送的图片。
 
         Args:
-            event: Administrator command event.
+            event: 管理员命令事件。
 
         Returns:
-            Start instructions or an actionable configuration error.
+            开始收集的指引，或可据此处理的配置错误。
         """
         key = self.key(event)
         if key in self.sessions:
@@ -107,7 +107,7 @@ class ManualCollectManager:
             pack_id, categories = await self.collection.prepare_manual(event)
         except (ValueError, OSError) as exc:
             return f"无法开始收集：{exc}"
-        # Provider startup can yield; retain an already-created session.
+        # 提供方启动时可能让出执行权，保留已创建的会话。
         if key in self.sessions:
             return "已在收集中；发送 /表情管理 结束收集 可结束。"
         session = ManualCollection(pack_id, categories, event)
@@ -128,13 +128,13 @@ class ManualCollectManager:
         )
 
     async def quick(self, event: Any) -> str:
-        """Collect direct images from a quoted message, or the command itself.
+        """收集引用消息或命令本身直接附带的图片。
 
         Args:
-            event: Command event optionally containing a reply component.
+            event: 可选地包含引用组件的命令事件。
 
         Returns:
-            Error text, or an empty string after acknowledging the submission.
+            错误文本；已确认提交时返回空字符串。
         """
         components = event.message_obj.message
         reply = next((item for item in components if isinstance(item, Reply)), None)
@@ -157,13 +157,13 @@ class ManualCollectManager:
         return await self._submit(event, session, images)
 
     def stop(self, event: Any) -> str:
-        """Stop receiving new images while preserving submitted jobs.
+        """停止接收新图片，保留已提交的任务。
 
         Args:
-            event: End command event used for the eventual final summary.
+            event: 用于发送最终汇总的结束命令事件。
 
         Returns:
-            Current outcomes, including jobs that are still processing.
+            当前结果，包含仍在处理的任务。
         """
         session = self.sessions.pop(self.key(event), None)
         if session is None:
@@ -176,13 +176,13 @@ class ManualCollectManager:
         return "已结束收集。" + session.summary()
 
     async def consume(self, event: Any) -> str | None:
-        """Route active uploads and suppress passive handling of commands.
+        """路由收集中上传的图片，并阻止命令触发被动处理。
 
         Args:
-            event: Incoming message, after AstrBot has resolved command handlers.
+            event: AstrBot 已解析命令处理器后的传入消息。
 
         Returns:
-            Response text, an empty string for a consumed event, or None otherwise.
+            回复文本、表示事件已消费的空字符串，或 None。
         """
         handlers = event.get_extra("activated_handlers") or []
         if event.get_extra("meme_manager_manual_collection_command") or any(
@@ -192,7 +192,7 @@ class ManualCollectManager:
         session = self.sessions.get(self.key(event))
         if session is None:
             return None
-        # Other commands must not accidentally supply images to this session.
+        # 避免其他命令意外向当前收集会话提供图片。
         if any(
             isinstance(event_filter, (CommandFilter, CommandGroupFilter))
             for handler in handlers
@@ -216,15 +216,15 @@ class ManualCollectManager:
     async def _submit(
         self, event: Any, session: ManualCollection, images: list[Image]
     ) -> str:
-        """Snapshot a bounded batch and observe its eventual real outcomes.
+        """为数量受限的一批图片创建快照，并观察其最终真实结果。
 
         Args:
-            event: Event owning the source image files.
-            session: Target and aggregate statistics for this operation.
-            images: Direct images from one message.
+            event: 来源图片文件所属的事件。
+            session: 本次操作的目标与累计统计信息。
+            images: 一条消息直接附带的图片。
 
         Returns:
-            An empty string after sending the acknowledgment before final results.
+            在最终结果前发送确认消息，然后返回空字符串。
         """
         selected = images[:MAX_MANUAL_IMAGES]
         session.total += len(images)
@@ -258,11 +258,11 @@ class ManualCollectManager:
     async def _observe(
         self, session: ManualCollection, completions: list[asyncio.Future[str]]
     ) -> None:
-        """Accumulate completed results and send one final closed-session summary.
+        """累计已完成结果，并为已结束的收集会话发送一次最终汇总。
 
         Args:
-            session: Operation to update.
-            completions: Futures resolved by the shared image worker.
+            session: 待更新的收集会话。
+            completions: 由共享图片工作任务完成的 Future。
         """
         try:
             for completion in asyncio.as_completed(completions):
@@ -282,16 +282,14 @@ class ManualCollectManager:
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception(
-                "[meme_manager] Failed to report manual collection outcomes"
-            )
+            logger.exception("[meme_manager] 汇报手动收集结果失败")
 
     async def _expire(self, key: tuple[str, str], session: ManualCollection) -> None:
-        """End an idle receiver without cancelling its queued image processing.
+        """结束空闲的接收会话，不取消已排队的图片处理。
 
         Args:
-            key: Conversation and sender that own this session.
-            session: Exact session instance protected against replacement.
+            key: 当前收集会话所属的聊天与发送者。
+            session: 用于防止替换混淆的确切会话实例。
         """
         try:
             while self.sessions.get(key) is session:
@@ -312,10 +310,10 @@ class ManualCollectManager:
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("[meme_manager] Failed to report idle collection expiry")
+            logger.exception("[meme_manager] 汇报收集空闲超时失败")
 
     async def close(self) -> None:
-        """Cancel transient receivers and reporters on plugin unload."""
+        """卸载插件时取消临时接收会话与汇报任务。"""
         self.closing = True
         self.sessions.clear()
         tasks = tuple(self.tasks)

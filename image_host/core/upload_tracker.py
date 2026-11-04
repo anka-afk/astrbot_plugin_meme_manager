@@ -1,4 +1,4 @@
-"""Durable per-destination baselines for conflict-aware synchronization."""
+"""按目标持久保存同步基线，以便识别冲突。"""
 
 import json
 import threading
@@ -11,7 +11,7 @@ from .file_handler import file_fingerprint, normalize_relative_path, write_json_
 
 
 class UploadTracker:
-    """Remember confirmed transfers; legacy filename-only records are not proof."""
+    """记录已确认的传输；旧版仅有文件名的记录不能作为依据。"""
 
     def __init__(self, tracker_file: Path):
         self.tracker_file = Path(tracker_file)
@@ -20,7 +20,7 @@ class UploadTracker:
         self.load()
 
     def load(self) -> None:
-        """Reload a complete snapshot, including writes made by a worker."""
+        """重新加载完整快照，包含工作进程写入的内容。"""
         with self._lock:
             try:
                 data = json.loads(self.tracker_file.read_text(encoding="utf-8"))
@@ -38,19 +38,19 @@ class UploadTracker:
                 self.uploaded_files = {}
 
     def save(self) -> None:
-        """Atomically persist the snapshot, propagating persistence failures."""
+        """原子保存快照，并向上传播持久化失败。"""
         with self._lock:
             write_json_atomic(self.tracker_file, self.uploaded_files)
 
     def is_uploaded(self, file_path: Path, category: str = "") -> bool:
-        """Check that current content matches a confirmed transfer.
+        """检查当前内容是否与已确认的传输一致。
 
         Args:
-            file_path: Current local image.
-            category: Portable category path.
+            file_path: 当前本地图片。
+            category: 可跨平台使用的分类路径。
 
         Returns:
-            Whether the saved SHA-256 matches the current content.
+            已保存的 SHA-256 是否与当前内容一致。
         """
         relative = normalize_relative_path(
             f"{category}/{file_path.name}" if category else file_path.name
@@ -71,14 +71,14 @@ class UploadTracker:
         remote_info: dict | None = None,
         fingerprint: dict | None = None,
     ) -> None:
-        """Save a baseline after a confirmed upload or validated download.
+        """在确认上传或校验下载后保存基线。
 
         Args:
-            file_path: Transferred local image.
-            category: Relative category.
-            remote_url: Public URL, when available.
-            remote_info: Confirmed remote ID and version tokens.
-            fingerprint: Fingerprint of the transferred bytes.
+            file_path: 已传输的本地图片。
+            category: 相对分类。
+            remote_url: 公开 URL（如有）。
+            remote_info: 已确认的远端 ID 与版本令牌。
+            fingerprint: 已传输字节的指纹。
         """
         relative = normalize_relative_path(
             f"{category}/{file_path.name}" if category else file_path.name
@@ -100,20 +100,20 @@ class UploadTracker:
             self.save()
 
     def get_uploaded_count(self) -> int:
-        """Return the number of confirmed file baselines."""
+        """返回已确认的文件基线数量。"""
         return len(self.uploaded_files)
 
     def get_uploaded_files(self) -> dict[str, dict]:
-        """Return a snapshot for status commands."""
+        """返回供状态命令使用的快照。"""
         with self._lock:
             return {key: dict(value) for key, value in self.uploaded_files.items()}
 
     def remove_record(self, file_path: Path, category: str = "") -> None:
-        """Remove a deleted image from the baseline.
+        """从基线中移除已删除图片。
 
         Args:
-            file_path: Deleted local image.
-            category: Relative category.
+            file_path: 已删除的本地图片。
+            category: 相对分类。
         """
         relative = normalize_relative_path(
             f"{category}/{file_path.name}" if category else file_path.name
@@ -123,7 +123,7 @@ class UploadTracker:
             self.save()
 
     def clear_record(self) -> None:
-        """Clear baselines without deleting any local or remote images."""
+        """清空基线，不删除任何本地或远端图片。"""
         with self._lock:
             self.uploaded_files = {}
             self.save()

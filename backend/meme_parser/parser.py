@@ -1,4 +1,4 @@
-"""Incremental, source-preserving parsing of meme markers in chat text."""
+"""增量解析聊天文本中的表情标记，并保留来源文本结构。"""
 
 import copy
 import re
@@ -9,23 +9,23 @@ from .types import MemeToken, ParseResult
 
 
 class MemeParser:
-    """Parse lines incrementally while streaming unambiguous text prefixes.
+    """增量解析各行，同时输出含义已确定的文本前缀。
 
     Args:
-        categories: Category keys from the request's active pack.
-        alternative: Recognize bracket, parenthesis and colon markers.
-        loose: Recognize a category occupying its own line.
-        repeated: Recognize standalone repeated category keys.
-        remove_invalid: Consume invalid bracket and parenthesis markers.
-        semantic: Accept semantic IDs instead of category keys.
-        strip_references: Remove standalone internal image references.
-        filter_all: Finally strip all marker forms without changing selections.
+        categories: 当前请求所用表情包的分类键。
+        alternative: 识别方括号、圆括号与冒号标记。
+        loose: 识别独占一行的分类。
+        repeated: 识别独立重复出现的分类键。
+        remove_invalid: 消费无效的方括号与圆括号标记。
+        semantic: 接受语义 ID 而不是分类键。
+        strip_references: 移除独立的内部图片引用。
+        filter_all: 最后清除所有标记形式，不改变已选结果。
 
     Notes:
-        Unconfirmed inline code is buffered until it closes or the reply ends.
-        Oversized lines or pending inline spans
-        and the remaining response are preserved without interpretation. This is a chat protocol scanner,
-        not a complete CommonMark renderer. No network or filesystem IO occurs.
+        尚未确认的行内代码会缓冲到闭合或回复结束。
+        超长行或待确认的行内区间
+        及其后续回复会原样保留而不再解释。这是聊天协议扫描器，
+        不是完整的 CommonMark 渲染器，不涉及网络或文件系统输入输出。
     """
 
     MAX_LINE = 16384
@@ -73,15 +73,15 @@ class MemeParser:
 
     @classmethod
     def parse(cls, text: str, categories=(), **options) -> ParseResult:
-        """Parse a complete response using the identical incremental engine.
+        """使用同一个增量引擎解析完整回复。
 
         Args:
-            text: Original complete response.
-            categories: Available category keys for this request.
-            **options: Constructor options controlling recognized marker forms.
+            text: 原始完整回复。
+            categories: 本次请求可用的分类键。
+            **options: 控制可识别标记形式的构造参数。
 
         Returns:
-            Immutable visible text, source tokens and resource diagnostics.
+            不可变的可见文本、来源标记与资源诊断信息。
         """
         parser = cls(categories, **options)
         visible = parser.feed(text) + parser.finish()
@@ -89,20 +89,20 @@ class MemeParser:
 
     @property
     def selections(self) -> list[str]:
-        """Return validated selections in source order without duplicates."""
+        """按来源顺序返回已校验且去重的选择结果。"""
         return list(dict.fromkeys(token.value for token in self.tokens if token.valid))
 
     def feed(self, text: str) -> str:
-        """Consume a text delta and return text safe to send now.
+        """消费一个文本增量，并返回当前可以安全发送的文本。
 
         Args:
-            text: Newly received text, not the accumulated response.
+            text: 新收到的文本，而不是累计回复。
 
         Returns:
-            Visible text whose interpretation no longer needs more input.
+            无需更多输入即可确定含义的可见文本。
 
         Raises:
-            RuntimeError: If called after finish.
+            RuntimeError: 在 finish 之后调用。
         """
         if self._finished:
             raise RuntimeError("Cannot feed a finished meme parser")
@@ -120,7 +120,7 @@ class MemeParser:
                 and self._pending_size + len(self._line) > self.MAX_LINE
             )
             if pending_limit and self.filter_all:
-                # Keep final tag filtering active after abandoning inline speculation.
+                # 放弃推测行内代码后，仍继续执行最终标签过滤。
                 self._inline_limit = True
                 self.diagnostics.append("inline_code_limit_exceeded")
                 output.append(self._flush_pending())
@@ -178,10 +178,10 @@ class MemeParser:
         return "".join(output)
 
     def finish(self) -> str:
-        """Flush the final line; incomplete markers remain literal text.
+        """输出最后一行；不完整标记仍作为字面文本保留。
 
         Returns:
-            Remaining visible text. Repeated calls return an empty string.
+            剩余可见文本。重复调用返回空字符串。
         """
         if self._finished:
             return ""
@@ -196,13 +196,13 @@ class MemeParser:
         return self._flush_pending(final=not self._inline_limit)
 
     def _flush_pending(self, *, final: bool = False) -> str:
-        """Replay deferred lines once code protection can be resolved safely.
+        """代码保护状态可安全确定后，重新处理延后的各行。
 
         Args:
-            final: Treat runs without a later equal-length run as literal text.
+            final: 将后续没有等长匹配序列的反引号序列视为字面文本。
 
         Returns:
-            Resolved text that has not already been emitted.
+            已解析且尚未输出的文本。
         """
         if not self._pending_lines:
             return ""
@@ -221,8 +221,8 @@ class MemeParser:
             last_ticks = {len(match[0]): match.start() for match in runs}
             literal_ticks.update(last_ticks.values())
             for match in runs:
-                # Outside code, an escape consumes only the first tick of a run.
-                # Closers inside code must still match a complete raw run.
+                # 在代码外，转义仅消费连续反引号中的第一个。
+                # 代码内的闭合符仍须匹配完整的原始反引号序列。
                 if (
                     len(match[0]) > 1
                     and is_escaped(text, match.start())
@@ -251,14 +251,14 @@ class MemeParser:
         return "".join(output)
 
     def _consume_line(self, *, literal_ticks: set[int] | None = None) -> str:
-        """Resolve one bounded line and update cross-line protection state.
+        """解析一行有长度限制的文本，并更新跨行保护状态。
 
         Args:
-            literal_ticks: Known literal backtick positions when replaying a
-                resolved block. None allows unfinished inline code to be deferred.
+            literal_ticks: 重新处理已解析区块时已知的字面反引号位置。
+                设为 None 时，允许延后处理尚未闭合的行内代码。
 
         Returns:
-            The un-emitted part of the line after recognized marker edits.
+            编辑已识别标记后，该行尚未输出的部分。
         """
         line = self._line
         checkpoint = (

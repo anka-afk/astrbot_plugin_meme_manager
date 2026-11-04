@@ -1,4 +1,4 @@
-"""Exercise immediate model-driven sends without external model or platform calls."""
+"""验证模型驱动的即时发送，不调用外部模型或平台。"""
 
 import asyncio
 import base64

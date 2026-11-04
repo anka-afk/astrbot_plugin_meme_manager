@@ -279,20 +279,20 @@ def _is_sha256(value: Any) -> bool:
 def refresh_metadata_inventory_snapshot(
     pack_dir: Path | str, metadata: dict[str, Any]
 ) -> None:
-    """Recompute inventory counters when records exactly cover the images.
+    """记录恰好覆盖全部图片时，重新计算图库计数。
 
-    Mutates ``metadata`` in place and never writes it to disk. Counters are
-    refreshed only when every record maps to one unique existing image path
-    and the record path set exactly matches the filesystem path set; otherwise
-    ``file_total`` is marked invalid so callers cannot report a stale complete
-    snapshot. Image contents are never read.
+    原地修改 ``metadata``，不写入磁盘。只有每条记录
+    均对应唯一且存在的图片路径，且记录路径集合
+    与文件系统路径集合完全一致时才刷新计数；否则
+    将 ``file_total`` 标记为无效，避免调用方将过时快照
+    报告为完整快照。本方法不会读取图片内容。
 
     Args:
-        pack_dir: Pack root that contains the ``memes`` directory.
-        metadata: Semantic metadata to update in place.
+        pack_dir: 包含 ``memes`` 目录的表情包根目录。
+        metadata: 待原地更新的语义元数据。
 
     Returns:
-        None.
+        无返回值。
     """
     root = Path(pack_dir).resolve()
     memes_root = (root / "memes").resolve()
@@ -304,8 +304,8 @@ def refresh_metadata_inventory_snapshot(
             try:
                 path.resolve().relative_to(memes_root)
             except (OSError, RuntimeError, ValueError):
-                # An image symlink escaping the pack is untracked content, not
-                # something that can be silently ignored.
+                # 超出表情包边界的图片符号链接属于未跟踪内容，
+                # 不能将其静默忽略。
                 metadata["file_total"] = -1
                 return
             existing_paths.add(path.relative_to(root).as_posix())
@@ -762,16 +762,16 @@ def _normalize_image_records(
 
 
 def load_metadata(pack_dir: Path | str, *, scan_legacy: bool = True) -> dict[str, Any]:
-    """Load metadata, optionally deferring legacy image reconciliation.
+    """加载元数据，并可延后旧版图片的对应处理。
 
     Args:
-        pack_dir: Pack directory.
-        scan_legacy: Whether to read image contents to map legacy records.
-            Disable for page queries; explicit tasks perform the migration.
+        pack_dir: 表情包目录。
+        scan_legacy: 是否读取图片内容以映射旧版记录。
+            页面查询时禁用，由显式任务执行迁移。
 
     Returns:
-        Normalized metadata or a migration-required snapshot without image
-        records when legacy scanning is disabled.
+        规范化的元数据；禁用旧版扫描时返回不含图片记录、
+        标记为需要迁移的快照。
     """
     path = metadata_path(pack_dir)
     if not path.is_file():
@@ -897,16 +897,16 @@ def semantic_metadata_is_complete(
 def get_pack_semantic_summary(
     pack_dir: Path | str, image_count: int | None = None, *, verify_files: bool = True
 ) -> dict[str, Any]:
-    """Summarize semantic progress from the saved metadata.
+    """根据已保存元数据汇总语义化进度。
 
     Args:
-        pack_dir: Pack directory.
-        image_count: Known image count, or None to count directory entries.
-        verify_files: Whether to hash images and verify the saved snapshot.
-            Page queries disable this and report saved progress only.
+        pack_dir: 表情包目录。
+        image_count: 已知图片数量；为 None 时统计目录条目。
+        verify_files: 是否计算图片哈希并验证已保存快照。
+            页面查询时禁用，仅报告已保存的进度。
 
     Returns:
-        Progress and snapshot status for the pack.
+        表情包的进度与快照状态。
     """
     root = Path(pack_dir).resolve()
     if image_count is None:
@@ -1389,17 +1389,17 @@ def save_collected_image_semantic(
     *,
     manual_confirmed: bool = False,
 ) -> None:
-    """Preserve collection analysis without starting a model or index task.
+    """保留收集分析结果，不启动模型或索引任务。
 
     Args:
-        pack_dir: Destination pack protected by its external-operation lock.
-        image_path: Newly accepted image inside the destination pack.
-        decision: Collection analysis with its semantic prompt and category.
-        manual_confirmed: Whether the user explicitly accepted this category.
+        pack_dir: 受外部操作锁保护的目标表情包。
+        image_path: 目标表情包中新接收的图片。
+        decision: 包含语义提示词与分类的收集分析结果。
+        manual_confirmed: 用户是否明确接受此分类。
 
     Raises:
-        ValueError: The image or metadata is invalid for the destination pack.
-        RuntimeError: The image changes before metadata can be saved.
+        ValueError: 图片或元数据对目标表情包无效。
+        RuntimeError: 保存元数据前图片发生变化。
     """
     root = Path(pack_dir).resolve()
     requested = Path(image_path)

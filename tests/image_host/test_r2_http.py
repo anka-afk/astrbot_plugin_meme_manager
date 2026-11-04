@@ -1,4 +1,4 @@
-"""Exercise the real MinIO SDK against a local S3-compatible HTTP server."""
+"""通过本地兼容 S3 的 HTTP 服务器验证真实 MinIO SDK。"""
 
 import hashlib
 import os

@@ -1,4 +1,4 @@
-"""Regress plugin-initiated streams that lose their final decoration phase."""
+"""回归验证插件发起的流在丢失最终装饰阶段时的行为。"""
 
 import asyncio
 import copy
@@ -17,7 +17,7 @@ from astrbot.core.message.message_event_result import (
     ResultContentType,
 )
 
-# Resolve the exported stage first so older cores initialize its submodules.
+# 先解析导出的阶段，使旧版核心初始化其子模块。
 from astrbot.core.pipeline import ProcessStage
 from astrbot.core.pipeline.process_stage.method import star_request
 from astrbot.core.pipeline.process_stage.method.agent_sub_stages import internal
@@ -71,7 +71,7 @@ async def test_plugin_stream_delivers_without_final_decoration(
     async def deliver(generator, *_args, **_kwargs):
         async for chunk in generator:
             output.append(chunk.get_plain_text())
-        # The platform may buffer text until its stream consumer returns.
+        # 平台可能将文本缓冲到流消费函数返回。
         sender._send_meme_image.assert_not_awaited()
         event._has_send_oper = True
 
@@ -124,7 +124,7 @@ async def test_plugin_stream_delivers_without_final_decoration(
             AsyncMock(return_value=True),
         )
     if hasattr(internal, "_select_provider"):
-        # Older cores prepare the request before the mocked agent builder.
+        # 旧版核心会在模拟的 Agent 构造器之前准备请求。
         monkeypatch.setattr(
             internal, "_select_provider", AsyncMock(return_value=provider)
         )
@@ -237,7 +237,7 @@ async def test_incomplete_stream_never_sends_images(
 
     event.send_streaming = deliver
     await sender._mark_llm_request_origin_impl(event)
-    # A previous stream's success must not authorize delivery for this one.
+    # 上一条流的成功不能授权当前流进行投递。
     state["meme_manager_stream_exhausted"] = True
     if interruption == "early_return":
         await event.send_streaming(source())

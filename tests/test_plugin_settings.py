@@ -4,7 +4,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot_plugin_meme_manager import main as plugin_main
 from astrbot_plugin_meme_manager.backend.plugin_settings import (
     describe_settings,
@@ -12,6 +11,8 @@ from astrbot_plugin_meme_manager.backend.plugin_settings import (
 )
 from astrbot_plugin_meme_manager.mixins.web_api import WebAPIMixin
 from quart import Quart
+
+from astrbot.core.config.astrbot_config import AstrBotConfig
 
 
 @pytest.fixture
@@ -106,7 +107,7 @@ def test_filter_all_tags_shared_config_roundtrip(shared_config, start_plugin):
 def test_independent_probabilities_settings_roundtrip(
     shared_config, start_plugin, probability
 ):
-    # Old configuration files omit both new fields and keep autonomous calls.
+    # 旧配置文件缺少这两个新字段，仍保留自主调用能力。
     shared_config["semantic"].pop("tool_probability_enabled", None)
     shared_config["semantic"].pop("tool_call_probability", None)
     shared_config.save_config()
