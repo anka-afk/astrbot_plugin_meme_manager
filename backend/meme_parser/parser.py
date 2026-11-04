@@ -178,10 +178,10 @@ class MemeParser:
         return "".join(output)
 
     def finish(self) -> str:
-        """输出最后一行；不完整标记仍作为字面文本保留。
+        """Flush the final line, including standalone unterminated semantic IDs.
 
         Returns:
-            剩余可见文本。重复调用返回空字符串。
+            Remaining visible text, or an empty string on repeated calls.
         """
         if self._finished:
             return ""
@@ -352,6 +352,27 @@ class MemeParser:
                         kind,
                         value,
                         valid,
+                    )
+                )
+
+        # Recover only a whole-line semantic ID after its full extent is known.
+        # Keep this outside _markers so final filtering retains its existing scope.
+        if self.semantic and not edits and not protected:
+            match = re.fullmatch(
+                r"[ \t]*(&&(?i:meme:[0-9a-f]{12,64}))[ \t]*(?:\r?\n)?", line
+            )
+            if match:
+                start, end = match.span(1)
+                raw = match[1]
+                edits.append((start, end))
+                self.tokens.append(
+                    MemeToken(
+                        self._offset + start,
+                        self._offset + end,
+                        raw,
+                        "unterminated",
+                        raw[2:].lower(),
+                        True,
                     )
                 )
 

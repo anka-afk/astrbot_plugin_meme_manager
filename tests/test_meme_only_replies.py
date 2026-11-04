@@ -467,6 +467,53 @@ async def test_category_fallback_uses_request_pack_instead_of_global_mapping(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("filter_all", [False, True])
+@pytest.mark.parametrize("candidate_valid", [False, True])
+@pytest.mark.parametrize("body", ["", "正文\n\n"])
+@pytest.mark.parametrize("chunk_size", [1, 7, 1000])
+async def test_unterminated_semantic_reply_cleans_marker_and_validates_candidate(
+    reply_context, monkeypatch, filter_all, candidate_valid, body, chunk_size
+):
+    sender, event, state, root = reply_context
+    sender.filter_all_tags = filter_all
+    sender.emotions_probability = 100
+    sender._semantic_mode_active = lambda event: True
+    identifier = "meme:addb64526374"
+    validated = []
+
+    def validate(event, value, pack):
+        validated.append(value)
+        return root / "happy" / "meme.png" if candidate_valid else None
+
+    monkeypatch.setattr(event_handlers, "validate_selected_id", validate)
+    text = f"{body}&&{identifier}"
+
+    async def source():
+        for index in range(0, len(text), chunk_size):
+            yield MessageChain([Plain(text[index : index + chunk_size])])
+
+    visible = "".join(
+        [
+            component.text
+            async for chunk in sender._filter_meme_stream(event, source())
+            for component in chunk.chain
+            if isinstance(component, Plain)
+        ]
+    )
+    assert visible == body
+    response = LLMResponse(role="assistant", completion_text=text)
+    await sender._resp_semantic_impl(event, response, text)
+    assert response.completion_text == body.strip()
+    assert validated == [identifier]
+    assert state["meme_manager_semantic_selected_ids"] == (
+        [identifier] if candidate_valid else []
+    )
+    assert bool(state.get("meme_manager_image_only_reply")) == (
+        candidate_valid and not body
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
 async def test_semantic_image_only_reply_keeps_multiple_selections(
     reply_context, monkeypatch, streaming

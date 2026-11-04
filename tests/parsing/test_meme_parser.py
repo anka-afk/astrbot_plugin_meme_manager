@@ -125,6 +125,104 @@ def test_semantic_bare_ids_are_identical_at_every_split(text):
         assert tuple(parser.tokens) == baseline.tokens
 
 
+@pytest.mark.parametrize("filter_all", [False, True])
+@pytest.mark.parametrize("ending", ["", "\n", "\r\n"])
+@pytest.mark.parametrize("padding", ["", " ", "   "])
+@pytest.mark.parametrize("identifier", ["meme:addb64526374", "MEME:" + "A" * 64])
+def test_unterminated_semantic_line_preserves_offsets_at_every_split(
+    filter_all, ending, padding, identifier
+):
+    marker = f"&&{identifier}"
+    text = f"正文\n\n{padding}{marker} \t{ending}"
+    expected = f"正文\n\n{padding} \t{ending}"
+    baseline = MemeParser.parse(text, semantic=True, filter_all=filter_all)
+    assert baseline.text == expected
+    assert baseline.selections == (identifier.lower(),)
+    assert len(baseline.tokens) == 1
+    token = baseline.tokens[0]
+    assert token.raw == marker
+    assert text[token.start : token.end] == marker
+    configurations = [list(text)]
+    configurations.extend([text[:i], text[i:]] for i in range(len(text) + 1))
+    for chunks in configurations:
+        parser = MemeParser(semantic=True, filter_all=filter_all)
+        visible = "".join(parser.feed(chunk) for chunk in chunks) + parser.finish()
+        assert visible == expected, chunks
+        assert tuple(parser.tokens) == baseline.tokens, chunks
+
+
+@pytest.mark.parametrize("filter_all", [False, True])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "正文 &&meme:addb64526374",
+        "&&meme:addb64526374 正文",
+        "&&meme:addb64526374&",
+        "&&meme:addb64526374。",
+        "&&&meme:addb64526374",
+        "&&meme:" + "a" * 11,
+        "&&meme:" + "a" * 65,
+        "&&meme:addb6452637g",
+        "&&happy",
+        r"\&&meme:addb64526374",
+        "`&&meme:addb64526374`",
+        "`code\n&&meme:addb64526374\ncode`",
+        "```text\n&&meme:addb64526374\n```",
+        "~~~\n&&meme:addb64526374\n~~~",
+        "    &&meme:addb64526374",
+        "\t&&meme:addb64526374",
+        "  \t&&meme:addb64526374",
+        "<!--\n&&meme:addb64526374\n-->",
+        "<think>\n&&meme:addb64526374\n</think>",
+        "[link\n&&meme:addb64526374](target)",
+        "[link](target(\n&&meme:addb64526374))",
+    ],
+)
+def test_unterminated_semantic_line_keeps_ambiguous_and_protected_text(
+    text, filter_all
+):
+    # Final filtering may already remove ordinary link labels or parentheses.
+    expected = MemeParser.parse(text, filter_all=filter_all).text
+    assert "&&" in expected
+    baseline = MemeParser.parse(text, semantic=True, filter_all=filter_all)
+    assert baseline.text == expected
+    assert baseline.selections == ()
+    for position in range(len(text) + 1):
+        parser = MemeParser(semantic=True, filter_all=filter_all)
+        visible = (
+            parser.feed(text[:position])
+            + parser.feed(text[position:])
+            + parser.finish()
+        )
+        assert visible == expected, position
+        assert parser.tokens == []
+
+
+@pytest.mark.parametrize("filter_all", [False, True])
+def test_unterminated_semantic_line_is_disabled_in_category_mode(filter_all):
+    text = "&&meme:addb64526374"
+    result = MemeParser.parse(text, {"happy"}, filter_all=filter_all)
+    assert result.text == text
+    assert result.selections == ()
+
+
+@pytest.mark.parametrize("suffix", ["a", " ordinary text"])
+def test_unterminated_semantic_line_waits_for_line_end(suffix):
+    parser = MemeParser(semantic=True)
+    marker = "&&meme:addb64526374"
+    assert parser.feed(marker) == ""
+    assert parser.selections == []
+    assert parser.feed(suffix) == ""
+    assert parser.selections == []
+    visible = parser.finish()
+    if suffix == "a":
+        assert visible == ""
+        assert parser.selections == ["meme:addb64526374a"]
+    else:
+        assert visible == marker + suffix
+        assert parser.selections == []
+
+
 def test_ordinary_words_are_emitted_before_the_line_finishes():
     parser = MemeParser({"happy"})
     assert parser.feed("hello world ") == "hello world "
