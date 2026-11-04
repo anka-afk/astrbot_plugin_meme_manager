@@ -15,7 +15,7 @@ function fixture(apiPost) {
   const address = { value: "https://example.test/v1", focus() {} };
   const context = vm.createContext({
     fetchModels: { addEventListener: (_, fn) => { click = fn; }, disabled: false },
-    help: { textContent: "" }, control,
+    help: { textContent: "", dataset: { state: "" } }, control,
     choices: {
       items: [],
       replaceChildren(...items) { this.items = items; },
@@ -23,7 +23,7 @@ function fixture(apiPost) {
     },
     controls: new Map([["decision_service.base_url", address]]),
     api: { apiPost: (...args) => { calls.push(args); return apiPost(...args); } },
-    modelListRequest: 0, decisionModels: [], decisionModelsBaseUrl: "",
+    modelListRequest: 0, decisionHintRequest: 0, decisionModels: [], decisionModelsBaseUrl: "",
     Option: class { constructor(label, value) { Object.assign(this, { label, value }); } },
   });
   vm.runInContext(handler, context);
@@ -45,7 +45,7 @@ for (const outcome of ["catalog", "empty", "error"]) {
   });
 }
 
-for (const mutation of ["address", "rerender", "typing"]) {
+for (const mutation of ["address", "rerender", "typing", "connection-test"]) {
   test("pending model discovery handles " + mutation, async () => {
     let resolve;
     const state = fixture(() => new Promise(done => { resolve = done; }));
@@ -57,9 +57,18 @@ for (const mutation of ["address", "rerender", "typing"]) {
     if (mutation === "address") state.context.modelListRequest++;
     if (mutation === "rerender") state.context.control.isConnected = false;
     if (mutation === "typing") state.context.control.value = "typed-id";
+    if (mutation === "connection-test") {
+      state.context.decisionHintRequest++;
+      state.context.help.textContent = "连接成功";
+      state.context.help.dataset.state = "ok";
+    }
     resolve({ models: [{ id: "catalog-id" }] });
     await pending;
     assert.equal(state.context.control.value, mutation === "typing" ? "typed-id" : "manual-id");
-    if (mutation !== "typing") assert.equal(state.context.choices.items.length, 0);
+    if (["address", "rerender"].includes(mutation)) assert.equal(state.context.choices.items.length, 0);
+    if (mutation === "connection-test") {
+      assert.equal(state.context.help.textContent, "连接成功");
+      assert.equal(state.context.help.dataset.state, "ok");
+    }
   });
 }

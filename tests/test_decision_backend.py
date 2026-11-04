@@ -4,7 +4,6 @@ from contextlib import asynccontextmanager
 
 import pytest
 from aiohttp import web
-
 from backend import decision as decision_module
 from backend.decision import MAX_RESPONSE_BYTES, DecisionClient, DecisionError
 
@@ -242,28 +241,22 @@ CLOUDFLARE_CONFIG = {
 }
 
 
-def cloudflare_envelope(**answer):
-    """Return the Workers AI v4 envelope for one validated choice answer."""
-    return {
-        "result": {
-            "model": "clef-flash",
-            "answers": {"selection": {"type": "choice", "choice": "c0", **answer}},
-            "usage": {"input_tokens": 120, "output_tokens": 0},
-        },
-        "success": True,
-        "errors": [],
-        "messages": [],
-    }
-
-
-async def test_cloudflare_endpoint_headers_and_envelope():
+@pytest.mark.parametrize("nested", [False, True])
+async def test_cloudflare_endpoint_headers_and_envelope(nested):
     observed = {}
 
     async def handler(request):
         observed["path"] = request.path
         observed["headers"] = dict(request.headers)
         observed["body"] = await request.json()
-        return web.json_response(cloudflare_envelope(confidence=0.9))
+        result = {
+            **payload(confidence=0.9),
+            "model": "clef-flash",
+            "usage": {"input_tokens": 120, "output_tokens": 0},
+        }
+        return web.json_response(
+            {"success": True, "result": {"result": result} if nested else result}
+        )
 
     async with client_for(handler, **CLOUDFLARE_CONFIG) as client:
         answers = await client.evaluate({"task": "meme_selection"}, questions())
@@ -277,17 +270,6 @@ async def test_cloudflare_endpoint_headers_and_envelope():
     assert answers.model == "clef-flash"
     assert answers.usage == {"input_tokens": 120, "output_tokens": 0}
     assert answers.credits is None
-
-
-async def test_cloudflare_accepts_nested_gateway_result():
-    async def handler(request):
-        envelope = cloudflare_envelope()
-        envelope["result"] = {"result": envelope["result"], "state": "Completed"}
-        return web.json_response(envelope)
-
-    async with client_for(handler, **CLOUDFLARE_CONFIG) as client:
-        answers = await client.evaluate({}, questions())
-    assert answers["selection"]["choice"] == "c0"
 
 
 @pytest.mark.parametrize(
@@ -354,34 +336,22 @@ async def test_cloudflare_catalog_is_local_and_needs_no_credentials():
 
 
 async def test_cloudflare_request_limits_differ_from_systemone():
-    async def cloudflare_handler(request):
+    async def handler(request):
         body = await request.json()
         answers = {
             name: {"type": "choice", "choice": next(iter(question["criteria"]))}
             for name, question in body["questions"].items()
         }
-        return web.json_response(
-            {
-                "result": {"model": "clef-flash", "answers": answers, "usage": {}},
-                "success": True,
-                "errors": [],
-                "messages": [],
-            }
-        )
-
-    async def systemone_handler(request):
-        body = await request.json()
-        answers = {
-            name: {"type": "choice", "choice": next(iter(question["criteria"]))}
-            for name, question in body["questions"].items()
-        }
-        return web.json_response({"answers": answers})
+        result = {"answers": answers}
+        if "/accounts/" in request.path:
+            result = {"success": True, "result": result}
+        return web.json_response(result)
 
     wide_questions = {
         f"q{index}": {"type": "choice", "criteria": {"a": "x", "b": "y"}}
         for index in range(33)
     }
-    async with client_for(cloudflare_handler, **CLOUDFLARE_CONFIG) as client:
+    async with client_for(handler, **CLOUDFLARE_CONFIG) as client:
         # 33 个问题超出 System One 的 32 问上限，但处于 clef 的 64 问内。
         await client.evaluate({}, wide_questions)
         # clef 的 choice 至少需要两个选项。
@@ -395,7 +365,7 @@ async def test_cloudflare_request_limits_differ_from_systemone():
                 {}, {"选图": {"type": "choice", "criteria": {"a": "x", "b": "y"}}}
             )
 
-    async with client_for(systemone_handler) as systemone_client:
+    async with client_for(handler) as systemone_client:
         # 同样的 33 个问题按 System One 规则被拒绝，单选项问题保持合法。
         with pytest.raises(DecisionError, match="invalid_request"):
             await systemone_client.evaluate({}, wide_questions)

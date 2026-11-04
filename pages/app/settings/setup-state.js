@@ -3,6 +3,7 @@ export function describeSetup(
   {
     providers,
     tokenConfigured,
+    accountIdConfigured = false,
     semanticStatus,
     defaultPack,
     embeddingChanged = false,
@@ -41,19 +42,19 @@ export function describeSetup(
     decision && "辅助配图",
     collectionEnabled && collectionDecision && "自动收集",
   ].filter(Boolean);
-  const cloudflare = String(
-    values["decision_service.provider"] || "systemone",
-  ).startsWith("cloudflare");
+  const cloudflare = values["decision_service.provider"] === "cloudflare";
 
   if (cloudflare) {
-    const accountId = String(values["decision_service.account_id"] || "").trim();
-    if (!accountId)
+    const accountId = String(
+      values["decision_service.account_id"] || "",
+    ).trim();
+    if (!accountId && !accountIdConfigured)
       serviceIssues.push({
         text: "填写 Cloudflare 账户 ID",
         group: "decision-service",
         path: "decision_service.account_id",
       });
-    else if (!/^[0-9a-fA-F]{32}$/.test(accountId))
+    else if (accountId && !/^[0-9a-fA-F]{32}$/.test(accountId))
       serviceIssues.push({
         text: "检查 Cloudflare 账户 ID（32 位十六进制）",
         group: "decision-service",

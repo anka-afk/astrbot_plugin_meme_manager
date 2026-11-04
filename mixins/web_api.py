@@ -99,7 +99,7 @@ PACK_IMPORT_SESSION_TTL_SECONDS = 60 * 60
 MAX_PACK_ARCHIVE_BYTES = 1024 * 1024 * 1024
 MAX_PACK_UPLOAD_REQUEST_BYTES = MAX_PACK_ARCHIVE_BYTES + 1024 * 1024
 COMMUNITY_INSTALL_JOB_TTL_SECONDS = 30 * 60
-# 决策服务连通性测试的稳定文案；上游细节与凭据都不会出现在其中。
+# 连通性测试只展示稳定文案，不暴露上游细节和凭据。
 DECISION_TEST_MESSAGES = {
     "invalid_provider": "请选择有效的决策服务提供方。",
     "missing_base_url": "请填写决策服务基础地址。",
@@ -129,24 +129,6 @@ DECISION_TEST_MESSAGES = {
     "closed": "决策服务客户端已关闭，请刷新页面后重试。",
 }
 DECISION_TEST_FALLBACK = "决策服务测试失败，请检查配置与服务日志。"
-
-
-def _decision_test_timeout(value) -> float:
-    """把配置的超时收敛到适合单次探活的区间。
-
-    Args:
-        value: 已保存的决策服务超时配置，可能缺失或非法。
-
-    Returns:
-        5 秒到 20 秒之间的探活超时秒数。
-    """
-    try:
-        timeout = float(value)
-    except (TypeError, ValueError):
-        timeout = 15.0
-    if timeout != timeout or timeout in {float("inf"), float("-inf")}:
-        timeout = 15.0
-    return min(max(timeout, 5.0), 20.0)
 
 
 def _parse_int(value, default: int = -1) -> int:
@@ -530,7 +512,7 @@ class WebAPIMixin:
             "settings/decision-test",
             self._api_settings_decision_test,
             ["POST"],
-            "Verify the draft decision service with one minimal inference request",
+            "使用当前草稿发起一次最小决策服务连通性测试",
         )
         self._register_webui_api(
             "settings/targets",
@@ -4044,20 +4026,22 @@ class WebAPIMixin:
             return jsonify({"message": f"安装官方首个表情包失败: {str(e)}"}), 500
 
     async def _api_settings_decision_models(self):
-        """Discover model choices without saving credentials or inferring.
+        """读取模型候选，不保存凭据或发起推理。
 
         Returns:
-            Model IDs and display names, or a sanitized discovery error. The
-            Cloudflare clef catalog is fixed and returned without a request.
+            模型 ID 和名称，或脱敏后的错误。Cloudflare 返回本地固定目录。
         """
         from ..backend.decision import DecisionClient, DecisionError
 
         data = await request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"message": "请求格式不正确。"}), 400
-        provider = str(data.get("provider") or "systemone").strip().casefold()
+        provider = data.get("provider", "systemone")
+        if not isinstance(provider, str):
+            return jsonify({"message": "请选择有效的决策服务提供方。"}), 400
+        provider = provider.strip().casefold()
         if provider not in {"systemone", "cloudflare"}:
-            provider = "systemone"
+            return jsonify({"message": "请选择有效的决策服务提供方。"}), 400
         config = {"provider": provider, "timeout": 8}
         if provider == "systemone":
             base_url = data.get("base_url")
@@ -4086,20 +4070,21 @@ class WebAPIMixin:
             await client.close()
 
     async def _api_settings_decision_test(self):
-        """Verify the draft decision service with one minimal inference.
+        """使用当前草稿发起一次最小连通性测试。
 
-        The API key is never echoed: an empty draft key falls back to the
-        saved one unless the page reports that it cleared the field.
+        省略字段保留已保存的值，显式空字符串表示清除，草稿不会写入配置。
 
         Returns:
-            Whether one tiny choice request succeeded, with latency, model,
-            usage, or a stable failure reason instead of upstream details.
+            测试状态、模型、耗时和用量，或不含上游细节的稳定失败原因。
         """
         from ..backend.decision import DecisionClient, DecisionError
 
         data = await request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"ok": False, "message": "请求格式不正确。"}), 400
+        names = ("provider", "account_id", "base_url", "token", "model")
+        if any(name in data and not isinstance(data[name], str) for name in names):
+            return jsonify({"ok": False, "message": "配置字段需要填写文本。"}), 400
         try:
             _, values = describe_settings(self.config)
         except Exception:
@@ -4107,20 +4092,12 @@ class WebAPIMixin:
             return jsonify({"ok": False, "message": "读取配置失败，请重试。"}), 500
         saved = values.get("decision_service")
         saved = saved if isinstance(saved, dict) else {}
-        draft = {
-            "provider": data.get("provider") or saved.get("provider"),
-            "account_id": data.get("account_id") or saved.get("account_id"),
-            "base_url": data.get("base_url") or saved.get("base_url"),
-            "model": data.get("model") or saved.get("model"),
-            "timeout": _decision_test_timeout(saved.get("timeout")),
-            "max_concurrency": 1,
-        }
-        token = data.get("token")
-        if isinstance(token, str) and token.strip():
-            draft["token"] = token
-        elif not data.get("token_cleared"):
-            draft["token"] = saved.get("token")
+        draft = {name: data.get(name, saved.get(name)) for name in names}
+        draft["timeout"] = data.get("timeout", saved.get("timeout", 15))
+        draft["max_concurrency"] = 1
         client = DecisionClient(draft)
+        # 限制测试等待时间，同时保留客户端对非法超时配置的判断。
+        client.timeout = min(client.timeout, 20.0)
         started = time.monotonic()
         try:
             answers = await client.evaluate(

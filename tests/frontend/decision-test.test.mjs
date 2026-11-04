@@ -4,111 +4,76 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = await readFile(new URL("../../pages/app/settings/config.js", import.meta.url), "utf8");
-const marker = 'testService.addEventListener("click", async () => {';
-const start = source.indexOf(marker);
+const start = source.indexOf('testService.addEventListener("click", async () => {');
 const handler = source.slice(start, source.indexOf("controlBox.append(testService);", start));
+const invalidate = source.slice(source.indexOf("  function invalidateDecisionTest()"), source.indexOf("  function updateDecisionModelControl("));
 
-function fixture(apiPost, { changes = {}, fields = {}, connected = true } = {}) {
+function fixture(apiPost, changes = {}) {
   let click;
   const calls = [];
+  const help = { dataset: { state: "", baseHint: "提示" }, textContent: "提示" };
   const context = vm.createContext({
-    testService: {
-      addEventListener: (_, fn) => { click = fn; },
-      disabled: false,
-      textContent: "测试连接",
-    },
-    control: { isConnected: connected },
-    help: { dataset: { state: "", baseHint: "提示" }, textContent: "提示" },
+    testService: { addEventListener: (_, fn) => { click = fn; }, disabled: false },
+    configState: { busy: false }, decisionHintRequest: 0,
+    control: { isConnected: true }, help,
+    document: { getElementById: () => help },
     changes: new Map(Object.entries(changes)),
-    fields: new Map(Object.entries(fields).map(([path, value]) => [path, { value }])),
+    fields: new Map(Object.entries({
+      provider: "cloudflare", account_id: "", token: "", model: "clef-flash", timeout: 15,
+    }).map(([name, value]) => [`decision_service.${name}`, {
+      value, secret: ["account_id", "token"].includes(name),
+    }])),
     api: { apiPost: (...args) => { calls.push(args); return apiPost(...args); } },
   });
-  vm.runInContext(handler, context);
+  vm.runInContext(invalidate + handler, context);
   return { context, calls, click: () => click() };
 }
 
-const CLOUDFLARE = {
-  "decision_service.provider": "cloudflare",
-  "decision_service.account_id": "a".repeat(32),
-  "decision_service.model": "clef-flash",
-};
-
-test("decision test posts the draft values and shows the result", async () => {
-  const state = fixture(async () => ({
-    ok: true,
-    message: "连接成功：clef-flash，用时 862 ms。",
-  }), { changes: CLOUDFLARE });
+test("测试提交当前草稿，未修改的脱敏字段不发送，空值不丢失", async () => {
+  const state = fixture(async () => ({ ok: true, message: "连接成功。" }), {
+    "decision_service.account_id": "a".repeat(32), "decision_service.model": "",
+  });
   await state.click();
-  assert.deepEqual(JSON.parse(JSON.stringify(state.calls)), [
-    ["settings/decision-test", {
-      provider: "cloudflare",
-      account_id: CLOUDFLARE["decision_service.account_id"],
-      base_url: "",
-      model: "clef-flash",
-      token: "",
-      token_cleared: false,
-    }],
-  ]);
-  assert.equal(state.context.help.textContent, "连接成功：clef-flash，用时 862 ms。");
+  assert.deepEqual(JSON.parse(JSON.stringify(state.calls)), [["settings/decision-test", {
+    provider: "cloudflare", account_id: "a".repeat(32), model: "", timeout: 15,
+  }]]);
   assert.equal(state.context.help.dataset.state, "ok");
+  assert.equal(state.context.help.textContent, "连接成功。");
   assert.equal(state.context.testService.disabled, false);
-  assert.equal(state.context.testService.textContent, "测试连接");
-});
-
-test("draft edits win over the saved snapshot", async () => {
-  const state = fixture(async () => ({ ok: true, message: "ok" }), {
-    changes: { "decision_service.model": "clef" },
-    fields: {
-      "decision_service.provider": "cloudflare",
-      "decision_service.account_id": CLOUDFLARE["decision_service.account_id"],
-      "decision_service.model": "clef-flash",
-    },
-  });
-  await state.click();
-  const body = state.calls[0][1];
-  assert.equal(body.model, "clef");
-  assert.equal(body.provider, "cloudflare");
-  assert.equal(body.account_id, CLOUDFLARE["decision_service.account_id"]);
-});
-
-test("cleared key is reported instead of silently reusing the saved one", async () => {
-  const state = fixture(async () => ({ ok: false, message: "请填写决策服务密钥。" }), {
-    changes: { ...CLOUDFLARE, "decision_service.token": "" },
-  });
-  await state.click();
-  assert.equal(state.calls[0][1].token, "");
-  assert.equal(state.calls[0][1].token_cleared, true);
-  assert.equal(state.context.help.dataset.state, "error");
-});
-
-test("typed key is forwarded and never echoed in the hint", async () => {
-  const state = fixture(async () => ({ ok: true, message: "连接成功。" }), {
-    changes: { ...CLOUDFLARE, "decision_service.token": "typed-secret" },
-  });
-  await state.click();
-  assert.equal(state.calls[0][1].token, "typed-secret");
-  assert.equal(state.calls[0][1].token_cleared, false);
-  assert.ok(!state.context.help.textContent.includes("typed-secret"));
-});
-
-test("transport failure keeps the button usable and marks the hint", async () => {
-  const state = fixture(async () => {
-    throw new Error("服务不可用");
-  }, { changes: CLOUDFLARE });
-  await state.click();
-  assert.equal(state.context.help.dataset.state, "error");
-  assert.match(state.context.help.textContent, /服务不可用/);
-  assert.match(state.context.help.textContent, /请检查网络后重试/);
-  assert.equal(state.context.testService.disabled, false);
-});
-
-test("a detached field stops updating the detached hint", async () => {
-  const state = fixture(async () => ({ ok: true, message: "连接成功。" }), {
-    changes: CLOUDFLARE,
-    connected: false,
-  });
-  await state.click();
-  // 字段已随重新渲染而分离，不再写回旧节点，也不恢复按钮状态。
+  state.context.invalidateDecisionTest();
   assert.equal(state.context.help.dataset.state, "");
-  assert.equal(state.context.testService.disabled, true);
+});
+
+test("清除与替换密钥均作为显式草稿提交，失败后可重试", async () => {
+  for (const value of ["", "新密钥"]) {
+    const state = fixture(async () => { throw new Error("服务不可用"); }, {
+      "decision_service.token": value,
+    });
+    await state.click();
+    assert.equal(state.calls[0][1].token, value);
+    assert.equal(state.context.help.dataset.state, "error");
+    assert.match(state.context.help.textContent, /服务不可用/);
+    assert.ok(!state.context.help.textContent.includes("新密钥"));
+    assert.equal(state.context.testService.disabled, false);
+  }
+});
+
+test("编辑、清除和重绘后丢弃旧响应，等待期间不重复请求", async () => {
+  for (const mutation of ["edit", "clear", "rerender"]) {
+    for (const failed of [false, true]) {
+      let resolve, reject;
+      const state = fixture(() => new Promise((yes, no) => { resolve = yes; reject = no; }));
+      const pending = state.click();
+      await state.click();
+      assert.equal(state.calls.length, 1);
+      if (mutation === "rerender") state.context.control.isConnected = false;
+      else state.context.invalidateDecisionTest();
+      if (failed) reject(new Error("旧错误"));
+      else resolve({ ok: true, message: "旧结果" });
+      await pending;
+      assert.equal(state.context.help.dataset.state, "");
+      assert.ok(!state.context.help.textContent.includes("旧"));
+      assert.equal(state.context.testService.disabled, mutation === "rerender");
+    }
+  }
 });

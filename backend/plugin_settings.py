@@ -126,6 +126,16 @@ def validate_settings_changes(
         for key in keys[:-1]:
             node = node.setdefault(key, {})
         node[keys[-1]] = copy.deepcopy(value)
+    # 先确定最终提供方，地址校验不依赖草稿字段的提交顺序。
+    decision = updated.get("decision_service", {})
+    provider = (
+        str(
+            changes.get("decision_service.provider", decision.get("provider"))
+            or "systemone"
+        )
+        .strip()
+        .casefold()
+    )
     for path, value in changes.items():
         if path not in allowed:
             raise ValueError("包含未知配置项，请重新加载设置。")
@@ -173,7 +183,7 @@ def validate_settings_changes(
             path.endswith(
                 (".url", ".public_url", ".github_accelerator_url", ".base_url")
             )
-            and path != "decision_service.base_url"
+            and (path != "decision_service.base_url" or provider != "cloudflare")
             and value
         ):
             try:
@@ -184,6 +194,15 @@ def validate_settings_changes(
                     and parsed.hostname
                     and (port is None or port > 0)
                 )
+                if path == "decision_service.base_url":
+                    valid_url = (
+                        valid_url
+                        and not parsed.username
+                        and not parsed.password
+                        and not parsed.query
+                        and not parsed.fragment
+                        and not any(char.isspace() for char in value)
+                    )
             except ValueError:
                 valid_url = False
             if not valid_url:
@@ -207,31 +226,6 @@ def validate_settings_changes(
         for key in keys[:-1]:
             node = node[key]
         node[keys[-1]] = value
-    # 决策服务基础地址是否校验取决于最终提供方，需在全部更改应用后判断。
-    decision = updated.get("decision_service", {})
-    provider = str(decision.get("provider") or "systemone").strip().casefold()
-    if provider == "systemone":
-        base_url = str(decision.get("base_url") or "")
-        if base_url:
-            try:
-                parsed = urlsplit(base_url)
-                port = parsed.port
-                valid_url = (
-                    parsed.scheme in {"http", "https"}
-                    and parsed.hostname
-                    and (port is None or port > 0)
-                    and not parsed.username
-                    and not parsed.password
-                    and not parsed.query
-                    and not parsed.fragment
-                    and not any(char.isspace() for char in base_url)
-                )
-            except ValueError:
-                valid_url = False
-            if not valid_url:
-                raise ValueError(
-                    "「决策服务基础地址」需要填写完整的 HTTP 或 HTTPS 地址。"
-                )
     if provider == "cloudflare":
         account_id = str(decision.get("account_id") or "").strip()
         if account_id and not CLOUDFLARE_ACCOUNT_ID.fullmatch(account_id):

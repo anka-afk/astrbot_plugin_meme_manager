@@ -139,22 +139,22 @@ CLOUDFLARE_CHANGES = {
 
 def test_cloudflare_provider_accepts_clef_without_base_url(shared_config):
     snapshot, values = describe_settings(shared_config)
+    # 未使用的地址无需校验，且结果不能依赖 provider 字段的提交顺序。
     updated = validate_settings_changes(
-        values, snapshot["fields"], CLOUDFLARE_CHANGES, shared_config.schema
+        values,
+        snapshot["fields"],
+        {
+            "decision_service.base_url": "unused-url",
+            **CLOUDFLARE_CHANGES,
+        },
+        shared_config.schema,
     )
     service = updated["decision_service"]
     assert service["provider"] == "cloudflare"
     assert service["account_id"] == "a1b2c3d4e5f60718293a4b5c6d7e8f90"
     assert service["token"] == "cf-token"
     assert service["model"] == "clef-flash"
-    # Cloudflare 提供方下 base_url 不再参与校验，可保留残留值或留空。
-    updated = validate_settings_changes(
-        values,
-        snapshot["fields"],
-        {**CLOUDFLARE_CHANGES, "decision_service.base_url": ""},
-        shared_config.schema,
-    )
-    assert not updated["decision_service"]["base_url"]
+    assert DecisionClient(service).ready
 
 
 @pytest.mark.parametrize(
@@ -201,111 +201,79 @@ async def test_decision_models_endpoint_still_requires_url_for_systemone():
     assert status == 400 and "基础地址" in body["message"]
 
 
+@pytest.mark.parametrize(
+    "draft,token,timeout",
+    [
+        ({"model": "clef"}, "saved-secret", 15),
+        ({"token": "typed-secret", "timeout": 300}, "typed-secret", 20),
+    ],
+)
 @pytest.mark.asyncio
-async def test_decision_test_uses_draft_values_and_saved_key(settings_api, monkeypatch):
+async def test_decision_test_merges_saved_and_draft(
+    settings_api, monkeypatch, draft, token, timeout
+):
+    settings_api.config["decision_service"].update(
+        provider="cloudflare",
+        account_id="a" * 32,
+        token="saved-secret",
+        model="clef-flash",
+    )
+    settings_api.config.save_config()
+    before = describe_settings(settings_api.config)[0]["revision"]
     observed = []
 
     async def evaluate(client, state, questions):
-        observed.append(
-            (
-                client.provider,
-                client.account_id,
-                client.model,
-                client.token,
-                client.timeout,
-                state["task"],
-                questions["ping"]["type"],
-                sorted(questions["ping"]["criteria"]),
-            )
-        )
+        observed.append((client.ready, client.account_id, client.token, client.timeout))
+        assert state["task"] == "connectivity_check"
+        assert set(questions["ping"]["criteria"]) == {"pong", "unavailable"}
         return DecisionAnswers(
-            {"ping": {"type": "choice", "choice": "pong", "confidence": 0.91}},
-            model="clef-flash",
+            {"ping": {"type": "choice", "choice": "pong"}},
+            model=client.model,
             usage={"input_tokens": 12},
-            credits=None,
         )
 
     monkeypatch.setattr(DecisionClient, "evaluate", evaluate)
-    settings_api.config["decision_service"].update(
-        {
-            "provider": "cloudflare",
-            "account_id": "a" * 32,
-            "token": "saved-secret",
-            "model": "clef-flash",
-        }
+    status, body = await settings_call(settings_api, "decision_test", draft)
+    assert status == 200 and body["ok"]
+    assert observed == [(True, "a" * 32, token, timeout)]
+    assert body["model"] == draft.get("model", "clef-flash")
+    assert body["usage"] == {"input_tokens": 12} and body["latency_ms"] >= 0
+    assert "saved-secret" not in json.dumps(body) and "typed-secret" not in json.dumps(
+        body
     )
-    status, body = await settings_call(
-        settings_api,
-        "decision_test",
-        {"provider": "cloudflare", "account_id": "a" * 32, "model": "clef-flash"},
-    )
-    assert status == 200 and body["ok"] is True
-    assert observed == [
-        (
-            "cloudflare",
-            "a" * 32,
-            "clef-flash",
-            "saved-secret",
-            15.0,
-            "connectivity_check",
-            "choice",
-            ["pong", "unavailable"],
-        )
-    ]
-    assert "clef-flash" in body["message"] and "ms" in body["message"]
-    assert body["choice"] == "pong" and body["confidence"] == 0.91
-    assert body["latency_ms"] >= 0
-    assert "saved-secret" not in json.dumps(body)
-    # 测试只读草稿并发送一次请求，不保存设置、不重载插件。
-    assert settings_api.config["decision_service"]["token"] == "saved-secret"
+    assert describe_settings(settings_api.config)[0]["revision"] == before
     settings_api.context._star_manager.reload.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "draft,reason",
+    [
+        ({"token": ""}, "missing_token"),
+        ({"account_id": ""}, "missing_account_id"),
+        ({"model": ""}, "missing_model"),
+        ({"provider": "systemone", "base_url": ""}, "missing_base_url"),
+        ({"timeout": 0}, "invalid_timeout"),
+        ({"provider": "unknown"}, "invalid_provider"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_decision_test_prefers_typed_key_and_caps_timeout(
-    settings_api, monkeypatch
+async def test_decision_test_rejects_invalid_draft_without_request(
+    settings_api, monkeypatch, draft, reason
 ):
-    observed = []
-
-    async def evaluate(client, state, questions):
-        observed.append((client.token, client.timeout, client.max_concurrency))
-        return DecisionAnswers({"ping": {"type": "choice", "choice": "pong"}})
-
-    monkeypatch.setattr(DecisionClient, "evaluate", evaluate)
-    settings_api.config["decision_service"].update({"token": "saved-secret"})
-    settings_api.config["decision_service"]["timeout"] = 300
-    status, body = await settings_call(
-        settings_api,
-        "decision_test",
-        {
-            "provider": "systemone",
-            "base_url": "https://service.test/v1",
-            "model": "some-model",
-            "token": "typed-key",
-        },
+    settings_api.config["decision_service"].update(
+        provider="cloudflare",
+        account_id="a" * 32,
+        token="saved-secret",
+        model="clef-flash",
     )
-    assert status == 200 and body["ok"] is True
-    assert observed == [("typed-key", 20.0, 1)]
-    assert "typed-key" not in json.dumps(body)
+    settings_api.config.save_config()
 
+    async def unexpected_request(client):
+        pytest.fail("无效草稿不应发起收费请求")
 
-@pytest.mark.asyncio
-async def test_decision_test_does_not_fall_back_when_key_cleared(settings_api):
-    settings_api.config["decision_service"]["token"] = "saved-secret"
-    status, body = await settings_call(
-        settings_api,
-        "decision_test",
-        {
-            "provider": "systemone",
-            "base_url": "https://service.test/v1",
-            "model": "some-model",
-            "token": "",
-            "token_cleared": True,
-        },
-    )
-    # 清除密钥后不再回退到已保存值，也不会发出计费请求。
-    assert status == 200 and body["ok"] is False
-    assert body["reason"] == "missing_token" and "密钥" in body["message"]
+    monkeypatch.setattr(DecisionClient, "_get_session", unexpected_request)
+    status, body = await settings_call(settings_api, "decision_test", draft)
+    assert status == 200 and not body["ok"] and body["reason"] == reason
 
 
 @pytest.mark.asyncio
@@ -317,16 +285,8 @@ async def test_decision_test_maps_upstream_failure_without_details(
 
     monkeypatch.setattr(DecisionClient, "evaluate", evaluate)
     status, body = await settings_call(
-        settings_api,
-        "decision_test",
-        {
-            "provider": "cloudflare",
-            "account_id": "b" * 32,
-            "model": "clef-flash",
-            "token": "cf-token",
-        },
+        settings_api, "decision_test", {"token": "cf-token"}
     )
-    assert status == 200 and body["ok"] is False
-    assert body["reason"] == "insufficient_credits"
-    assert "余额" in body["message"]
+    assert status == 200 and not body["ok"]
+    assert body["reason"] == "insufficient_credits" and "余额" in body["message"]
     assert "cf-token" not in json.dumps(body)

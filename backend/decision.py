@@ -15,13 +15,16 @@ MAX_QUESTIONS = 32
 MAX_OPTIONS = 255
 
 CLOUDFLARE_BASE_URL = "https://api.cloudflare.com/client/v4"
-CLOUDFLARE_MODELS = ("clef", "clef-flash", "clef-omni")
+CLOUDFLARE_MODELS = {
+    "clef-flash": "Clef Flash · 快速 9B",
+    "clef": "Clef · 27B",
+    "clef-omni": "Clef Omni · 音视频输入",
+}
 CLOUDFLARE_MAX_QUESTIONS = 64
 CLOUDFLARE_REQUEST_BYTES = 13 * 1024 * 1024
 CLOUDFLARE_ACCOUNT_ID = re.compile(r"^[0-9a-fA-F]{32}$")
 CLOUDFLARE_QUESTION_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
-# Cloudflare v4 error codes with an actionable stable meaning; the rest map
-# through the HTTP status so private details never reach error messages.
+# 仅映射可稳定识别的错误码，其余按 HTTP 状态处理，避免暴露上游细节。
 CLOUDFLARE_ERROR_CODES = {
     10000: "unauthorized",
     2021: "insufficient_credits",
@@ -47,18 +50,13 @@ class DecisionAnswers(dict):
 
 
 class DecisionClient:
-    """Share one bounded decision transport between independent tasks.
-
-    The same request and answer contract is served by System One and by
-    Cloudflare Workers AI clef models; only the transport envelope differs.
-    """
+    """为独立任务共享有界传输，统一 System One 与 Cloudflare 的决策契约。"""
 
     def __init__(self, config: dict):
-        """Initialize configuration without starting a session or inference.
+        """初始化配置，不建立会话或发起推理。
 
         Args:
-            config: Provider, service URL or account ID, token, model,
-                timeout, and concurrency settings.
+            config: 提供方、服务地址或账户 ID、密钥、模型、超时和并发设置。
         """
         values = config if isinstance(config, dict) else {}
         provider = str(values.get("provider") or "systemone").strip().casefold()
@@ -204,23 +202,20 @@ class DecisionClient:
             return self._session
 
     async def list_models(self) -> list[dict[str, str]]:
-        """Read model choices without credentials or an inference request.
+        """读取模型候选，不发送凭据或发起推理。
 
         Returns:
-            Exact model IDs and display names, preserving catalog order. The
-            Cloudflare clef catalog is fixed, so it is returned locally.
+            按目录顺序排列的模型 ID 和名称。Cloudflare 直接返回本地固定目录。
 
         Raises:
-            DecisionError: The URL, connection, response size, or catalog is invalid.
-            asyncio.CancelledError: The owning discovery request was cancelled.
+            DecisionError: 地址、连接、响应大小或目录格式无效。
+            asyncio.CancelledError: 模型发现请求被取消。
         """
         if not self._provider_valid:
             raise DecisionError("invalid_provider")
         if self.provider == "cloudflare":
             return [
-                {"id": "clef-flash", "name": "Clef Flash · 快速 9B"},
-                {"id": "clef", "name": "Clef · 27B"},
-                {"id": "clef-omni", "name": "Clef Omni · 音视频输入"},
+                {"id": model, "name": name} for model, name in CLOUDFLARE_MODELS.items()
             ]
         if not self._base_url_valid():
             raise DecisionError("invalid_base_url")
@@ -499,13 +494,13 @@ class DecisionClient:
     async def _cloudflare_error(
         self, response: aiohttp.ClientResponse
     ) -> DecisionError:
-        """Map the Cloudflare v4 error envelope to a stable error code.
+        """将 Cloudflare v4 错误信封映射为稳定错误码。
 
         Args:
-            response: Failed Workers AI response, possibly with an error body.
+            response: Workers AI 的失败响应，可能包含错误信封。
 
         Returns:
-            A stable DecisionError without upstream message details.
+            不含上游消息细节的稳定错误。
         """
         code = None
         try:
@@ -525,22 +520,22 @@ class DecisionClient:
 
     @staticmethod
     def _cloudflare_payload(payload) -> dict:
-        """Normalize the Workers AI v4 envelope to the shared answers payload.
+        """将 Workers AI v4 信封解包为统一的答案结构。
 
         Args:
-            payload: Decoded JSON body of a successful Workers AI response.
+            payload: Workers AI 成功响应解码后的 JSON。
 
         Returns:
-            A mapping with answers, model, and usage at the top level.
+            顶层包含 answers、model 和 usage 的结果。
 
         Raises:
-            DecisionError: The envelope is malformed or reports failure.
+            DecisionError: 信封格式错误或上游报告失败。
         """
         if not isinstance(payload, dict) or payload.get("success") is not True:
             raise DecisionError("invalid_response")
         result = payload.get("result")
         if isinstance(result, dict) and "answers" not in result:
-            # Gateway-billed decision models wrap the output one level deeper.
+            # 经网关计费的决策模型可能在 result 内再包一层结果。
             inner = result.get("result")
             if isinstance(inner, dict) and "answers" in inner:
                 result = inner

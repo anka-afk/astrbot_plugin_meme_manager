@@ -510,6 +510,7 @@ async function initPluginConfig() {
   let decisionModels = [];
   let decisionModelsBaseUrl = "";
   let modelListRequest = 0;
+  let decisionHintRequest = 0;
   const cloudflareDecisionModels = [
     { id: "clef-flash", name: "Clef Flash · 快速 9B" },
     { id: "clef", name: "Clef · 27B" },
@@ -535,6 +536,16 @@ async function initPluginConfig() {
     );
   }
 
+  function invalidateDecisionTest() {
+    // 修改配置后，已完成的提示和仍在等待的响应都不再有效。
+    decisionHintRequest++;
+    const help = document.getElementById("config-decision_service-model-hint");
+    if (help) {
+      help.dataset.state = "";
+      help.textContent = help.dataset.baseHint;
+    }
+  }
+
   function updateDecisionModelControl(provider) {
     const cloudflare = (provider ?? decisionProvider()) === "cloudflare";
     const control = controls.get("decision_service.model");
@@ -549,9 +560,18 @@ async function initPluginConfig() {
         : "从列表选择或填写模型 ID";
     if (choices) {
       choices.replaceChildren(new Option("从列表选择…", ""));
-      if (cloudflare)
-        for (const model of cloudflareDecisionModels)
-          choices.append(new Option(model.name || model.id, model.id));
+      const baseUrl = String(
+        changes.get("decision_service.base_url") ??
+          fields.get("decision_service.base_url")?.value ??
+          "",
+      ).trim();
+      const models = cloudflare
+        ? cloudflareDecisionModels
+        : baseUrl === decisionModelsBaseUrl
+        ? decisionModels
+        : [];
+      for (const model of models)
+        choices.append(new Option(model.name || model.id, model.id));
       choices.disabled = choices.options.length <= 1;
     }
     if (button) {
@@ -834,6 +854,9 @@ async function initPluginConfig() {
       tokenConfigured: changes.has("decision_service.token")
         ? Boolean(changes.get("decision_service.token"))
         : Boolean(fields.get("decision_service.token")?.configured),
+      accountIdConfigured:
+        !changes.has("decision_service.account_id") &&
+        Boolean(fields.get("decision_service.account_id")?.configured),
       semanticStatus,
       defaultPack: packs.find((pack) => pack.is_default),
       embeddingChanged: changes.has("semantic.embedding_provider_id"),
@@ -1146,6 +1169,7 @@ async function initPluginConfig() {
       dialogContent && dialogContent !== rulesPanel ? dialogContent.id : "";
     if (dialogCardId) restoreDialogContent();
     modelListRequest++;
+    invalidateDecisionTest();
     fields.clear();
     controls.clear();
     sections.replaceChildren();
@@ -1328,30 +1352,11 @@ async function initPluginConfig() {
         if (decisionModel) {
           control.maxLength = 128;
           help.setAttribute("aria-live", "polite");
-          const cloudflare = decisionProvider() === "cloudflare";
-          if (cloudflare) {
-            control.placeholder = "clef、clef-flash 或 clef-omni";
-            help.textContent = `${baseHint}；从列表选择或手动填写`;
-            for (const model of cloudflareDecisionModels)
-              choices.append(new Option(model.name || model.id, model.id));
-          } else {
-            control.placeholder = "从列表选择或填写模型 ID";
-            help.textContent = `${baseHint}；可获取列表或手动填写`;
-            const baseUrl =
-              changes.get("decision_service.base_url") ??
-              snapshot.fields.find(
-                (item) => item.path === "decision_service.base_url",
-              )?.value;
-            if (String(baseUrl || "").trim() === decisionModelsBaseUrl)
-              for (const model of decisionModels)
-                choices.append(new Option(model.name || model.id, model.id));
-          }
           const fetchModels = document.createElement("button");
           fetchModels.type = "button";
           fetchModels.className = "ghost compact fetch-models";
           fetchModels.id = "fetch-decision-models";
           fetchModels.textContent = "获取列表";
-          fetchModels.hidden = cloudflare;
           fetchModels.addEventListener("click", async () => {
             const baseUrl = controls
               .get("decision_service.base_url")
@@ -1362,8 +1367,10 @@ async function initPluginConfig() {
               return;
             }
             const requestId = ++modelListRequest;
+            const hintRequest = ++decisionHintRequest;
             fetchModels.disabled = true;
             fetchModels.textContent = "获取中…";
+            help.dataset.state = "";
             help.textContent = "正在获取模型列表";
             try {
               const result = await api.apiPost("settings/decision-models", {
@@ -1378,11 +1385,16 @@ async function initPluginConfig() {
               for (const model of decisionModels)
                 choices.append(new Option(model.name || model.id, model.id));
               choices.disabled = !decisionModels.length;
-              help.textContent = decisionModels.length
-                ? `${decisionModels.length} 个模型`
-                : "模型列表为空，可填写模型 ID";
+              if (hintRequest === decisionHintRequest)
+                help.textContent = decisionModels.length
+                  ? `${decisionModels.length} 个模型`
+                  : "模型列表为空，可填写模型 ID";
             } catch (error) {
-              if (requestId !== modelListRequest || !control.isConnected)
+              if (
+                requestId !== modelListRequest ||
+                hintRequest !== decisionHintRequest ||
+                !control.isConnected
+              )
                 return;
               help.textContent = `${
                 error.message || "获取失败"
@@ -1401,27 +1413,36 @@ async function initPluginConfig() {
           testService.id = "test-decision-service";
           testService.textContent = "测试连接";
           testService.addEventListener("click", async () => {
-            const draft = (path) =>
-              changes.get(path) ?? fields.get(path)?.value ?? "";
-            const tokenChange = changes.get("decision_service.token");
+            if (testService.disabled || configState.busy) return;
+            const requestId = ++decisionHintRequest;
+            const draft = {};
+            for (const name of [
+              "provider",
+              "account_id",
+              "base_url",
+              "token",
+              "model",
+              "timeout",
+            ]) {
+              const path = `decision_service.${name}`;
+              const field = fields.get(path);
+              if (changes.has(path)) draft[name] = changes.get(path);
+              else if (field && !field.secret) draft[name] = field.value;
+            }
             testService.disabled = true;
             testService.textContent = "测试中…";
             help.dataset.state = "";
-            help.textContent = "正在发送一次极小的测试请求，可能产生少量额度消耗…";
+            help.textContent =
+              "正在发送一次极小的测试请求，可能产生少量额度消耗…";
             try {
-              const result = await api.apiPost("settings/decision-test", {
-                provider: draft("decision_service.provider"),
-                account_id: draft("decision_service.account_id"),
-                base_url: draft("decision_service.base_url"),
-                model: draft("decision_service.model"),
-                token: tokenChange || "",
-                token_cleared: tokenChange === "",
-              });
-              if (!control.isConnected) return;
+              const result = await api.apiPost("settings/decision-test", draft);
+              if (requestId !== decisionHintRequest || !control.isConnected)
+                return;
               help.dataset.state = result.ok ? "ok" : "error";
               help.textContent = result.message;
             } catch (error) {
-              if (!control.isConnected) return;
+              if (requestId !== decisionHintRequest || !control.isConnected)
+                return;
               help.dataset.state = "error";
               help.textContent = `${
                 error.message || "测试失败"
@@ -1536,6 +1557,8 @@ async function initPluginConfig() {
         clear.textContent = "清除";
         clear.setAttribute("aria-label", `清除${label.textContent}`);
         clear.addEventListener("click", () => {
+          if (field.path.startsWith("decision_service."))
+            invalidateDecisionTest();
           control.removeAttribute("aria-invalid");
           row.querySelector(".config-field-error")?.remove();
           control.setAttribute("aria-describedby", help.id);
@@ -1571,6 +1594,7 @@ async function initPluginConfig() {
       else
         body.insertBefore(row, body.querySelector("details, .config-notice"));
     }
+    updateDecisionModelControl();
     if (dialogCardId) mountDialogContent(document.getElementById(dialogCardId));
     updateView();
   }
@@ -1709,16 +1733,12 @@ async function initPluginConfig() {
       const path = control.dataset.configPath;
       const field = fields.get(path);
       if (!field) return;
-      // 配置一旦改动，上一次的连通性测试结果就不再可信。
-      const testHint = document.getElementById(
-        "config-decision_service-model-hint",
-      );
-      if (path.startsWith("decision_service.") && testHint?.dataset.state) {
-        testHint.dataset.state = "";
-        testHint.textContent = testHint.dataset.baseHint;
-      }
+      if (path.startsWith("decision_service.")) invalidateDecisionTest();
       if (path === "storage.provider") activeFlowGroup = "";
-      if (path === "decision_service.base_url") {
+      if (
+        path === "decision_service.base_url" &&
+        decisionProvider() !== "cloudflare"
+      ) {
         modelListRequest++;
         decisionModels = [];
         decisionModelsBaseUrl = "";
@@ -1743,7 +1763,7 @@ async function initPluginConfig() {
         modelListRequest++;
         decisionModels = [];
         decisionModelsBaseUrl = "";
-        // changes 稍后才写入，这里用控件当前值刷新模型选择。
+        // 草稿稍后才写入，先使用当前控件值更新模型候选。
         updateDecisionModelControl(control.value);
       }
       control.removeAttribute("aria-invalid");
@@ -1819,47 +1839,27 @@ async function initPluginConfig() {
         return;
       }
     }
-    const value = (path) =>
-      changes.has(path) ? changes.get(path) : fields.get(path)?.value;
-    const decisionUsed =
-      (value("generation.emotion.llm.enabled") &&
-        value("generation.emotion.llm.backend") === "decision") ||
-      (value("auto_collect.enabled") &&
-        value("auto_collect.judgment_backend") === "decision");
-    if (decisionUsed) {
-      const cloudflare = decisionProvider() === "cloudflare";
-      const model = String(value("decision_service.model") || "").trim();
-      const missing = [
-        cloudflare
-          ? !String(value("decision_service.account_id") || "").trim() && [
-              "decision_service.account_id",
-              "请填写 Cloudflare 账户 ID。",
-            ]
-          : !value("decision_service.base_url") && [
-              "decision_service.base_url",
-              "请填写决策服务地址。",
-            ],
-        !(changes.has("decision_service.token")
-          ? changes.get("decision_service.token")
-          : fields.get("decision_service.token")?.configured) && [
-          "decision_service.token",
-          "请填写决策服务密钥。",
-        ],
-        !model && [
-          "decision_service.model",
-          cloudflare ? "请填写 Cloudflare 决策模型 ID。" : "请填写决策模型 ID。",
-        ],
-        cloudflare &&
-          model &&
-          !["clef", "clef-flash", "clef-omni"].includes(model) && [
-            "decision_service.model",
-            "决策模型 ID 仅支持 clef、clef-flash、clef-omni。",
-          ],
-      ].find(Boolean);
-      if (missing) {
-        showFieldError(...missing);
-        return;
-      }
+    const setup = describeSetup(
+      Object.fromEntries(
+        [...fields].map(([path, field]) => [
+          path,
+          changes.has(path) ? changes.get(path) : field.value,
+        ]),
+      ),
+      {
+        providers,
+        tokenConfigured: changes.has("decision_service.token")
+          ? Boolean(changes.get("decision_service.token"))
+          : Boolean(fields.get("decision_service.token")?.configured),
+        accountIdConfigured:
+          !changes.has("decision_service.account_id") &&
+          Boolean(fields.get("decision_service.account_id")?.configured),
+      },
+    );
+    if (setup.consumers.length && setup.serviceIssues.length) {
+      const issue = setup.serviceIssues[0];
+      showFieldError(issue.path, issue.text);
+      return;
     }
     configState.busy = true;
     notice.hidden = true;
