@@ -207,7 +207,7 @@ def validate_settings_changes(
         for key in keys[:-1]:
             node = node[key]
         node[keys[-1]] = value
-    # Validate the final provider after applying all draft changes.
+    # 决策服务基础地址是否校验取决于最终提供方，需在全部更改应用后判断。
     decision = updated.get("decision_service", {})
     provider = str(decision.get("provider") or "systemone").strip().casefold()
     if provider == "systemone":

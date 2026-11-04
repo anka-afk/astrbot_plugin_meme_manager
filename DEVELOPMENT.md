@@ -57,8 +57,6 @@ backend/
 
 设置弹窗复用原控件和唯一草稿，使用规则单独保存；`#config-group-<group.id>` 直达参数并兼容旧链接。模型目录仅读取草稿地址，不保存、不推理、不转发密钥；失败保留手填，迟到结果不得覆盖草稿。
 
-`POST settings/decision-test` 只接受决策服务字段的局部草稿：`provider`、`account_id`、`base_url`、`token`、`model`、`timeout`。省略字段沿用磁盘中已保存的值，显式空字符串表示清除；前端不发送未修改的脱敏字段。测试复用运行时校验，单次超时最多 20 秒，不保存配置、不重载插件、不重试收费请求。保存校验与就绪提示共用 `describeSetup`；脱敏字段通过快照的 `configured` 判断是否已配置。编辑、清除或重新渲染都会使之前的测试结果失效。
-
 运行数据位于 `data/plugin_data/meme_manager/`。启动时不再探测或迁移旧的全局表情目录，也不维护固定的默认表情目录别名；资源路径由 `backend/packs/resolver.py` 按当前规则动态解析。已有目录不会因移除旧机制而被删除。
 
 主要文件：
