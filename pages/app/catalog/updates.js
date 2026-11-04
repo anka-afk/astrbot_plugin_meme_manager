@@ -419,7 +419,7 @@ export function setupCatalogUpdates({ apiGet, apiPost, onDone, onBusy }) {
     try {
       sessionStorage.setItem(storageKey, jobId);
     } catch {
-      /* Storage may be unavailable. */
+      /* 浏览器存储可能不可用。 */
     }
     let failures = 0;
     try {
@@ -433,7 +433,7 @@ export function setupCatalogUpdates({ apiGet, apiPost, onDone, onBusy }) {
             try {
               sessionStorage.removeItem(storageKey);
             } catch {
-              /* Storage may be unavailable. */
+              /* 浏览器存储可能不可用。 */
             }
             throw reason;
           }
@@ -448,7 +448,7 @@ export function setupCatalogUpdates({ apiGet, apiPost, onDone, onBusy }) {
           try {
             sessionStorage.removeItem(storageKey);
           } catch {
-            /* Storage may be unavailable. */
+            /* 浏览器存储可能不可用。 */
           }
           status.textContent = "已取消下载更新，本地表情包未修改。";
           break;
@@ -457,7 +457,7 @@ export function setupCatalogUpdates({ apiGet, apiPost, onDone, onBusy }) {
           try {
             sessionStorage.removeItem(storageKey);
           } catch {
-            /* Storage may be unavailable. */
+            /* 浏览器存储可能不可用。 */
           }
           throw new Error(job.message);
         }
@@ -465,7 +465,7 @@ export function setupCatalogUpdates({ apiGet, apiPost, onDone, onBusy }) {
           try {
             sessionStorage.removeItem(storageKey);
           } catch {
-            /* Storage may be unavailable. */
+            /* 浏览器存储可能不可用。 */
           }
           if (job.result.session) {
             recovering = false;

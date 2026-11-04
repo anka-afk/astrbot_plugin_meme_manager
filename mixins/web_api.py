@@ -596,19 +596,19 @@ class WebAPIMixin:
         )
 
     def _register_webui_api(self, route, handler, methods, desc):
-        """Register an API handler with status-based request logging.
+        """注册 API 处理器，并根据状态记录请求日志。
 
         Args:
-            route: API path relative to the plugin prefix.
-            handler: Asynchronous request handler.
-            methods: HTTP methods supported by the handler.
-            desc: Description passed to the WebUI API registry.
+            route: 相对于插件前缀的 API 路径。
+            handler: 异步请求处理器。
+            methods: 处理器支持的 HTTP 方法。
+            desc: 传给 WebUI API 注册表的描述。
         """
         route_path = f"/{PLUGIN_NAME}/{route.strip('/')}"
 
         async def logged_handler(*args, **kwargs):
             started_at = time.monotonic()
-            logger.debug(f"{WEBUI_LOG_PREFIX} {request.method} {route_path} started")
+            logger.debug(f"{WEBUI_LOG_PREFIX} {request.method} {route_path} 开始")
             try:
                 response = await handler(*args, **kwargs)
                 if route in {
@@ -622,7 +622,7 @@ class WebAPIMixin:
             except Exception:
                 elapsed_ms = int((time.monotonic() - started_at) * 1000)
                 logger.error(
-                    f"{WEBUI_LOG_PREFIX} {request.method} {route_path} failed elapsed={elapsed_ms}ms",
+                    f"{WEBUI_LOG_PREFIX} {request.method} {route_path} 失败 耗时={elapsed_ms}ms",
                     exc_info=True,
                 )
                 raise
@@ -635,7 +635,7 @@ class WebAPIMixin:
                 elif status_code >= 400:
                     log_response = logger.warning
             log_response(
-                f"{WEBUI_LOG_PREFIX} {request.method} {route_path} completed status={status_code} elapsed={elapsed_ms}ms"
+                f"{WEBUI_LOG_PREFIX} {request.method} {route_path} 完成 状态={status_code} 耗时={elapsed_ms}ms"
             )
             return response
 
@@ -965,13 +965,13 @@ class WebAPIMixin:
 
     @staticmethod
     def _resolve_webui_write_pack(data: dict | None = None):
-        """Resolve the requested pack or retain the default for legacy calls.
+        """解析请求的表情包，或为旧调用保留默认选包。
 
         Args:
-            data: Optional decoded request body.
+            data: 可选的已解码请求体。
 
         Returns:
-            A pack ID and an optional validation error response.
+            表情包 ID 及可选的校验错误响应。
         """
         payload = data if isinstance(data, dict) else {}
         pack_id = str(
@@ -1314,10 +1314,10 @@ class WebAPIMixin:
         )
 
     async def _api_transfer_pack_images(self):
-        """Preview or execute a transfer while holding both pack operation locks.
+        """持有两个表情包操作锁时预览或执行传输。
 
         Returns:
-            A category plan, per-image outcomes, or a validation/conflict response.
+            分类方案、每张图片的结果，或校验、冲突响应。
         """
         locked = []
         manager = getattr(self, "semantic_task_manager", None)
@@ -1364,7 +1364,7 @@ class WebAPIMixin:
         except RuntimeError as exc:
             return jsonify({"message": str(exc)}), 409
         except OSError:
-            logger.exception("Failed to prepare cross-pack image transfer")
+            logger.exception("准备跨包图片传输失败")
             return jsonify({"message": "分类配置无法保存，尚未执行图片移动"}), 500
         finally:
             for pack_id in reversed(locked):
@@ -1761,10 +1761,10 @@ class WebAPIMixin:
         return ""
 
     def _get_img_host_sync_task_status(self) -> dict:
-        """Expose worker progress and release pack locks only after the worker exits.
+        """提供工作进程进度，仅在进程退出后释放表情包锁。
 
         Returns:
-            Current or last completed synchronization status.
+            当前或最近一次已完成的同步状态。
         """
         if not self.img_sync:
             self._finish_img_host_local_operation()
@@ -2025,7 +2025,7 @@ class WebAPIMixin:
         return jsonify(self._get_img_host_sync_task_status())
 
     async def _api_img_host_sync_cancel(self):
-        """Cancel the active image transfer without blocking the event loop."""
+        """取消当前图片传输，不阻塞事件循环。"""
         payload = await request.get_json(silent=True)
         pack_id = self._resolve_requested_sync_pack_id(payload)
         if pack_id and pack_id != getattr(self, "_img_sync_pack_id", ""):
@@ -2090,13 +2090,13 @@ class WebAPIMixin:
 
     @staticmethod
     def _preview_revision(file_path: Path) -> str:
-        """Identify a file and the preview recipe without reading image bytes.
+        """不读取图片字节，确定文件身份与预览生成方案。
 
         Args:
-            file_path: Resolved image path.
+            file_path: 已解析的图片路径。
 
         Returns:
-            An opaque revision based on file identity, metadata and recipe version.
+            根据文件身份、元数据及生成方案版本得到的不透明修订号。
         """
         stat = file_path.stat()
         identity = (
@@ -2106,10 +2106,10 @@ class WebAPIMixin:
         return hashlib.sha256(identity.encode()).hexdigest()
 
     async def _api_preview_manifest(self):
-        """Return current file revisions and the shared preview concurrency setting.
+        """返回当前文件修订号及共享预览并发设置。
 
         Returns:
-            An uncached, pack-scoped preview manifest.
+            不缓存且限定表情包范围的预览清单。
         """
         context = self._resolve_webui_pack_view_context()
         if request.args.get("managed_pack_id") and context is None:
@@ -2685,10 +2685,10 @@ class WebAPIMixin:
             return jsonify({"message": "启动语义任务失败"}), 500
 
     async def _api_auto_collect_inbox(self):
-        """Return all pending images for the selected pack.
+        """返回所选表情包的全部待处理图片。
 
         Returns:
-            JSON review state or a validation error response.
+            JSON 复核状态或校验错误响应。
         """
         try:
             pack_id = await self._semantic_request_pack_id()
@@ -2697,10 +2697,10 @@ class WebAPIMixin:
             return jsonify({"message": str(exc)}), 400
 
     async def _api_auto_collect_image(self):
-        """Serve an authenticated, pack-scoped pending image.
+        """提供经过身份验证且限定表情包范围的待处理图片。
 
         Returns:
-            Image response or a validation error response.
+            图片响应或校验错误响应。
         """
         try:
             pack_id = await self._semantic_request_pack_id()
@@ -2728,10 +2728,10 @@ class WebAPIMixin:
             return jsonify({"message": str(exc)}), 404
 
     async def _api_auto_collect_image_data(self):
-        """Return an authenticated image data URL for embedded dashboards.
+        """为嵌入式仪表盘返回经过身份验证的图片数据 URL。
 
         Returns:
-            Original image bytes encoded as a data URL.
+            编码为数据 URL 的原始图片字节。
         """
         try:
             pack_id = await self._semantic_request_pack_id()
@@ -2767,10 +2767,10 @@ class WebAPIMixin:
             return jsonify({"message": str(exc)}), 404
 
     async def _api_auto_collect_accept(self):
-        """Accept only explicitly selected collected images.
+        """仅接收明确选中的已收集图片。
 
         Returns:
-            Import counts or a validation/conflict response.
+            导入数量或校验、冲突响应。
         """
         try:
             data = await request.get_json() or {}
@@ -2787,10 +2787,10 @@ class WebAPIMixin:
             return jsonify({"message": str(exc)}), 409
 
     async def _api_auto_collect_discard(self):
-        """Discard selected collected images with optional rejection memory.
+        """丢弃选中的已收集图片，可选择记住拒收结果。
 
         Returns:
-            Discard count or a validation response.
+            丢弃数量或校验响应。
         """
         try:
             data = await request.get_json() or {}
@@ -3215,13 +3215,13 @@ class WebAPIMixin:
             return jsonify({"message": "预检导入压缩包失败"}), 500
 
     async def _api_start_pack_import_session(self):
-        """Create a chunked import session for large pack archives.
+        """为大型表情包压缩文件创建分块导入会话。
 
-        The dashboard caps a single request body, so archives that exceed the
-        cap are uploaded in chunks and reassembled here before inspection.
+        仪表盘限制单次请求体大小，超过限制的压缩文件
+        会分块上传，在此重新组装后检查。
 
         Returns:
-            The created session identity or a validation error.
+            已创建的会话标识或校验错误。
         """
         try:
             self._cleanup_pack_import_sessions()
@@ -3261,19 +3261,19 @@ class WebAPIMixin:
         except ValueError as exc:
             return jsonify({"message": str(exc)}), 400
         except (OSError, RuntimeError, TypeError, KeyError) as exc:
-            logger.error("Creating pack import session failed: %s", exc, exc_info=True)
+            logger.error("创建表情包导入会话失败：%s", exc, exc_info=True)
             return jsonify({"message": "创建导入会话失败"}), 500
 
     async def _api_upload_pack_import_chunk(self, session_id, index, total_chunks):
-        """Append one archive chunk and inspect the archive once complete.
+        """追加一个压缩文件分块，完整接收后检查压缩文件。
 
         Args:
-            session_id: Import session created by the session endpoint.
-            index: Zero-based chunk index.
-            total_chunks: Total number of chunks in this upload.
+            session_id: 会话接口创建的导入会话。
+            index: 从零开始的分块索引。
+            total_chunks: 本次上传的分块总数。
 
         Returns:
-            Progress information, or the archive inspection result.
+            进度信息或压缩文件检查结果。
         """
         archive_path = None
         metadata_path = None
@@ -3294,8 +3294,8 @@ class WebAPIMixin:
                 if inspect.isawaitable(chunk):
                     chunk = await chunk
 
-            # Read the latest state after receiving the body. Do not yield
-            # between checking the sequence and recording the appended chunk.
+            # 收到请求体后读取最新状态，检查分块顺序与记录已追加分块
+            # 之间不能让出执行权。
             if not metadata_path.is_file():
                 raise ValueError("导入会话已失效，请重新选择压缩包")
             session_data = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -3347,7 +3347,7 @@ class WebAPIMixin:
             try:
                 inspection = await asyncio.shield(inspection_task)
             except asyncio.CancelledError:
-                # Keep the archive available until the inspection worker exits.
+                # 在检查工作任务退出前，保持压缩文件可用。
                 await asyncio.gather(inspection_task, return_exceptions=True)
                 raise
             metadata_path.write_text(
@@ -3379,7 +3379,7 @@ class WebAPIMixin:
         except RequestEntityTooLarge:
             return jsonify({"message": "分片超过允许大小，请重新选择压缩包"}), 413
         except (OSError, RuntimeError, KeyError) as exc:
-            logger.error("Chunked pack import failed: %s", exc, exc_info=True)
+            logger.error("分块导入表情包失败：%s", exc, exc_info=True)
             return jsonify({"message": "分片导入失败"}), 500
         finally:
             if discard_session:
@@ -3479,10 +3479,10 @@ class WebAPIMixin:
             return jsonify({"message": f"卸载表情包失败: {str(e)}"}), 500
 
     async def _api_create_local_pack(self):
-        """Create and register an empty local pack.
+        """创建并注册一个空的本地表情包。
 
         Returns:
-            The created pack identity or a validation error.
+            已创建的表情包标识或校验错误。
         """
         try:
             data = await request.get_json() or {}
@@ -3498,14 +3498,14 @@ class WebAPIMixin:
         except (ValueError, RuntimeError) as exc:
             return jsonify({"message": str(exc)}), 400
         except Exception as exc:
-            logger.error("Creating local pack failed: %s", exc, exc_info=True)
+            logger.error("创建本地表情包失败：%s", exc, exc_info=True)
             return jsonify({"message": "创建失败，请重试"}), 500
 
     async def _api_community_updates(self):
-        """Read fresh catalog installation and update status.
+        """读取目录中最新的安装与更新状态。
 
         Returns:
-            Per-pack availability and recovery backups.
+            各表情包的可用状态及恢复备份。
         """
         try:
             return jsonify(
@@ -3514,14 +3514,14 @@ class WebAPIMixin:
         except FileNotFoundError:
             return jsonify({"packs": {}}), 200
         except Exception as exc:
-            logger.error("Reading update status failed: %s", exc, exc_info=True)
+            logger.error("读取更新状态失败：%s", exc, exc_info=True)
             return jsonify({"message": "读取更新状态失败，请重试"}), 500
 
     async def _api_community_update(self):
-        """Preview synchronously or start a durable background update operation.
+        """同步预览，或启动持久保存状态的后台更新操作。
 
         Returns:
-            A preview or a job ID that can be polled after request completion.
+            预览结果，或可在请求结束后轮询的任务 ID。
         """
         try:
             data = await request.get_json() or {}
@@ -3573,15 +3573,15 @@ class WebAPIMixin:
         except (ValueError, FileNotFoundError, RuntimeError) as exc:
             return jsonify({"message": str(exc)}), 409
         except Exception as exc:
-            logger.error("Preparing update request failed: %s", exc, exc_info=True)
+            logger.error("准备更新请求失败：%s", exc, exc_info=True)
             return jsonify({"message": "更新预览失败，请刷新重试"}), 500
 
     async def _run_community_update_job(self, job_id: str, data: dict):
-        """Keep file-operation locks until a background job has finished.
+        """在后台任务结束前持续持有文件操作锁。
 
         Args:
-            job_id: Server-generated identifier for polling.
-            data: Validated action and update selections.
+            job_id: 服务器生成的轮询标识符。
+            data: 已校验的操作及更新选择。
         """
         job = self._community_update_jobs[job_id]
         try:
@@ -3610,14 +3610,14 @@ class WebAPIMixin:
         except InstallCancelledError:
             job.update(state="cancelled", message="已取消检查更新")
         except Exception as exc:
-            logger.error("Community update job failed: %s", exc, exc_info=True)
+            logger.error("社区更新任务失败：%s", exc, exc_info=True)
             job.update(state="failed", message=str(exc))
 
     async def _api_community_update_status(self):
-        """Return a running or completed update job.
+        """返回运行中或已完成的更新任务。
 
         Returns:
-            Current job status, or a not-found response after expiry/restart.
+            当前任务状态；过期或重启后返回未找到响应。
         """
         job = getattr(self, "_community_update_jobs", {}).get(
             str(request.args.get("job_id") or "")
@@ -3627,10 +3627,10 @@ class WebAPIMixin:
         return jsonify(job), 200
 
     async def _api_community_update_image_data(self):
-        """Return a bounded preview from an active update session.
+        """从有效的更新会话中返回大小受限的预览。
 
         Returns:
-            A preview data URL for one local or upstream image.
+            一张本地或上游图片的预览数据 URL。
         """
         token = str(request.args.get("session") or "")
         side = request.args.get("side")
@@ -3687,10 +3687,10 @@ class WebAPIMixin:
         return response
 
     async def _api_fetch_community_index(self):
-        """Fetch the catalog and remote versions outside the event loop.
+        """在事件循环外获取目录及远端版本。
 
         Returns:
-            The cached catalog response and HTTP status code.
+            已缓存的目录响应及 HTTP 状态码。
         """
         try:
             index_url = COMMUNITY_INDEX_URL
@@ -4175,10 +4175,10 @@ class WebAPIMixin:
         ), 200
 
     async def _api_settings_config(self):
-        """Edit the same AstrBotConfig and reload through AstrBot's plugin manager.
+        """编辑同一份 AstrBotConfig，并通过 AstrBot 插件管理器重载。
 
         Returns:
-            A redacted configuration snapshot or a validation/conflict response.
+            隐藏敏感信息后的配置快照或校验、冲突响应。
         """
         try:
             from ..backend.decision import DecisionClient

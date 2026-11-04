@@ -1,1 +1,1 @@
-"""Image descriptions, embeddings, retrieval and semantic task execution."""
+"""图片描述、向量生成、检索与语义任务执行。"""

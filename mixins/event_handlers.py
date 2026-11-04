@@ -67,13 +67,13 @@ SEND_TOOL_PROMPT_MARKER_END = "<!-- meme_manager_send_tool:end -->"
 
 
 def normalize_trigger_scope(value: Any) -> str:
-    """Resolve a supported trigger scope, defaulting to ordinary chat.
+    """解析支持的触发范围，默认仅普通聊天。
 
     Args:
-        value: The configured LLM trigger scope.
+        value: 配置的 LLM 触发范围。
 
     Returns:
-        One of the two supported trigger scopes.
+        两种受支持触发范围之一。
     """
     scope = str(value or TRIGGER_SCOPE_CHAT_ONLY).strip().lower()
     if scope == TRIGGER_SCOPE_CHAT_AND_PLUGIN:
@@ -82,19 +82,19 @@ def normalize_trigger_scope(value: Any) -> str:
 
 
 class EventHandlerMixin:
-    """Handle uploads, LLM replies and meme delivery."""
+    """处理上传、LLM 回复及表情投递。"""
 
     def _track_prepared_meme(
         self, event, image, source_path, *, category="", candidate_id=""
     ):
-        """Associate a prepared image with its original source until delivery.
+        """将准备好的图片关联到原始来源，直到完成投递。
 
         Args:
-            event: Owning reply event.
-            image: Prepared message image component.
-            source_path: Local image prior to optional conversion.
-            category: Selected category, if known.
-            candidate_id: Exact semantic candidate, if applicable.
+            event: 所属回复事件。
+            image: 准备好的消息图片组件。
+            source_path: 可选转换之前的本地图片。
+            category: 所选分类（如已知）。
+            candidate_id: 确切的语义候选（如适用）。
         """
         registry = event.get_extra("meme_manager_delivery_registry")
         if not isinstance(registry, dict):
@@ -112,11 +112,11 @@ class EventHandlerMixin:
             event.set_extra("meme_manager_tag_image_prepared", True)
 
     async def _confirm_meme_delivery(self, event, images):
-        """Record registered images only after a successful send returns.
+        """仅在成功发送返回后记录已注册图片。
 
         Args:
-            event: Owning reply event.
-            images: Components from the successfully sent message.
+            event: 所属回复事件。
+            images: 成功发送的消息中的组件。
         """
         origin = str(getattr(event, "unified_msg_origin", "") or "")
         try:
@@ -134,7 +134,7 @@ class EventHandlerMixin:
             record = registry.get(id(image)) or registry.get(str(image.file))
             if not record or record["confirmed"]:
                 continue
-            # Claim before yielding: the send wrapper and direct send share it.
+            # 让出执行权前先占用状态，发送包装器与直接发送共用此状态。
             record["confirmed"] = True
             digest = ""
             try:
@@ -146,8 +146,8 @@ class EventHandlerMixin:
             except OSError:
                 pass
             finally:
-                # Cancellation of optional fingerprinting must not erase a
-                # delivery whose adapter call has already returned successfully.
+                # 可选的指纹计算被取消时，不能清除
+                # 适配器调用已成功返回的投递记录。
                 history.record(
                     origin,
                     {
@@ -158,12 +158,12 @@ class EventHandlerMixin:
                 )
 
     def _alias_prepared_meme(self, event, original, normalized):
-        """Keep image provenance when an adapter replaces a component.
+        """适配器替换组件时保留图片来源信息。
 
         Args:
-            event: Owning reply event.
-            original: Previously registered component.
-            normalized: Replacement component, possibly containing base64.
+            event: 所属回复事件。
+            original: 先前注册的组件。
+            normalized: 替换后的组件，可能包含 base64。
         """
         try:
             registry = event.get_extra("meme_manager_delivery_registry")
@@ -177,13 +177,13 @@ class EventHandlerMixin:
             registry[str(normalized.file)] = record
 
     def _meme_send_allowed(self, event: AstrMessageEvent) -> bool:
-        """Cache the independent delivery decision for one event's reply.
+        """缓存一个事件回复的独立投递决策。
 
         Args:
-            event: Message event shared by hooks, retries and stream delivery.
+            event: 钩子、重试与流式投递共享的消息事件。
 
         Returns:
-            Whether this reply is eligible to send selected memes.
+            当前回复是否可以发送所选表情。
         """
         if event.get_extra("meme_manager_direct_send_attempted"):
             return False
@@ -247,8 +247,8 @@ class EventHandlerMixin:
                         event.set_extra("meme_manager_semantic_selected_ids", None)
                         event.set_extra("meme_manager_image_only_reply", False)
                         event.set_extra("meme_manager_legacy_probability_hit", None)
-                # Plugin-initiated streams can lose STREAMING_FINISH in AstrBot.
-                # Wait for both source exhaustion and the adapter's final flush.
+                # 插件发起的流可能在 AstrBot 中丢失 STREAMING_FINISH 阶段。
+                # 等待来源流耗尽，且适配器完成最后一次缓冲输出。
                 if stream_completed and (
                     self.streaming_compatibility
                     or event.get_platform_name() == "webchat"
@@ -257,7 +257,7 @@ class EventHandlerMixin:
                     try:
                         await self._send_memes_streaming(event, stream_completed=True)
                     except Exception:
-                        logger.exception("[meme_manager] Failed to send stream memes")
+                        logger.exception("[meme_manager] 发送流式回复表情失败")
                 return result
 
             event.send_streaming = send_filtered_stream
@@ -479,7 +479,7 @@ class EventHandlerMixin:
 
         if not sections:
             return ""
-        # Keep reference data separate from fixed selection instructions.
+        # 将参考数据与固定选图指令分开。
         return "\n参考上下文（JSON 数据，仅用于理解回复）：\n" + json.dumps(
             sections, ensure_ascii=False
         )
@@ -533,13 +533,13 @@ class EventHandlerMixin:
         return selected
 
     def _filter_emotion_selection(self, emotions: list[str]) -> list[str]:
-        """Keep valid distinct tags in selection order without a quantity cap.
+        """按选择顺序保留有效且去重的标签，不限制数量。
 
         Args:
-            emotions: Selected category tags.
+            emotions: 所选分类标签。
 
         Returns:
-            Nonempty distinct tags in their original order.
+            保留原始顺序的非空去重标签。
         """
 
         seen: set[str] = set()
@@ -554,14 +554,14 @@ class EventHandlerMixin:
     def _resolve_emotion_llm_model(
         self, event: AstrMessageEvent, *, use_reply: bool = False
     ) -> str | None:
-        """Resolve a model override only when following the actual reply provider.
+        """仅在跟随实际回复提供方时解析模型覆盖值。
 
         Args:
-            event: Current reply event.
-            use_reply: Ignore the separately configured image-selection provider.
+            event: 当前回复事件。
+            use_reply: 忽略单独配置的选图提供方。
 
         Returns:
-            Actual reply model override, or None for an explicit provider.
+            实际回复模型的覆盖值；显式选择提供方时返回 None。
         """
         if not use_reply and str(self.emotion_llm_provider_id or "").strip():
             return None
@@ -637,16 +637,16 @@ class EventHandlerMixin:
     def _make_meme_parser(
         self, categories, *, semantic=False, fallbacks=True, final_cleanup=False
     ):
-        """Build an isolated parser from the current plugin settings.
+        """根据当前插件设置构建隔离的解析器。
 
         Args:
-            categories: Allowed keys from the request's resource pack.
-            semantic: Whether to accept semantic IDs instead of categories.
-            fallbacks: Whether standalone and repeated categories are permitted.
-            final_cleanup: Whether this parser handles final delivery text.
+            categories: 当前请求资源包允许的键。
+            semantic: 是否接受语义 ID 而不是分类。
+            fallbacks: 是否允许独立或重复分类。
+            final_cleanup: 此解析器是否处理最终投递文本。
 
         Returns:
-            A new parser with no shared mutable request state.
+            不共享可变请求状态的新解析器。
         """
         return MemeParser(
             categories,
@@ -670,28 +670,28 @@ class EventHandlerMixin:
     def _extract_marked_emotions_from_text(
         self, text: str, valid_emoticons: set[str]
     ) -> tuple[str, list[str]]:
-        """Parse compatibility messages without standalone fallback detection.
+        """解析兼容接口消息，不启用独立分类回退检测。
 
         Args:
-            text: Original compatibility message text.
-            valid_emoticons: Allowed keys in the selected resource pack.
+            text: 兼容接口的原始消息文本。
+            valid_emoticons: 所选资源包允许的键。
 
         Returns:
-            Visible text and valid markers in source order.
+            可见文本及按来源顺序排列的有效标记。
         """
         parser = self._make_meme_parser(valid_emoticons, fallbacks=False)
         cleaned = parser.feed(text or "") + parser.finish()
         return cleaned, [token.value for token in parser.tokens if token.valid]
 
     async def _filter_meme_stream(self, event, source):
-        """Filter visible deltas before the platform consumes the async stream.
+        """在平台消费异步流之前过滤可见文本增量。
 
         Args:
-            event: Request event supplying the selected resource pack.
-            source: Original asynchronous MessageChain stream.
+            event: 提供所选资源包的请求事件。
+            source: 原始异步 MessageChain 流。
 
         Yields:
-            Message chains with parsed visible text; other components are retained.
+            包含已解析可见文本的消息链，保留其他组件。
         """
         parser = None
         last_text_chunk = None
@@ -756,14 +756,14 @@ class EventHandlerMixin:
                 await source.aclose()
 
     def _limit_meme_selection(self, selections: list[str], event=None) -> list[str]:
-        """Truncate a reply's selected memes before building or sending images.
+        """在构造或发送图片前截取回复所选表情。
 
         Args:
-            selections: Ordered category names or semantic image IDs.
-            event: Optional event carrying prior automatic tool deliveries.
+            selections: 有序的分类名称或语义图片 ID。
+            event: 可选的携带先前自动工具投递记录的事件。
 
         Returns:
-            The first configured number of selections, or all for a negative limit.
+            配置数量内的前若干个选择；负数限制表示全部。
         """
         limit = getattr(self, "max_memes_per_message", -1)
         if event is not None and limit >= 0:
@@ -775,14 +775,14 @@ class EventHandlerMixin:
     def _get_category_meme_files(
         self, event: AstrMessageEvent, emotion: str
     ) -> list[Path]:
-        """Collect category images from all currently bound packs.
+        """从当前绑定的全部表情包中收集分类图片。
 
         Args:
-            event: Event used to resolve the current pack bindings.
-            emotion: Category name selected for delivery.
+            event: 用于解析当前表情包绑定的事件。
+            emotion: 为投递选择的分类名称。
 
         Returns:
-            Image paths from every bound pack, excluding review categories.
+            全部绑定表情包中的图片路径，不包含待复核分类。
         """
         if not emotion or emotion == REVIEW_CATEGORY:
             return []
@@ -816,15 +816,15 @@ class EventHandlerMixin:
         return await self._build_selected_meme_images(event, emotions)
 
     async def _build_selected_meme_images(self, event, selections, *, semantic=False):
-        """Build and revalidate selected images with cancellation-safe cleanup.
+        """构造并重新校验所选图片，提供取消时安全的清理。
 
         Args:
-            event: Selection context and owning delivery gate.
-            selections: Ordered category names or verified candidate IDs.
-            semantic: Whether selections are exact semantic candidates.
+            event: 选图上下文及所属投递门控。
+            selections: 有序的分类名称或已验证候选 ID。
+            semantic: 选择结果是否为确切的语义候选。
 
         Returns:
-            Prepared images and their temporary conversion files.
+            准备好的图片及其临时转换文件。
         """
         images, temp_files = [], []
         if not selections or not self._meme_send_allowed(event):
@@ -866,7 +866,7 @@ class EventHandlerMixin:
                 self._alias_prepared_meme(event, image, normalized)
                 images.append(normalized)
             except asyncio.CancelledError:
-                # A cancelled await does not stop the conversion thread.
+                # 取消等待不会停止转换线程。
                 while not conversion.done():
                     try:
                         await asyncio.shield(conversion)
@@ -878,11 +878,11 @@ class EventHandlerMixin:
                     final_path = conversion.result()
                 raise
             except Exception:
-                logger.exception("[meme_manager] Failed to prepare selected meme")
+                logger.exception("[meme_manager] 准备所选表情失败")
             finally:
                 if final_path != str(source):
                     temp_files.append(final_path)
-                # Register eagerly so cancellation of a later image cannot leak.
+                # 立即登记，避免后续图片被取消时泄漏当前图片。
                 event.set_extra(
                     "meme_manager_temp_files",
                     list(
@@ -895,11 +895,11 @@ class EventHandlerMixin:
         return images, temp_files
 
     async def _cleanup_outgoing_files(self, event, *, files=None):
-        """Remove temporary images after a completed or interrupted tool call.
+        """在工具调用完成或中断后移除临时图片。
 
         Args:
-            event: Isolated event owning conversion output.
-            files: Optional explicit list from a public prepared-message payload.
+            event: 转换输出所属的隔离事件。
+            files: 公开的已准备消息数据中可选的显式文件列表。
         """
         if files is None:
             files = event.get_extra("meme_manager_temp_files") or []
@@ -907,13 +907,13 @@ class EventHandlerMixin:
             try:
                 Path(filename).unlink(missing_ok=True)
             except OSError:
-                logger.warning("[meme_manager] Outgoing meme cleanup failed")
+                logger.warning("[meme_manager] 清理外发表情失败")
 
     async def _resolve_outgoing_event(self, event):
-        """Resolve destination persona and semantic readiness without source writes.
+        """解析目标人格与语义就绪状态，不写入来源状态。
 
         Args:
-            event: Isolated event with an already validated destination.
+            event: 已包含已校验目标的隔离事件。
         """
         if event.unified_msg_origin == str(event.source.unified_msg_origin):
             return
@@ -957,9 +957,7 @@ class EventHandlerMixin:
             )
             event.set_extra("meme_manager_resolved_persona_id", persona_id or "")
         except Exception:
-            logger.warning(
-                "[meme_manager] Could not resolve outgoing persona", exc_info=True
-            )
+            logger.warning("[meme_manager] 无法解析外发消息的目标人格", exc_info=True)
         context = self._resolve_runtime_pack_context(event=event)
         mode = (
             "llm"
@@ -975,14 +973,14 @@ class EventHandlerMixin:
             )
 
     async def _prepare_outgoing_message(self, event, message):
-        """Reuse reply selection for a component-preserving outgoing message.
+        """复用回复选图逻辑，保留外发消息的组件。
 
         Args:
-            event: Isolated selection event for the destination.
-            message: Original validated components or public compatibility input.
+            event: 目标会话的隔离选图事件。
+            message: 原始已校验组件或公开兼容接口输入。
 
         Returns:
-            Clean components, selected images, and conversion ownership.
+            干净的组件、所选图片及转换文件归属。
         """
         components = self._normalize_outgoing_message_components(message)
         text = "\n".join(c.text for c in components if isinstance(c, Plain))
@@ -1014,8 +1012,8 @@ class EventHandlerMixin:
             if not isinstance(component, Plain):
                 cleaned.append(component)
                 continue
-            # Project source-coordinate edits back onto the original components.
-            # This preserves code context across media without moving that media.
+            # 将来源坐标上的文本编辑映射回原始组件。
+            # 保留跨媒体的代码上下文，同时不移动媒体组件。
             end_offset = offset + len(component.text)
             cursor, pieces = 0, []
             for start, end in edits:
@@ -1029,7 +1027,7 @@ class EventHandlerMixin:
                 cursor = max(cursor, end)
             pieces.append(component.text[cursor:])
             value = "".join(pieces)
-            # Final filtering also removes unknown markers, which have no tokens.
+            # 最终过滤还会移除没有对应标记记录的未知标记。
             if getattr(self, "filter_all_tags", False):
                 value = MemeParser.parse(value, filter_all=True).text
             value = value.strip()
@@ -1124,14 +1122,14 @@ class EventHandlerMixin:
         }
 
     async def _handle_upload_image_impl(self, event: AstrMessageEvent):
-        """Save pending chat-upload images into the identified primary pack.
+        """将待处理的聊天上传图片保存到确定的主表情包。
 
         Args:
-            event: Event carrying the pending upload state and image components.
+            event: 携带待处理上传状态及图片组件的事件。
 
         Yields:
-            One result chain summarizing saved, duplicate, failed, and
-            unprocessed counts together with any refresh warnings.
+            一个结果消息链，汇总已保存、重复、失败、
+            未处理数量以及可能的刷新警告。
         """
         user_key = f"{event.session_id}_{event.get_sender_id()}"
         upload_state = self.upload_states.get(user_key)
@@ -1193,7 +1191,7 @@ class EventHandlerMixin:
                 pack_id, "接收并保存表情图片"
             )
         except RuntimeError as exc:
-            # Keep the pending state so the user can retry within its lifetime.
+            # 保留待处理状态，使用户可以在有效期内重试。
             yield event.plain_result(
                 f"⚠️ {state_label}暂时无法写入：{exc}\n"
                 "上传请求仍然有效，请在30秒内重新发送图片重试。"
@@ -1208,8 +1206,8 @@ class EventHandlerMixin:
         refresh_notes: list[str] = []
 
         def route_problem() -> str:
-            # Re-resolve the captured primary pack and its memes root
-            # synchronously, after routing awaits, immediately before a write.
+            # 在路由等待结束后、实际写入前，同步重新解析
+            # 已捕获的主表情包及其 memes 根目录。
             try:
                 current_paths = get_pack_paths(pack_id)
                 current_pack_dir = Path(current_paths["pack_dir"]).resolve()
@@ -1222,7 +1220,7 @@ class EventHandlerMixin:
                 routed_memes_dir = Path(str(context.get("memes_dir") or "")).resolve()
             except Exception as exc:
                 logger.warning(
-                    "Chat upload could not re-resolve routing for pack %s category %s: %s",
+                    "聊天上传无法重新解析路由：表情包=%s 分类=%s 错误=%s",
                     pack_id,
                     category,
                     exc,
@@ -1246,7 +1244,7 @@ class EventHandlerMixin:
                 )
             except Exception as exc:
                 logger.warning(
-                    "Chat upload could not re-check category %s for pack %s: %s",
+                    "聊天上传无法重新检查分类 %s：表情包=%s 错误=%s",
                     category,
                     pack_id,
                     exc,
@@ -1265,12 +1263,12 @@ class EventHandlerMixin:
                     category,
                     content,
                 )
-                # Count only after the worker has completed the write.
+                # 仅在工作任务完成写入后计数。
                 saved_count += 1
             except DuplicateEmojiError as exc:
                 duplicate_count += 1
                 logger.info(
-                    "Chat upload skipped duplicate in pack %s category %s: %s",
+                    "聊天上传跳过重复图片：表情包=%s 分类=%s 图片=%s",
                     pack_id,
                     category,
                     exc.existing_filename,
@@ -1278,8 +1276,7 @@ class EventHandlerMixin:
             except Exception as exc:
                 failed_count += 1
                 logger.warning(
-                    "Chat upload image %s/%s could not be saved in pack %s "
-                    "category %s: %s",
+                    "聊天上传第 %s/%s 张图片保存失败：表情包=%s 分类=%s 错误=%s",
                     index + 1,
                     len(images),
                     pack_id,
@@ -1293,8 +1290,7 @@ class EventHandlerMixin:
             except Exception as exc:
                 refresh_notes.append("语义元数据刷新失败，已保存的图片不受影响。")
                 logger.warning(
-                    "Chat upload saved images but semantic invalidation failed "
-                    "for pack %s: %s",
+                    "聊天上传已保存图片，但使语义数据失效时失败：表情包=%s 错误=%s",
                     pack_id,
                     exc,
                 )
@@ -1303,30 +1299,29 @@ class EventHandlerMixin:
             except Exception as exc:
                 refresh_notes.append("表情配置刷新失败，已保存的图片不受影响。")
                 logger.warning(
-                    "Chat upload saved images but emotion reload failed "
-                    "for pack %s: %s",
+                    "聊天上传已保存图片，但重新加载分类失败：表情包=%s 错误=%s",
                     pack_id,
                     exc,
                 )
 
         async def wait_for_worker(task: asyncio.Task) -> None:
-            """Finish a shielded worker before propagating cancellation.
+            """在向上传播取消之前完成受屏蔽保护的工作任务。
 
             Args:
-                task: Image commit or metadata refresh task holding the pack guard.
+                task: 持有表情包保护锁的图片提交或元数据刷新任务。
 
             Returns:
-                None after the worker finishes.
+                工作任务完成后返回 None。
 
             Raises:
-                asyncio.CancelledError: Cancellation requested before completion;
-                    propagated only after the worker has finished.
+                asyncio.CancelledError: 完成前收到取消请求，
+                    仅在工作任务结束后向上传播。
             """
             try:
                 await asyncio.shield(task)
             except asyncio.CancelledError:
-                # A write or refresh worker cannot be interrupted safely; keep
-                # the pack locked until it returns, then propagate cancellation.
+                # 无法安全中断写入或刷新工作任务，因此在其返回前
+                # 保持表情包锁定，随后再向上传播取消。
                 while not task.done():
                     try:
                         await asyncio.shield(task)
@@ -1357,7 +1352,7 @@ class EventHandlerMixin:
                     except asyncio.TimeoutError:
                         failed_count += 1
                         logger.warning(
-                            "Chat upload image %s/%s timed out for pack %s category %s",
+                            "聊天上传第 %s/%s 张图片超时：表情包=%s 分类=%s",
                             index + 1,
                             len(images),
                             pack_id,
@@ -1367,8 +1362,7 @@ class EventHandlerMixin:
                     except Exception as exc:
                         failed_count += 1
                         logger.warning(
-                            "Chat upload image %s/%s could not be read for pack %s "
-                            "category %s: %s",
+                            "聊天上传第 %s/%s 张图片读取失败：表情包=%s 分类=%s 错误=%s",
                             index + 1,
                             len(images),
                             pack_id,
@@ -1390,7 +1384,7 @@ class EventHandlerMixin:
 
         except Exception as exc:
             logger.exception(
-                "Chat upload failed unexpectedly for pack %s category %s: %s",
+                "聊天上传出现意外错误：表情包=%s 分类=%s 错误=%s",
                 pack_id,
                 category,
                 exc,
@@ -1403,8 +1397,8 @@ class EventHandlerMixin:
         finally:
             try:
                 if saved_count:
-                    # Refresh while the pack operation guard is still held; a
-                    # cancelled consumer must wait for the metadata worker.
+                    # 仍持有表情包操作保护锁时执行刷新；被取消的
+                    # 消费方必须等待元数据工作任务结束。
                     await wait_for_worker(asyncio.create_task(refresh_metadata()))
             finally:
                 if self.upload_states.get(user_key) is upload_state:
@@ -1622,11 +1616,11 @@ class EventHandlerMixin:
     async def _prepare_probability_tool_search(
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
-        """Attempt one required search using the reply provider and model.
+        """使用回复提供方与模型尝试一次必需搜索。
 
         Args:
-            event: Event holding this reply's decisions and verified candidates.
-            req: Normal reply request; only its local tool set and prompt change.
+            event: 保存当前回复决策及已验证候选的事件。
+            req: 普通回复请求，仅修改其本地工具集与提示词。
         """
         lock = event.get_extra("meme_manager_tool_probability_lock")
         if lock is None:
@@ -1634,7 +1628,7 @@ class EventHandlerMixin:
             event.set_extra("meme_manager_tool_probability_lock", lock)
         async with lock:
             if not event.get_extra("meme_manager_tool_probability_attempted"):
-                # Claim the attempt before awaiting, including on cancellation.
+                # 在等待前先登记尝试，即使随后取消也保留状态。
                 event.set_extra("meme_manager_tool_probability_attempted", True)
                 tool_set = getattr(req, "func_tool", None)
                 full_set = getattr(tool_set, "get_full_tool_set", None)
@@ -1665,16 +1659,16 @@ class EventHandlerMixin:
                             )
                             fallback_ids = model_config.get("fallback_provider_ids", [])
                             if fallback_ids:
-                                # The core may already have routed this image
-                                # request to a fallback before this hook. Reuse
-                                # its selection policy without changing the event.
+                                # 本钩子执行前，核心可能已经将图片请求
+                                # 路由到备用提供方。复用其选择策略，
+                                # 不修改原始事件。
                                 try:
                                     (
                                         _get_fallback_chat_providers,
                                         _select_image_chat_provider,
                                     ) = get_image_chat_routing()
                                 except ImportError:
-                                    # Older cores do not perform this image routing.
+                                    # 旧版核心不会执行此图片路由。
                                     pass
                                 else:
                                     provider = _select_image_chat_provider(
@@ -1713,8 +1707,8 @@ class EventHandlerMixin:
                         )
                         names = getattr(response, "tools_call_name", []) or []
                         arguments = getattr(response, "tools_call_args", []) or []
-                        # Execute only the first declared call, even if required
-                        # returned duplicates or the first arguments are invalid.
+                        # 仅执行声明的第一个调用，即使必需调用返回了重复项，
+                        # 或第一个调用的参数无效。
                         if not names or names[0] != "search_memes" or not arguments:
                             raise ValueError(
                                 "Required search_memes call was not returned"
@@ -1729,7 +1723,7 @@ class EventHandlerMixin:
                             raise ValueError("Invalid search_memes arguments")
                         event.set_extra("meme_manager_tool_probability_running", True)
                         try:
-                            # Preserve AstrBot's permission proxy when present.
+                            # 存在 AstrBot 权限代理时予以保留。
                             if tool.handler is not None:
                                 raw_result = await tool.handler(event, **args)
                             else:
@@ -1751,14 +1745,12 @@ class EventHandlerMixin:
                 except asyncio.CancelledError:
                     result = {"ok": False, "reason": "tool_search_cancelled"}
                     event.set_extra("meme_manager_semantic_candidates", {})
-                    logger.info("[meme_manager] Probability tool search cancelled")
+                    logger.info("[meme_manager] 按概率触发的工具搜索已取消")
                     raise
                 except Exception as exc:
                     result = {"ok": False, "reason": "tool_search_failed"}
                     event.set_extra("meme_manager_semantic_candidates", {})
-                    logger.warning(
-                        "[meme_manager] Probability tool search skipped: %s", exc
-                    )
+                    logger.warning("[meme_manager] 已跳过按概率触发的工具搜索：%s", exc)
                 finally:
                     event.set_extra("meme_manager_semantic_search_completed", True)
                     if not result.get("ok"):
@@ -1769,7 +1761,7 @@ class EventHandlerMixin:
                     )
                     if not result.get("ok") or not result.get("candidates"):
                         logger.info(
-                            "[meme_manager] Probability tool search has no selection: %s",
+                            "[meme_manager] 按概率触发的工具搜索未选中候选：%s",
                             result.get("reason", "no_candidates"),
                         )
             self._remove_meme_tool(req)
@@ -1782,14 +1774,14 @@ class EventHandlerMixin:
     async def _resolve_emotion_llm_provider_id(
         self, event: AstrMessageEvent, *, use_reply: bool = False
     ) -> str:
-        """Resolve the configured image provider or the cached actual reply one.
+        """解析已配置的图片提供方，或缓存的实际回复提供方。
 
         Args:
-            event: Current reply event containing routing overrides.
-            use_reply: Always use the reply provider, such as for query generation.
+            event: 包含路由覆盖值的当前回复事件。
+            use_reply: 始终使用回复提供方，例如生成检索词时。
 
         Returns:
-            A provider ID, or an empty string if no chat provider is available.
+            提供方 ID；没有可用聊天提供方时返回空字符串。
         """
         configured_id = (
             "" if use_reply else str(self.emotion_llm_provider_id or "").strip()
@@ -1844,12 +1836,12 @@ class EventHandlerMixin:
     async def _resp_semantic_llm_impl(
         self, event: AstrMessageEvent, response: LLMResponse, text: str
     ):
-        """Retrieve candidates and let the configured post-reply backend select.
+        """检索候选，并由配置的回复后后端选择。
 
         Args:
-            event: Current reply event holding verified candidate bindings.
-            response: Reply response whose text will be cleaned in place.
-            text: Complete reply used for retrieval and selection.
+            event: 持有已验证候选绑定的当前回复事件。
+            response: 将原地清理文本的回复响应。
+            text: 用于检索与选择的完整回复。
         """
         parser = self._make_meme_parser((), semantic=True)
         clean_text = parser.feed(text) + parser.finish()
@@ -1907,7 +1899,7 @@ class EventHandlerMixin:
                 if selection.status == "selected" and selection.selected_ids:
                     selected_id = selection.selected_ids[0]
                 logger.info(
-                    "[meme_manager] Selection finished: status=%s backend=%s reason=%s",
+                    "[meme_manager] 选图完成：状态=%s 后端=%s 原因=%s",
                     selection.status,
                     selection.backend,
                     selection.reason,
@@ -1925,14 +1917,14 @@ class EventHandlerMixin:
     async def _build_emotion_semantic_query(
         self, event: AstrMessageEvent, visible_text: str
     ) -> str:
-        """Build a query using the configured text source and chat provider.
+        """使用配置的文本来源与聊天提供方构造查询。
 
         Args:
-            event: Reply event containing the actual chat provider/model.
-            visible_text: Clean visible reply to retrieve images for.
+            event: 包含实际聊天提供方及模型的回复事件。
+            visible_text: 需要检索配图的干净可见回复。
 
         Returns:
-            A bounded query, with visible text as the generation fallback.
+            长度受限的查询，生成失败时回退到可见文本。
         """
         explicit_provider = getattr(self, "semantic_query_provider_id", "")
         decision_backend = (
@@ -1941,13 +1933,13 @@ class EventHandlerMixin:
         ) == "decision"
 
         async def generate_query(prompt):
-            """Generate search text through an explicit or inherited chat model.
+            """通过明确指定或继承的聊天模型生成搜索文本。
 
             Args:
-                prompt: Fixed query-generation instructions and reference data.
+                prompt: 固定的查询生成指令与参考数据。
 
             Returns:
-                Chat response, or None when no provider can be resolved.
+                聊天响应；无法解析提供方时返回 None。
             """
             if not explicit_provider and not decision_backend:
                 return await self._emotion_llm_generate(event, prompt)
@@ -2034,7 +2026,7 @@ class EventHandlerMixin:
         if event.get_extra("meme_manager_direct_send_attempted"):
             found_emotions = []
         elif self.emotion_llm_enabled:
-            # Only the post-reply selector owns the choice, including abstention.
+            # 仅由回复后选择器决定选择结果，包括主动放弃。
             found_emotions = []
             try:
                 category_catalog = [
@@ -2062,7 +2054,7 @@ class EventHandlerMixin:
                 if selection.status == "selected":
                     found_emotions = selection.selected_ids
                 logger.info(
-                    "[meme_manager] Selection finished: status=%s backend=%s reason=%s",
+                    "[meme_manager] 选图完成：状态=%s 后端=%s 原因=%s",
                     selection.status,
                     selection.backend,
                     selection.reason,
@@ -2086,7 +2078,7 @@ class EventHandlerMixin:
                 response.result_chain = MessageChain([Plain("")])
             event.set_extra("meme_manager_image_only_reply", True)
             # 此图片就是回复本身，而不是可选的文本附件。
-            # Image-only replies use the same delivery gate as text replies.
+            # 纯图片回复与文字回复使用相同的投递门控。
         logger.debug(
             f"[meme_manager] 清理后的最终文本内容长度: {len(response.completion_text)}"
         )
@@ -2245,14 +2237,14 @@ class EventHandlerMixin:
 
     # 辅助方法
     def _convert_to_gif(self, image_path: str) -> str:
-        """Convert a static image to an exclusively owned temporary GIF.
+        """将静态图片转换为独占的临时 GIF。
 
         Args:
-            image_path: Source image to convert when conversion is enabled.
+            image_path: 启用转换时待转换的来源图片。
 
         Returns:
-            A new GIF path owned by the caller, or the source path if skipped
-            or conversion fails. The caller cleans up after delivery.
+            由调用方负责管理的新 GIF 路径；跳过或转换失败时
+            返回来源路径。调用方在投递后负责清理。
         """
         if not self.convert_static_to_gif:
             return image_path
@@ -2285,28 +2277,26 @@ class EventHandlerMixin:
                 fd, temp_filename = tempfile.mkstemp(
                     prefix="meme_", suffix=".gif", dir=temp_dir
                 )
-                # Write through the owned handle; Windows closes it before delivery.
+                # 通过自己持有的句柄写入，Windows 上会在投递前关闭句柄。
                 with os.fdopen(fd, "wb") as output:
                     img.save(output, "GIF")
-                logger.debug(
-                    "[meme_manager] Converted static image to GIF: %s", temp_filename
-                )
+                logger.debug("[meme_manager] 已将静态图片转换为 GIF：%s", temp_filename)
                 return temp_filename
         except Exception as e:
             if temp_filename is not None:
                 Path(temp_filename).unlink(missing_ok=True)
-            logger.error("[meme_manager] GIF conversion failed: %s", e)
+            logger.error("[meme_manager] GIF 转换失败：%s", e)
             return image_path
 
     async def _send_memes_streaming(
         self, event: AstrMessageEvent, *, stream_completed: bool = False
     ):
-        """Send selected memes after a completed streaming reply.
+        """流式回复完成后发送所选表情。
 
         Args:
-            event: Event containing this reply's validated selections.
-            stream_completed: Whether the adapter finished an exhausted stream.
-                This bypasses the result-type check, while retaining origin gates.
+            event: 包含当前回复已校验选择结果的事件。
+            stream_completed: 适配器是否已完成对耗尽流的处理。
+                跳过结果类型检查，但仍保留来源门控。
         """
         if not self._scope_allows_llm_origin(event) or (
             not stream_completed
@@ -2381,17 +2371,17 @@ class EventHandlerMixin:
             event.set_extra("found_emotions", None)
 
     async def _send_meme_tool_impl(self, event: AstrMessageEvent, target: str) -> str:
-        """Send a category or a verified semantic candidate independently of gates.
+        """独立于门控发送一个分类或已验证的语义候选。
 
         Args:
-            event: Current chat event whose tools have passed request filtering.
-            target: Exact bound category or a candidate ID retrieved this turn.
+            event: 工具已通过请求过滤的当前聊天事件。
+            target: 确切的绑定分类，或本轮检索到的候选 ID。
 
         Returns:
-            JSON indicating an adapter-confirmed send or a stable failure reason.
+            JSON，表示适配器已确认的发送结果或稳定失败原因。
 
         Raises:
-            asyncio.CancelledError: The owning model/tool request was cancelled.
+            asyncio.CancelledError: 所属模型或工具请求已被取消。
         """
         if not getattr(self, "send_meme_tool_enabled", True):
             return json.dumps({"ok": False, "reason": "tool_disabled"})
@@ -2459,8 +2449,8 @@ class EventHandlerMixin:
             if not files:
                 return json.dumps({"ok": False, "reason": "no_images"})
             source = random.choice(files)
-        # Claim automatic attachment ownership once the target is validated.
-        # Keep it through delivery failures, whose adapter outcome may be uncertain.
+        # 目标校验通过后，登记自动附图的处理归属。
+        # 投递失败时仍保留此归属，因为适配器的实际结果可能不确定。
         event.set_extra("meme_manager_direct_send_attempted", True)
         final_path = str(source)
         conversion = None
@@ -2487,8 +2477,8 @@ class EventHandlerMixin:
             await self._send_meme_image(event, image)
             return json.dumps({"ok": True, "status": "sent", "sent_count": 1})
         except asyncio.CancelledError:
-            # A cancelled await cannot stop the conversion thread. Reclaim its
-            # output before allowing this tool invocation to finish cancelling.
+            # 取消等待无法停止转换线程；允许本次工具调用完成取消前，
+            # 先回收转换输出。
             if conversion is not None:
                 while not conversion.done():
                     try:
@@ -2504,14 +2494,14 @@ class EventHandlerMixin:
                         pass
             raise
         except Exception:
-            logger.exception("[meme_manager] Direct meme tool delivery failed")
+            logger.exception("[meme_manager] 主动表情工具投递失败")
             return json.dumps({"ok": False, "reason": "send_failed"})
         finally:
             if final_path != str(source):
                 try:
                     Path(final_path).unlink(missing_ok=True)
                 except OSError:
-                    logger.warning("[meme_manager] Direct meme tool cleanup failed")
+                    logger.warning("[meme_manager] 主动表情工具清理失败")
 
     async def _send_meme_image(self, event: AstrMessageEvent, image: Image) -> None:
         original = image
@@ -2534,15 +2524,15 @@ class EventHandlerMixin:
             except ImportError:
                 pass
             else:
-                # QQ group image replies must reuse the triggering message context.
+                # QQ 群图片回复必须复用触发消息的上下文。
                 if isinstance(raw_message, GroupMessage):
                     lock = event.get_extra("meme_manager_qq_image_send_lock")
                     if lock is None:
                         lock = asyncio.Lock()
                         event.set_extra("meme_manager_qq_image_send_lock", lock)
                     async with lock:
-                        # QQ's stream and ordinary sends share send_buffer. Keep
-                        # pending stream text separate from this immediate image.
+                        # QQ 的流式与普通发送共用 send_buffer，因此将待发送的
+                        # 流式文本与本次即时图片分开处理。
                         has_buffer = hasattr(event, "send_buffer")
                         buffered = getattr(event, "send_buffer", None)
                         try:

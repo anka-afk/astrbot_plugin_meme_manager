@@ -1,4 +1,4 @@
-"""Adapt validated builtin message sends without mutating shared agent state."""
+"""适配已校验的内置消息发送，不修改共享 Agent 状态。"""
 
 import asyncio
 import copy
@@ -12,11 +12,11 @@ from ..astrbot_compat import MessageSession
 
 
 class OutgoingEvent:
-    """Isolate selection state while retaining the original request's delivery gates.
+    """隔离选图状态，同时保留原始请求的投递门控。
 
     Args:
-        source: Event owning the model turn and probability decision.
-        session: Already validated destination session.
+        source: 模型轮次及概率决策所属的事件。
+        session: 已校验的目标会话。
     """
 
     def __init__(self, source, session):
@@ -43,14 +43,14 @@ class OutgoingEvent:
         return getattr(self.source, name)
 
     def get_extra(self, key, default=None):
-        """Read local state, delegating shared turn state to its owner.
+        """读取本地状态，将共享轮次状态的读取委托给其所有者。
 
         Args:
-            key: Extra name.
-            default: Value when absent.
+            key: 扩展属性名称。
+            default: 属性不存在时使用的默认值。
 
         Returns:
-            The local or inherited value.
+            本地或继承的值。
         """
         if key in self.extras:
             return self.extras[key]
@@ -58,11 +58,11 @@ class OutgoingEvent:
         return default if value is None else value
 
     def set_extra(self, key, value):
-        """Write selection state locally and probability decisions to the turn.
+        """将选图状态写入本地，将概率决策写入轮次状态。
 
         Args:
-            key: Extra name.
-            value: New value.
+            key: 扩展属性名称。
+            value: 新值。
         """
         if key == "meme_manager_send_probability_hit":
             self.source.set_extra(key, value)
@@ -70,26 +70,26 @@ class OutgoingEvent:
             self.extras[key] = value
 
     def get_result(self):
-        """Return isolated output so selection cannot send webchat replacements.
+        """返回隔离的输出，避免选图时发送 webchat 文本替换。
 
         Returns:
-            This preparation's result, if any.
+            本次准备工作的结果（如有）。
         """
         return self.result
 
     def get_session_id(self):
-        """Return the destination's rule key.
+        """返回目标会话的规则键。
 
         Returns:
-            The destination session ID.
+            目标会话 ID。
         """
         return self.session_id
 
     def get_message_type(self):
-        """Return the destination message type.
+        """返回目标消息类型。
 
         Returns:
-            The destination's message type.
+            目标会话的消息类型。
         """
         return (
             self.session.message_type
@@ -98,10 +98,10 @@ class OutgoingEvent:
         )
 
     def get_platform_name(self):
-        """Read a destination platform override, falling back only in this session.
+        """读取目标平台覆盖值，仅在此会话内使用回退值。
 
         Returns:
-            The destination platform type, if known.
+            目标平台类型（如已知）。
         """
         if "platform_name" in self.__dict__:
             return self.platform_name
@@ -109,11 +109,11 @@ class OutgoingEvent:
 
 
 class _SendContext:
-    """Delegate context operations while adapting only this invocation's send.
+    """委托上下文操作，仅适配本次调用的发送行为。
 
     Args:
-        original: Unmodified plugin context.
-        send: Invocation-local send implementation.
+        original: 未修改的插件上下文。
+        send: 本次调用独立使用的发送实现。
     """
 
     def __init__(self, original, send):
@@ -125,11 +125,11 @@ class _SendContext:
 
 
 class MemeMessageTool(FunctionTool):
-    """Delegate builtin validation and adapt its final message chain.
+    """委托内置校验，并适配最终消息链。
 
     Args:
-        original: Request's original builtin tool, including any permission proxy.
-        plugin: Meme manager instance.
+        original: 当前请求的原始内置工具，包含可能存在的权限代理。
+        plugin: 表情包管理器实例。
     """
 
     def __init__(self, original, plugin):
@@ -143,14 +143,14 @@ class MemeMessageTool(FunctionTool):
         self.plugin = plugin
 
     async def call(self, context, **kwargs):
-        """Run original validation and keep all mutable state invocation-local.
+        """执行原始校验，将所有可变状态隔离到本次调用。
 
         Args:
-            context: Agent context with the original caller identity.
-            **kwargs: Original tool arguments.
+            context: 包含原始调用者身份的 Agent 上下文。
+            **kwargs: 原始工具参数。
 
         Returns:
-            The builtin result, or an explicit skipped/partial-delivery result.
+            内置工具结果，或明确的跳过、部分投递结果。
         """
         plugin = self.plugin
         source = context.context.event
@@ -158,14 +158,14 @@ class MemeMessageTool(FunctionTool):
         delivery = {"calls": 0, "sent": 0, "skipped": False}
 
         async def send(session, chain):
-            """Adapt only messages already validated by the original tool.
+            """仅适配原始工具已经校验的消息。
 
             Args:
-                session: Resolved destination accepted by the builtin.
-                chain: Validated message components.
+                session: 内置工具接受的已解析目标会话。
+                chain: 已校验的消息组件。
 
             Returns:
-                Whether all prepared messages reached a matching adapter.
+                所有准备好的消息是否均已送达匹配的适配器。
             """
             if not plugin._scope_allows_llm_origin(source) or not any(
                 isinstance(component, Plain) for component in chain.chain
@@ -201,7 +201,7 @@ class MemeMessageTool(FunctionTool):
                         plugin.enable_mixed_message
                         and random.randint(1, 100) <= plugin.mixed_message_probability
                     )
-                    # Mutate this validated chain so the builtin records clean text.
+                    # 修改这条已校验的消息链，使内置工具记录干净文本。
                     chain.chain = (
                         plugin._merge_components_with_images(base, images)
                         if mixed
@@ -212,12 +212,12 @@ class MemeMessageTool(FunctionTool):
                         sends.extend(MessageChain([image]) for image in images)
                     if not sends:
                         delivery["skipped"] = True
-                        # Returning false prevents the builtin marking a blank send.
+                        # 返回 false，防止内置工具将空白内容标记为已发送。
                         return False
                     for message in sends:
                         delivery["calls"] += 1
-                        # Adapters may replace components while sending. Capture
-                        # provenance by identity before yielding to the adapter.
+                        # 适配器可能在发送过程中替换组件，因此在让出执行权前
+                        # 先按对象身份记录来源信息。
                         sent_images = [
                             image
                             for image in images

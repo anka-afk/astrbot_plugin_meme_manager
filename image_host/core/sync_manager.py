@@ -1,4 +1,4 @@
-"""Plan and execute conservative image synchronization across storage adapters."""
+"""在存储适配器之间规划并执行保守的图片同步。"""
 
 import tempfile
 from collections.abc import Callable
@@ -22,7 +22,7 @@ SYNC_TASKS = {
 
 
 class SyncManager:
-    """Separate inventory comparison, transfer execution and mirror cleanup."""
+    """分离清单比较、传输执行与镜像清理。"""
 
     def __init__(
         self,
@@ -39,13 +39,13 @@ class SyncManager:
 
     @staticmethod
     def _extract_remote_size(image_info: dict) -> int | None:
-        """Read an optional byte count without treating missing sizes as zero.
+        """读取可选字节数，不将缺失的大小视为零。
 
         Args:
-            image_info: Provider metadata.
+            image_info: 提供方元数据。
 
         Returns:
-            A nonnegative size, or None when the provider does not expose one.
+            非负大小；提供方未提供时返回 None。
         """
         for key in ("size", "file_size", "fileSize", "bytes", "length"):
             value = image_info.get(key)
@@ -60,14 +60,14 @@ class SyncManager:
         return None
 
     def check_sync_status(self) -> dict:
-        """Build one complete comparison without modifying either image library.
+        """进行一次完整比较，不修改任一图片库。
 
         Returns:
-            Incremental transfers, conflicts and directional mirror candidates.
+            增量传输项、冲突项及单向镜像候选项。
 
         Raises:
-            ValueError: A remote path is unsafe or maps ambiguously to a local file.
-            Exception: Local scanning or any remote listing page fails.
+            ValueError: 远端路径不安全或与本地文件的映射存在歧义。
+            Exception: 本地扫描或任一远端列表页读取失败。
         """
         local_images = self.file_handler.scan_local_images()
         remote_images = []
@@ -207,25 +207,25 @@ class SyncManager:
         }
 
     def _publish_progress(self, **changes) -> None:
-        """Publish a bounded snapshot after each operation.
+        """每次操作后发布一个大小受限的快照。
 
         Args:
-            **changes: Updated task fields.
+            **changes: 更新后的任务字段。
         """
         self.progress.update(changes)
         if self.progress_callback:
             self.progress_callback(dict(self.progress))
 
     def _transfer_image(self, direction: str, image: dict, local: dict | None) -> None:
-        """Transfer a planned file while protecting edits made after planning.
+        """传输规划中的文件，同时保护规划后发生的编辑。
 
         Args:
-            direction: Upload or download.
-            image: Planned source metadata.
-            local: Local metadata captured when planning, if the file existed.
+            direction: 上传或下载。
+            image: 规划时的来源元数据。
+            local: 文件存在时，规划阶段捕获的本地元数据。
 
         Raises:
-            Exception: Content changed, a transfer failed, or state could not be saved.
+            Exception: 内容变化、传输失败或无法保存状态。
         """
         category, filename = image.get("category", ""), image["filename"]
         path = self.file_handler.get_file_path(category, filename)
@@ -289,16 +289,16 @@ class SyncManager:
             )
 
     def run(self, task: str) -> bool:
-        """Execute a single plan and delete extras only after successful transfers.
+        """执行单个方案，仅在传输成功后删除多余文件。
 
         Args:
-            task: Incremental upload, download, union sync, or directional mirror.
+            task: 增量上传、下载、双向合并或单向镜像。
 
         Returns:
-            Whether every operation succeeded without unresolved conflicts.
+            所有操作是否成功且不存在未解决的冲突。
 
         Raises:
-            ValueError: The task is unsupported.
+            ValueError: 不支持的任务类型。
         """
         if task not in SYNC_TASKS:
             raise ValueError(f"Unsupported sync task: {task}")
@@ -482,17 +482,17 @@ class SyncManager:
             return False
 
     def sync_to_remote(self) -> bool:
-        """Upload new and locally changed images; retain conflicts and remote extras."""
+        """上传新增及本地变更的图片，保留冲突项与远端多余文件。"""
         return self.run("upload")
 
     def sync_from_remote(self) -> bool:
-        """Download new and remotely changed images; retain conflicts and local extras."""
+        """下载新增及远端变更的图片，保留冲突项与本地多余文件。"""
         return self.run("download")
 
     def overwrite_to_remote(self) -> bool:
-        """Resolve differences in favor of local images, then remove remote extras."""
+        """以本地图片为准解决差异，然后删除远端多余文件。"""
         return self.run("overwrite_to_remote")
 
     def overwrite_from_remote(self) -> bool:
-        """Resolve differences in favor of remote images, then remove local extras."""
+        """以远端图片为准解决差异，然后删除本地多余文件。"""
         return self.run("overwrite_from_remote")

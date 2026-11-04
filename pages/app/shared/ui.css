@@ -59,7 +59,7 @@
   --ambient-sage: rgb(135 168 117 / 12%);
   --ambient-warm: rgb(255 241 214 / 60%);
 
-  /* Compact design scale. */
+  /* 紧凑布局的尺寸档位。 */
   --space-4: 4px;
   --space-8: 8px;
   --space-12: 12px;
@@ -90,7 +90,7 @@
     background-color var(--motion), border-color var(--motion),
     color var(--motion), box-shadow var(--motion);
 
-  /* Compatibility aliases retained for pages and host integrations. */
+  /* 为页面与宿主集成保留的兼容别名。 */
   --brand: var(--primary);
   --brand-strong: var(--link);
   --brand-soft: var(--primary-soft);

@@ -1,4 +1,4 @@
-"""Preview and execute image transfers between explicitly selected packs."""
+"""预览并执行明确选定的表情包之间的图片传输。"""
 
 import hashlib
 import json
@@ -14,19 +14,19 @@ from .images import IMAGE_EXTENSIONS
 
 
 def transfer_pack_images(packs_root: Path, data: dict) -> dict:
-    """Plan a transfer or execute a previously reviewed plan under caller locks.
+    """规划传输，或在调用方持锁时执行已经审核的方案。
 
     Args:
-        packs_root: Directory containing installed packs.
-        data: Explicit pack IDs, image selections, category policy and preview token.
+        packs_root: 已安装表情包所在目录。
+        data: 明确的表情包 ID、图片选择、分类策略及预览令牌。
 
     Returns:
-        Category mappings for preview, or per-image outcomes after execution.
+        预览时返回分类映射，执行后返回每张图片的结果。
 
     Raises:
-        ValueError: A request, metadata document or path is invalid.
-        RuntimeError: The reviewed plan changed or category conflicts remain.
-        OSError: Pack metadata could not be saved before moving images.
+        ValueError: 请求、元数据文档或路径无效。
+        RuntimeError: 已审核方案发生变化，或分类冲突尚未解决。
+        OSError: 无法在移动图片前保存表情包元数据。
     """
     if not isinstance(data, dict) or not isinstance(data.get("preview", True), bool):
         raise ValueError("请求格式无效")
@@ -137,7 +137,7 @@ def transfer_pack_images(packs_root: Path, data: dict) -> dict:
         ):
             raise ValueError("目标分类无效")
         if destination and destination not in target[3]:
-            # Windows paths compare case-insensitively; reuse the stored spelling.
+            # Windows 路径比较不区分大小写，复用已存储的拼写形式。
             destination = next(
                 (
                     name
@@ -195,7 +195,7 @@ def transfer_pack_images(packs_root: Path, data: dict) -> dict:
         return result
     if not result["ready"] or data.get("plan_token") != token:
         raise RuntimeError("分类信息已变化或冲突未解决，请重新预览并确认")
-    # Persist new category descriptions before any source image can be removed.
+    # 在可能移除任一来源图片前，先持久保存新分类描述。
     if any(row["action"] == "create" for row in plan):
         descriptions = dict(target[3])
         manifest = dict(target[2]["manifest.json"])

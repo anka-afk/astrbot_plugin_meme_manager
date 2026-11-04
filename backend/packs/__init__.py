@@ -1,1 +1,1 @@
-"""Resource pack protocols, selection, storage and image management."""
+"""资源包协议、选包、存储与图片管理。"""

@@ -122,36 +122,36 @@ def save_chat_upload_image(
     category: str,
     content: bytes,
 ) -> dict[str, str]:
-    """Atomically save original chat-upload bytes into an explicit pack category.
+    """将聊天上传的原始字节原子保存到指定表情包分类。
 
-    The caller owns routing and category authorization. This routine works only
-    with the supplied ``memes_root`` and never resolves the global default pack,
-    so a changed runtime selection cannot redirect the write.
+    调用方负责路由与分类授权。本方法仅使用
+    传入的 ``memes_root``，不会解析全局默认表情包，
+    因此运行时选包变化不会改变写入目标。
 
     Args:
-        memes_root: Canonical ``memes`` directory of the destination pack.
-        category: Single path-segment category already accepted by that pack.
-        content: Original image bytes; animation frames are preserved verbatim.
+        memes_root: 目标表情包的规范 ``memes`` 目录。
+        category: 该表情包已接受的单路径段分类。
+        content: 原始图片字节，逐字节保留动画帧。
 
     Returns:
-        Dictionary containing the saved absolute path and final filename.
+        包含保存后绝对路径和最终文件名的字典。
 
     Raises:
-        DuplicateEmojiError: The same category already holds identical bytes.
-        ValueError: Content is empty, corrupt, unsupported, or the category is
-            unsafe or escapes the pack directory.
-        OSError: The image could not be written atomically.
+        DuplicateEmojiError: 同一分类已存在字节完全相同的图片。
+        ValueError: 内容为空、损坏或不受支持，或分类
+            不安全、超出表情包目录。
+        OSError: 无法原子写入图片。
     """
     if not content:
         raise ValueError("上传图片内容为空")
 
-    # Validate before creating a directory so rejected bytes leave no category.
+    # 先校验再创建目录，避免被拒绝的字节留下分类目录。
     try:
         with PILImage.open(io.BytesIO(content)) as image:
             image_format = str(image.format or "").upper()
             image.verify()
-        # verify() accepts some truncated JPEG payloads, so decode the first
-        # frame from the original bytes without re-encoding or altering them.
+        # verify() 会接受部分截断的 JPEG 数据，因此直接从原始字节
+        # 解码首帧，不重新编码或改变图片内容。
         with PILImage.open(io.BytesIO(content)) as image:
             image.load()
     except Exception as exc:
@@ -169,8 +169,8 @@ def save_chat_upload_image(
         if duplicate_path is not None:
             raise DuplicateEmojiError(duplicate_path.name)
 
-    # A configured category may legitimately have no directory yet. Re-resolve
-    # after creation so a symlink introduced meanwhile cannot escape the pack.
+    # 已配置分类尚无目录属于正常情况；创建后重新解析，
+    # 避免期间出现的符号链接使路径超出表情包。
     category_path.mkdir(parents=True, exist_ok=True)
     category_path = category_path.resolve()
     try:
@@ -197,9 +197,9 @@ def save_chat_upload_image(
         while True:
             file_path = _build_available_file_path(category_path, filename)
             try:
-                # Reserve the final name exclusively, then atomically replace
-                # the reservation. Existing files are never overwritten, even
-                # when a controlled UUID collision produces the same name.
+                # 独占预留最终文件名，然后原子替换预留文件。
+                # 绝不覆盖已有文件，即使受控的 UUID 碰撞
+                # 生成了相同的文件名。
                 reservation_fd = os.open(
                     file_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
                 )

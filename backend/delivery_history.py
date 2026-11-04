@@ -1,11 +1,11 @@
-"""Bounded, in-memory records of confirmed meme deliveries."""
+"""在内存中有限保留已确认的表情投递记录。"""
 
 import time
 from collections import OrderedDict
 
 
 class DeliveryHistory:
-    """Retain recent successful deliveries separately for each conversation."""
+    """为每个会话分别保留近期成功投递记录。"""
 
     def __init__(self, max_sessions=128, max_records=10, ttl=3600):
         self.max_sessions = max_sessions
@@ -14,11 +14,11 @@ class DeliveryHistory:
         self._sessions = OrderedDict()
 
     def record(self, origin: str, record: dict) -> None:
-        """Append one confirmed image without retaining paths or message text.
+        """追加一张已确认投递的图片，不保留路径或消息文本。
 
         Args:
-            origin: Conversation identity, never sent to the selection backend.
-            record: Public category, candidate ID, and content fingerprint.
+            origin: 会话标识，不会发送给选图后端。
+            record: 公开分类、候选 ID 及内容指纹。
         """
         if not origin:
             return
@@ -31,13 +31,13 @@ class DeliveryHistory:
             self._sessions.popitem(last=False)
 
     def recent(self, origin: str) -> list[dict]:
-        """Return a copy of this conversation's unexpired delivery records.
+        """返回该会话尚未过期的投递记录副本。
 
         Args:
-            origin: Conversation identity.
+            origin: 会话标识。
 
         Returns:
-            Recent records, or an empty list when history is unknown.
+            近期记录；历史未知时返回空列表。
         """
         existing = self._sessions.get(origin)
         if existing is None:

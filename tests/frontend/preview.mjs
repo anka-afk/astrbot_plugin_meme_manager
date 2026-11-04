@@ -1,5 +1,5 @@
-// Run `node tests/frontend/preview.mjs` to inspect the UI with disposable fixtures.
-// This server never connects to AstrBot or writes plugin data.
+// 运行 `node tests/frontend/preview.mjs`，使用临时测试数据检查界面。
+// 此服务器不会连接 AstrBot，也不会写入插件数据。
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { dirname, extname, resolve, sep } from "node:path";
@@ -127,7 +127,7 @@ server.listen(
   "127.0.0.1",
   () => {
     console.log(
-      `Frontend fixture preview: http://127.0.0.1:${
+      `前端测试数据预览：http://127.0.0.1:${
         server.address().port
       }/app/`,
     );

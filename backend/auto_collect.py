@@ -94,7 +94,7 @@ class AutoCollectJob:
         categories: 用于识别分类的运行时分类描述。
         source_kind: 来源类型，值为 ``group`` 或 ``user``。
         source_id: 原始群聊或个人用户 ID。
-        completion: Optional future for the final processing outcome.
+        completion: 可选的最终处理结果 Future。
     """
 
     snapshot_path: Path
@@ -211,10 +211,10 @@ class AutoCollectManager:
         os.replace(temporary, path)
 
     def _decision_service_status(self) -> dict[str, Any]:
-        """Return this consumer's redacted local decision-service readiness.
+        """返回当前使用方的本地决策服务就绪状态，并隐藏敏感信息。
 
         Returns:
-            Configuration status; no network request is performed.
+            配置状态，不发起网络请求。
         """
         if self.judgment_backend != "decision":
             return {"ready": False, "reason": "not_used", "model": ""}
@@ -246,12 +246,12 @@ class AutoCollectManager:
     async def start(
         self, *, defer_missing_provider: bool = False, manual: bool = False
     ) -> None:
-        """Validate both required backends and start one background worker.
+        """校验两个必需后端，并启动一个后台工作任务。
 
         Args:
-            defer_missing_provider: Skip unregistered providers during plugin
-                initialization; the core-loaded hook will retry after loading.
-            manual: Start on demand even when passive collection is disabled.
+            defer_missing_provider: 在插件初始化期间跳过尚未注册的提供方，
+                核心加载完成后的钩子会再次尝试。
+            manual: 即使禁用被动收集，也允许按需启动。
         """
         if (not self.enabled and not manual) or self._worker_task is not None:
             return
@@ -266,7 +266,7 @@ class AutoCollectManager:
         ):
             self._unavailable_reason = "vision_provider_pending"
             logger.info(
-                "[meme_manager] Waiting for AstrBot to load vision provider: %s",
+                "[meme_manager] 等待 AstrBot 加载视觉提供方：%s",
                 self.vision_provider_id,
             )
             return
@@ -274,7 +274,7 @@ class AutoCollectManager:
         if provider is None:
             self._unavailable_reason = "vision_provider_unavailable"
             logger.info(
-                "[meme_manager] Auto collection is inactive; vision provider is unavailable: %s",
+                "[meme_manager] 自动收集未启动，视觉提供方不可用：%s",
                 self.vision_provider_id,
             )
             return
@@ -302,7 +302,7 @@ class AutoCollectManager:
                     decision_status.get("reason") or "decision_not_ready"
                 )
                 logger.warning(
-                    "[meme_manager] Collection decision service is not ready: %s",
+                    "[meme_manager] 收集决策服务尚未就绪：%s",
                     self._unavailable_reason,
                 )
                 return
@@ -313,7 +313,7 @@ class AutoCollectManager:
             self._worker(), name="meme_manager_auto_collect"
         )
         logger.info(
-            "[meme_manager] Collection started: vision=%s judgment=%s",
+            "[meme_manager] 收集已启动：视觉模型=%s 判断后端=%s",
             self.vision_provider_id,
             self.judgment_backend,
         )
@@ -382,16 +382,16 @@ class AutoCollectManager:
         return bool(self.scope.intersection(candidates)), source_kind, source_id
 
     async def prepare_manual(self, event: Any) -> tuple[str, dict[str, str]]:
-        """Validate collection backends and resolve one writable target pack.
+        """校验收集后端，并解析一个可写入的目标表情包。
 
         Args:
-            event: Command event used to resolve the primary pack.
+            event: 用于解析主表情包的命令事件。
 
         Returns:
-            Target pack ID and its own category mapping.
+            目标表情包 ID 及其自身的分类映射。
 
         Raises:
-            ValueError: A backend or target pack is unavailable.
+            ValueError: 后端或目标表情包不可用。
         """
         await self.start(manual=True)
         if not self._ready:
@@ -417,16 +417,16 @@ class AutoCollectManager:
     async def submit_manual(
         self, event: Any, images: list[Image], pack_id: str, categories: dict[str, str]
     ) -> list[asyncio.Future[str]]:
-        """Snapshot explicit images before event-owned files are released.
+        """在事件所属文件被释放前，为显式提交的图片创建快照。
 
         Args:
-            event: Source command or upload event.
-            images: Direct image components, without recursively following replies.
-            pack_id: Target fixed when the collection began.
-            categories: Categories belonging to that target pack.
+            event: 来源命令或上传事件。
+            images: 直接附带的图片组件，不递归查找引用消息。
+            pack_id: 收集开始时固定的目标表情包。
+            categories: 目标表情包的分类。
 
         Returns:
-            Futures reporting each image's actual processing outcome.
+            分别报告每张图片实际处理结果的 Future。
         """
         _, source_kind, source_id = self._source_allowed(event)
         completions = []
@@ -750,8 +750,8 @@ class AutoCollectManager:
             marked: 平台是否明确将图片标为表情。
             message_key: 用于排除平台重复投递的消息标识。
             message_seen: 同一消息已经处理过的图片摘要。
-            manual: Bypass passive sampling and cooldown for explicit submissions.
-            completion: Optional future receiving the actual outcome.
+            manual: 显式提交时跳过被动采样与冷却限制。
+            completion: 可选的接收实际处理结果的 Future。
 
         Returns:
             快照是否成功进入识别队列。
@@ -858,7 +858,7 @@ class AutoCollectManager:
                         self.counters.get("model_rejected_cached", 0) + 1
                     )
                     logger.info(
-                        "[meme_manager] Cached collection rejection: pack=%s digest=%s",
+                        "[meme_manager] 命中缓存的拒收记录：表情包=%s 摘要=%s",
                         target_pack_id,
                         digest[:12],
                     )
@@ -1050,15 +1050,15 @@ class AutoCollectManager:
         categories: dict[str, str],
         understanding: dict[str, Any],
     ) -> str:
-        """Fingerprint stable evidence, destination categories, and routing rules.
+        """为稳定证据、目标分类和路由规则生成指纹。
 
         Args:
-            target_pack_id: Pack which owns the candidate image.
-            categories: Current category catalog.
-            understanding: Visual evidence; observational timestamps are ignored.
+            target_pack_id: 候选图片所属的表情包。
+            categories: 当前分类目录。
+            understanding: 视觉证据，忽略观测时间戳。
 
         Returns:
-            A stable key that changes when analysis or acceptance rules change.
+            分析或接收规则变化时随之改变的稳定键。
         """
         understanding_hash = hashlib.sha256(
             json.dumps(
@@ -1318,14 +1318,14 @@ class AutoCollectManager:
         }
 
     async def _understand(self, content: bytes, extension: str) -> dict[str, Any]:
-        """Generate category-independent evidence and clean temporary visual inputs.
+        """生成独立于分类的证据，并清理临时视觉输入。
 
         Args:
-            content: Validated source image bytes.
-            extension: Trusted image extension.
+            content: 已校验的来源图片字节。
+            extension: 可信的图片扩展名。
 
         Returns:
-            Parsed visual evidence, suitable for independent decision evaluation.
+            已解析的视觉证据，可用于独立的决策评估。
         """
         AUTO_COLLECT_TEMP_DIR.mkdir(parents=True, exist_ok=True)
         source_file = tempfile.NamedTemporaryFile(
@@ -1378,14 +1378,14 @@ class AutoCollectManager:
     async def _judge_understanding(
         self, understanding: dict[str, Any], categories: dict[str, str]
     ) -> dict[str, Any]:
-        """Evaluate one evidence record without retrying paid judgment requests.
+        """评估一条证据记录，不重试付费判断请求。
 
         Args:
-            understanding: Previously generated image description and evidence.
-            categories: Destination pack's current category catalog.
+            understanding: 先前生成的图片描述与证据。
+            categories: 目标表情包当前的分类目录。
 
         Returns:
-            A normalized decision or a record requiring human review.
+            规范化的决策，或需要人工复核的记录。
         """
         client = getattr(self.plugin, "decision_client", None)
         status = self._decision_service_status()
@@ -1447,16 +1447,16 @@ class AutoCollectManager:
         job: AutoCollectJob,
         digest: str,
     ) -> dict[str, Any] | None:
-        """Reuse visual evidence and decisions independently under their own keys.
+        """使用各自的键独立复用视觉证据与决策。
 
         Args:
-            content: Validated image bytes.
-            extension: Trusted image extension.
-            job: Frozen target pack and category snapshot.
-            digest: Source image content hash.
+            content: 已校验的图片字节。
+            extension: 可信的图片扩展名。
+            job: 已固定的目标表情包与分类快照。
+            digest: 来源图片内容的哈希值。
 
         Returns:
-            A decision, or None when the visual recognition quota is exhausted.
+            决策结果；视觉识别额度耗尽时返回 None。
         """
         understandings = self._state.get("understandings", {})
         understanding_key = self._understanding_cache_key(digest)
@@ -1469,7 +1469,7 @@ class AutoCollectManager:
             if not self._daily_call_available():
                 self.counters["quota"] = self.counters.get("quota", 0) + 1
                 logger.info(
-                    "[meme_manager] Visual recognition quota exhausted: pack=%s digest=%s",
+                    "[meme_manager] 视觉识别额度已耗尽：表情包=%s 摘要=%s",
                     job.target_pack_id,
                     digest[:12],
                 )
@@ -1583,7 +1583,7 @@ class AutoCollectManager:
             decision: 已规范化的视觉识别结果。
 
         Returns:
-            Saved, duplicate, or capacity-limited outcome.
+            已保存、重复或容量受限的处理结果。
         """
         async with self._inbox_lock:
             metadata = self._load_json(
@@ -1662,7 +1662,7 @@ class AutoCollectManager:
             job: 自动收集任务快照。
 
         Returns:
-            The processing outcome used by manual collection summaries.
+            用于手动收集汇总的处理结果。
         """
         content = await asyncio.to_thread(job.snapshot_path.read_bytes)
         extension = await asyncio.to_thread(self._validate_image, content)
@@ -1729,7 +1729,7 @@ class AutoCollectManager:
                     self.counters.get("model_rejected", 0) + 1
                 )
                 logger.info(
-                    "[meme_manager] Collection rejected: pack=%s reason=%s digest=%s",
+                    "[meme_manager] 已拒收图片：表情包=%s 原因=%s 摘要=%s",
                     job.target_pack_id,
                     decision.get("rejection_reason"),
                     digest[:12],
@@ -1829,13 +1829,13 @@ class AutoCollectManager:
         return "pending"
 
     async def pending_status(self, pack_id: str) -> dict[str, Any]:
-        """List candidates with nullable probabilities and review provenance.
+        """列出候选图片，包含可为空的概率和复核来源。
 
         Args:
-            pack_id: Destination pack whose pending images are requested.
+            pack_id: 需要查询待处理图片的目标表情包。
 
         Returns:
-            Candidates, required-review counts, and consumer readiness metadata.
+            候选图片、必须复核的数量及使用方就绪状态元信息。
         """
         pack_id = validate_pack_id(pack_id, "表情包")
         async with self._inbox_lock:
@@ -1957,19 +1957,19 @@ class AutoCollectManager:
     def pending_image_path(
         self, pack_id: str, record_id: str, *, _record: dict[str, Any] | None = None
     ) -> Path:
-        """Resolve a candidate while enforcing pack ownership and file containment.
+        """解析候选图片，并校验表情包归属与文件路径边界。
 
         Args:
-            pack_id: Target pack identifier.
-            record_id: Candidate identifier.
-            _record: Internal batch record read while holding the inbox lock.
+            pack_id: 目标表情包标识符。
+            record_id: 候选记录标识符。
+            _record: 持有待审箱锁时读取的内部批量记录。
 
         Returns:
-            Safe existing image path.
+            安全且存在的图片路径。
 
         Raises:
-            ValueError: The record belongs to another pack or has an unsafe path.
-            FileNotFoundError: The candidate or image no longer exists.
+            ValueError: 记录属于其他表情包，或路径不安全。
+            FileNotFoundError: 候选记录或图片已不存在。
         """
         pack_id = validate_pack_id(pack_id, "表情包")
         item = _record
@@ -2003,19 +2003,19 @@ class AutoCollectManager:
         *,
         manual_confirmed: bool = True,
     ) -> dict[str, int]:
-        """Accept selected candidates, retaining failed candidates for retry.
+        """接收选中的候选图片，保留失败项以便重试。
 
         Args:
-            pack_id: Target pack identifier.
-            selections: Candidate IDs with optional category overrides.
-            manual_confirmed: Whether a person explicitly accepted these images.
+            pack_id: 目标表情包标识符。
+            selections: 候选 ID 及可选的分类覆盖值。
+            manual_confirmed: 是否由人工明确接收这些图片。
 
         Returns:
-            Imported, duplicate, and failed item counts.
+            导入、重复及失败项的数量。
 
         Raises:
-            ValueError: Selection, ownership, or category is invalid.
-            RuntimeError: Another operation holds the pack write lock.
+            ValueError: 选择内容、归属或分类无效。
+            RuntimeError: 其他操作正持有表情包写锁。
         """
         pack_id = validate_pack_id(pack_id, "表情包")
         if not (PACKS_DIR / pack_id).is_dir():
@@ -2126,13 +2126,13 @@ class AutoCollectManager:
         return result
 
     async def _generate_collected_vectors(self, pack_id: str) -> None:
-        """Coalesce accepted images and incrementally update their pack index.
+        """合并已接收图片，并增量更新所属表情包的索引。
 
         Args:
-            pack_id: Pack containing newly accepted images.
+            pack_id: 包含新接收图片的表情包。
         """
         try:
-            # Allow consecutive collection jobs to share one embedding batch.
+            # 允许连续的收集任务共用一批向量生成请求。
             await asyncio.sleep(1)
             while self.auto_embedding and getattr(
                 self.plugin, "semantic_enabled", False
@@ -2142,7 +2142,7 @@ class AutoCollectManager:
                         pack_id, "update collected image vectors"
                     )
                 except RuntimeError:
-                    # Retain the trigger while another task or paused queue owns the pack.
+                    # 其他任务或暂停队列占用表情包时，保留触发状态。
                     await asyncio.sleep(2)
                     continue
                 try:
@@ -2150,7 +2150,7 @@ class AutoCollectManager:
                         pack_id, force=False
                     )
                 except RuntimeError:
-                    # Another semantic task may have acquired the lock after the check.
+                    # 检查结束后，其他语义任务可能已经获得锁。
                     try:
                         self.plugin.semantic_task_manager.assert_pack_mutation_allowed(
                             pack_id, "update collected image vectors"
@@ -2164,8 +2164,7 @@ class AutoCollectManager:
             raise
         except Exception:
             logger.warning(
-                "Automatic incremental embedding failed for pack %s; "
-                "pending images can be retried from the management page",
+                "表情包 %s 的自动增量向量生成失败，可在管理页面重试待处理图片",
                 pack_id,
                 exc_info=True,
             )
@@ -2173,10 +2172,10 @@ class AutoCollectManager:
             self._embedding_tasks.pop(pack_id, None)
 
     async def _retry_auto_accept(self, pack_id: str) -> None:
-        """Retry only newly collected candidates deferred by a busy pack.
+        """仅重试因表情包忙碌而延后的新收集候选图片。
 
         Args:
-            pack_id: Pack containing candidates collected with review disabled.
+            pack_id: 包含关闭复核时收集的候选图片的表情包。
         """
         try:
             while not self.manual_review and self._pending_auto_accept.get(pack_id):
@@ -2212,11 +2211,11 @@ class AutoCollectManager:
                 try:
                     await asyncio.shield(acceptance)
                 except asyncio.CancelledError:
-                    # Finish an in-progress disk mutation before releasing the task.
+                    # 在释放任务前完成正在进行的磁盘变更。
                     await asyncio.gather(acceptance, return_exceptions=True)
                     raise
                 except RuntimeError:
-                    # The pack may have become busy while waiting for the inbox lock.
+                    # 等待待审箱锁期间，表情包可能已经变为忙碌状态。
                     try:
                         self.plugin.semantic_task_manager.assert_pack_mutation_allowed(
                             pack_id, "accept collected images"
@@ -2230,8 +2229,7 @@ class AutoCollectManager:
             raise
         except Exception:
             logger.warning(
-                "Deferred automatic acceptance failed for pack %s; "
-                "candidates remain available for manual retry",
+                "表情包 %s 的延后自动接收失败，候选图片仍保留，可手动重试",
                 pack_id,
                 exc_info=True,
             )
@@ -2242,18 +2240,18 @@ class AutoCollectManager:
     async def discard_pending(
         self, pack_id: str, ids: list[str], remember_rejection: bool = False
     ) -> dict[str, int]:
-        """Discard selected candidates and optionally block their recollection.
+        """丢弃选中的候选图片，并可阻止再次收集。
 
         Args:
-            pack_id: Target pack identifier.
-            ids: Selected candidate identifiers.
-            remember_rejection: Persist exact hashes as rejected for this pack.
+            pack_id: 目标表情包标识符。
+            ids: 选中的候选记录标识符。
+            remember_rejection: 将精确哈希持久保存为该表情包的拒收记录。
 
         Returns:
-            Number of discarded candidates.
+            丢弃的候选记录数量。
 
         Raises:
-            ValueError: Selection or pack ownership is invalid.
+            ValueError: 选择内容或表情包归属无效。
         """
         if (
             not isinstance(ids, list)
@@ -2289,16 +2287,16 @@ class AutoCollectManager:
         return {"discarded": len(paths)}
 
     async def import_pending(self, pack_id: str) -> dict[str, int]:
-        """Import legacy inbox candidates only when manual review is disabled.
+        """仅在关闭人工复核时导入旧版待审箱候选图片。
 
         Args:
-            pack_id: Target pack identifier.
+            pack_id: 目标表情包标识符。
 
         Returns:
-            Import result counts.
+            导入结果的数量统计。
 
         Raises:
-            RuntimeError: Manual review requires explicit candidate selections.
+            RuntimeError: 启用人工复核时必须明确选择候选图片。
         """
         if self.manual_review:
             raise RuntimeError("请在表情包管理页面预览并选择要接收的图片")

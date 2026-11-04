@@ -1,4 +1,4 @@
-"""Exercise independent delivery and Tool trigger decisions without model services."""
+"""无需模型服务，验证独立投递与工具触发决策。"""
 
 import asyncio
 import json
@@ -253,8 +253,8 @@ async def test_preflight_uses_core_image_fallback_provider(
         "agent_runner": {"config": {"model": {"fallback_provider_ids": ["vision"]}}}
     }
     request.image_urls = ["fixture.png"]
-    # AstrBot has already selected the image fallback before invoking our hook,
-    # and clears a model override that belonged to the original provider.
+    # 调用本钩子前，AstrBot 已选择图片备用提供方，
+    # 并清除原本属于原始提供方的模型覆盖值。
     actual = _select_image_chat_provider(
         primary,
         request,

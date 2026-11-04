@@ -1,4 +1,4 @@
-"""Check async entry points at the underlying synchronous HTTP boundary."""
+"""在底层同步 HTTP 边界检查异步入口。"""
 
 import asyncio
 import threading

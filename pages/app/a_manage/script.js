@@ -1017,12 +1017,12 @@ async function initApp() {
     }
 
     if (!samePack) {
-      // A backup selection belongs to one pack; reset new packs to share.
+      // 备份选择仅属于一个表情包，切换新包时重置为分享模式。
       exportCapabilityPackId = normalizedPackId;
       const shareInput = document.getElementById("export-mode-share");
       if (shareInput) shareInput.checked = true;
     }
-    // Capability is unknown while loading: block backup and its download path.
+    // 加载期间能力未知，禁用备份及其下载入口。
     if (exportModeBackup) exportModeBackup.disabled = true;
     if (exportPackDownloadBtn)
       exportPackDownloadBtn.disabled = Boolean(exportModeBackup?.checked);
@@ -4710,7 +4710,7 @@ async function initApp() {
             missingFiles.push(`${sourceCategory}/${filename}`);
           });
         } catch (error) {
-          console.error("Failed to move emoji batch", error);
+          console.error("批量移动表情失败", error);
           requestErrors.push(`${sourceCategory}: ${error.message}`);
         }
       }
@@ -5807,7 +5807,7 @@ async function initApp() {
     file,
     packId = activeManagePackId || managePackSelect?.value || "",
   ) {
-    // The host bridge encodes each path segment once.
+    // 宿主桥接层会对每个路径段编码一次。
     const endpoint = packId
       ? `emoji/add/${packId}/${category}`
       : `emoji/add/${category}`;
@@ -7089,7 +7089,7 @@ async function initApp() {
       try {
         await refreshManagePackSummaries();
       } catch (error) {
-        console.warn("Failed to refresh pack summaries", error);
+        console.warn("刷新表情包摘要失败", error);
       } finally {
         vectorStatusPollInFlight = false;
       }

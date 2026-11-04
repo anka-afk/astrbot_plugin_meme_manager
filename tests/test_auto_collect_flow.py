@@ -19,14 +19,14 @@ from quart import Quart
 
 
 class FlowEvent:
-    """Provide the message interface consumed by the real collection manager."""
+    """提供真实收集管理器使用的消息接口。"""
 
     def __init__(self, path: Path, sub_type: int = 1):
-        """Create a local AstrBot image and its corresponding NapCat segment.
+        """创建本地 AstrBot 图片及其对应的 NapCat 消息段。
 
         Args:
-            path: Real source image file.
-            sub_type: NapCat image classification marker.
+            path: 真实来源图片文件。
+            sub_type: NapCat 图片分类标记。
         """
         self.unified_msg_origin = "test:GroupMessage:100"
         self.message_obj = SimpleNamespace(
@@ -44,14 +44,14 @@ class FlowEvent:
 
 
 class FlowHost(web_api.WebAPIMixin):
-    """Host real API handlers and task locks without starting the AstrBot server."""
+    """承载真实 API 处理器与任务锁，不启动 AstrBot 服务器。"""
 
     def __init__(self, root: Path, context):
-        """Initialize the temporary plugin host.
+        """初始化临时插件宿主。
 
         Args:
-            root: Isolated plugin data directory.
-            context: Provider registry and mocked external vision transport.
+            root: 隔离的插件数据目录。
+            context: 提供方注册表及模拟的外部视觉传输。
         """
         self.context = context
         self.semantic_enabled = False
@@ -61,7 +61,7 @@ class FlowHost(web_api.WebAPIMixin):
         self.loaded_files = []
 
     async def reload_emotions(self):
-        """Observe accepted files when the production manager requests a reload."""
+        """生产管理器请求重载时，观察已接收的文件。"""
         self.loaded_files = sorted(
             path for path in (self.pack_dir / "memes").rglob("*") if path.is_file()
         )
@@ -155,13 +155,13 @@ class AutoCollectFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.host.semantic_task_manager.close()
 
     async def vision_response(self, **request):
-        """Validate actual visual input before returning deterministic external output.
+        """返回确定性的外部输出前，校验实际视觉输入。
 
         Args:
-            **request: Real classifier request including temporary frame paths.
+            **request: 真实分类器请求，包含临时帧路径。
 
         Returns:
-            Provider-compatible structured response.
+            与提供方兼容的结构化响应。
         """
         paths = [Path(path) for path in request["image_urls"]]
         for path in paths:

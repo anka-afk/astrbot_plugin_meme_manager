@@ -329,7 +329,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         self._semantic_initial_rebuild_task = None
 
     async def initialize(self) -> None:
-        """Start collection on reload, deferring unregistered providers at startup."""
+        """重载时启动收集，初次启动时延后处理尚未注册的提供方。"""
         await self.auto_collect_manager.start(defer_missing_provider=True)
 
     @filter.on_astrbot_loaded()
@@ -494,13 +494,13 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         return self.img_sync
 
     def _build_meme_prompt(self, category_mapping_string: str | None = None) -> str:
-        """Compose category instructions, examples, and optional quantity guidance.
+        """组合分类指令、示例及可选的数量指引。
 
         Args:
-            category_mapping_string: Available categories for the current request.
+            category_mapping_string: 当前请求可用的分类。
 
         Returns:
-            Category instructions followed by enabled, nonempty additions.
+            分类指令及已启用且非空的附加内容。
         """
         mapping_string = category_mapping_string or self.category_mapping_string
         prompt = self.prompt_head + mapping_string + self.prompt_tail
@@ -510,10 +510,10 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         return prompt + self._build_meme_quantity_prompt()
 
     def _build_meme_quantity_prompt(self) -> str:
-        """Build optional quantity guidance shared by every meme selection prompt.
+        """构建所有表情选图提示共用的可选数量指引。
 
         Returns:
-            Editable quantity guidance, or an empty string when disabled or blank.
+            可编辑的数量指引；禁用或留空时返回空字符串。
         """
         if not self._read_config_value(
             ("generation", "prompt", "quantity_guidance_enabled"), default=False
@@ -629,7 +629,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
     ) -> bool:
         """判断当前选择的运行时表情包能否使用语义检索。
 
-        Checks all bound packs: ready if at least one pack is fully indexed.
+        检查全部绑定的表情包；至少一个表情包索引完整即视为就绪。
 
         Args:
             event: 当前 AstrBot 消息事件。
@@ -637,7 +637,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             require_tool: 是否要求回复模型和请求公开语义检索工具。
 
         Returns:
-            True if a bound pack has valid vectors matching its embedding model.
+            任一绑定表情包的有效向量与其向量模型匹配时返回 True。
         """
         if not self.semantic_enabled:
             return False
@@ -661,7 +661,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         if not pack_ids:
             return False
 
-        # A broken pack must not disable healthy packs in the same binding.
+        # 损坏的表情包不能使同一绑定中的正常表情包失效。
         for pack_id in pack_ids:
             try:
                 pack_dir = get_pack_paths(pack_id)["pack_dir"]
@@ -681,17 +681,17 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 ):
                     return True
             except Exception as exc:
-                logger.warning("Pack %s semantic check failed: %s", pack_id, exc)
+                logger.warning("表情包 %s 的语义检查失败：%s", pack_id, exc)
 
         return False
 
     @staticmethod
     def _remove_meme_tool(req: ProviderRequest, name: str = "search_memes") -> None:
-        """Remove a meme tool from this request without changing shared tools.
+        """从当前请求移除表情工具，不修改共享工具。
 
         Args:
-            req: Current provider request.
-            name: Tool to remove while preserving other tools and permissions.
+            req: 当前提供方请求。
+            name: 待移除的工具名称，保留其他工具及权限。
         """
         tool_set = getattr(req, "func_tool", None)
         get_full_tool_set = getattr(tool_set, "get_full_tool_set", None)
@@ -699,7 +699,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             req.func_tool = get_full_tool_set()
             tool_set = req.func_tool
         elif tool_set is not None:
-            # ToolSet instances can be shared with other events or the registry.
+            # ToolSet 实例可能与其他事件或注册表共享。
             req.func_tool = copy.copy(tool_set)
             if hasattr(tool_set, "tools"):
                 req.func_tool.tools = list(tool_set.tools)
@@ -731,13 +731,13 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         )
 
     def _semantic_system_prompt(self, search_result: str | None = None) -> str:
-        """Describe optional selection from live search or prefetched candidates.
+        """描述如何从实时搜索或预取候选中选择可选图片。
 
         Args:
-            search_result: Serialized result when the independent attempt is over.
+            search_result: 独立尝试结束后的序列化结果。
 
         Returns:
-            A removable system-prompt block with selection and privacy rules.
+            可移除的系统提示区块，包含选择与隐私规则。
         """
         if search_result is not None:
             return (
@@ -795,14 +795,14 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
     def _resolve_persona_id(
         self, event: AstrMessageEvent | None = None, req: ProviderRequest | None = None
     ) -> str | None:
-        """Read the effective persona cached before selecting a resource pack.
+        """读取选包前已缓存的实际生效人格。
 
         Args:
-            event: Message event carrying the resolved persona for this request.
-            req: Provider request used when no resolved persona is available.
+            event: 携带本次请求已解析人格的消息事件。
+            req: 尚无已解析人格时使用的提供方请求。
 
         Returns:
-            The effective persona ID, or None when no persona is selected.
+            实际生效的人格 ID；未选择人格时返回 None。
         """
         if event is not None and hasattr(event, "get_extra"):
             resolved_persona = event.get_extra("meme_manager_resolved_persona_id")
@@ -842,7 +842,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 "meme_manager_runtime_memes_dir",
                 str(context["memes_dir"]),
             )
-            # Store both single pack_id (for backward compat) and pack_ids list.
+            # 同时保存用于向后兼容的单个 pack_id 与 pack_ids 列表。
             pack_ids = context.get("pack_ids", [])
             event.set_extra(
                 "meme_manager_runtime_pack_id", str(context.get("pack_id") or "")
@@ -935,7 +935,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             event.set_extra("meme_manager_request_initialized", True)
             event.set_extra("meme_manager_semantic_active", semantic_active)
             event.set_extra("meme_manager_semantic_mode", semantic_mode)
-            # Store verified pack IDs for later validation.
+            # 保存已验证的表情包 ID，供后续校验。
             runtime_pack_ids = event.get_extra("meme_manager_runtime_pack_ids") or []
             event.set_extra(
                 "meme_manager_semantic_verified_pack_ids",
@@ -1043,20 +1043,20 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
 
     @llm_tool(name="search_memes")
     async def search_memes_tool(self, event: AstrMessageEvent, query: str) -> str:
-        """Find meme images matching the assistant's intended expression.
+        """查找符合助手表达意图的表情图片。
 
-        Use a short natural-language query describing the emotion, attitude, or
-        action to express, including who it refers to. Search at most once per
-        reply. The returned candidates are available for selection in this turn.
+        使用简短的自然语言描述想表达的情绪、态度或
+        动作，并说明其指代对象。每条回复最多搜索一次。
+        返回的候选图片可供本轮选择。
 
         Args:
-            query(string): The intended expression, such as celebrating someone's
-                achievement or expressing playful disappointment.
+            query(string): 想表达的含义，例如庆祝某人
+                取得成就，或带着玩笑意味表达失望。
 
         Returns:
-            JSON search results containing candidate IDs, captions, and tags.
-            The complete candidate IDs are used to select specific images for
-            delivery through the available sending method.
+            包含候选 ID、描述和标签的 JSON 搜索结果。
+            使用完整候选 ID 选择具体图片，
+            再通过可用的发送方式完成投递。
         """
         direct_search = bool(
             event.get_extra("meme_manager_send_tool_available")
@@ -1089,7 +1089,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         context = self._resolve_runtime_pack_context(event=event)
         pack_ids = context.get("pack_ids", [])
 
-        # Verify pack_ids match what was checked before prompt injection.
+        # 校验 pack_ids 与注入提示词前检查过的结果一致。
         verified_ids = str(
             event.get_extra("meme_manager_semantic_verified_pack_ids") or ""
         )
@@ -1097,7 +1097,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             return dumps_result({"ok": False, "reason": "当前语义图包已经变化"})
 
         try:
-            # Resolve providers separately because packs can use different indexes.
+            # 分别解析提供方，因为各表情包可能使用不同的索引。
             pack_contexts = []
             for pack_id in pack_ids:
                 paths = get_pack_paths(pack_id)
@@ -1135,24 +1135,24 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
 
     @llm_tool(name="send_meme")
     async def send_meme_tool(self, event: AstrMessageEvent, target: str) -> str:
-        """Send one meme image to the current chat immediately.
+        """立即向当前聊天发送一张表情图片。
 
-        Use when the user asks for a meme or when an image helps express your
-        response. Each successful call sends one image as a separate message.
+        用户请求表情，或图片有助于表达回复时使用。
+        每次成功调用都会以独立消息发送一张图片。
 
-        A category target randomly selects an image from that category.
-        A candidate ID selects the specific image retrieved in this turn.
-        Call again when another image is intended. This tool operates
-        independently of automatic attachment probability and quantity limits.
+        分类目标会从该分类中随机选择一张图片。
+        候选 ID 会选择本轮检索到的指定图片。
+        需要另一张图片时可再次调用。此工具独立于
+        自动附图的概率与数量限制。
 
         Args:
-            target(string): An available category key from the system prompt,
-                or a complete candidate ID returned by search_memes in this turn.
+            target(string): 系统提示中可用的分类键，
+                或本轮 search_memes 返回的完整候选 ID。
 
         Returns:
-            JSON with ok=true, status=sent, and sent_count=1 after the platform
-            adapter completes delivery. When ok=false, reason describes the
-            outcome and instruction, when present, gives the next action.
+            平台适配器完成投递后，返回包含 ok=true、status=sent
+            及 sent_count=1 的 JSON。ok=false 时，reason 描述
+            结果；若包含 instruction，则给出下一步操作指引。
         """
         return await self._send_meme_tool_impl(event, target)
 

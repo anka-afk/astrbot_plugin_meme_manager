@@ -1,4 +1,4 @@
-"""Stateful protection of literal regions before marker recognition."""
+"""识别标记前，有状态地保护字面文本区域。"""
 
 import re
 
@@ -6,14 +6,14 @@ from .text_safety import _protected_reference_spans
 
 
 def is_escaped(text: str, position: int) -> bool:
-    """Check Markdown escape parity at a source position.
+    """检查来源文本指定位置的 Markdown 转义奇偶性。
 
     Args:
-        text: Original source text.
-        position: Position of the possible delimiter.
+        text: 原始来源文本。
+        position: 可能的分隔符位置。
 
     Returns:
-        Whether an odd number of backslashes precedes the delimiter.
+        分隔符前是否有奇数个反斜杠。
     """
     cursor = position
     while cursor and text[cursor - 1] == "\\":
@@ -22,7 +22,7 @@ def is_escaped(text: str, position: int) -> bool:
 
 
 class ContextScanner:
-    """Track literal regions across protocol lines without rendering Markdown."""
+    """跨协议行跟踪字面文本区域，不渲染 Markdown。"""
 
     _fence = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
     _reason = re.compile(r"</?(think|thinking|analysis|reasoning)\b[^>]*>", re.I)
@@ -39,7 +39,7 @@ class ContextScanner:
 
     @property
     def active(self) -> bool:
-        """Return whether a protected region continues from the previous line."""
+        """返回受保护区域是否从上一行延续。"""
         return bool(
             self.fence or self.reasoning or self.ticks or self.comment or self.link
         )
@@ -47,15 +47,15 @@ class ContextScanner:
     def scan(
         self, line: str, *, literal_ticks: set[int] | None = None
     ) -> list[tuple[int, int]]:
-        """Locate protected spans and retain unfinished context for the next line.
+        """定位受保护区间，为下一行保留未完成的上下文。
 
         Args:
-            line: One original source line, including its line ending.
-            literal_ticks: Backtick runs that cannot open a matched code span,
-                expressed as character offsets in this line.
+            line: 一行原始来源文本，包含行尾符。
+            literal_ticks: 无法开启匹配代码片段的反引号序列，
+                以本行内的字符偏移表示。
 
         Returns:
-            Ordered non-overlapping protected character intervals.
+            有序且不重叠的受保护字符区间。
         """
         spans = _protected_reference_spans(line, protect_inline_code=False)
         fence = self._fence.match(line.rstrip("\r\n"))
@@ -185,8 +185,8 @@ class ContextScanner:
                 if "[" in line[cursor + 1 : end - 1]:
                     spans.append((cursor, end))
                 if "`" in line[cursor + 1 : end - 1]:
-                    # Code may start inside a label and close beyond its brackets.
-                    # Skip nested bracket rescans while visiting the label contents.
+                    # 代码可能在链接标签内开始，并在括号外闭合。
+                    # 遍历标签内容时，跳过对嵌套括号的重复扫描。
                     plain_label_end = end
                     cursor += 1
                     continue

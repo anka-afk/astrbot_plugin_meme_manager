@@ -1,4 +1,4 @@
-"""Check ranking semantics and preserve cards when market data is invalid."""
+"""检查排名规则，并在市场数据无效时保留原有卡片。"""
 
 import json
 import tempfile

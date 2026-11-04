@@ -153,7 +153,7 @@ for (const dialog of document.querySelectorAll('[role="dialog"]')) {
   mask.addEventListener(
     "click",
     (event) => {
-      // Drag selections can retarget click to the dialog or its backdrop.
+      // 拖动选区可能使点击目标变为对话框或其遮罩。
       if (
         event.detail > 0 &&
         (event.target === mask || event.target === dialog) &&

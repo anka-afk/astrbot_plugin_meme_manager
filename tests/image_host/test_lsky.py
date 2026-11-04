@@ -1,4 +1,4 @@
-"""Exercise Lsky's HTTP contract and sync lifecycle without a live account."""
+"""无需真实账户，验证兰空图床的 HTTP 协议约定与同步生命周期。"""
 
 import base64
 import hashlib

@@ -1,4 +1,4 @@
-"""Storage adapters available to the image synchronization client."""
+"""图片同步客户端可使用的存储适配器。"""
 
 from .cloudflare_r2_provider import CloudflareR2Provider
 from .lsky_provider import LskyProvider

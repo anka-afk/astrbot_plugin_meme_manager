@@ -1,4 +1,4 @@
-"""Cover provider availability during cold startup and plugin reloads."""
+"""覆盖冷启动及插件重载期间提供方的可用状态。"""
 
 import tempfile
 import unittest
@@ -43,7 +43,7 @@ class AutoCollectStartupTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cold_start_defers_missing_provider_without_warning(self):
         context = self.sender.context
-        # Other providers do not imply that the selected vision provider is ready.
+        # 其他提供方可用，并不代表所选视觉提供方已经就绪。
         context.provider_manager.inst_map["other"] = SimpleNamespace()
 
         await self.sender.initialize()

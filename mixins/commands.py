@@ -23,24 +23,24 @@ from ..config import COMMUNITY_INDEX_URL
 
 
 class CategoryCreationCancelled(Exception):
-    """Signal that the sender cancelled category creation."""
+    """表示发送者取消了分类创建。"""
 
 
 class ConfirmationCancelled(Exception):
-    """Signal that the sender cancelled a pending operation."""
+    """表示发送者取消了待处理操作。"""
 
 
 class SenderScopedSessionFilter(SessionFilter):
-    """Keep interactive commands scoped to their original sender and session."""
+    """将交互命令限制在原始发送者与会话内。"""
 
     def filter(self, event: AstrMessageEvent) -> str:
-        """Build an unambiguous key for the waiting sender.
+        """为等待中的发送者构造无歧义的键。
 
         Args:
-            event: Incoming event whose session and sender identify the waiter.
+            event: 以会话和发送者标识等待者的传入事件。
 
         Returns:
-            Serialized session and sender identifiers.
+            序列化后的会话及发送者标识符。
         """
         return json.dumps([event.unified_msg_origin, str(event.get_sender_id())])
 
@@ -212,13 +212,13 @@ class CommandMixin:
     @filter.permission_type(filter.PermissionType.ADMIN)
     @meme_manager.command("收集表情")
     async def collect_memes(self, event: AstrMessageEvent):
-        """Collect quoted images using the configured classification pipeline.
+        """通过配置的分类管线收集引用图片。
 
         Args:
-            event: Administrator command with a quote or attached images.
+            event: 包含引用或附带图片的管理员命令。
 
         Yields:
-            Acknowledgment of submission or an actionable error.
+            提交确认或可据此处理的错误。
         """
         event.set_extra("meme_manager_manual_collection_command", True)
         response = await self.manual_collect_manager.quick(event)
@@ -228,13 +228,13 @@ class CommandMixin:
     @filter.permission_type(filter.PermissionType.ADMIN)
     @meme_manager.command("开始收集")
     async def start_collecting_memes(self, event: AstrMessageEvent):
-        """Begin a sender-scoped continuous image collection session.
+        """开始按发送者隔离的连续图片收集会话。
 
         Args:
-            event: Administrator command identifying the chat and collector.
+            event: 标识聊天与收集者的管理员命令。
 
         Yields:
-            Target pack, review behavior, and stop instructions.
+            目标表情包、复核行为及停止指引。
         """
         event.set_extra("meme_manager_manual_collection_command", True)
         response = await self.manual_collect_manager.start(event)
@@ -248,13 +248,13 @@ class CommandMixin:
     @filter.permission_type(filter.PermissionType.ADMIN)
     @meme_manager.command("结束收集")
     async def stop_collecting_memes(self, event: AstrMessageEvent):
-        """Stop receiving images and report completed and pending outcomes.
+        """停止接收图片，报告已完成及待处理结果。
 
         Args:
-            event: Administrator command identifying the active collector.
+            event: 标识当前收集者的管理员命令。
 
         Yields:
-            Current aggregate results without cancelling queued jobs.
+            当前累计结果，不取消已排队任务。
         """
         event.set_extra("meme_manager_manual_collection_command", True)
         yield event.plain_result(self.manual_collect_manager.stop(event))

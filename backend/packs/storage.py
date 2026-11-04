@@ -71,7 +71,7 @@ ARCHIVE_JSON_SIZE_LIMITS = {
 
 
 class InstallCancelledError(RuntimeError):
-    """Raised when an operator cancels an in-progress pack installation."""
+    """操作人员取消正在进行的表情包安装时抛出。"""
 
 
 def _build_accelerated_url(raw_url: str, github_accelerator_url: str) -> str:
@@ -453,21 +453,21 @@ def create_local_pack(
     operation_guard=None,
     pack_id: str | None = None,
 ) -> dict:
-    """Create a named local pack without changing the current default.
+    """创建具名本地表情包，不改变当前默认选包。
 
     Args:
-        name: User-visible name, between one and 80 characters.
-        description: Optional description, at most 500 characters.
-        operation_guard: Optional runtime mutation guard.
-        pack_id: Optional user-chosen pack ID. When empty a random ID is used.
+        name: 用户可见名称，长度为 1 至 80 个字符。
+        description: 可选描述，最多 500 个字符。
+        operation_guard: 可选的运行时变更保护器。
+        pack_id: 可选的用户指定表情包 ID，留空时使用随机 ID。
 
     Returns:
-        Identity and name of the newly registered pack.
+        新注册表情包的标识与名称。
 
     Raises:
-        ValueError: The supplied name, description or pack ID is invalid, or
-            the requested pack ID is already taken.
-        OSError: The pack or registry cannot be written.
+        ValueError: 提供的名称、描述或表情包 ID 无效，或
+            请求的表情包 ID 已被占用。
+        OSError: 无法写入表情包或注册表。
     """
     import secrets
 
@@ -1044,9 +1044,9 @@ def import_pack_archive(
             and vector_files_present
             and semantic_file.is_file()
         )
-        # Archive metadata cannot authenticate native index bytes. Preserve
-        # portable descriptions and build indexes locally instead of parsing
-        # externally supplied FAISS files in the AstrBot process.
+        # 压缩包元数据无法验证原生索引字节的可信性，因此保留
+        # 可移植的描述，并在本地构建索引，不在 AstrBot 进程中
+        # 解析外部提供的 FAISS 文件。
         if restore_candidate:
             vector_warning = (
                 "已保留图片和语义描述；压缩包向量不直接载入，请在本机重建索引。"
@@ -1665,8 +1665,8 @@ def install_pack_from_github_source(
         github_accelerator_url: 可选的 GitHub 加速地址。
         progress_callback: 安装阶段、已下载字节和总字节的回调。
         cancel_check: 返回 True 时终止安装的协作式取消检查。
-        preserve_existing_selection: Preserve selection rules and empty packs.
-        expected_pack_id: Require this manifest ID without allocating a suffix.
+        preserve_existing_selection: 保留选包规则与空表情包。
+        expected_pack_id: 要求清单 ID 与此值一致，不分配后缀。
 
     Returns:
         已安装表情包的信息。
@@ -2142,8 +2142,8 @@ def import_runtime_backup(
             else None
         )
         semantic_indexes_dir = PLUGIN_DATA_DIR / "semantic_indexes"
-        # Keep rollback sources outside the temporary workspace so a failed
-        # rollback never lets TemporaryDirectory remove the original library.
+        # 将回滚来源保留在临时工作区外，避免回滚失败时
+        # TemporaryDirectory 清理掉原始图库。
         old_packs_dir = PACKS_DIR.with_name(f".packs-{workspace.name}.old")
         old_indexes_dir = semantic_indexes_dir.with_name(
             f".indexes-{workspace.name}.old"

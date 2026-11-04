@@ -1,4 +1,4 @@
-"""Regression coverage for pack-scoped WebUI write operations.
+"""限定表情包范围的 WebUI 写入操作回归覆盖。
 
 管理页切换到非默认表情包后，写接口必须落到被管理的那个包，
 而不是固定写入默认包。

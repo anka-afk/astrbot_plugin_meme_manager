@@ -4,53 +4,53 @@ from ..interfaces.image_host import ImageHostInterface, ImageInfo
 
 
 class ProviderTemplate(ImageHostInterface):
-    """Template for adapters implementing complete inventories and atomic downloads."""
+    """适配器模板，实现完整清单与原子下载。"""
 
     def __init__(self, config: dict):
         self.config = config
 
     def upload_image(self, file_path: Path) -> ImageInfo:
-        """Upload a file using its path relative to config['local_dir'].
+        """使用相对于 config['local_dir'] 的路径上传文件。
 
         Args:
-            file_path: Local image within the configured root.
+            file_path: 已配置根目录内的本地图片。
 
         Returns:
-            Opaque id, relative_path, filename, category and optional size,
-            sha256, etag, modified and public url fields.
+            不透明 id、relative_path、filename、category 以及可选的 size、
+            sha256、etag、modified 和公开 url 字段。
         """
         raise NotImplementedError
 
     def delete_image(self, image_id: str) -> bool:
-        """Delete the opaque ID returned by this adapter.
+        """删除此适配器返回的不透明 ID。
 
         Args:
-            image_id: Provider-native object identifier.
+            image_id: 提供方原生对象标识符。
 
         Returns:
-            Whether the object is now absent.
+            对象当前是否已不存在。
         """
         raise NotImplementedError
 
     def get_image_list(self) -> list[ImageInfo]:
-        """List every image in the configured namespace.
+        """列出已配置命名空间内的所有图片。
 
         Returns:
-            A complete list using the same relative paths as upload_image.
+            完整清单，使用与 upload_image 相同的相对路径。
 
         Raises:
-            Exception: Any page or directory could not be listed completely.
+            Exception: 任一页或目录无法完整列出。
         """
         raise NotImplementedError
 
     def download_image(self, image_info: ImageInfo, save_path: Path) -> bool:
-        """Use save_image_stream to validate and atomically publish a download.
+        """使用 save_image_stream 校验下载内容并原子发布。
 
         Args:
-            image_info: Metadata returned by get_image_list.
-            save_path: Local destination.
+            image_info: get_image_list 返回的元数据。
+            save_path: 本地目标路径。
 
         Returns:
-            Whether the complete image was saved.
+            是否保存了完整图片。
         """
         raise NotImplementedError

@@ -1,4 +1,4 @@
-"""Reviewable community updates with three-way merging and recoverable backups."""
+"""可预览的社区更新，支持三方合并与可恢复备份。"""
 
 import hashlib
 import json
@@ -27,17 +27,17 @@ ORIGIN_FILE = ".community-origin.json"
 
 
 def snapshot(pack: Path) -> dict:
-    """Read file fingerprints and effective category descriptions.
+    """读取文件指纹及生效的分类描述。
 
     Args:
-        pack: Validated local or staged pack directory.
+        pack: 已校验的本地或暂存表情包目录。
 
     Returns:
-        Image hashes, categories, version and a fingerprint of all pack files.
+        图片哈希、分类、版本及全部表情包文件的指纹。
 
     Raises:
-        ValueError: The directory contains links or invalid metadata.
-        OSError: A file cannot be read.
+        ValueError: 目录包含链接或无效元数据。
+        OSError: 无法读取文件。
     """
     storage._require_regular_tree(pack, "检查更新")
     manifest = validate_pack_directory(pack)
@@ -89,10 +89,10 @@ def snapshot(pack: Path) -> dict:
 
 
 def community_update_status() -> dict:
-    """Return fresh install/update state only for entries present in the catalog.
+    """仅为目录中存在的条目返回最新安装或更新状态。
 
     Returns:
-        Status keyed by catalog pack ID, including the latest recovery backup.
+        以目录表情包 ID 为键的状态，包含最新恢复备份。
     """
     installed = {pack["id"]: pack for pack in storage.list_installed_packs()}
     result = {}
@@ -142,24 +142,24 @@ def prepare_update(
     operation_guard=None,
     cancel_check=None,
 ) -> dict:
-    """Download an isolated candidate without modifying installed files.
+    """下载独立的候选资源，不修改已安装文件。
 
-    This synchronous operation includes HTTP downloads and archive processing.
-    Async callers must offload the entire operation with asyncio.to_thread;
-    the WebUI does this through _run_guarded_pack_file_operation.
+    本同步操作包括 HTTP 下载与压缩包处理。
+    异步调用方必须通过 asyncio.to_thread 在线程中执行整个操作；
+    WebUI 通过 _run_guarded_pack_file_operation 完成此处理。
 
     Args:
-        pack_id: Catalog and installed pack ID.
-        github_accelerator_url: Configured download accelerator.
-        operation_guard: Optional caller operation guard.
-        cancel_check: Cooperative cancellation callback for downloads and staging.
+        pack_id: 目录及已安装表情包的 ID。
+        github_accelerator_url: 已配置的下载加速地址。
+        operation_guard: 可选的调用方操作保护器。
+        cancel_check: 下载及暂存阶段的协作取消回调。
 
     Returns:
-        A random session token for subsequent previews.
+        用于后续预览的随机会话令牌。
 
     Raises:
-        ValueError: Source, downloaded identity or version is inconsistent.
-        FileNotFoundError: The catalog entry or installed pack is missing.
+        ValueError: 来源、下载资源的标识或版本不一致。
+        FileNotFoundError: 目录条目或已安装表情包不存在。
     """
     pack_id = validate_pack_id(pack_id)
     if pack_id in {".", ".."}:
@@ -278,18 +278,18 @@ def prepare_update(
 
 
 def plan_update(data: dict, operation_guard=None) -> dict:
-    """Compute a deterministic merge plan, including unresolved category mappings.
+    """计算确定性的合并方案，包含尚未解决的分类映射。
 
     Args:
-        data: Session, strategy, file decisions, category mappings and removals.
-        operation_guard: Optional caller operation guard.
+        data: 会话、策略、文件决策、分类映射及删除项。
+        operation_guard: 可选的调用方操作保护器。
 
     Returns:
-        A serializable plan and token tied to the current local snapshot.
+        可序列化的方案及与当前本地快照绑定的令牌。
 
     Raises:
-        ValueError: A session or requested decision is invalid.
-        RuntimeError: The session expired or its source changed.
+        ValueError: 会话或请求的决策无效。
+        RuntimeError: 会话过期或来源发生变化。
     """
     token = data.get("session", "")
     if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{32}", token):
@@ -524,20 +524,20 @@ def plan_update(data: dict, operation_guard=None) -> dict:
 def commit_snapshot(
     pack_id: str, prepared: Path, version: str, index: Path | None, kind: str
 ) -> dict:
-    """Swap a staged pack with temporary rollback and preserve the local index.
+    """替换暂存表情包，提供临时回滚并保留本地索引。
 
     Args:
-        pack_id: Installed pack ID held under the caller's mutation lock.
-        prepared: Complete staged pack to install.
-        version: Version written to the installed registry entry.
-        index: Optional saved vector directory to restore.
-        kind: Operation label stored in the recovery record.
+        pack_id: 由调用方变更锁保护的已安装表情包 ID。
+        prepared: 待安装的完整暂存表情包。
+        version: 写入已安装注册表条目的版本。
+        index: 可选的待恢复向量目录。
+        kind: 保存在恢复记录中的操作标签。
 
     Returns:
-        Identity and timestamp of the completed operation.
+        已完成操作的标识与时间戳。
 
     Raises:
-        OSError: Replacement failed and the original contents were restored.
+        OSError: 替换失败，原始内容已恢复。
     """
     target = storage.PACKS_DIR / pack_id
     current_index = storage.PLUGIN_DATA_DIR / "semantic_indexes" / pack_id
@@ -603,18 +603,18 @@ def commit_snapshot(
 
 
 def apply_update(data: dict, operation_guard=None) -> dict:
-    """Apply exactly the reviewed plan, preserving local data unless authorized.
+    """严格应用已审核的方案，未经授权时保留本地数据。
 
     Args:
-        data: Reviewed preview request with plan_token and replacement acknowledgment.
-        operation_guard: Optional caller mutation guard.
+        data: 已审核的预览请求，含 plan_token 与替换确认。
+        operation_guard: 可选的调用方变更保护器。
 
     Returns:
-        Updated pack identity and recovery backup information.
+        更新后的表情包标识及恢复备份信息。
 
     Raises:
-        RuntimeError: The preview is stale or a conflict remains unresolved.
-        ValueError: Complete replacement was not explicitly acknowledged.
+        RuntimeError: 预览已过时或仍存在未解决的冲突。
+        ValueError: 未明确确认完整替换。
     """
     plan = plan_update(data)
     session = storage.TEMP_DIR / "community_updates" / plan["session"]
@@ -740,18 +740,18 @@ def apply_update(data: dict, operation_guard=None) -> dict:
 
 
 def restore_update(data: dict, operation_guard=None) -> dict:
-    """Preview or restore a previously saved backup with failure rollback.
+    """预览或恢复先前保存的备份，并提供失败回滚。
 
     Args:
-        data: Backup ID, preview flag and current-content confirmation token.
-        operation_guard: Optional caller mutation guard.
+        data: 备份 ID、预览标志及当前内容确认令牌。
+        operation_guard: 可选的调用方变更保护器。
 
     Returns:
-        Restore preview or recovery information for the replaced contents.
+        恢复预览，或被替换内容的恢复信息。
 
     Raises:
-        ValueError: Backup identity or confirmation is invalid.
-        RuntimeError: Contents changed after confirmation.
+        ValueError: 备份标识或确认信息无效。
+        RuntimeError: 确认后内容发生变化。
     """
     backup_id = data.get("backup_id", "")
     if not isinstance(backup_id, str) or not re.fullmatch(r"[0-9a-f]{32}", backup_id):

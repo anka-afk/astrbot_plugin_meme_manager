@@ -13,12 +13,12 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 @dataclass(frozen=True, slots=True)
 class ImageMatch:
-    """Describe a byte-identical image and an optional visual review hint.
+    """描述字节完全相同的图片及可选的视觉复核提示。
 
     Args:
-        exact_path: Existing image with identical SHA-256, if found.
-        similar_path: Static image with a nearby dHash, for human review only.
-        distance: Number of differing dHash bits for the visual hint.
+        exact_path: 已找到的 SHA-256 完全相同的现有图片。
+        similar_path: dHash 接近的静态图片，仅供人工复核参考。
+        distance: 视觉提示对应的 dHash 差异位数。
     """
 
     exact_path: Path | None = None
@@ -27,13 +27,13 @@ class ImageMatch:
 
 
 class AutoCollectImageIndex:
-    """Cache file fingerprints per pack, with bounded least-recently-used packs."""
+    """按表情包缓存文件指纹，以最近最少使用策略限制缓存数量。"""
 
     def __init__(self, max_packs: int = 8):
-        """Initialize an index safe for concurrent background lookups.
+        """初始化可供后台并发查询的索引。
 
         Args:
-            max_packs: Maximum number of pack manifests retained in memory.
+            max_packs: 内存中最多保留的表情包清单数量。
         """
         self.max_packs = max(1, max_packs)
         self._packs: OrderedDict[Path, dict[Path, tuple[int, int, str, int | None]]] = (
@@ -43,13 +43,13 @@ class AutoCollectImageIndex:
 
     @staticmethod
     def _difference_hash(path: Path) -> int | None:
-        """Decode a bounded static image for an advisory visual fingerprint.
+        """在大小限制内解码静态图片，生成参考用的视觉指纹。
 
         Args:
-            path: Image to inspect.
+            path: 待检查的图片。
 
         Returns:
-            A 64-bit dHash, or None for animated, oversized, or invalid images.
+            64 位 dHash；动画、过大或无效图片返回 None。
         """
         try:
             with Image.open(path) as image:
@@ -74,20 +74,20 @@ class AutoCollectImageIndex:
     def lookup(
         self, pack_root: Path, digest: str, candidate_path: Path | None = None
     ) -> ImageMatch:
-        """Refresh cheap file stats and find an exact match or a review hint.
+        """刷新低开销的文件状态，查找完全匹配项或复核提示。
 
-        This method performs disk reads and image decoding. Async callers must
-        use a worker thread. Only changed files are hashed again. Visual hashes
-        are computed lazily when a candidate image is supplied. Approximate
-        matches must never be treated as duplicates: text variants may matter.
+        本方法会读取磁盘并解码图片，异步调用方必须
+        使用工作线程。仅重新计算变更文件的哈希。视觉哈希
+        仅在提供候选图片时按需计算。近似匹配
+        不能视为重复图片，因为文字差异可能具有实际意义。
 
         Args:
-            pack_root: Directory containing the target pack's images.
-            digest: SHA-256 of the candidate's original bytes.
-            candidate_path: Optional candidate file for visual similarity hints.
+            pack_root: 目标表情包的图片目录。
+            digest: 候选图片原始字节的 SHA-256。
+            candidate_path: 可选的候选文件，用于提供视觉相似度提示。
 
         Returns:
-            Exact match or closest static-image hint within five differing bits.
+            完全匹配项，或差异不超过五位的最接近静态图片提示。
         """
         root = Path(pack_root).resolve()
         with self._lock:

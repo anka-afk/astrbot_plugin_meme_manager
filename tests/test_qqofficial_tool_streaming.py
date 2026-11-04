@@ -1,4 +1,4 @@
-"""Exercise the real QQ group stream buffer with mocked network delivery only."""
+"""仅模拟网络投递，验证真实 QQ 群流式缓冲区。"""
 
 import asyncio
 import json

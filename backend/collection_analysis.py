@@ -36,17 +36,17 @@ def _probability(value: Any) -> float | None:
 
 
 def parse_understanding(raw_text: str, *, vision_model: str) -> dict[str, Any]:
-    """Parse independent evidence without assigning a semantic category.
+    """解析独立证据，不指定语义分类。
 
     Args:
-        raw_text: Visual provider's structured text response.
-        vision_model: Provider identifier recorded as the evidence source.
+        raw_text: 视觉提供方返回的结构化文本。
+        vision_model: 作为证据来源记录的提供方标识符。
 
     Returns:
-        Bounded description, tags, visible text, and chat-use evidence.
+        已限制长度的描述、标签、可见文字及聊天用途证据。
 
     Raises:
-        ValueError: The response is malformed or required evidence is missing.
+        ValueError: 响应格式错误或缺少必需证据。
     """
     text = str(raw_text or "").strip()
     try:
@@ -86,16 +86,16 @@ def build_decision_request(
     content_review_enabled: bool,
     content_review_prompt: str,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, str]]:
-    """Build one shared-state request with independent Noul and Choice tasks.
+    """使用共享状态构造请求，包含相互独立的 Noul 与 Choice 任务。
 
     Args:
-        understanding: Category-independent visual evidence.
-        categories: Current destination pack's categories and descriptions.
-        content_review_enabled: Whether the optional content rule is evaluated.
-        content_review_prompt: User-configured collection policy, when enabled.
+        understanding: 独立于分类的视觉证据。
+        categories: 目标表情包当前的分类及描述。
+        content_review_enabled: 是否评估可选的内容规则。
+        content_review_prompt: 启用时使用的用户自定义收集规则。
 
     Returns:
-        Evidence state, fixed questions, and short-key-to-category mapping.
+        证据状态、固定问题及短键到分类的映射。
     """
     option_to_category = {
         f"c{index}": category for index, category in enumerate(categories)
@@ -159,15 +159,15 @@ def collection_decision_failure(
     decision_model: str,
     code: str,
 ) -> dict[str, Any]:
-    """Keep reliable evidence when judgment fails instead of rejecting the image.
+    """判断失败时保留可靠证据，而不是拒收图片。
 
     Args:
-        understanding: Successfully generated visual evidence.
-        decision_model: Configured or reported decision model.
-        code: Sanitized stable error code.
+        understanding: 已成功生成的视觉证据。
+        decision_model: 配置或服务报告的决策模型。
+        code: 已清理敏感信息的稳定错误码。
 
     Returns:
-        A persistent record requiring explicit human review.
+        需要人工明确复核的持久化记录。
     """
     reason = str(code or "decision_failed")[:100]
     return {
@@ -202,19 +202,19 @@ def normalize_decision_answers(
     min_meme_confidence: float,
     min_category_confidence: float,
 ) -> dict[str, Any]:
-    """Validate every required answer before routing acceptance or rejection.
+    """在决定接收或拒收前校验所有必需答案。
 
     Args:
-        answers: Complete service answer mapping.
-        questions: Exact questions sent in this operation.
-        option_to_category: Allowed category keys for the current pack.
-        understanding: Reliable visual evidence to retain if review is needed.
-        decision_model: Configured or reported model identifier.
-        min_meme_confidence: Positive probability threshold, with an uncertain middle.
-        min_category_confidence: Minimum selected-category probability.
+        answers: 服务返回的完整答案映射。
+        questions: 本次操作实际发送的问题。
+        option_to_category: 当前表情包允许的分类键。
+        understanding: 需要复核时保留的可靠视觉证据。
+        decision_model: 配置或服务报告的模型标识符。
+        min_meme_confidence: 正向概率阈值，中间区间视为不确定。
+        min_category_confidence: 所选分类的最低概率。
 
     Returns:
-        A collection decision with explicit rejection or human-review reasons.
+        包含明确拒收或人工复核原因的收集决策。
     """
     if not isinstance(answers, dict) or set(answers) != set(questions):
         return collection_decision_failure(
@@ -287,8 +287,8 @@ def normalize_decision_answers(
         review_reasons.append("category_confidence_low")
 
     rejection_reason = ""
-    # Complete answer validation precedes routing; a conclusive refusal does not
-    # require finding a category for an image which will never be collected.
+    # 先完成全部答案校验再决定路由；已明确拒收的图片
+    # 不会进入收集流程，因此无需继续为其寻找分类。
     if meme_negative:
         rejection_reason = "not_meme"
     elif content_result == "reject":

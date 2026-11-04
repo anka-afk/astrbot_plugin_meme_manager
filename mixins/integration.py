@@ -1,4 +1,4 @@
-"""Public pack-management interfaces for other plugins."""
+"""供其他插件使用的公开表情包管理接口。"""
 
 import asyncio
 
@@ -7,19 +7,19 @@ from ..backend.packs.protocol import validate_pack_id
 
 
 class IntegrationMixin:
-    """Expose pack operations through the plugin instance."""
+    """通过插件实例提供表情包操作。"""
 
     async def get_pack_status(self, pack_id: str) -> dict:
-        """Read local pack availability without network access.
+        """读取本地表情包可用状态，不访问网络。
 
         Args:
-            pack_id: Pack identity to inspect.
+            pack_id: 待检查的表情包标识。
 
         Returns:
-            Pack ID, local image count, and missing, ready, or error status.
+            表情包 ID、本地图片数量及 missing、ready 或 error 状态。
 
         Raises:
-            ValueError: The pack ID is invalid.
+            ValueError: 表情包 ID 无效。
         """
         pack_id = validate_pack_id(pack_id, "pack_id")
         try:
@@ -37,18 +37,18 @@ class IntegrationMixin:
     async def install_pack(
         self, source: dict, *, expected_pack_id: str | None = None
     ) -> dict:
-        """Install a caller-selected source while preserving existing selections.
+        """安装调用方选择的来源，并保留现有选包规则。
 
         Args:
-            source: GitHub source descriptor with repo, ref, and subpath.
-            expected_pack_id: Optional required manifest ID; collisions fail.
+            source: 包含 repo、ref 与 subpath 的 GitHub 来源描述。
+            expected_pack_id: 可选的必需清单 ID，冲突时失败。
 
         Returns:
-            The storage install result, including the actual pack ID.
+            存储层安装结果，包含实际表情包 ID。
 
         Raises:
-            ValueError: Source, archive, or expected identity is invalid.
-            FileExistsError: The required pack ID already exists.
+            ValueError: 来源、压缩包或预期标识无效。
+            FileExistsError: 所要求的表情包 ID 已存在。
         """
         if expected_pack_id is not None:
             expected_pack_id = validate_pack_id(expected_pack_id, "expected_pack_id")

@@ -1,4 +1,4 @@
-"""Shared batch and incremental meme parsing, independent of AstrBot and IO."""
+"""共享的批量与增量表情解析逻辑，独立于 AstrBot 和输入输出。"""
 
 from .parser import MemeParser
 from .types import MemeToken, ParseResult

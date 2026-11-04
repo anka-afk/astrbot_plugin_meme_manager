@@ -357,19 +357,19 @@ def index_is_ready(
     *,
     allow_partial: bool = False,
 ) -> bool:
-    """Check whether the saved index matches the current semantic records.
+    """检查已保存索引是否匹配当前语义记录。
 
     Args:
-        plugin_data_dir: Directory containing local indexes.
-        pack_id: Pack identifier.
-        metadata: Current semantic records.
-        embedding_provider_id: Expected provider identifier, if specified.
-        embedding_model: Expected model name, if specified.
-        embedding_dimension: Expected vector dimension, if specified.
-        allow_partial: Accept an index with at least one unchanged, completed entry.
+        plugin_data_dir: 本地索引所在目录。
+        pack_id: 表情包标识符。
+        metadata: 当前语义记录。
+        embedding_provider_id: 预期的提供方标识符（如有指定）。
+        embedding_model: 预期的模型名称（如有指定）。
+        embedding_dimension: 预期的向量维度（如有指定）。
+        allow_partial: 接受至少有一个未变更且已完成条目的索引。
 
     Returns:
-        Whether the index has the required matching entries and provider signature.
+        索引是否包含所需的匹配条目与提供方签名。
     """
     manifest = load_index_manifest(plugin_data_dir, pack_id)
     if manifest.get("index_format") != INDEX_FORMAT:
@@ -482,25 +482,25 @@ async def build_index(
     incremental_only: bool = False,
     target_entry_ids: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Build a FAISS index while reusing compatible vectors.
+    """构建 FAISS 索引，并复用兼容向量。
 
     Args:
-        pack_dir: Directory containing the pack's images and semantic records.
-        plugin_data_dir: Plugin runtime directory containing local indexes.
-        pack_id: Pack identifier.
-        embedding: Provider adapter used to generate missing vectors.
-        force: Regenerate all vectors instead of reusing the saved index.
-        incremental_only: Reject damaged existing indexes instead of regenerating
-            unchanged entries through the embedding provider.
-        target_entry_ids: Restrict generation to these entries; reject updates
-            that would require embedding other entries.
+        pack_dir: 表情包图片与语义记录所在目录。
+        plugin_data_dir: 包含本地索引的插件运行数据目录。
+        pack_id: 表情包标识符。
+        embedding: 用于生成缺失向量的提供方适配器。
+        force: 重新生成全部向量，不复用已保存索引。
+        incremental_only: 拒绝损坏的现有索引，避免通过向量提供方
+            重新生成未变更条目的向量。
+        target_entry_ids: 仅为这些条目生成向量；若更新需要
+            生成其他条目的向量，则拒绝更新。
 
     Returns:
-        Saved index manifest and generation statistics.
+        已保存的索引清单及生成统计信息。
 
     Raises:
-        RuntimeError: No descriptions are ready or existing vectors cannot be
-            reused within the requested update scope.
+        RuntimeError: 没有可用的描述，或现有向量无法
+            在请求的更新范围内复用。
     """
     if not embedding.ready:
         raise RuntimeError("未配置 AstrBot 核心向量模型")
@@ -660,8 +660,8 @@ async def build_index(
         Returns:
             已写入磁盘的索引清单。
         """
-        # Validate the inventory before publishing a new index snapshot. A path
-        # enumeration failure must leave the previous manifest untouched.
+        # 发布新索引快照前先校验文件清单；路径枚举失败时
+        # 必须保留先前的清单不变。
         refresh_metadata_inventory_snapshot(pack_dir, metadata)
         successful = [
             (digest, item)
@@ -725,20 +725,20 @@ async def search_index(
     min_score: float = 0.25,
     pack_dir: Path | str | None = None,
 ) -> list[dict[str, Any]]:
-    """Search valid entries, checking current files when a pack directory is supplied.
+    """搜索有效条目；提供表情包目录时检查当前文件。
 
     Args:
-        plugin_data_dir: Directory containing local semantic indexes.
-        pack_id: Pack identifier.
-        query: Text to embed and search.
-        embedding: Configured embedding provider adapter.
-        metadata: Semantic records corresponding to the pack.
-        top_k: Maximum number of valid results.
-        min_score: Minimum cosine similarity score.
-        pack_dir: Pack root used to exclude deleted or replaced candidate files.
+        plugin_data_dir: 本地语义索引所在目录。
+        pack_id: 表情包标识符。
+        query: 待生成向量并检索的文本。
+        embedding: 已配置的向量提供方适配器。
+        metadata: 与表情包对应的语义记录。
+        top_k: 最多返回的有效结果数量。
+        min_score: 最低余弦相似度分数。
+        pack_dir: 表情包根目录，用于排除已删除或替换的候选文件。
 
     Returns:
-        Ranked entries whose semantic content and optional files remain valid.
+        按排名排列、语义内容及可选文件仍有效的条目。
     """
     manifest = await _run_blocking(load_index_manifest, plugin_data_dir, pack_id)
     if manifest.get("index_format") != INDEX_FORMAT:
@@ -760,10 +760,10 @@ async def search_index(
     query_embedding = await embedding.embed(str(query or ""))
 
     def rank_candidates() -> list[dict[str, Any]]:
-        """Rank and validate candidates without blocking the event loop.
+        """在不阻塞事件循环的情况下排序并校验候选。
 
         Returns:
-            Valid candidates, expanding the search when stale entries are skipped.
+            有效候选；跳过过时条目时会扩大搜索范围。
         """
         id_to_digest = {}
         for digest, item in raw_manifest_items.items():
@@ -820,11 +820,11 @@ async def search_index(
                 or float(scores[0][-1]) < float(min_score)
             ):
                 break
-            # Reuse the query vector and only validate newly exposed candidates.
+            # 复用查询向量，仅校验新获取的候选。
             result_limit = min(result_limit * 2, int(index.ntotal))
         if not ranked:
             return []
-        # Public IDs must remain unambiguous across the complete saved index.
+        # 公开 ID 必须在完整的已保存索引中保持无歧义。
         id_map = build_id_map(raw_manifest_items)
         return [
             {

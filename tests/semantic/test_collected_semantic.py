@@ -372,11 +372,11 @@ async def test_incremental_collection_reuses_vectors_and_keeps_existing_search(
     next(item for item in metadata["images"].values() if item.get("caption"))[
         "caption"
     ] = "Stale entry"
-    # A stale top-ranked vector must not hide the remaining valid entry at top_k=1.
+    # top_k=1 时，排名靠前的过时向量不能遮蔽剩余有效条目。
     remaining = await search_index(runtime, "pack", "joy", embedding, metadata, top_k=1)
     assert len(remaining) == 1
     assert remaining[0]["caption"] != "Stale entry"
-    # Changing semantic text must prevent stale vectors from returning that entry.
+    # 语义文本变化后，过时向量不得再返回该条目。
     for item in metadata["images"].values():
         if item.get("caption"):
             item["caption"] = "Changed text"
