@@ -1,0 +1,364 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-11-07T07:19:59Z",
+  "maintainer": "anka-afk",
+  "repository": "anka-afk/astrbot-meme-pack-index",
+  "packs": [
+    {
+      "id": "official-001",
+      "name": "官方表情包1号",
+      "version": "1.0.0",
+      "maintainer": "anka-afk",
+      "description": "AstrBot 官方默认表情包，适合作为初始安装包。",
+      "license": "CC-BY-NC-SA-4.0",
+      "verified": true,
+      "tags": ["official", "default", "starter"],
+      "previews": [
+        "https://raw.githubusercontent.com/anka-afk/astrbot-meme-pack-official-01/main/previews/cover.jpg"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "anka-afk/astrbot-meme-pack-official-01",
+        "ref": "main",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "seio-stickers",
+      "name": "AstrBot娘表情包",
+      "version": "2026.09.0",
+      "maintainer": "anka-afk",
+      "description": "收录 208 个 AstrBot娘动态表情，按 15 个聊天语义类别整理，适合日常对话、情绪表达与互动场景。",
+      "license": "仅限非商业使用；允许下载、分享与分发",
+      "verified": true,
+      "tags": ["official", "seio", "animated", "gif", "non-commercial"],
+      "previews": [
+        "https://raw.githubusercontent.com/anka-afk/seio-stickers/v2026.09.0/previews/cover.jpg"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "anka-afk/seio-stickers",
+        "ref": "v2026.09.0",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "atri-meme-pack",
+      "name": "ATRI 表情包",
+      "version": "1.0.0",
+      "maintainer": "anka-afk",
+      "description": "收录 551 张 ATRI 静态与动态表情，按 15 个聊天语义类别整理，适合日常对话、情绪表达与互动场景。",
+      "license": "仅限非商业使用；素材版权归原作者",
+      "verified": true,
+      "tags": ["official", "atri", "anime", "animated", "non-commercial"],
+      "previews": [
+        "https://raw.githubusercontent.com/anka-afk/atri-meme-pack/v1.0.0/previews/cover.jpg"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "anka-afk/atri-meme-pack",
+        "ref": "v1.0.0",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "congyu-meme-pack",
+      "name": "丛雨表情包",
+      "version": "1.0.0",
+      "maintainer": "anka-afk",
+      "description": "收录 83 张丛雨静态与动态表情，按 12 个聊天语义类别整理，适合日常对话与角色互动。",
+      "license": "仅限非商业使用；素材版权归原作者",
+      "verified": true,
+      "tags": ["official", "congyu", "murasame", "senren-banka", "anime", "animated", "non-commercial"],
+      "previews": [
+        "https://raw.githubusercontent.com/anka-afk/congyu-meme-pack/v1.0.0/previews/cover.jpg"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "anka-afk/congyu-meme-pack",
+        "ref": "v1.0.0",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "juxueli-meme-pack",
+      "name": "橘雪莉表情包",
+      "version": "1.0.0",
+      "maintainer": "anka-afk",
+      "description": "收录 38 张橘雪莉静态表情，按 10 个聊天语义类别整理，适合日常回复、夸赞、疑问、道歉与轻松互动。",
+      "license": "仅限非商业使用；素材版权归原作者",
+      "verified": true,
+      "tags": ["official", "juxueli", "anime", "static", "meme-pack"],
+      "previews": [
+        "https://raw.githubusercontent.com/anka-afk/juxueli-meme-pack/v1.0.0/previews/cover.jpg"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "anka-afk/juxueli-meme-pack",
+        "ref": "v1.0.0",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "laffey2-meme-pack",
+      "name": "拉菲2表情包",
+      "version": "1.0.0",
+      "maintainer": "anka-afk",
+      "description": "收录 148 个拉菲2动态表情，按 16 个聊天语义类别整理。素材制作：Z-wumi；来源：哔哩哔哩《进来看我做的兔兔表情包》（https://b23.tv/hNxBp02）。",
+      "license": "经授权发布；素材版权归原权利人，详见仓库 LICENSE",
+      "verified": true,
+      "tags": ["official", "laffey", "laffey2", "anime", "animated", "gif", "meme-pack"],
+      "previews": [
+        "https://raw.githubusercontent.com/anka-afk/laffey2-meme-pack/v1.0.0/previews/cover.jpg"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "anka-afk/laffey2-meme-pack",
+        "ref": "v1.0.0",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "clover-days-meme-pack",
+      "name": "Clover Days 表情包 · 鹰仓杏铃",
+      "version": "1.0.0",
+      "maintainer": "anka-afk",
+      "description": "收录 78 张静态表情，以鹰仓杏铃为主，按 12 个聊天语义类别整理。",
+      "license": "原素材许可未指定；版权归各权利人，详见 LICENSE",
+      "verified": true,
+      "tags": ["official", "clover-days", "鹰仓杏铃", "anime", "static", "meme-pack"],
+      "previews": [
+        "https://raw.githubusercontent.com/anka-afk/clover-days-meme-pack/v1.0.0/previews/cover.jpg"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "anka-afk/clover-days-meme-pack",
+        "ref": "v1.0.0",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "blue-fat-fish-meme-pack",
+      "name": "蓝色大肥鱼表情包",
+      "version": "1.0.0",
+      "maintainer": "anka-afk",
+      "description": "收录 157 个蓝色大肥鱼动态表情，按 15 个聊天语义类别整理，适合日常回复、情绪表达与互动。",
+      "license": "原素材许可未指定；版权归各权利人，详见 LICENSE",
+      "verified": true,
+      "tags": ["official", "blue-fat-fish", "animated", "gif", "meme-pack"],
+      "previews": [
+        "https://raw.githubusercontent.com/anka-afk/blue-fat-fish-meme-pack/v1.0.0/previews/cover.jpg"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "anka-afk/blue-fat-fish-meme-pack",
+        "ref": "v1.0.0",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "deepseek-fanart-meme-pack",
+      "name": "DeepSeek 二创表情包",
+      "version": "1.0.0",
+      "maintainer": "anka-afk",
+      "description": "收录 174 张 DeepSeek 二创图片，包含插画、聊天梗图、拟人角色和少量动画，按 13 个聊天语义类别整理。",
+      "license": "原素材许可未指定；版权归各权利人，详见 LICENSE",
+      "verified": true,
+      "tags": ["official", "deepseek", "fanart", "anime", "mixed-style", "meme-pack"],
+      "previews": [
+        "https://raw.githubusercontent.com/anka-afk/deepseek-fanart-meme-pack/v1.0.0/previews/cover.jpg"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "anka-afk/deepseek-fanart-meme-pack",
+        "ref": "v1.0.0",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "ddzs987-semantic-001",
+      "name": "官方表情包1号 · 社区语义增强版",
+      "version": "1.1.0",
+      "maintainer": "DDZS987",
+      "description": "基于官方表情包1号制作的社区语义增强版，包含 398 张图片和 398 条路径级语义描述，不分发本机向量；安装后可按当前向量模型重建。",
+      "license": "CC-BY-NC-SA-4.0",
+      "verified": false,
+      "tags": ["community", "semantic", "v2", "starter"],
+      "previews": [
+        "https://raw.githubusercontent.com/DDZS987/astrbot-meme-pack-semantic-01/v1.1.0/previews/cover.jpg"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "DDZS987/astrbot-meme-pack-semantic-01",
+        "ref": "v1.1.0",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "yctf-taffy",
+      "name": "永雏塔菲表情包",
+      "version": "1.0.0",
+      "maintainer": "flybode",
+      "description": "永雏塔菲（含小菲）表情包合集：收录 B 站官方/粉丝整理的 2D 与 3D 动图，覆盖 19 个常见情绪与动作类别，适合在聊天、评论、直播互动中使用。",
+      "license": "CC-BY-NC-SA-4.0",
+      "verified": false,
+      "tags": ["永雏塔菲", "taffy", "小菲", "vtuber", "anime", "bilibili", "meme-pack"],
+      "previews": [
+        "https://raw.githubusercontent.com/flybode/yctf-taffy-meme-pack/main/previews/cover.jpg"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "flybode/yctf-taffy-meme-pack",
+        "ref": "main",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "kipfel",
+      "name": "Kipfel 表情包",
+      "version": "1.1.0",
+      "maintainer": "momo-OwO-qwq",
+      "description": "Kipfel 猫猫表情包合集，按聊天语义分类整理，适合日常闲聊、卖萌互动与情绪表达。",
+      "license": "仅限非商业使用；素材版权归原作者",
+      "verified": false,
+      "tags": ["kipfel", "cat", "moe", "anime", "meme-pack", "gif"],
+      "previews": [
+        "https://raw.githubusercontent.com/momo-OwO-qwq/astrbot-meme-pack-kipfel/master/previews/cover.jpg"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "momo-OwO-qwq/astrbot-meme-pack-kipfel",
+        "ref": "master",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "emilia-chibi-meme-pack",
+      "name": "爱蜜莉雅 Q版表情包",
+      "maintainer": "just1cez",
+      "description": "120 张爱蜜莉雅 Q版透明 PNG，覆盖 21 个聊天分类，附逐图中文描述和细粒度标签，不包含本机向量。",
+      "license": "MIT",
+      "verified": false,
+      "tags": [
+        "emilia",
+        "semantic",
+        "ai-generated",
+        "anime",
+        "community",
+        "png"
+      ],
+      "previews": [
+        "https://raw.githubusercontent.com/just1cez/emilia-meme-pack/main/previews/cover.png"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "just1cez/emilia-meme-pack",
+        "ref": "main",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "steins-gate-0",
+      "name": "命运石之门0",
+      "maintainer": "Shennoter",
+      "description": "命运石之门0的角色在聊天工具Rine里用到的表情包。汉化作者为幸运的兔脚。",
+      "license": "CC-BY-NC-SA-4.0",
+      "verified": false,
+      "tags": [
+        "community",
+        "steins-gate-0",
+        "Rine",
+        "anime",
+        "汉化",
+        "聊天表情"
+      ],
+      "previews": [
+        "https://raw.githubusercontent.com/Shennoter/astrbot-meme-pack-steins-gate-0/main/previews/cover.png",
+        "https://raw.githubusercontent.com/Shennoter/astrbot-meme-pack-steins-gate-0/main/previews/all.png"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "Shennoter/astrbot-meme-pack-steins-gate-0",
+        "ref": "main",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "marisa-meme-pack",
+      "name": "魔理沙表情包",
+      "maintainer": "Turino",
+      "description": "收录 165 张魔理沙 Q 版动态表情（500×500 GIF），由 lightbulb128 约稿自 EmoteLab，按 22 个聊天语义类别整理，适合日常对话、吐槽玩梗与情绪表达。",
+      "license": "仅限非商业使用；允许下载、分享与分发；素材版权归原作者，详见仓库 LICENSE",
+      "verified": false,
+      "tags": [
+        "community",
+        "touhou",
+        "marisa",
+        "chibi",
+        "animated",
+        "gif",
+        "meme-pack"
+      ],
+      "previews": [
+        "https://raw.githubusercontent.com/liquidtoy001/astrbot-meme-pack-marisa/v1.0.0/previews/cover.jpg",
+        "https://raw.githubusercontent.com/liquidtoy001/astrbot-meme-pack-marisa/v1.0.0/previews/overview.jpg"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "liquidtoy001/astrbot-meme-pack-marisa",
+        "ref": "v1.0.0",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "izumi-hiyori-meme-pack",
+      "name": "和泉妃爱表情包",
+      "maintainer": "NooAcc",
+      "description": "收录 99 张和泉妃爱（Izumi Hiyori）聊天表情，按 18 个语义类别整理，并附带 99 条路径级语义描述（不含向量，安装后可自行重建）。",
+      "license": "CC-BY-NC-SA-4.0（署名、非商业性使用、相同方式共享）；素材版权归原作者，详见仓库 LICENSE",
+      "verified": false,
+      "tags": [
+        "community",
+        "izumi-hiyori",
+        "anime",
+        "static",
+        "zh-cn",
+        "semantic"
+      ],
+      "previews": [
+        "https://raw.githubusercontent.com/NooAcc/astrbot-meme-IzumiHiyori/v1.0.2/previews/cover.png"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "NooAcc/astrbot-meme-IzumiHiyori",
+        "ref": "v1.0.2",
+        "subpath": "."
+      }
+    },
+    {
+      "id": "chinesebqb-astrbot",
+      "name": "ChineseBQB 中文表情包合集",
+      "maintainer": "DumKing",
+      "description": "整理自 zhaoolee/ChineseBQB，按图片内容分为 28 个情绪/用途分类，收录 5,173 张去重图片，附逐图中文描述与可选语义元数据，不分发本机向量。全量识别后，含义不明、无法完整解码或被标记不宜分发的图片未纳入。",
+      "license": "原素材未提供统一许可证；版权归各权利人。来源与授权说明：https://github.com/DumKing/ChineseBQB-AstrBot/blob/v1.1.0/RIGHTS.md",
+      "verified": false,
+      "tags": [
+        "community",
+        "chinese",
+        "chinesebqb",
+        "semantic",
+        "animated",
+        "static"
+      ],
+      "previews": [
+        "https://raw.githubusercontent.com/DumKing/ChineseBQB-AstrBot/v1.1.0/previews/cover.jpg"
+      ],
+      "source": {
+        "type": "github",
+        "repo": "DumKing/ChineseBQB-AstrBot",
+        "ref": "v1.1.0",
+        "subpath": "."
+      }
+    }
+  ]
+}

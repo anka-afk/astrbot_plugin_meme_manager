@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="浏览 AstrBot 官方和社区表情包，搜索、预览、下载资源，并获取安装来源。">
+  <meta name="theme-color" content="#f7f9f8">
+  <title>表情包资源广场 · AstrBot Meme Manager</title>
+  <link rel="icon" href="./assets/logo.png">
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" type="module"></script>
+</head>
+<body>
+  <a class="skip-link" href="#catalog">跳到资源列表</a>
+  <header class="site-header">
+    <a class="brand" href="./" aria-label="AstrBot 表情包资源广场首页"><img src="./assets/logo.png" width="40" height="40" alt=""><span>AstrBot <strong>表情包广场</strong></span></a>
+    <nav aria-label="主导航"><a href="#catalog" class="nav-active">资源列表</a><a href="#guide">安装指南</a><a class="github-link" href="https://github.com/anka-afk/astrbot_plugin_meme_manager" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a></nav>
+  </header>
+  <main>
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <h1 id="hero-title">AstrBot 表情包<br><span class="accent">资源广场</span><svg class="spark" viewBox="0 0 52 52" aria-hidden="true"><path d="M26 3v14M26 35v14M3 26h14M35 26h14M9 9l10 10M33 33l10 10M9 43l10-10M33 19 43 9"/></svg></h1>
+        <p class="hero-description">浏览官方和社区表情包。<br>选好后，在 AstrBot 的表情包管理器中安装。</p>
+        <div class="hero-actions"><a class="button primary" href="#catalog">浏览资源 <span aria-hidden="true">↓</span></a><a class="text-link" href="https://github.com/anka-afk/astrbot-meme-pack-index#提交社区表情包" target="_blank" rel="noopener noreferrer">提交表情包 <span aria-hidden="true">↗</span></a></div>
+        <div class="hero-meta"><span><strong id="total-count">—</strong> 个表情包</span><span><strong id="creator-count">—</strong> 位维护者</span></div>
+      </div>
+      <div class="hero-art" aria-label="AstrBot 表情包管理器插画">
+        <div class="art-orbit"></div><span class="art-doodle doodle-one" aria-hidden="true">✦</span><span class="art-doodle doodle-two" aria-hidden="true">✳</span>
+        <div class="hero-sticker"><img src="./assets/logo.png" width="380" height="380" alt="蓝发 AstrBot 娘抱着西瓜的表情包管理器插画"></div>
+      </div>
+    </section>
+    <section id="catalog" class="catalog" aria-labelledby="catalog-title">
+      <div class="section-heading"><h2 id="catalog-title">资源列表 <span class="count-bubble" id="section-count">—</span></h2></div>
+      <div class="toolbar">
+        <label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><span class="sr-only">搜索表情包</span><input id="search" type="search" placeholder="搜索名称、标签、维护者或仓库…" autocomplete="off"><kbd aria-hidden="true">/</kbd></label>
+        <label class="sort-box"><span class="sr-only">排序方式</span><select id="sort"><option value="default">默认排序</option><option value="newest">最近收录</option><option value="name">名称 A–Z</option></select></label>
+      </div>
+      <div class="filter-line"><div class="filters" role="group" aria-label="表情包来源"><button type="button" class="filter active" data-group="all" aria-pressed="true">全部资源 <span id="all-count"></span></button><button type="button" class="filter" data-group="official" aria-pressed="false">官方 <span id="official-count"></span></button><button type="button" class="filter" data-group="community" aria-pressed="false">社区 <span id="community-count"></span></button></div><label class="type-filter">类型 <select id="type"><option value="all">全部类型</option><option value="animated">动态表情</option><option value="static">静态表情</option><option value="semantic">语义描述</option><option value="anime">动漫角色</option></select></label></div>
+      <div class="result-line"><p id="result-count" role="status">正在加载资源列表…</p><button type="button" id="refresh" class="refresh">↻ <span>刷新资源</span></button></div>
+      <div id="pack-grid" class="pack-grid" aria-busy="true"></div>
+      <div id="empty-state" class="empty-state" hidden><h3>没有匹配的表情包</h3><p>换个关键词，或清除筛选条件。</p><button type="button" class="button secondary" id="reset-filters">查看全部资源</button></div>
+      <div id="error-state" class="empty-state" hidden><h3>资源列表加载失败</h3><p>请检查网络后重试。</p><button type="button" class="button secondary" id="retry">重新加载</button></div>
+      <p id="sync-status" class="sync-status"></p>
+    </section>
+    <section id="guide" class="guide" aria-labelledby="guide-title"><div class="guide-intro"><h2 id="guide-title">安装和使用</h2><a class="text-link" href="https://github.com/anka-afk/astrbot_plugin_meme_manager#quick-start" target="_blank" rel="noopener noreferrer">查看完整指南 ↗</a></div><ol class="steps"><li><span>01</span><div><h3>安装插件</h3><p>在 AstrBot 插件市场搜索并安装「表情包管理器」。</p></div></li><li><span>02</span><div><h3>安装表情包</h3><p>打开插件资源广场，按名称安装；也可复制本页来源，使用「从 GitHub 安装」。</p></div></li><li><span>03</span><div><h3>设置使用规则</h3><p>在「设置中心 → 使用规则」中选择表情包并保存。</p></div></li></ol></section>
+    <section class="contribute"><div><span class="tiny-star" aria-hidden="true">✳</span><h2>提交社区表情包</h2><p>按表情包规范整理资源后，向社区索引提交 PR 或 Issue。</p></div><a class="button secondary" href="https://github.com/anka-afk/astrbot-meme-pack-index#提交社区表情包" target="_blank" rel="noopener noreferrer">查看提交说明 <span aria-hidden="true">↗</span></a></section>
+  </main>
+  <footer><a class="footer-brand" href="https://github.com/anka-afk/astrbot_plugin_meme_manager" target="_blank" rel="noopener noreferrer">AstrBot Meme Manager</a><p>由社区共同维护 · 图片与角色版权归各权利人</p><a href="https://github.com/anka-afk/astrbot-meme-pack-index" target="_blank" rel="noopener noreferrer">资源索引 ↗</a></footer>
+  <dialog id="pack-dialog" aria-labelledby="detail-title"><button type="button" class="close-dialog" id="close-dialog" aria-label="关闭详情">×</button><div id="detail-content"></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <noscript><p class="noscript">请启用 JavaScript 浏览资源广场，也可以直接访问 <a href="https://github.com/anka-afk/astrbot-meme-pack-index">GitHub 资源索引</a>。</p></noscript>
+</body>
+</html>
