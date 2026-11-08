@@ -272,13 +272,14 @@ AstrBot 内置 `send_message_to_user` 自动支持表情标记和辅助选图，
 
 ## 📜 更新日志
 
-当前版本：v5.3.5
+当前版本：v5.3.6
 
-- 修复语义模式下，独占一行的 `&&meme:图片ID` 漏写结尾 `&&` 时，标记泄漏到正文且无法选图的问题（[#208](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/208)）。
-- 普通与流式回复默认启用这项受限容错，无需新增配置；保留代码等受保护区域和分类标记的原有规则，选图仍须通过本轮候选校验。
-- 「过滤所有标签」保持原有清理范围。
+- 修复第三方请求进入 AstrBot 请求钩子却缺少来源标记时，表情处理静默跳过的问题；保守按插件请求兜底，并复用普通与流式发送监听（[#212](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/212)）。
+- 保留已有来源与触发范围限制：“仅普通聊天”仍不处理插件请求，允许插件请求时才继续处理；完全绕过 AstrBot 钩子的插件仍需接入联动接口。
+- 新增中文来源兜底 INFO 日志与触发范围拒绝 DEBUG 日志，便于排查第三方插件联动。
+- README 新增[公开表情包资源广场](https://ankaanka.org/astrbot_plugin_meme_manager/)入口。
 
-升级后请重载插件。最低要求仍为 AstrBot 4.28.2、Python 3.12，已有配置继续使用。
+升级后请重载插件。最低要求仍为 AstrBot 4.28.2、Python 3.12，已有配置继续使用。需要处理第三方插件请求时，请确认触发范围允许插件请求；排查跳过原因时可将插件日志级别调为 DEBUG。
 
 完整版本记录请查看 [CHANGELOG.md](CHANGELOG.md)。
 
