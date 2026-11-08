@@ -197,13 +197,22 @@ class EventHandlerMixin:
             event.set_extra("meme_manager_send_probability_hit", decision)
         return bool(decision)
 
-    async def _mark_llm_request_origin_impl(self, event: AstrMessageEvent) -> None:
-        """在 AstrBot 构建默认请求前记录本轮 LLM 请求来源。"""
-        origin = (
-            LLM_REQUEST_ORIGIN_PLUGIN
-            if event.get_extra("provider_request") is not None
-            else LLM_REQUEST_ORIGIN_CHAT
-        )
+    async def _mark_llm_request_origin_impl(
+        self, event: AstrMessageEvent, *, origin: str | None = None
+    ) -> None:
+        """Record the request origin and install delivery observers once.
+
+        Args:
+            event: Message event shared by request and delivery hooks.
+            origin: Explicit origin when the waiting hook was bypassed. When
+                omitted, infer the origin before AstrBot builds its request.
+        """
+        if origin is None:
+            origin = (
+                LLM_REQUEST_ORIGIN_PLUGIN
+                if event.get_extra("provider_request") is not None
+                else LLM_REQUEST_ORIGIN_CHAT
+            )
         event.set_extra(LLM_REQUEST_ORIGIN_EXTRA_KEY, origin)
 
         send_message = getattr(event, "send", None)
@@ -1448,7 +1457,24 @@ class EventHandlerMixin:
     async def _inject_meme_prompt_impl(
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
+        if not event.get_extra(LLM_REQUEST_ORIGIN_EXTRA_KEY):
+            # Without the waiting hook, absence of provider_request cannot prove
+            # this is a native chat request. Keep the plugin scope restriction.
+            await self._mark_llm_request_origin_impl(
+                event, origin=LLM_REQUEST_ORIGIN_PLUGIN
+            )
+            logger.info(
+                "[meme_manager] 请求缺少来源标记，按插件请求兜底处理，仍遵守触发范围限制；"
+                "触发范围=%s",
+                normalize_trigger_scope(getattr(self, "trigger_scope", None)),
+            )
         if not self._scope_allows_llm_origin(event):
+            logger.debug(
+                "[meme_manager] 跳过请求的表情处理：来源=%s，触发范围=%s，"
+                "当前触发范围不允许处理该来源",
+                event.get_extra(LLM_REQUEST_ORIGIN_EXTRA_KEY),
+                normalize_trigger_scope(getattr(self, "trigger_scope", None)),
+            )
             self._remove_meme_tool(req)
             self._remove_meme_tool(req, "send_meme")
             event.set_extra("meme_manager_send_tool_available", False)
@@ -1967,6 +1993,12 @@ class EventHandlerMixin:
         """处理 LLM 响应，识别表情"""
 
         if not self._scope_allows_llm_origin(event):
+            logger.debug(
+                "[meme_manager] 跳过响应的表情处理：来源=%s，触发范围=%s，"
+                "当前触发范围不允许处理该来源",
+                event.get_extra(LLM_REQUEST_ORIGIN_EXTRA_KEY) or "未标记",
+                normalize_trigger_scope(getattr(self, "trigger_scope", None)),
+            )
             return
         if not response or not response.completion_text:
             return
