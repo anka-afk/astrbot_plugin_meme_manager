@@ -30,7 +30,7 @@ class MemeParser:
 
     MAX_LINE = 16384
     _markers = re.compile(
-        r"&&(?P<strict>[^&\r\n]{1,256})&&"
+        r"&[ \t]*&(?P<strict>[^&\r\n]{1,256})&[ \t]*&"
         r"|\[(?P<bracket>[^\[\]\r\n]{1,256})\]"
         r"|\((?P<paren>[^()\r\n]{1,256})\)"
         r"|(?<![\w:]):(?P<colon>[^:\s]{1,256}):(?![\w:])"
@@ -334,7 +334,11 @@ class MemeParser:
                 valid = bool(semantic_id) if self.semantic else value in self.categories
                 if semantic_id:
                     value = value.lower()
-                consume = True
+                consume = valid or (
+                    kind == "strict"
+                    and not line[: match.start()].strip()
+                    and not line[match.end() :].strip()
+                )
             elif self.alternative and not self.semantic:
                 valid = value in self.categories
                 consume = valid or (
