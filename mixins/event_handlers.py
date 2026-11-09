@@ -625,8 +625,15 @@ class EventHandlerMixin:
                 normalized.append(component)
         return normalized
 
-    def _clean_outgoing_plain_text(self, text: str) -> str:
-        cleaned = MemeParser.parse(text or "", strip_references=True).text
+    def _clean_outgoing_plain_text(self, event, text: str) -> str:
+        context = self._resolve_runtime_pack_context(event=event)
+        categories = runtime_category_mapping(context.get("category_mapping") or {})
+        cleaned = MemeParser.parse(
+            text or "",
+            categories,
+            semantic=self._semantic_mode_active(event),
+            strip_references=True,
+        ).text
         if self.content_cleanup_rule and self.content_cleanup_rule != r"&&[a-zA-Z]*&&":
             protected = _protected_reference_spans(cleaned)
             edits = [
@@ -2013,7 +2020,9 @@ class EventHandlerMixin:
         if not event.get_extra("meme_manager_outgoing_processing") and str(
             getattr(event, "unified_msg_origin", "")
         ) in (event.get_extra("meme_manager_tool_message_targets") or ()):
-            response.completion_text = self._clean_outgoing_plain_text(text).strip()
+            response.completion_text = self._clean_outgoing_plain_text(
+                event, text
+            ).strip()
             event.set_extra("found_emotions", [])
             event.set_extra("meme_manager_semantic_selected_ids", [])
             return
@@ -2101,7 +2110,7 @@ class EventHandlerMixin:
         logger.info(f"[meme_manager] 去重后的最终表情列表: {filtered_emotions}")
 
         if getattr(self, "filter_all_tags", False):
-            clean_text = self._clean_outgoing_plain_text(clean_text)
+            clean_text = self._clean_outgoing_plain_text(event, clean_text)
         response.completion_text = clean_text.strip()
         if filtered_emotions and not response.completion_text:
             # 保留消息链，让 AstrBot 在空消息正文下仍进入装饰阶段；
@@ -2152,7 +2161,7 @@ class EventHandlerMixin:
         event.set_extra("meme_manager_semantic_selected_ids", selected_ids)
         event.set_extra("found_emotions", None)
         if getattr(self, "filter_all_tags", False):
-            clean_text = self._clean_outgoing_plain_text(clean_text)
+            clean_text = self._clean_outgoing_plain_text(event, clean_text)
         response.completion_text = clean_text.strip()
         if selected_ids and not response.completion_text:
             if response.result_chain is None:
@@ -2191,7 +2200,7 @@ class EventHandlerMixin:
                     original_chain
                 ):
                     if isinstance(component, Plain):
-                        cleaned = self._clean_outgoing_plain_text(component.text)
+                        cleaned = self._clean_outgoing_plain_text(event, component.text)
                         if cleaned.strip():
                             cleaned_components.append(Plain(cleaned.strip()))
                     else:

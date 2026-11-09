@@ -91,7 +91,14 @@ async def test_final_filter_runs_after_selection(reply_context, enabled, empty_p
         for component in state["result"].chain
         if isinstance(component, Plain)
     )
-    assert visible == ("Hello" if enabled else "Hello  :unknown: [unknown]")
+    expected = "Hello"
+    if not enabled:
+        expected = (
+            "Hello &&happy&& :unknown: [unknown]"
+            if empty_pack
+            else "Hello  :unknown: [unknown]"
+        )
+    assert visible == expected
     assert bool(state.get("meme_manager_pending_images")) is not empty_pack
 
 

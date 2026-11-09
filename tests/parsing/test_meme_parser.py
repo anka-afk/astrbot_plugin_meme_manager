@@ -36,6 +36,14 @@ def test_final_filter_does_not_leak_after_line_limit():
         ("&&自定义&&", "", ["自定义"]),
         (":happy:", "", ["happy"]),
         ("&&unknown&&", "", []),
+        ("&& unknown &&", "", []),
+        ("& & unknown & &", "", []),
+        ("x &&unknown&& z", "x &&unknown&& z", []),
+        ("x && y && z", "x && y && z", []),
+        ("x & & unknown & & z", "x & & unknown & & z", []),
+        ("x && happy && z", "x  z", ["happy"]),
+        ("& & happy & &", "", ["happy"]),
+        ("x & & happy & & z", "x  z", ["happy"]),
         ("&&未闭合", "&&未闭合", []),
         ("&&&&", "&&&&", []),
         (r"\&&happy&&", r"\&&happy&&", []),
@@ -93,6 +101,12 @@ def test_batch_and_every_chunk_boundary_are_equivalent(text, visible, selected):
         assert parser.finish() == ""
         for token in parser.tokens:
             assert text[token.start : token.end] == token.raw
+
+
+def test_invalid_inline_strict_marker_is_not_consumed():
+    result = MemeParser.parse("x && y && z", strip_references=True)
+    assert result.text == "x && y && z"
+    assert result.tokens == ()
 
 
 def test_semantic_markers_share_protection_and_streaming_rules():
