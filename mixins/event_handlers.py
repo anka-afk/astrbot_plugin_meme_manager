@@ -2224,7 +2224,24 @@ class EventHandlerMixin:
                 images, files = await self._build_selected_meme_images(
                     event, ids or emotions, semantic=bool(ids)
                 )
-                if images:
+                if images and event.get_platform_name() == "aiocqhttp":
+                    if cleaned_components:
+                        # 有文字：等文字发完，由 after_message_sent 逐张发表情
+                        event.set_extra("meme_manager_pending_images", images)
+                    else:
+                        # 只有表情：空消息链不会触发 after_message_sent，这里直接发并清理
+                        try:
+                            for image in images:
+                                await self._send_meme_image(event, image)
+                        finally:
+                            for f in event.get_extra("meme_manager_temp_files") or []:
+                                try:
+                                    if os.path.exists(f):
+                                        os.remove(f)
+                                except OSError:
+                                    pass
+                            event.set_extra("meme_manager_temp_files", None)
+                elif images:
                     mixed = not cleaned_components or (
                         self.enable_mixed_message
                         and random.randint(1, 100) <= self.mixed_message_probability
@@ -2544,10 +2561,27 @@ class EventHandlerMixin:
                 except OSError:
                     logger.warning("[meme_manager] 主动表情工具清理失败")
 
+    async def _try_send_qq_sticker(self, event: AstrMessageEvent, image: Image) -> bool:
+        """aiocqhttp(NapCat) 上把图片作为 QQ 表情（sub_type=1）发送；失败返回 False。"""
+        if event.get_platform_name() != "aiocqhttp":
+            return False
+        try:
+            seg = await event._parse_onebot_json(MessageChain([image]))
+            seg[0]["data"]["sub_type"] = 1
+            seg[0]["data"]["summary"] = "[动画表情]"
+            await event.bot.send(event.message_obj.raw_message, seg)
+            return True
+        except Exception as e:
+            logger.warning(f"[meme_manager] QQ 表情发送失败，改用普通图片: {e}")
+            return False
+
     async def _send_meme_image(self, event: AstrMessageEvent, image: Image) -> None:
         original = image
         image = await self._ensure_image_send_format(image)
         self._alias_prepared_meme(event, original, image)
+        if await self._try_send_qq_sticker(event, image):
+            await self._confirm_meme_delivery(event, [image])
+            return
         platform_name = event.get_platform_name()
         if platform_name in {"gewechat", "webchat"}:
             await event.send(MessageChain([image]))
