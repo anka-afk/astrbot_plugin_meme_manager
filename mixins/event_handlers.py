@@ -2224,23 +2224,26 @@ class EventHandlerMixin:
                 images, files = await self._build_selected_meme_images(
                     event, ids or emotions, semantic=bool(ids)
                 )
-                if images and event.get_platform_name() == "aiocqhttp":
-                    if cleaned_components:
-                        # 有文字：等文字发完，由 after_message_sent 逐张发表情
-                        event.set_extra("meme_manager_pending_images", images)
-                    else:
-                        # 只有表情：空消息链不会触发 after_message_sent，这里直接发并清理
-                        try:
-                            for image in images:
-                                await self._send_meme_image(event, image)
-                        finally:
-                            for f in event.get_extra("meme_manager_temp_files") or []:
-                                try:
-                                    if os.path.exists(f):
-                                        os.remove(f)
-                                except OSError:
-                                    pass
-                            event.set_extra("meme_manager_temp_files", None)
+                if (
+                    images
+                    and not cleaned_components
+                    and event.get_platform_name() == "aiocqhttp"
+                ):
+                    # 只有表情：直接以 QQ 表情发送。空消息链不会触发
+                    # after_message_sent，因此在这里发送并清理临时文件。
+                    try:
+                        for image in images:
+                            await self._send_meme_image(event, image)
+                    except Exception as e:
+                        logger.exception("发送表情图片失败：%s", e)
+                    finally:
+                        for f in event.get_extra("meme_manager_temp_files") or []:
+                            try:
+                                if os.path.exists(f):
+                                    os.remove(f)
+                            except OSError:
+                                pass
+                        event.set_extra("meme_manager_temp_files", None)
                 elif images:
                     mixed = not cleaned_components or (
                         self.enable_mixed_message
