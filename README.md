@@ -272,13 +272,12 @@ AstrBot 内置 `send_message_to_user` 自动支持表情标记和辅助选图，
 
 ## 📜 更新日志
 
-当前版本：v5.3.7
+当前版本：v5.3.8
 
-- 修复正文中的无效 `&&...&&` 标记被误删的问题；未知标记现在仅在独占一行时清理，行内普通文本保持不变（[#215](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/215)）。
-- strict 标记支持 `&& happy &&`、`& & happy & &` 等空白变体；有效分类无论在行内还是独占一行都会正常选图，批量与流式解析行为一致。
-- 消息二次清理复用当前图包分类与语义模式，避免工具消息中的有效标记残留；默认内容清理规则与「过滤所有标签」配置行为不变。
+- NapCat（aiocqhttp）上的纯表情回复、流式补发和 `send_meme` 按 QQ 自定义表情类型发送（[#218](https://github.com/anka-afk/astrbot_plugin_meme_manager/pull/218)）。
+- 纯表情回复保留 AstrBot 的自动引用和群聊 @，图文同条发送时使用普通图片。
 
-升级后请重载插件。最低要求仍为 AstrBot 4.28.2、Python 3.12，已有配置继续使用，无需额外设置。
+升级后请重载插件。QQ 自定义表情发送无需开启「静态图转 GIF」。
 
 完整版本记录请查看 [CHANGELOG.md](CHANGELOG.md)。
 
