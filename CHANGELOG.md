@@ -2,6 +2,14 @@
 
 本文件记录 AstrBot 表情包管理器的主要版本更新，最新版本排在最前。
 
+## v5.3.8
+
+- 通过 NapCat（aiocqhttp）发送纯表情回复、流式补发和 `send_meme` 时，按 QQ 自定义表情类型发送（[#218](https://github.com/anka-afk/astrbot_plugin_meme_manager/pull/218)）。
+- 纯表情回复保留 AstrBot 的自动引用、群聊 @ 和机器人账号路由。图文同条发送时使用普通图片。
+- 表情准备失败时回退为普通图片。发送超时后不重复投递。
+
+升级后请重载插件。QQ 自定义表情发送无需开启「静态图转 GIF」。
+
 ## v5.3.7
 
 - 修复无效 strict 标记在行内被无条件消费的问题：`x && y && z` 等普通正文原样保留，未知标记仅独占一行时清理，不再生成无效 token（[#215](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/215)）。
