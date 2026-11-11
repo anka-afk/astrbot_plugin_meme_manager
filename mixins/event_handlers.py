@@ -15,7 +15,14 @@ from PIL import Image as PILImage
 
 from astrbot.api import ToolSet, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, ResultContentType, filter
-from astrbot.api.message_components import Image, Plain
+from astrbot.api.message_components import (
+    At,
+    BaseMessageComponent,
+    ComponentType,
+    Image,
+    Plain,
+    Reply,
+)
 from astrbot.api.platform import MessageType
 from astrbot.api.provider import LLMResponse, ProviderRequest
 
@@ -24,6 +31,7 @@ from ..astrbot_compat import (
     MessageSession,
     get_astrbot_temp_path,
     get_image_chat_routing,
+    is_aiocqhttp_message_event,
     is_builtin_message_tool,
 )
 from ..backend.delivery_history import DeliveryHistory
@@ -64,6 +72,52 @@ LLM_REQUEST_ORIGIN_CHAT = "chat"
 LLM_REQUEST_ORIGIN_PLUGIN = "plugin"
 SEND_TOOL_PROMPT_MARKER_START = "<!-- meme_manager_send_tool:start -->"
 SEND_TOOL_PROMPT_MARKER_END = "<!-- meme_manager_send_tool:end -->"
+
+
+class _OneBotSticker(BaseMessageComponent):
+    """Represent a NapCat image segment at the adapter boundary."""
+
+    type: ComponentType = ComponentType.Image
+    file: str
+    sub_type: int = 1
+    summary: str = "[动画表情]"
+
+
+async def _prepare_qq_sticker_chain(
+    message: MessageChain, images: list[Image] | tuple[Image, ...]
+) -> MessageChain:
+    """Replace selected images just before aiocqhttp serializes the chain.
+
+    Args:
+        message: The final chain, including any reply and mention segments.
+        images: The exact image instances selected for sticker delivery.
+
+    Returns:
+        The adapted chain or the original chain for ordinary image delivery.
+    """
+    image_ids = {id(image) for image in images}
+    if not any(id(component) in image_ids for component in message.chain) or any(
+        id(component) not in image_ids
+        and not isinstance(component, (At, Reply))
+        and not (isinstance(component, Plain) and not component.text.strip())
+        for component in message.chain
+    ):
+        return message
+
+    try:
+        components = []
+        for component in message.chain:
+            if isinstance(component, Image) and id(component) in image_ids:
+                encoded = await component.convert_to_base64()
+                if not encoded:
+                    return message
+                # aiocqhttp forwards the fields of generic components via toDict().
+                component = _OneBotSticker(file=f"base64://{encoded}")
+            components.append(component)
+        return message.derive(components)
+    except Exception:
+        logger.warning("[meme_manager] Could not prepare QQ stickers", exc_info=True)
+        return message
 
 
 def normalize_trigger_scope(value: Any) -> str:
@@ -215,20 +269,7 @@ class EventHandlerMixin:
             )
         event.set_extra(LLM_REQUEST_ORIGIN_EXTRA_KEY, origin)
 
-        send_message = getattr(event, "send", None)
-        if callable(send_message) and not event.get_extra(
-            "meme_manager_delivery_observer_installed"
-        ):
-
-            async def send_observed(message, *args, **kwargs):
-                result = await send_message(message, *args, **kwargs)
-                await self._confirm_meme_delivery(
-                    event, getattr(message, "chain", []) or []
-                )
-                return result
-
-            event.send = send_observed
-            event.set_extra("meme_manager_delivery_observer_installed", True)
+        self._install_meme_delivery_observer(event)
 
         # AstrBot 对流式结果不会执行装饰钩子，因此要在代理开始消费
         # 响应流之前拦截该事件的发送过程。
@@ -271,6 +312,32 @@ class EventHandlerMixin:
 
             event.send_streaming = send_filtered_stream
             event.set_extra("meme_manager_stream_filter_installed", True)
+
+    def _install_meme_delivery_observer(self, event: AstrMessageEvent) -> None:
+        """Wrap this event's sends once to adapt and record selected images.
+
+        Args:
+            event: The event that owns the reply and its delivery state.
+        """
+        send_message = getattr(event, "send", None)
+        if not callable(send_message) or event.get_extra(
+            "meme_manager_delivery_observer_installed"
+        ):
+            return
+
+        async def send_observed(message, *args, **kwargs):
+            outgoing = message
+            stickers = event.get_extra("meme_manager_qq_reply_stickers")
+            if stickers and isinstance(message, MessageChain):
+                outgoing = await _prepare_qq_sticker_chain(message, stickers)
+            result = await send_message(outgoing, *args, **kwargs)
+            await self._confirm_meme_delivery(
+                event, getattr(message, "chain", []) or []
+            )
+            return result
+
+        event.send = send_observed
+        event.set_extra("meme_manager_delivery_observer_installed", True)
 
     def _scope_allows_llm_origin(self, event: AstrMessageEvent) -> bool:
         """判断当前配置是否允许处理该来源的 LLM 请求。"""
@@ -2225,9 +2292,20 @@ class EventHandlerMixin:
                     event, ids or emotions, semantic=bool(ids)
                 )
                 if images:
-                    mixed = not cleaned_components or (
-                        self.enable_mixed_message
-                        and random.randint(1, 100) <= self.mixed_message_probability
+                    qq_stickers = all(
+                        isinstance(component, (At, Reply))
+                        for component in cleaned_components
+                    ) and is_aiocqhttp_message_event(event)
+                    if qq_stickers:
+                        self._install_meme_delivery_observer(event)
+                        event.set_extra("meme_manager_qq_reply_stickers", tuple(images))
+                    mixed = (
+                        qq_stickers
+                        or not cleaned_components
+                        or (
+                            self.enable_mixed_message
+                            and random.randint(1, 100) <= self.mixed_message_probability
+                        )
                     )
                     if mixed:
                         cleaned_components = self._merge_components_with_images(
@@ -2263,6 +2341,8 @@ class EventHandlerMixin:
             logger.exception("发送表情图片失败：%s", e)
         finally:
             event.set_extra("meme_manager_pending_images", None)
+            if event.get_extra("meme_manager_qq_reply_stickers"):
+                event.set_extra("meme_manager_qq_reply_stickers", None)
 
             # 清理临时文件
             temp_files = event.get_extra("meme_manager_temp_files")
@@ -2549,6 +2629,11 @@ class EventHandlerMixin:
         image = await self._ensure_image_send_format(image)
         self._alias_prepared_meme(event, original, image)
         platform_name = event.get_platform_name()
+        if platform_name == "aiocqhttp" and is_aiocqhttp_message_event(event):
+            message = await _prepare_qq_sticker_chain(MessageChain([image]), [image])
+            await event.send(message)
+            await self._confirm_meme_delivery(event, [image])
+            return
         if platform_name in {"gewechat", "webchat"}:
             await event.send(MessageChain([image]))
             await self._confirm_meme_delivery(event, [image])

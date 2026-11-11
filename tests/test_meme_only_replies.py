@@ -1,8 +1,11 @@
+from base64 import b64decode
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from aiocqhttp import Event
 from astrbot_plugin_meme_manager import main as plugin_main
 from astrbot_plugin_meme_manager.main import MemeSender
 from astrbot_plugin_meme_manager.mixins import event_handlers
@@ -12,6 +15,7 @@ from astrbot_plugin_meme_manager.mixins.event_handlers import (
 from PIL import Image as PillowImage
 
 from astrbot.api.provider import LLMResponse
+from astrbot.core.config.default import DEFAULT_CONFIG
 from astrbot.core.message.components import Image, Plain
 from astrbot.core.message.message_event_result import (
     MessageChain,
@@ -19,8 +23,15 @@ from astrbot.core.message.message_event_result import (
     ResultContentType,
 )
 from astrbot.core.pipeline.respond.stage import RespondStage
+from astrbot.core.pipeline.result_decorate import stage as decorate_stage
 from astrbot.core.pipeline.result_decorate.stage import ResultDecorateStage
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
+from astrbot.core.platform.message_type import MessageType
+from astrbot.core.platform.platform_metadata import PlatformMetadata
+from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+    AiocqhttpMessageEvent,
+)
 from astrbot.core.platform.sources.webchat.webchat_event import WebChatMessageEvent
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
 
@@ -65,6 +76,131 @@ def reply_context(tmp_path):
         get_platform_name=lambda: "test",
     )
     return sender, event, state, tmp_path
+
+
+@pytest.fixture
+def qq_reply_context(reply_context, monkeypatch):
+    sender, _, _, root = reply_context
+    sender.emotions_probability = 100
+    del sender._send_meme_image
+    monkeypatch.setattr(
+        "astrbot.core.platform.astr_message_event.Metric.upload", AsyncMock()
+    )
+
+    message = AstrBotMessage()
+    message.type = MessageType.GROUP_MESSAGE
+    message.group_id = "333"
+    message.sender = MessageMember("222", "tester")
+    message.message_id = "444"
+    message.self_id = "111"
+    message.raw_message = Event({"group_id": 333, "self_id": 111})
+    event = AiocqhttpMessageEvent(
+        "test",
+        message,
+        PlatformMetadata("aiocqhttp", "test", "qq-test"),
+        "333",
+        AsyncMock(),
+    )
+    return sender, event, root / "happy" / "meme.png"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text, sub_type", [("", 1), ("hello", None)])
+async def test_qq_reply_stickers_through_pipeline(
+    qq_reply_context, monkeypatch, text, sub_type
+):
+    sender, event, path = qq_reply_context
+    send = event.bot.send_group_msg
+    sender.enable_mixed_message = True
+    await sender._mark_llm_request_origin_impl(event)
+    response = LLMResponse(role="assistant", completion_text=f"&&happy&& {text}")
+    await sender._resp_impl(event, response)
+    chain = response.result_chain or MessageChain([Plain(response.completion_text)])
+    event.set_result(
+        MessageEventResult(
+            chain=chain.chain,
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+
+    config = deepcopy(DEFAULT_CONFIG)
+    config["platform_settings"].update(reply_with_mention=True, reply_with_quote=True)
+    config["platform_settings"]["segmented_reply"]["enable"] = False
+    config["provider_tts_settings"]["enable"] = False
+    config["t2i"] = False
+    context = SimpleNamespace(
+        astrbot_config=config,
+        plugin_manager=SimpleNamespace(
+            context=SimpleNamespace(
+                get_using_tts_provider_async=AsyncMock(return_value=None)
+            )
+        ),
+    )
+    decorator = ResultDecorateStage()
+    respond = RespondStage()
+    await decorator.initialize(context)
+    await respond.initialize(context)
+    handler = SimpleNamespace(
+        handler_module_path="meme_test",
+        handler_name="on_decorating_result",
+        handler=sender._on_decorating_result_impl,
+    )
+    monkeypatch.setitem(
+        decorate_stage.star_map, "meme_test", SimpleNamespace(name="meme_test")
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            decorate_stage.star_handlers_registry,
+            "get_handlers_by_event_type",
+            lambda *args, **kwargs: [handler],
+        )
+        async for _ in decorator.process(event):
+            pass
+    send.assert_not_awaited()
+
+    async def after_sent(current, _):
+        await sender._after_message_sent_impl(current)
+        return False
+
+    monkeypatch.setattr(
+        "astrbot.core.pipeline.respond.stage.call_event_hook", after_sent
+    )
+    await respond.process(event)
+
+    send.assert_awaited_once()
+    sent = send.await_args.kwargs
+    assert (sent["group_id"], sent["self_id"]) == (333, 111)
+    parts = sent["message"]
+    assert parts[0]["type"] == "reply" and str(parts[0]["data"]["id"]) == "444"
+    assert parts[1]["type"] == "at" and str(parts[1]["data"]["qq"]) == "222"
+    (picture,) = [part["data"] for part in parts if part["type"] == "image"]
+    assert picture.get("sub_type") == sub_type
+    assert b64decode(picture["file"].removeprefix("base64://")) == path.read_bytes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport_timeout", [False, True])
+async def test_qq_sticker_send_failure(
+    qq_reply_context, monkeypatch, transport_timeout
+):
+    sender, event, path = qq_reply_context
+    send = event.bot.send_group_msg
+    image = Image.fromFileSystem(str(path))
+    if transport_timeout:
+        send.side_effect = TimeoutError("unknown delivery status")
+        with pytest.raises(TimeoutError, match="unknown delivery status"):
+            await sender._send_meme_image(event, image)
+    else:
+        encoded = await image.convert_to_base64()
+        monkeypatch.setattr(
+            Image, "convert_to_base64", AsyncMock(side_effect=[ValueError(), encoded])
+        )
+        await sender._send_meme_image(event, image)
+
+    send.assert_awaited_once()
+    (part,) = send.await_args.kwargs["message"]
+    assert part["type"] == "image"
+    assert part["data"].get("sub_type") == (1 if transport_timeout else None)
 
 
 @pytest.mark.asyncio
