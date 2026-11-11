@@ -25,6 +25,7 @@ __all__ = [
     "get_astrbot_temp_path",
     "get_star_handlers_registry",
     "get_image_chat_routing",
+    "is_aiocqhttp_message_event",
     "is_builtin_message_tool",
 ]
 
@@ -75,3 +76,24 @@ def is_builtin_message_tool(tool):
         该工具是否属于当前支持的内部模块。
     """
     return type(tool).__module__ == "astrbot.core.tools.message_tools"
+
+
+def is_aiocqhttp_message_event(event) -> bool:
+    """Check that an event uses the OneBot serializer for outgoing messages.
+
+    Args:
+        event: The event that will send the message.
+
+    Returns:
+        Whether the event uses AstrBot's aiocqhttp adapter.
+    """
+    if event.get_platform_name() != "aiocqhttp":
+        return False
+
+    try:
+        from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+            AiocqhttpMessageEvent,
+        )
+    except ImportError:
+        return False
+    return isinstance(event, AiocqhttpMessageEvent)
