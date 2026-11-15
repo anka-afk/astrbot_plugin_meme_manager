@@ -12,9 +12,7 @@ export function describeSetup(
 ) {
   const toolOnly = Boolean(values["generation.emotion.tool_only"]);
   const postReply = !toolOnly && Boolean(values["generation.emotion.llm.enabled"]);
-  const autoSemantic = Boolean(values["semantic.enabled"]);
-  const onDemand = !postReply && Boolean(values["semantic.on_demand_enabled"]);
-  const semantic = autoSemantic || onDemand;
+  const semantic = Boolean(values["semantic.enabled"]);
   const decision =
     postReply && values["generation.emotion.llm.backend"] === "decision";
   const collectionEnabled = Boolean(values["auto_collect.enabled"]);
@@ -129,7 +127,7 @@ export function describeSetup(
       ? "appearance"
       : postReply
       ? "emotion-model"
-      : autoSemantic
+      : semantic
       ? "tool-trigger"
       : "prompts",
   });
@@ -181,7 +179,7 @@ export function describeSetup(
       rows.push({
         label: "语义检索",
         value: "由主模型调用搜索工具",
-        group: toolOnly || !autoSemantic ? "appearance" : "tool-trigger",
+        group: toolOnly ? "appearance" : "tool-trigger",
       });
     rows.push({
       label: "向量模型",
@@ -238,24 +236,22 @@ export function describeSetup(
   const requestNote = toolOnly
     ? values["generation.emotion.send_tool_enabled"] === false
       ? "主动发送表情工具已关闭"
-      : semantic
-      ? "仅工具发图，可按分类随机发送或按需搜图"
-      : "仅工具发图，按分类随机发送"
+      : "仅工具发图，按分类随机发送，有可用索引时可按需搜图"
     : postReply
     ? semantic
       ? `${generated ? "检索词生成 + " : ""}向量检索 + ${
           decision ? "决策服务" : "聊天模型"
         }选图`
       : `${decision ? "决策服务" : "聊天模型"}选分类`
-    : autoSemantic
+    : semantic
     ? `${
         values["semantic.tool_probability_enabled"]
           ? "按概率尝试一次检索"
           : "主模型按需调用搜索工具"
       }；失败时只回复文字，不切换其他模式补发`
-    : onDemand
-    ? "按分类随机取图，需要具体图片时由主模型调用搜索工具"
-    : "无需额外调用";
+    : values["generation.emotion.send_tool_enabled"] === false
+    ? "分类标签随机取图"
+    : "按分类随机取图，有可用索引时可按需搜图";
   return {
     rows,
     selectionIssues,

@@ -347,9 +347,8 @@ async def test_optional_search_keeps_category_sending_available(
 ):
     sender, event, state, request, shared, provider, search = tool_reply
     sender.meme_tool_only = tool_only
-    sender.semantic_selection_enabled = tool_only
-    sender.semantic_on_demand_enabled = not tool_only
-    sender._semantic_pack_ready = lambda **kwargs: indexed
+    sender.semantic_enabled = False
+    sender._semantic_pack_ready = lambda **kwargs: indexed and kwargs["for_direct_search"]
     sender.prompt_head = "Category tags"
     sender.prompt_tail = ""
     sender.prompt_examples = []
@@ -389,8 +388,7 @@ async def test_category_tag_attachment_respects_tool_only_mode(
 ):
     sender, event, state, request, shared, provider, search = tool_reply
     sender.meme_tool_only = tool_only
-    sender.semantic_selection_enabled = not tool_support
-    sender.semantic_on_demand_enabled = True
+    sender.semantic_enabled = not tool_support
     provider.provider_config["modalities"] = ["tool_use"] if tool_support else ["image"]
     sender.prompt_head = "Category tags"
     sender.prompt_tail = ""

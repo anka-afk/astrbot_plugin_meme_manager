@@ -80,17 +80,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                     raise
 
         # 只有执行语义操作时才需要模型。
-        self.semantic_selection_enabled = bool(
+        self.semantic_enabled = bool(
             self._read_config_value(
                 ("semantic", "enabled"),
                 default=False,
             )
-        )
-        self.semantic_on_demand_enabled = bool(
-            self._read_config_value(("semantic", "on_demand_enabled"), default=False)
-        )
-        self.semantic_enabled = (
-            self.semantic_selection_enabled or self.semantic_on_demand_enabled
         )
         self.semantic_vision_provider_id = str(
             self._read_config_value(
@@ -644,6 +638,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         req: ProviderRequest | None = None,
         *,
         require_tool: bool = False,
+        for_direct_search: bool = False,
     ) -> bool:
         """判断当前选择的运行时表情包能否使用语义检索。
 
@@ -653,11 +648,12 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             event: 当前 AstrBot 消息事件。
             req: 检查请求阶段工具时的当前模型请求。
             require_tool: 是否要求回复模型和请求公开语义检索工具。
+            for_direct_search: Check existing indexes even in category selection mode.
 
         Returns:
             任一绑定表情包的有效向量与其向量模型匹配时返回 True。
         """
-        if not self.semantic_enabled:
+        if not for_direct_search and not self.semantic_enabled:
             return False
         if (
             require_tool
@@ -684,6 +680,8 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             try:
                 pack_dir = get_pack_paths(pack_id)["pack_dir"]
                 metadata = load_metadata(pack_dir)
+                if not metadata.get("images"):
+                    continue
                 provider = self._resolve_embedding_provider(pack_id)
                 embedding = EmbeddingAdapter(
                     provider, self.semantic_embedding_provider_id or ""
@@ -934,7 +932,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         supports_tools = self._reply_model_supports_tools(event)
         tool_only = getattr(self, "meme_tool_only", False)
         tool_only_fallback = tool_only and not supports_tools
-        semantic_selection = getattr(self, "semantic_selection_enabled", True)
+        semantic_selection = getattr(self, "semantic_enabled", True)
         get_tool = getattr(getattr(req, "func_tool", None), "get_tool", None)
         send_tool = get_tool("send_meme") if callable(get_tool) else None
         search_tool = get_tool("search_memes") if callable(get_tool) else None
@@ -960,13 +958,9 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 logger.info(
                     "[meme_manager] Reply model lacks tool support; using category tags."
                 )
-        elif tool_only or (
-            not semantic_selection
-            and not self.emotion_llm_enabled
-            and getattr(self, "semantic_on_demand_enabled", False)
-        ):
+        elif tool_only or not semantic_selection:
             if direct_tools_available and self._semantic_pack_ready(
-                event=event, req=req
+                event=event, req=req, for_direct_search=True
             ):
                 semantic_mode = "direct"
         elif semantic_selection and self.emotion_llm_enabled:

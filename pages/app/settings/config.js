@@ -59,20 +59,20 @@ async function initPluginConfig() {
     }`;
   }
 
-  function selectionWorkflow({ semantic, postReply, toolOnly, onDemand }) {
+  function selectionWorkflow({ semantic, postReply, toolOnly }) {
     return [
       {
         title: "表情来源",
         tab: "rules",
       },
       {
-        title: onDemand || (semantic && toolOnly)
+        title: semantic && toolOnly
           ? "语义数据准备"
           : semantic
           ? "图片标签"
           : "分类标签",
-        group: semantic || onDemand ? "semantic-models" : "category-matching",
-        links: semantic || onDemand
+        group: semantic ? "semantic-models" : "category-matching",
+        links: semantic
           ? [
               ["semantic", "检索参数"],
               ...(postReply ? [["semantic-query", "检索词来源"]] : []),
@@ -116,7 +116,6 @@ async function initPluginConfig() {
         "generation.emotion.probability",
         "generation.emotion.send_tool_enabled",
         "generation.emotion.tool_only",
-        "semantic.on_demand_enabled",
         "generation.emotion.max_memes_per_message",
       ],
     },
@@ -139,7 +138,6 @@ async function initPluginConfig() {
     },
     {
       id: "semantic",
-      when: "semantic",
       category: "models",
       title: "检索参数",
       advanced: true,
@@ -147,7 +145,6 @@ async function initPluginConfig() {
     },
     {
       id: "semantic-models",
-      when: "semantic",
       category: "models",
       title: "语义数据准备",
       advanced: true,
@@ -773,10 +770,6 @@ async function initPluginConfig() {
     const semantic = Boolean(currentValue(modePaths[0]));
     const toolOnly = Boolean(currentValue("generation.emotion.tool_only"));
     const postReply = !toolOnly && Boolean(currentValue(modePaths[1]));
-    const onDemand =
-      !semantic &&
-      !postReply &&
-      Boolean(currentValue("semantic.on_demand_enabled"));
     const backend = currentValue("generation.emotion.llm.backend") || "chat";
     const querySource = currentValue("semantic.query.source") || "generated";
     const judgmentBackend =
@@ -815,7 +808,6 @@ async function initPluginConfig() {
     const workflowKey = [
       mode,
       toolOnly,
-      onDemand,
       backend,
       querySource,
       activeFlowGroup,
@@ -827,7 +819,6 @@ async function initPluginConfig() {
         semantic,
         postReply,
         toolOnly,
-        onDemand,
       })) {
         const item = document.createElement("li");
         const node = document.createElement("button");
@@ -884,8 +875,8 @@ async function initPluginConfig() {
       providerListErrors,
     });
     const readiness = document.getElementById("selection-readiness-note");
-    readiness.hidden = !semantic && !onDemand;
-    if (semantic || onDemand) {
+    readiness.hidden = !semantic;
+    if (semantic) {
       readiness.textContent = `${
         setup.preparationWarning &&
         setup.selectionIssues.some(
@@ -953,10 +944,7 @@ async function initPluginConfig() {
       serviceLink.dataset.settingGroup = "decision-service";
       reference.append(serviceLink);
     }
-    document.getElementById("selection-mode-detail").textContent =
-      toolOnly || postReply || semantic || onDemand
-        ? setup.requestNote
-        : "分类标签随机取图";
+    document.getElementById("selection-mode-detail").textContent = setup.requestNote;
     resetPrompts.hidden = Boolean(query) || active !== "prompts";
     const configVisible = Boolean(query) || Boolean(categories[active]);
     for (const panel of panels) {
@@ -984,7 +972,6 @@ async function initPluginConfig() {
     sections.classList.toggle("storage-layout", active === "storage" && !query);
     let visibleCount = modePanel.hidden && collectionWorkflow.hidden ? 0 : 1;
     const conditions = {
-      semantic: semantic || onDemand,
       category: !semantic,
       "reply-semantic": semantic && !postReply && !toolOnly,
       "post-semantic": semantic && postReply,

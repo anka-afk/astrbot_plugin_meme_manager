@@ -86,18 +86,16 @@ test("every persisted field has exactly one editable group", async () => {
 
 });
 
-test("tool-only overrides auxiliary selection and semantic search stays optional", () => {
-  const onDemand = { "semantic.on_demand_enabled": true };
-  assert.match(describe(onDemand).requestNote, /调用搜索工具/);
+test("category and tool-only modes advertise search when an index is usable", () => {
+  assert.match(describe().requestNote, /有可用索引时可按需搜图/);
   const toolOnly = {
     "generation.emotion.tool_only": true,
     "generation.emotion.llm.enabled": true,
     "generation.emotion.llm.backend": "decision",
   };
-  assert.match(describe(toolOnly).requestNote, /按分类随机发送/);
-  const setup = describe({ ...toolOnly, ...onDemand });
+  const setup = describe(toolOnly);
   assert.equal(setup.selectionIssues.length, 0);
-  assert.match(setup.requestNote, /按需搜图/);
+  assert.match(setup.requestNote, /有可用索引时可按需搜图/);
 });
 
 test("脱敏账户允许再次保存，清除或错误草稿仍被拦截", () => {
