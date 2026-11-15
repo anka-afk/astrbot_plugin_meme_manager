@@ -116,6 +116,8 @@ async function initPluginConfig() {
         "generation.emotion.probability",
         "generation.emotion.send_tool_enabled",
         "generation.emotion.tool_only",
+        "generation.emotion.preview_images_per_page",
+        "generation.emotion.keep_send_summary",
         "generation.emotion.max_memes_per_message",
       ],
     },

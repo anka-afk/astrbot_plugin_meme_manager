@@ -47,6 +47,11 @@ from ..backend.packs.images import (
     DuplicateEmojiError,
     save_chat_upload_image,
 )
+from ..backend.packs.preview import (
+    PREVIEW_TARGET_PREFIX,
+    PREVIEW_TOOL,
+    discard_meme_tool_context,
+)
 from ..backend.packs.resolver import get_pack_paths, load_pack_category_mapping
 from ..backend.selection import SelectionTask, select_candidates
 from ..backend.semantic.models import (
@@ -1554,7 +1559,9 @@ class EventHandlerMixin:
             )
             self._remove_meme_tool(req)
             self._remove_meme_tool(req, "send_meme")
+            self._remove_meme_tool(req, PREVIEW_TOOL)
             event.set_extra("meme_manager_send_tool_available", False)
+            event.set_extra("meme_manager_preview_available", False)
             req.system_prompt = self._strip_meme_prompt(req.system_prompt)
             event.set_extra("meme_manager_semantic_active", False)
             event.set_extra("meme_manager_semantic_mode", "")
@@ -1618,6 +1625,8 @@ class EventHandlerMixin:
         )
         event.set_extra("meme_manager_send_tool_available", send_tool_available)
         search_tool = get_tool("search_memes") if callable(get_tool) else None
+        preview_tool = get_tool(PREVIEW_TOOL) if callable(get_tool) else None
+        preview_available = False
         semantic_mode = event.get_extra("meme_manager_semantic_mode")
         context = (
             self._resolve_runtime_pack_context(event=event, req=req)
@@ -1648,11 +1657,24 @@ class EventHandlerMixin:
                 semantic_active
                 and (can_search or event.get_extra("meme_manager_semantic_candidates"))
             )
+            preview_available = bool(
+                catalog
+                and preview_tool
+                and getattr(preview_tool, "active", True)
+                and getattr(self, "preview_images_per_page", 0)
+                and self._reply_model_supports_tools(event, require_image_input=True)
+            )
             if catalog or semantic_send:
                 req.system_prompt += (
                     f"\n\n{SEND_TOOL_PROMPT_MARKER_START}\n"
                     "[主动发送表情工具]\n"
                     "用户要求发表情，或图片有助于表达回复时，可以调用 send_meme。\n"
+                    + (
+                        "需要看画面再选时，先调用 preview_memes 查看分类拼图。"
+                        "使用 send_meme 发送选中的 preview:编号。拼图仅供选图。\n"
+                        if preview_available
+                        else ""
+                    )
                     + (
                         "按分类选图：将下方分类键作为 target，随机发送该分类的一张图片。\n"
                         if catalog
@@ -1693,6 +1715,9 @@ class EventHandlerMixin:
                 event.set_extra("meme_manager_send_tool_available", False)
         if not send_tool_available and send_tool is not None:
             self._remove_meme_tool(req, "send_meme")
+        event.set_extra("meme_manager_preview_available", preview_available)
+        if not preview_available and preview_tool is not None:
+            self._remove_meme_tool(req, PREVIEW_TOOL)
         direct_search = bool(
             send_tool_available
             and semantic_active
@@ -2545,7 +2570,31 @@ class EventHandlerMixin:
             )
         context = self._resolve_runtime_pack_context(event=event)
         semantic = target.startswith("meme:")
-        if semantic:
+        preview = target.startswith(PREVIEW_TARGET_PREFIX)
+        original_bytes = None
+        if preview:
+            snapshot = event.get_extra("meme_manager_preview_candidates")
+            number = target.removeprefix(PREVIEW_TARGET_PREFIX)
+            if not snapshot or not re.fullmatch(r"[1-9][0-9]{0,18}", number):
+                return json.dumps({"ok": False, "reason": "invalid_preview_candidate"})
+            pack_ids, category, candidates = snapshot
+            candidate = candidates.get(int(number))
+            if not candidate:
+                return json.dumps({"ok": False, "reason": "invalid_preview_candidate"})
+            source, digest = candidate
+            try:
+                if (
+                    context.get("pack_ids") != pack_ids
+                    or source.is_symlink()
+                    or source not in self._get_category_meme_files(event, category)
+                ):
+                    return json.dumps({"ok": False, "reason": "candidate_changed"})
+                original_bytes = await asyncio.to_thread(source.read_bytes)
+                if hashlib.sha256(original_bytes).hexdigest() != digest:
+                    return json.dumps({"ok": False, "reason": "candidate_changed"})
+            except OSError:
+                return json.dumps({"ok": False, "reason": "candidate_changed"})
+        elif semantic:
             if not self._semantic_mode_active(event, include_direct=True):
                 return json.dumps({"ok": False, "reason": "semantic_unavailable"})
             source = validate_selected_id(event, target, context)
@@ -2593,10 +2642,11 @@ class EventHandlerMixin:
         final_path = str(source)
         conversion = None
         try:
-            conversion = asyncio.create_task(
-                asyncio.to_thread(self._convert_to_gif, str(source))
-            )
-            final_path = await asyncio.shield(conversion)
+            if original_bytes is None:
+                conversion = asyncio.create_task(
+                    asyncio.to_thread(self._convert_to_gif, str(source))
+                )
+                final_path = await asyncio.shield(conversion)
             current = self._resolve_runtime_pack_context(event=event)
             if current.get("pack_ids") != context.get("pack_ids") or (
                 validate_selected_id(event, target, current) != source
@@ -2604,15 +2654,33 @@ class EventHandlerMixin:
                 else source not in self._get_category_meme_files(event, category)
             ):
                 return json.dumps({"ok": False, "reason": "candidate_changed"})
-            image = Image.fromFileSystem(final_path)
+            image = (
+                Image.fromBytes(original_bytes)
+                if original_bytes is not None
+                else Image.fromFileSystem(final_path)
+            )
             self._track_prepared_meme(
                 event,
                 image,
                 source,
                 category=category,
-                candidate_id=target if semantic else "",
+                candidate_id=target if semantic or preview else "",
             )
             await self._send_meme_image(event, image)
+            if run_context := event.get_extra("meme_manager_tool_context"):
+                if getattr(self, "keep_meme_send_summary", True):
+                    receipt = event.get_extra("meme_manager_send_summary")
+                    event.set_extra(
+                        "meme_manager_send_summary",
+                        (
+                            (receipt[0] + 1) if receipt else 1,
+                            category,
+                            number if preview else "",
+                        ),
+                    )
+                if event.get_extra("meme_manager_preview_candidates"):
+                    discard_meme_tool_context(run_context.messages, preview_only=True)
+                    event.set_extra("meme_manager_preview_candidates", None)
             return json.dumps({"ok": True, "status": "sent", "sent_count": 1})
         except asyncio.CancelledError:
             # 取消等待无法停止转换线程；允许本次工具调用完成取消前，

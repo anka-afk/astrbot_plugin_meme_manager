@@ -536,6 +536,23 @@
             "default": false,
             "hint": "支持工具的主模型只通过 send_meme 发图。可按分类随机取图，当前表情包有可用语义索引时也可按需搜图。需要启用主动发送表情工具。模型不支持工具调用时，回退到分类标签随机取图。"
           },
+          "preview_images_per_page": {
+            "description": "分类表情预览张数",
+            "type": "int",
+            "default": 9,
+            "hint": "每张预览拼图最多包含的表情数。0 关闭预览，1–16 可选。需要主模型支持工具和图片输入；每轮最多生成两页。",
+            "slider": {
+              "min": 0,
+              "max": 16,
+              "step": 1
+            }
+          },
+          "keep_send_summary": {
+            "description": "在对话历史中保留发图摘要",
+            "type": "bool",
+            "default": true,
+            "hint": "主动发送表情成功后，在对话历史中只保留一句发送摘要。关闭后也不保留摘要。预览图、候选列表和表情工具记录会在本轮结束时清理。"
+          },
           "probability": {
             "description": "表情发送概率",
             "type": "int",
