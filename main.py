@@ -80,11 +80,17 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                     raise
 
         # 只有执行语义操作时才需要模型。
-        self.semantic_enabled = bool(
+        self.semantic_selection_enabled = bool(
             self._read_config_value(
                 ("semantic", "enabled"),
                 default=False,
             )
+        )
+        self.semantic_on_demand_enabled = bool(
+            self._read_config_value(("semantic", "on_demand_enabled"), default=False)
+        )
+        self.semantic_enabled = (
+            self.semantic_selection_enabled or self.semantic_on_demand_enabled
         )
         self.semantic_vision_provider_id = str(
             self._read_config_value(
@@ -238,6 +244,11 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 ("generation", "emotion", "send_tool_enabled"), default=True
             )
         )
+        self.meme_tool_only = bool(
+            self._read_config_value(
+                ("generation", "emotion", "tool_only"), default=False
+            )
+        )
         self.tool_probability_enabled = bool(
             self._read_config_value(
                 ("semantic", "tool_probability_enabled"), default=False
@@ -246,7 +257,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         self.tool_call_probability = self._read_config_value(
             ("semantic", "tool_call_probability"), default=100
         )
-        self.emotion_llm_enabled = self._read_config_value(
+        self.emotion_llm_enabled = not self.meme_tool_only and self._read_config_value(
             ("generation", "emotion", "llm", "enabled"),
             default=False,
         )
@@ -596,7 +607,14 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             )
 
     def _reply_model_supports_tools(self, event: AstrMessageEvent | None) -> bool:
-        """仅在模型明确声明不支持工具时关闭语义模式。"""
+        """Check tool support using the reply provider's declared modalities.
+
+        Args:
+            event: Message event with the selected reply provider, if available.
+
+        Returns:
+            False only when the provider explicitly lacks tool support.
+        """
         if event is None:
             return True
         try:
@@ -708,14 +726,17 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         if callable(remove_tool):
             remove_tool(name)
 
-    def _semantic_mode_active(self, event: AstrMessageEvent | None) -> bool:
-        """判断事件是否仍指向已验证的语义表情包。
+    def _semantic_mode_active(
+        self, event: AstrMessageEvent | None, *, include_direct: bool = False
+    ) -> bool:
+        """Check whether the event still uses the verified semantic packs.
 
         Args:
-            event: 当前 AstrBot 消息事件。
+            event: Current message event with the resolved pack binding.
+            include_direct: Whether to allow semantic search used only by send_meme.
 
         Returns:
-            请求阶段验证结果与运行时表情包匹配时返回 True。
+            True if the requested semantic mode and pack binding are still valid.
         """
         if event is None or not hasattr(event, "get_extra"):
             return False
@@ -728,6 +749,10 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             bool(event.get_extra("meme_manager_semantic_active"))
             and bool(verified_ids)
             and verified_ids == runtime_ids_str
+            and (
+                include_direct
+                or event.get_extra("meme_manager_semantic_mode") != "direct"
+            )
         )
 
     def _semantic_system_prompt(self, search_result: str | None = None) -> str:
@@ -906,24 +931,54 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         self, req: ProviderRequest, event: AstrMessageEvent | None = None
     ) -> None:
         semantic_mode = ""
-        semantic_tool_ready = False
-        if self.emotion_llm_enabled:
-            if self._semantic_pack_ready(event=event, req=req):
-                semantic_mode = "llm"
-        else:
-            semantic_tool_ready = self._semantic_pack_ready(
-                event=event,
-                req=req,
-                require_tool=not getattr(self, "tool_probability_enabled", False),
-            )
-            if semantic_tool_ready:
-                semantic_mode = "tool"
+        supports_tools = self._reply_model_supports_tools(event)
+        tool_only = getattr(self, "meme_tool_only", False)
+        tool_only_fallback = tool_only and not supports_tools
+        semantic_selection = getattr(self, "semantic_selection_enabled", True)
+        get_tool = getattr(getattr(req, "func_tool", None), "get_tool", None)
+        send_tool = get_tool("send_meme") if callable(get_tool) else None
+        search_tool = get_tool("search_memes") if callable(get_tool) else None
+        direct_tools_available = bool(
+            getattr(self, "send_meme_tool_enabled", True)
+            and send_tool
+            and getattr(send_tool, "active", True)
+            and search_tool
+            and getattr(search_tool, "active", True)
+            and supports_tools
+        )
         initialized = event is not None and event.get_extra(
             "meme_manager_request_initialized"
         )
-        mode_changed = initialized and self.emotion_llm_enabled != (
-            event.get_extra("meme_manager_selection_timing") == "after_reply"
+        mode_changed = initialized and (
+            self.emotion_llm_enabled
+            != (event.get_extra("meme_manager_selection_timing") == "after_reply")
+            or tool_only_fallback
+            != bool(event.get_extra("meme_manager_tool_only_fallback"))
         )
+        if tool_only_fallback:
+            if not initialized or mode_changed:
+                logger.info(
+                    "[meme_manager] Reply model lacks tool support; using category tags."
+                )
+        elif tool_only or (
+            not semantic_selection
+            and not self.emotion_llm_enabled
+            and getattr(self, "semantic_on_demand_enabled", False)
+        ):
+            if direct_tools_available and self._semantic_pack_ready(
+                event=event, req=req
+            ):
+                semantic_mode = "direct"
+        elif semantic_selection and self.emotion_llm_enabled:
+            if self._semantic_pack_ready(event=event, req=req):
+                semantic_mode = "llm"
+        elif semantic_selection:
+            if self._semantic_pack_ready(
+                event=event,
+                req=req,
+                require_tool=not getattr(self, "tool_probability_enabled", False),
+            ):
+                semantic_mode = "tool"
         if initialized and not mode_changed:
             semantic_mode = str(event.get_extra("meme_manager_semantic_mode") or "")
         semantic_active = bool(semantic_mode)
@@ -933,6 +988,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             and (not initialized or mode_changed)
         ):
             event.set_extra("meme_manager_request_initialized", True)
+            event.set_extra("meme_manager_tool_only_fallback", tool_only_fallback)
             event.set_extra("meme_manager_semantic_active", semantic_active)
             event.set_extra("meme_manager_semantic_mode", semantic_mode)
             # 保存已验证的表情包 ID，供后续校验。
@@ -961,7 +1017,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             )
             event.set_extra(
                 "meme_manager_selection_method",
-                "semantic" if semantic_active else "category",
+                "semantic" if semantic_mode in {"tool", "llm"} else "category",
             )
         if semantic_mode == "tool":
             req.system_prompt = self._strip_meme_prompt(
@@ -972,22 +1028,14 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 else None
             )
             return
-        tools = getattr(req, "func_tool", None)
-        get_tool = getattr(tools, "get_tool", None)
-        send_tool = get_tool("send_meme") if callable(get_tool) else None
-        search_tool = get_tool("search_memes") if callable(get_tool) else None
-        direct_search = bool(
-            semantic_mode == "llm"
-            and getattr(self, "send_meme_tool_enabled", True)
-            and send_tool
-            and getattr(send_tool, "active", True)
-            and search_tool
-            and getattr(search_tool, "active", True)
-            and self._reply_model_supports_tools(event)
-        )
-        if not direct_search:
+        direct_search = semantic_mode == "llm" and direct_tools_available
+        if not direct_search and semantic_mode != "direct":
             self._remove_meme_tool(req)
-        if semantic_mode == "llm" or self.emotion_llm_enabled:
+        if (
+            (tool_only and not tool_only_fallback)
+            or semantic_mode == "llm"
+            or self.emotion_llm_enabled
+        ):
             req.system_prompt = self._strip_meme_prompt(req.system_prompt)
             return
         pack_context = self._resolve_runtime_pack_context(event=event, req=req)
@@ -1069,7 +1117,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             and not direct_search
         ):
             return dumps_result({"ok": False, "reason": "tool_probability_managed"})
-        if not self._semantic_mode_active(event) or (
+        if not self._semantic_mode_active(event, include_direct=True) or (
             str(event.get_extra("meme_manager_semantic_mode") or "") != "tool"
             and not direct_search
         ):

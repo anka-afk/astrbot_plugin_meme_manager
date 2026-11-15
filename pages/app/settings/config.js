@@ -59,16 +59,20 @@ async function initPluginConfig() {
     }`;
   }
 
-  function selectionWorkflow({ semantic, postReply }) {
+  function selectionWorkflow({ semantic, postReply, toolOnly, onDemand }) {
     return [
       {
         title: "表情来源",
         tab: "rules",
       },
       {
-        title: semantic ? "图片标签" : "分类标签",
-        group: semantic ? "semantic-models" : "category-matching",
-        links: semantic
+        title: onDemand || (semantic && toolOnly)
+          ? "语义数据准备"
+          : semantic
+          ? "图片标签"
+          : "分类标签",
+        group: semantic || onDemand ? "semantic-models" : "category-matching",
+        links: semantic || onDemand
           ? [
               ["semantic", "检索参数"],
               ...(postReply ? [["semantic-query", "检索词来源"]] : []),
@@ -76,8 +80,10 @@ async function initPluginConfig() {
           : [],
       },
       {
-        title: postReply ? "辅助模型" : "主模型",
-        group: postReply
+        title: toolOnly ? "仅工具" : postReply ? "辅助模型" : "主模型",
+        group: toolOnly
+          ? "appearance"
+          : postReply
           ? "emotion-model"
           : semantic
           ? "tool-trigger"
@@ -109,6 +115,8 @@ async function initPluginConfig() {
         "generation.trigger.",
         "generation.emotion.probability",
         "generation.emotion.send_tool_enabled",
+        "generation.emotion.tool_only",
+        "semantic.on_demand_enabled",
         "generation.emotion.max_memes_per_message",
       ],
     },
@@ -763,7 +771,12 @@ async function initPluginConfig() {
     const currentValue = (path) =>
       changes.has(path) ? changes.get(path) : fields.get(path)?.value;
     const semantic = Boolean(currentValue(modePaths[0]));
-    const postReply = Boolean(currentValue(modePaths[1]));
+    const toolOnly = Boolean(currentValue("generation.emotion.tool_only"));
+    const postReply = !toolOnly && Boolean(currentValue(modePaths[1]));
+    const onDemand =
+      !semantic &&
+      !postReply &&
+      Boolean(currentValue("semantic.on_demand_enabled"));
     const backend = currentValue("generation.emotion.llm.backend") || "chat";
     const querySource = currentValue("semantic.query.source") || "generated";
     const judgmentBackend =
@@ -788,25 +801,33 @@ async function initPluginConfig() {
             .includes(query)
         : active !== "models");
     for (const input of dimensionInputs) {
+      input.disabled = toolOnly && input.name === "selection-agent";
       input.checked =
         input.name === "selection-method"
           ? input.value === (semantic ? "semantic" : "category")
-          : input.value === (postReply ? "assisted" : "reply");
+          : input.value === (currentValue(modePaths[1]) ? "assisted" : "reply");
       input.closest("label").classList.toggle("selected", input.checked);
     }
     sections.hidden = !query && ["models", "collect"].includes(active);
     workflow.hidden = !loaded || Boolean(query) || active !== "models";
     collectionWorkflow.hidden =
       !loaded || Boolean(query) || active !== "collect";
-    const workflowKey = [mode, backend, querySource, activeFlowGroup].join(":");
+    const workflowKey = [
+      mode,
+      toolOnly,
+      onDemand,
+      backend,
+      querySource,
+      activeFlowGroup,
+    ].join(":");
     if (workflowSteps.dataset.state !== workflowKey) {
       workflowSteps.dataset.state = workflowKey;
       workflowSteps.replaceChildren();
       for (const step of selectionWorkflow({
         semantic,
         postReply,
-        backend,
-        querySource,
+        toolOnly,
+        onDemand,
       })) {
         const item = document.createElement("li");
         const node = document.createElement("button");
@@ -863,8 +884,8 @@ async function initPluginConfig() {
       providerListErrors,
     });
     const readiness = document.getElementById("selection-readiness-note");
-    readiness.hidden = !semantic;
-    if (semantic) {
+    readiness.hidden = !semantic && !onDemand;
+    if (semantic || onDemand) {
       readiness.textContent = `${
         setup.preparationWarning &&
         setup.selectionIssues.some(
@@ -933,7 +954,9 @@ async function initPluginConfig() {
       reference.append(serviceLink);
     }
     document.getElementById("selection-mode-detail").textContent =
-      postReply || semantic ? setup.requestNote : "分类标签随机取图";
+      toolOnly || postReply || semantic || onDemand
+        ? setup.requestNote
+        : "分类标签随机取图";
     resetPrompts.hidden = Boolean(query) || active !== "prompts";
     const configVisible = Boolean(query) || Boolean(categories[active]);
     for (const panel of panels) {
@@ -961,9 +984,9 @@ async function initPluginConfig() {
     sections.classList.toggle("storage-layout", active === "storage" && !query);
     let visibleCount = modePanel.hidden && collectionWorkflow.hidden ? 0 : 1;
     const conditions = {
-      semantic,
+      semantic: semantic || onDemand,
       category: !semantic,
-      "reply-semantic": semantic && !postReply,
+      "reply-semantic": semantic && !postReply && !toolOnly,
       "post-semantic": semantic && postReply,
       "reply-category": !semantic && !postReply,
       post: postReply,

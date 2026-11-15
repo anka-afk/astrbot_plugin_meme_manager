@@ -10,8 +10,11 @@ export function describeSetup(
     providerListErrors = [],
   },
 ) {
-  const semantic = Boolean(values["semantic.enabled"]);
-  const postReply = Boolean(values["generation.emotion.llm.enabled"]);
+  const toolOnly = Boolean(values["generation.emotion.tool_only"]);
+  const postReply = !toolOnly && Boolean(values["generation.emotion.llm.enabled"]);
+  const autoSemantic = Boolean(values["semantic.enabled"]);
+  const onDemand = !postReply && Boolean(values["semantic.on_demand_enabled"]);
+  const semantic = autoSemantic || onDemand;
   const decision =
     postReply && values["generation.emotion.llm.backend"] === "decision";
   const collectionEnabled = Boolean(values["auto_collect.enabled"]);
@@ -116,11 +119,19 @@ export function describeSetup(
       ? chatNames.get(selectionProvider) ||
         `${selectionProvider}（未在列表中找到，请核对 ID）`
       : "跟随本轮主模型"
+    : toolOnly
+    ? "由本轮主模型调用 send_meme"
     : "由本轮主模型完成";
   rows.push({
     label: "标签选择",
     value: selector,
-    group: postReply ? "emotion-model" : semantic ? "tool-trigger" : "prompts",
+    group: toolOnly
+      ? "appearance"
+      : postReply
+      ? "emotion-model"
+      : autoSemantic
+      ? "tool-trigger"
+      : "prompts",
   });
   if (decision) selectionIssues.push(...serviceIssues);
   if (
@@ -170,7 +181,7 @@ export function describeSetup(
       rows.push({
         label: "语义检索",
         value: "由主模型调用搜索工具",
-        group: "tool-trigger",
+        group: toolOnly || !autoSemantic ? "appearance" : "tool-trigger",
       });
     rows.push({
       label: "向量模型",
@@ -224,18 +235,26 @@ export function describeSetup(
     : collectionDecision
     ? "分类明确的图片自动入包，其余进入待审核。"
     : "符合收录条件的图片自动入包，分类不确定的归入「待分类」。";
-  const requestNote = postReply
+  const requestNote = toolOnly
+    ? values["generation.emotion.send_tool_enabled"] === false
+      ? "主动发送表情工具已关闭"
+      : semantic
+      ? "仅工具发图，可按分类随机发送或按需搜图"
+      : "仅工具发图，按分类随机发送"
+    : postReply
     ? semantic
       ? `${generated ? "检索词生成 + " : ""}向量检索 + ${
           decision ? "决策服务" : "聊天模型"
         }选图`
       : `${decision ? "决策服务" : "聊天模型"}选分类`
-    : semantic
+    : autoSemantic
     ? `${
         values["semantic.tool_probability_enabled"]
           ? "按概率尝试一次检索"
           : "主模型按需调用搜索工具"
       }；失败时只回复文字，不切换其他模式补发`
+    : onDemand
+    ? "按分类随机取图，需要具体图片时由主模型调用搜索工具"
     : "无需额外调用";
   return {
     rows,

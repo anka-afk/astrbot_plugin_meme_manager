@@ -239,7 +239,10 @@ class EventHandlerMixin:
         Returns:
             当前回复是否可以发送所选表情。
         """
-        if event.get_extra("meme_manager_direct_send_attempted"):
+        if event.get_extra("meme_manager_direct_send_attempted") or (
+            getattr(self, "meme_tool_only", False)
+            and not event.get_extra("meme_manager_tool_only_fallback")
+        ):
             return False
         if not event.get_extra("meme_manager_outgoing_processing") and str(
             getattr(event, "unified_msg_origin", "")
@@ -1615,8 +1618,26 @@ class EventHandlerMixin:
         )
         event.set_extra("meme_manager_send_tool_available", send_tool_available)
         search_tool = get_tool("search_memes") if callable(get_tool) else None
+        semantic_mode = event.get_extra("meme_manager_semantic_mode")
+        context = (
+            self._resolve_runtime_pack_context(event=event, req=req)
+            if send_tool_available
+            else {}
+        )
+        semantic_active = self._semantic_mode_active(event, include_direct=True)
+        if (
+            semantic_mode == "direct"
+            and search_tool is not None
+            and (
+                not send_tool_available
+                or not semantic_active
+                or event.get_extra("meme_manager_semantic_search_completed")
+            )
+        ):
+            self._remove_meme_tool(req)
+            search_tool = None
+        can_search = bool(search_tool and getattr(search_tool, "active", True))
         if send_tool_available:
-            context = self._resolve_runtime_pack_context(event=event, req=req)
             mapping = runtime_category_mapping(context.get("category_mapping") or {})
             catalog = {
                 key: str(description or "")[:1000]
@@ -1624,11 +1645,8 @@ class EventHandlerMixin:
                 if self._get_category_meme_files(event, key)
             }
             semantic_send = bool(
-                self._semantic_mode_active(event)
-                and (
-                    (search_tool and getattr(search_tool, "active", True))
-                    or event.get_extra("meme_manager_semantic_candidates")
-                )
+                semantic_active
+                and (can_search or event.get_extra("meme_manager_semantic_candidates"))
             )
             if catalog or semantic_send:
                 req.system_prompt += (
@@ -1641,10 +1659,8 @@ class EventHandlerMixin:
                         else ""
                     )
                     + (
-                        "按具体图片选图：先调用 search_memes，再将本轮候选的完整 ID 作为 target。\n"
-                        if semantic_send
-                        and search_tool
-                        and getattr(search_tool, "active", True)
+                        "需要按图片内容选图时，先调用 search_memes，再将本轮候选的完整 ID 作为 target。\n"
+                        if semantic_send and can_search
                         else ""
                     )
                     + (
@@ -1665,11 +1681,9 @@ class EventHandlerMixin:
                     )
                     + (
                         "\n标签与工具二选一：使用其中一种方式完成本轮配图。"
-                        if not self.emotion_llm_enabled
-                        and (
-                            event.get_extra("meme_manager_semantic_mode") == "tool"
-                            or catalog
-                        )
+                        if not getattr(self, "meme_tool_only", False)
+                        and not self.emotion_llm_enabled
+                        and (semantic_mode == "tool" or catalog)
                         else ""
                     )
                     + f"\n{SEND_TOOL_PROMPT_MARKER_END}"
@@ -1681,12 +1695,12 @@ class EventHandlerMixin:
             self._remove_meme_tool(req, "send_meme")
         direct_search = bool(
             send_tool_available
-            and event.get_extra("meme_manager_semantic_mode") == "llm"
-            and search_tool
-            and getattr(search_tool, "active", True)
+            and semantic_active
+            and semantic_mode in {"direct", "llm"}
+            and can_search
         )
         event.set_extra("meme_manager_direct_search_available", direct_search)
-        if event.get_extra("meme_manager_semantic_mode") == "llm" and not direct_search:
+        if semantic_mode == "llm" and not direct_search:
             self._remove_meme_tool(req)
         if not self.emotion_llm_enabled:
             return
@@ -2131,7 +2145,10 @@ class EventHandlerMixin:
         clean_text = parser.feed(text) + parser.finish()
         found_emotions = parser.selections
 
-        if event.get_extra("meme_manager_direct_send_attempted"):
+        if event.get_extra("meme_manager_direct_send_attempted") or (
+            getattr(self, "meme_tool_only", False)
+            and not event.get_extra("meme_manager_tool_only_fallback")
+        ):
             found_emotions = []
         elif self.emotion_llm_enabled:
             # 仅由回复后选择器决定选择结果，包括主动放弃。
@@ -2529,7 +2546,7 @@ class EventHandlerMixin:
         context = self._resolve_runtime_pack_context(event=event)
         semantic = target.startswith("meme:")
         if semantic:
-            if not self._semantic_mode_active(event):
+            if not self._semantic_mode_active(event, include_direct=True):
                 return json.dumps({"ok": False, "reason": "semantic_unavailable"})
             source = validate_selected_id(event, target, context)
             if source is None:
