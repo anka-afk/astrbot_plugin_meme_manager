@@ -1033,16 +1033,27 @@ async function initPluginConfig() {
       )
         card.hidden = true;
       if (card === dialogContent) card.hidden = false;
+      const toolOnlyFallback =
+        toolOnly &&
+        [
+          "prompts",
+          "quantity-guidance",
+          "category-example",
+          "reply-example",
+        ].includes(group.id);
       card.querySelector(".config-mode-inactive")?.remove();
       if (
         !card.hidden &&
-        ((group.when && !conditions[group.when]) ||
+        (toolOnlyFallback ||
+          (group.when && !conditions[group.when]) ||
           (group.provider && group.provider !== selectedProvider))
       ) {
         const inactive = document.createElement("p");
         inactive.className = "config-mode-inactive config-card-description";
         inactive.textContent = group.provider
           ? "当前存储方式未使用；已填参数会保留，切换后保存生效"
+          : toolOnlyFallback
+          ? "无工具回退时使用"
           : semantic &&
             [
               "prompts",

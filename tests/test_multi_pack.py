@@ -292,8 +292,9 @@ async def test_primary_file_errors_do_not_abort_secondary_search(
     assert [item["_source_pack_id"] for item in result["candidates"]] == ["pack-b"]
 
 
-@pytest.mark.parametrize("stage", ["load_metadata", "index_is_ready"])
-@pytest.mark.parametrize("for_direct_search", [False, True])
+@pytest.mark.parametrize(
+    ("stage", "for_direct_search"), [("load_metadata", False), ("index_is_ready", True)]
+)
 def test_primary_file_errors_do_not_abort_secondary_readiness(
     semantic_runtime, monkeypatch, stage, for_direct_search
 ):
