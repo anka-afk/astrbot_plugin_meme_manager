@@ -530,6 +530,29 @@
             "default": true,
             "hint": "默认开启。向支持工具调用的主模型提供 send_meme，由模型决定何时调用；可按当前会话分类随机发图，或发送本轮 search_memes 检索候选中的具体图片。调用不受自动配图的发送概率（含 0%）和数量上限限制，可多次调用；使用后本轮不再自动附加表情。关闭后不提供或执行该工具，仍遵守应用范围、图包绑定和 AstrBot 工具权限。"
           },
+          "tool_only": {
+            "description": "仅通过工具发送表情",
+            "type": "bool",
+            "default": false,
+            "hint": "支持工具的主模型只通过 send_meme 发图。可按分类随机取图，当前表情包有可用语义索引时也可按需搜图。需要启用主动发送表情工具。模型不支持工具调用时，回退到分类标签随机取图。"
+          },
+          "preview_images_per_page": {
+            "description": "分类表情预览张数",
+            "type": "int",
+            "default": 9,
+            "hint": "每张预览拼图最多包含的表情数。0 关闭预览，1–16 可选。需要主模型支持工具和图片输入；每轮最多生成两页。",
+            "slider": {
+              "min": 0,
+              "max": 16,
+              "step": 1
+            }
+          },
+          "keep_send_summary": {
+            "description": "在对话历史中保留发图摘要",
+            "type": "bool",
+            "default": true,
+            "hint": "主动发送表情成功后，在对话历史中只保留一句发送摘要。关闭后也不保留摘要。预览图、候选列表和表情工具记录会在本轮结束时清理。"
+          },
           "probability": {
             "description": "表情发送概率",
             "type": "int",

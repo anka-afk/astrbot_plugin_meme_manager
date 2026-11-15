@@ -292,12 +292,14 @@ async def test_primary_file_errors_do_not_abort_secondary_search(
     assert [item["_source_pack_id"] for item in result["candidates"]] == ["pack-b"]
 
 
-@pytest.mark.parametrize("stage", ["load_metadata", "index_is_ready"])
+@pytest.mark.parametrize(
+    ("stage", "for_direct_search"), [("load_metadata", False), ("index_is_ready", True)]
+)
 def test_primary_file_errors_do_not_abort_secondary_readiness(
-    semantic_runtime, monkeypatch, stage
+    semantic_runtime, monkeypatch, stage, for_direct_search
 ):
     sender, event, state, context = semantic_runtime
-    sender.semantic_enabled = True
+    sender.semantic_enabled = not for_direct_search
     sender.semantic_embedding_provider_id = ""
     sender._resolve_embedding_provider = lambda pack_id: SimpleNamespace(
         provider_config={"id": pack_id, "model": "embedding-model"},
@@ -320,7 +322,7 @@ def test_primary_file_errors_do_not_abort_secondary_readiness(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(plugin_main, stage, fail_primary)
-    assert sender._semantic_pack_ready(event)
+    assert sender._semantic_pack_ready(event, for_direct_search=for_direct_search)
 
 
 def test_legacy_category_images_include_secondary_pack(semantic_runtime):

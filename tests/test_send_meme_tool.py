@@ -341,6 +341,65 @@ async def test_prompt_exposes_available_paths_without_example_ids(
 
 
 @pytest.mark.parametrize(
+    ("tool_only", "indexed", "delivery"),
+    [
+        (False, True, "search"),
+        (True, True, "search"),
+        (False, True, "random"),
+        (True, False, "random"),
+        (False, True, "tag"),
+        (True, True, "tag"),
+        (True, True, "fallback"),
+    ],
+)
+async def test_category_sending_modes(tool_reply, tool_only, indexed, delivery):
+    sender, event, state, request, shared, provider, search = tool_reply
+    supports_tools = delivery != "fallback"
+    sender.meme_tool_only = tool_only
+    sender.semantic_enabled = not supports_tools
+    provider.provider_config["modalities"] = ["tool_use"] if supports_tools else ["image"]
+    sender._semantic_pack_ready = lambda **kwargs: indexed and kwargs["for_direct_search"]
+    sender.prompt_head = "Category tags"
+    sender.prompt_tail = ""
+    sender.prompt_examples = []
+    context = sender._resolve_runtime_pack_context()
+    context.update(memes_dir=context["pack_dir"], pack_dirs={})
+    sender._resolve_runtime_pack_context = lambda **kwargs: context
+    shared.add_tool(copy.copy(llm_tools.get_func("send_meme")))
+
+    await sender._inject_meme_prompt_impl(event, request)
+    assert (request.func_tool.get_tool("search_memes") is not None) is (
+        indexed and supports_tools
+    )
+    assert (request.func_tool.get_tool("send_meme") is not None) is supports_tools
+    expect_tags = not tool_only or not supports_tools
+    assert ("Category tags" in request.system_prompt) is expect_tags
+    assert ("标签与工具二选一" in request.system_prompt) is (not tool_only)
+    provider.text_chat.assert_not_awaited()
+    search.assert_not_awaited()
+
+    if delivery in {"tag", "fallback"}:
+        response = LLMResponse(role="assistant", completion_text="Hello\n&&happy&&")
+        await sender._resp_impl(event, response)
+        assert response.completion_text == "Hello"
+        assert state["found_emotions"] == (["happy"] if expect_tags else [])
+        assert sender._meme_send_allowed(event) is expect_tags
+        return
+
+    target = "happy"
+    if delivery == "search":
+        result = json.loads(await sender.search_memes_tool(event, "celebrate"))
+        target = result["candidates"][0]["id"]
+        request.func_tool = shared
+        await sender._inject_meme_prompt_impl(event, request)
+        assert request.func_tool.get_tool("search_memes") is None
+        assert "本轮已有候选" in request.system_prompt
+    assert json.loads(await sender.send_meme_tool(event, target))["ok"]
+    sender._send_meme_image.assert_awaited_once()
+    assert not state.get("meme_manager_semantic_selected_ids")
+
+
+@pytest.mark.parametrize(
     "tag_state",
     [
         "found_emotions",

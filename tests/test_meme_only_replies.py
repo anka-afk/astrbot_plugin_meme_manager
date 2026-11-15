@@ -61,7 +61,7 @@ def reply_context(tmp_path):
     sender.send_image_as_base64 = False
     sender.streaming_compatibility = True
     sender.content_cleanup_rule = r"&&[a-zA-Z]*&&"
-    sender._semantic_mode_active = lambda event: False
+    sender._semantic_mode_active = lambda event, **kwargs: False
     sender._resolve_runtime_pack_context = lambda **kwargs: {
         "category_mapping": mapping,
         "pack_dir": tmp_path,
@@ -731,7 +731,7 @@ async def test_semantic_search_exposes_candidates_without_preselecting(
     import json
 
     sender, event, state, root = reply_context
-    sender._semantic_mode_active = lambda event: True
+    sender._semantic_mode_active = lambda event, **kwargs: True
     sender._resolve_runtime_pack_context = lambda **kwargs: {
         "pack_id": "pack",
         "pack_ids": ["pack"],

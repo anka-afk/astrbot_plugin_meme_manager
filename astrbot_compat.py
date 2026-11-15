@@ -5,6 +5,7 @@
 
 # 先初始化公开 API，否则旧核心会通过 star_tools 发生循环导入。
 import astrbot.api  # noqa: F401
+from astrbot.core.agent.message import ImageURLPart, Message, TextPart, ToolCall
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.star.filter.command import CommandFilter
@@ -17,10 +18,14 @@ from astrbot.core.utils.session_waiter import SessionFilter
 
 __all__ = [
     "ContextWrapper",
+    "ImageURLPart",
+    "Message",
     "MessageSession",
     "CommandFilter",
     "CommandGroupFilter",
     "SessionFilter",
+    "TextPart",
+    "ToolCall",
     "get_astrbot_plugin_data_path",
     "get_astrbot_temp_path",
     "get_star_handlers_registry",

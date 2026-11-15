@@ -1,7 +1,11 @@
 import asyncio
+import base64
 import copy
 import re
+import sqlite3
 from pathlib import Path
+
+from mcp.types import CallToolResult, ImageContent, TextContent
 
 from astrbot.api import llm_tool, logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -9,12 +13,24 @@ from astrbot.api.event.filter import EventMessageType
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star
 
-from .astrbot_compat import get_star_handlers_registry
+from .astrbot_compat import (
+    ContextWrapper,
+    Message,
+    TextPart,
+    get_star_handlers_registry,
+)
 from .backend.auto_collect import AutoCollectManager
 from .backend.decision import DecisionClient
 from .backend.manual_collect import ManualCollectManager
 from .backend.packs.categories import CategoryManager
 from .backend.packs.images import IMAGE_EXTENSIONS
+from .backend.packs.preview import (
+    MAX_PREVIEW_IMAGES,
+    MAX_PREVIEW_PAGES,
+    PREVIEW_TOOL,
+    build_meme_preview,
+    discard_meme_tool_context,
+)
 from .backend.packs.resolver import get_pack_paths
 from .backend.semantic.index import EmbeddingAdapter, index_is_ready
 from .backend.semantic.models import runtime_category_mapping
@@ -238,6 +254,24 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 ("generation", "emotion", "send_tool_enabled"), default=True
             )
         )
+        self.meme_tool_only = bool(
+            self._read_config_value(
+                ("generation", "emotion", "tool_only"), default=False
+            )
+        )
+        preview_images = self._read_config_value(
+            ("generation", "emotion", "preview_images_per_page"), default=9
+        )
+        self.preview_images_per_page = (
+            max(0, min(MAX_PREVIEW_IMAGES, preview_images))
+            if isinstance(preview_images, int)
+            else 9
+        )
+        self.keep_meme_send_summary = bool(
+            self._read_config_value(
+                ("generation", "emotion", "keep_send_summary"), default=True
+            )
+        )
         self.tool_probability_enabled = bool(
             self._read_config_value(
                 ("semantic", "tool_probability_enabled"), default=False
@@ -246,7 +280,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         self.tool_call_probability = self._read_config_value(
             ("semantic", "tool_call_probability"), default=100
         )
-        self.emotion_llm_enabled = self._read_config_value(
+        self.emotion_llm_enabled = not self.meme_tool_only and self._read_config_value(
             ("generation", "emotion", "llm", "enabled"),
             default=False,
         )
@@ -394,6 +428,69 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
     @filter.on_llm_response(priority=99999)
     async def resp(self, event: AstrMessageEvent, response: LLMResponse):
         return await self._resp_impl(event, response)
+
+    @filter.on_agent_begin(priority=99999)
+    async def track_meme_tool_context(
+        self, event: AstrMessageEvent, run_context: ContextWrapper
+    ):
+        """Keep access to the current agent messages while meme tools run.
+
+        Args:
+            event: Message event for this agent turn.
+            run_context: Agent context whose message list can change between steps.
+        """
+        if event.get_extra("meme_manager_request_initialized"):
+            event.set_extra("meme_manager_tool_context", run_context)
+
+    @filter.on_agent_done(priority=99999)
+    async def compact_meme_tool_history(
+        self,
+        event: AstrMessageEvent,
+        run_context: ContextWrapper,
+        response: LLMResponse,
+    ):
+        """Keep at most one delivery summary before AstrBot saves the turn.
+
+        Args:
+            event: Message event for the completed turn.
+            run_context: Agent context about to be saved.
+            response: Final response supplied by the AstrBot hook.
+        """
+        if event.get_extra("meme_manager_tool_context") is not run_context:
+            return
+        event.set_extra("meme_manager_tool_context", None)
+        event.set_extra("meme_manager_preview_candidates", None)
+        receipt = event.get_extra("meme_manager_send_summary")
+        event.set_extra("meme_manager_send_summary", None)
+        messages = run_context.messages
+        discard_meme_tool_context(messages)
+        if receipt is None or not self.keep_meme_send_summary:
+            return
+
+        count, category, number = receipt
+        detail = ""
+        if count == 1:
+            category = " ".join(category.split())[:32]
+            detail = f"（{category}，#{number}）" if number else f"（{category}）"
+        summary = f"已发送 {count} 张表情{detail}。"
+        last = messages[-1] if messages else None
+        if (
+            last
+            and last.role == "assistant"
+            and not last.tool_calls
+            and not last._no_save
+        ):
+            content = last.content
+            if isinstance(content, list):
+                content = [
+                    *content,
+                    TextPart(text=f"\n\n{summary}" if content else summary),
+                ]
+            else:
+                content = f"{content}\n\n{summary}" if content else summary
+            messages[-1] = last.model_copy(update={"content": content})
+        else:
+            messages.append(Message(role="assistant", content=summary))
 
     @filter.on_decorating_result(priority=99999)
     async def on_decorating_result(self, event: AstrMessageEvent):
@@ -595,10 +692,20 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 str(exc),
             )
 
-    def _reply_model_supports_tools(self, event: AstrMessageEvent | None) -> bool:
-        """仅在模型明确声明不支持工具时关闭语义模式。"""
+    def _reply_model_supports_tools(
+        self, event: AstrMessageEvent | None, *, require_image_input: bool = False
+    ) -> bool:
+        """Check tool support using the reply provider's declared modalities.
+
+        Args:
+            event: Message event with the selected reply provider, if available.
+            require_image_input: Require explicit support for image input as well.
+
+        Returns:
+            Whether the provider supports the required modalities.
+        """
         if event is None:
-            return True
+            return not require_image_input
         try:
             selected = event.get_extra("selected_provider")
             provider = (
@@ -613,12 +720,13 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 else None
             )
             if not isinstance(modalities, list) or not modalities:
-                return True
-            return "tool_use" in {
-                str(modality or "").strip().lower() for modality in modalities
-            }
+                return not require_image_input
+            available = {str(modality or "").strip().lower() for modality in modalities}
+            return "tool_use" in available and (
+                not require_image_input or "image" in available
+            )
         except Exception:
-            return True
+            return not require_image_input
 
     def _semantic_pack_ready(
         self,
@@ -626,6 +734,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         req: ProviderRequest | None = None,
         *,
         require_tool: bool = False,
+        for_direct_search: bool = False,
     ) -> bool:
         """判断当前选择的运行时表情包能否使用语义检索。
 
@@ -635,11 +744,12 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             event: 当前 AstrBot 消息事件。
             req: 检查请求阶段工具时的当前模型请求。
             require_tool: 是否要求回复模型和请求公开语义检索工具。
+            for_direct_search: Check existing indexes even in category selection mode.
 
         Returns:
             任一绑定表情包的有效向量与其向量模型匹配时返回 True。
         """
-        if not self.semantic_enabled:
+        if not for_direct_search and not self.semantic_enabled:
             return False
         if (
             require_tool
@@ -666,6 +776,8 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             try:
                 pack_dir = get_pack_paths(pack_id)["pack_dir"]
                 metadata = load_metadata(pack_dir)
+                if not metadata.get("images"):
+                    continue
                 provider = self._resolve_embedding_provider(pack_id)
                 embedding = EmbeddingAdapter(
                     provider, self.semantic_embedding_provider_id or ""
@@ -708,14 +820,17 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         if callable(remove_tool):
             remove_tool(name)
 
-    def _semantic_mode_active(self, event: AstrMessageEvent | None) -> bool:
-        """判断事件是否仍指向已验证的语义表情包。
+    def _semantic_mode_active(
+        self, event: AstrMessageEvent | None, *, include_direct: bool = False
+    ) -> bool:
+        """Check whether the event still uses the verified semantic packs.
 
         Args:
-            event: 当前 AstrBot 消息事件。
+            event: Current message event with the resolved pack binding.
+            include_direct: Whether to allow semantic search used only by send_meme.
 
         Returns:
-            请求阶段验证结果与运行时表情包匹配时返回 True。
+            True if the requested semantic mode and pack binding are still valid.
         """
         if event is None or not hasattr(event, "get_extra"):
             return False
@@ -728,6 +843,10 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             bool(event.get_extra("meme_manager_semantic_active"))
             and bool(verified_ids)
             and verified_ids == runtime_ids_str
+            and (
+                include_direct
+                or event.get_extra("meme_manager_semantic_mode") != "direct"
+            )
         )
 
     def _semantic_system_prompt(self, search_result: str | None = None) -> str:
@@ -906,24 +1025,50 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         self, req: ProviderRequest, event: AstrMessageEvent | None = None
     ) -> None:
         semantic_mode = ""
-        semantic_tool_ready = False
-        if self.emotion_llm_enabled:
-            if self._semantic_pack_ready(event=event, req=req):
-                semantic_mode = "llm"
-        else:
-            semantic_tool_ready = self._semantic_pack_ready(
-                event=event,
-                req=req,
-                require_tool=not getattr(self, "tool_probability_enabled", False),
-            )
-            if semantic_tool_ready:
-                semantic_mode = "tool"
+        supports_tools = self._reply_model_supports_tools(event)
+        tool_only = getattr(self, "meme_tool_only", False)
+        tool_only_fallback = tool_only and not supports_tools
+        semantic_selection = getattr(self, "semantic_enabled", True)
+        get_tool = getattr(getattr(req, "func_tool", None), "get_tool", None)
+        send_tool = get_tool("send_meme") if callable(get_tool) else None
+        search_tool = get_tool("search_memes") if callable(get_tool) else None
+        direct_tools_available = bool(
+            getattr(self, "send_meme_tool_enabled", True)
+            and send_tool
+            and getattr(send_tool, "active", True)
+            and search_tool
+            and getattr(search_tool, "active", True)
+            and supports_tools
+        )
         initialized = event is not None and event.get_extra(
             "meme_manager_request_initialized"
         )
-        mode_changed = initialized and self.emotion_llm_enabled != (
-            event.get_extra("meme_manager_selection_timing") == "after_reply"
+        mode_changed = initialized and (
+            self.emotion_llm_enabled
+            != (event.get_extra("meme_manager_selection_timing") == "after_reply")
+            or tool_only_fallback
+            != bool(event.get_extra("meme_manager_tool_only_fallback"))
         )
+        if tool_only_fallback:
+            if not initialized or mode_changed:
+                logger.info(
+                    "[meme_manager] Reply model lacks tool support; using category tags."
+                )
+        elif tool_only or not semantic_selection:
+            if direct_tools_available and self._semantic_pack_ready(
+                event=event, req=req, for_direct_search=True
+            ):
+                semantic_mode = "direct"
+        elif semantic_selection and self.emotion_llm_enabled:
+            if self._semantic_pack_ready(event=event, req=req):
+                semantic_mode = "llm"
+        elif semantic_selection:
+            if self._semantic_pack_ready(
+                event=event,
+                req=req,
+                require_tool=not getattr(self, "tool_probability_enabled", False),
+            ):
+                semantic_mode = "tool"
         if initialized and not mode_changed:
             semantic_mode = str(event.get_extra("meme_manager_semantic_mode") or "")
         semantic_active = bool(semantic_mode)
@@ -933,6 +1078,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             and (not initialized or mode_changed)
         ):
             event.set_extra("meme_manager_request_initialized", True)
+            event.set_extra("meme_manager_tool_only_fallback", tool_only_fallback)
             event.set_extra("meme_manager_semantic_active", semantic_active)
             event.set_extra("meme_manager_semantic_mode", semantic_mode)
             # 保存已验证的表情包 ID，供后续校验。
@@ -961,7 +1107,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             )
             event.set_extra(
                 "meme_manager_selection_method",
-                "semantic" if semantic_active else "category",
+                "semantic" if semantic_mode in {"tool", "llm"} else "category",
             )
         if semantic_mode == "tool":
             req.system_prompt = self._strip_meme_prompt(
@@ -972,22 +1118,14 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 else None
             )
             return
-        tools = getattr(req, "func_tool", None)
-        get_tool = getattr(tools, "get_tool", None)
-        send_tool = get_tool("send_meme") if callable(get_tool) else None
-        search_tool = get_tool("search_memes") if callable(get_tool) else None
-        direct_search = bool(
-            semantic_mode == "llm"
-            and getattr(self, "send_meme_tool_enabled", True)
-            and send_tool
-            and getattr(send_tool, "active", True)
-            and search_tool
-            and getattr(search_tool, "active", True)
-            and self._reply_model_supports_tools(event)
-        )
-        if not direct_search:
+        direct_search = semantic_mode == "llm" and direct_tools_available
+        if not direct_search and semantic_mode != "direct":
             self._remove_meme_tool(req)
-        if semantic_mode == "llm" or self.emotion_llm_enabled:
+        if (
+            (tool_only and not tool_only_fallback)
+            or semantic_mode == "llm"
+            or self.emotion_llm_enabled
+        ):
             req.system_prompt = self._strip_meme_prompt(req.system_prompt)
             return
         pack_context = self._resolve_runtime_pack_context(event=event, req=req)
@@ -1069,7 +1207,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             and not direct_search
         ):
             return dumps_result({"ok": False, "reason": "tool_probability_managed"})
-        if not self._semantic_mode_active(event) or (
+        if not self._semantic_mode_active(event, include_direct=True) or (
             str(event.get_extra("meme_manager_semantic_mode") or "") != "tool"
             and not direct_search
         ):
@@ -1133,6 +1271,89 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             logger.error("语义表情查询失败: %s", exc, exc_info=True)
             return dumps_result({"ok": False, "reason": "语义查询失败"})
 
+    @llm_tool(name=PREVIEW_TOOL)
+    async def preview_memes_tool(
+        self, event: AstrMessageEvent, category: str, after: int = 0
+    ) -> CallToolResult | str:
+        """查看一个分类的编号缩略图，用于按画面挑选具体表情。
+
+        Args:
+            category(string): 可用分类键。
+            after(number): 起始编号游标。首次使用 0，翻页使用返回的 next_after。
+
+        Returns:
+            一张供模型选图的拼图。用 send_meme 的 preview:编号 发送原图。
+        """
+        run_context = event.get_extra("meme_manager_tool_context")
+        if (
+            run_context is None
+            or not self._scope_allows_llm_origin(event)
+            or not event.get_extra("meme_manager_preview_available")
+        ):
+            return dumps_result({"ok": False, "reason": "preview_unavailable"})
+        count = event.get_extra("meme_manager_preview_count") or 0
+        if count >= MAX_PREVIEW_PAGES:
+            return dumps_result({"ok": False, "reason": "preview_limit"})
+        if not isinstance(category, str) or type(after) is not int or after < 0:
+            return dumps_result({"ok": False, "reason": "invalid_preview_arguments"})
+        category = category.strip()
+        context = self._resolve_runtime_pack_context(event=event)
+        if category not in runtime_category_mapping(
+            context.get("category_mapping") or {}
+        ):
+            return dumps_result({"ok": False, "reason": "invalid_category"})
+        if event.get_extra("meme_manager_preview_busy") or (
+            event.get_extra("meme_manager_preview_candidates")
+            and not discard_meme_tool_context(run_context.messages, preview_only=True)
+        ):
+            return dumps_result({"ok": False, "reason": "preview_pending"})
+
+        event.set_extra("meme_manager_preview_candidates", None)
+        event.set_extra("meme_manager_preview_count", count + 1)
+        event.set_extra("meme_manager_preview_busy", True)
+        try:
+            files = self._get_category_meme_files(event, category)
+            jpeg, candidates, next_after = await asyncio.to_thread(
+                build_meme_preview,
+                PLUGIN_DATA_DIR / "preview_ids.sqlite3",
+                files,
+                context.get("pack_dirs") or {},
+                after,
+                self.preview_images_per_page,
+            )
+        except (OSError, sqlite3.Error):
+            logger.exception("[meme_manager] Failed to build a meme preview")
+            return dumps_result({"ok": False, "reason": "preview_failed"})
+        finally:
+            event.set_extra("meme_manager_preview_busy", False)
+        if jpeg is None:
+            return dumps_result({"ok": False, "reason": "no_preview_images"})
+        current = self._resolve_runtime_pack_context(event=event)
+        if context.get("pack_ids") != current.get("pack_ids"):
+            return dumps_result({"ok": False, "reason": "candidate_changed"})
+
+        event.set_extra(
+            "meme_manager_preview_candidates",
+            (context["pack_ids"], category, candidates),
+        )
+        result = {"numbers": list(candidates), "send_target": "preview:编号"}
+        if next_after is not None and count + 1 < MAX_PREVIEW_PAGES:
+            result["next_after"] = next_after
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=dumps_result(result)
+                    + "。拼图仅供选图。请用 send_meme 发送选中的原图。",
+                ),
+                ImageContent(
+                    type="image",
+                    data=base64.b64encode(jpeg).decode("ascii"),
+                    mimeType="image/jpeg",
+                ),
+            ]
+        )
+
     @llm_tool(name="send_meme")
     async def send_meme_tool(self, event: AstrMessageEvent, target: str) -> str:
         """立即向当前聊天发送一张表情图片。
@@ -1146,8 +1367,8 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         自动附图的概率与数量限制。
 
         Args:
-            target(string): 系统提示中可用的分类键，
-                或本轮 search_memes 返回的完整候选 ID。
+            target(string): 系统提示中可用的分类键、本轮 search_memes 返回的
+                完整候选 ID，或 preview_memes 中选中的 preview:编号。
 
         Returns:
             平台适配器完成投递后，返回包含 ok=true、status=sent

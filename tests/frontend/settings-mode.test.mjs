@@ -86,6 +86,51 @@ test("every persisted field has exactly one editable group", async () => {
 
 });
 
+test("category and tool-only modes advertise search when an index is usable", () => {
+  assert.match(describe().requestNote, /有可用索引时可按需搜图/);
+  const toolOnly = {
+    "generation.emotion.tool_only": true,
+    "generation.emotion.llm.enabled": true,
+    "generation.emotion.llm.backend": "decision",
+  };
+  const setup = describe(toolOnly);
+  assert.equal(setup.selectionIssues.length, 0);
+  assert.match(setup.requestNote, /有可用索引时可按需搜图/);
+});
+
+test("tool-only marks category prompt settings as no-tool fallbacks", () => {
+  const start = source.indexOf("      const toolOnlyFallback =");
+  const end = source.indexOf("\n      }", source.indexOf(
+    'card.querySelector(".config-card-header").append(inactive);', start,
+  )) + 8;
+  assert.ok(start >= 0 && end > start);
+  function inactiveText(groupId, toolOnly) {
+    const notices = [];
+    const card = {
+      hidden: false,
+      querySelector: () => ({
+        append: (node) => notices.push(node.textContent),
+        remove: () => {},
+      }),
+    };
+    vm.runInNewContext(`(() => {${source.slice(start, end)}})()`, {
+      card,
+      group: { id: groupId, when: "reply-category" },
+      toolOnly,
+      semantic: false,
+      conditions: { "reply-category": true },
+      selectedProvider: "stardots",
+      document: { createElement: () => ({}) },
+    });
+    return notices[0];
+  }
+  for (const id of [
+    "prompts", "quantity-guidance", "category-example", "reply-example",
+  ])
+    assert.equal(inactiveText(id, true), "无工具回退时使用");
+  assert.equal(inactiveText("prompts", false), undefined);
+});
+
 test("脱敏账户允许再次保存，清除或错误草稿仍被拦截", () => {
   const fields = new Map(Object.entries({
     ...defaults,
