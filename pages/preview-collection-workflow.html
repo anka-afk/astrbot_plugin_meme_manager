@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>自动收集流程预览</title>
+    <link rel="stylesheet" href="app/shared/fa.min.css" />
+    <link rel="stylesheet" href="app/shared/ui.css" />
+    <link rel="stylesheet" href="app/settings/style.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 2rem;
+        background: linear-gradient(135deg, #0a0d12 0%, #0f131c 100%);
+        min-height: 100vh;
+      }
+      .preview-container {
+        max-width: 1400px;
+        margin: 0 auto;
+      }
+      .preview-header {
+        margin-bottom: 2rem;
+        color: #f8fafc;
+      }
+      .preview-header h1 {
+        font-size: clamp(1.75rem, 3vw, 2.5rem);
+        margin: 0 0 0.5rem;
+        background: linear-gradient(135deg, #38bdf8 0%, #6ee7b7 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+      .preview-header p {
+        color: #94a3b8;
+        font-size: 1.1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="preview-container">
+      <div class="preview-header">
+        <h1>✨ 自动收集流程 - 增强版</h1>
+        <p>悬停任意步骤，查看对应的配置项高亮效果</p>
+      </div>
+
+      <section class="panel mode-workflow">
+        <div class="workflow-heading">
+          <h3>自动收集流程</h3>
+          <span class="workflow-state">已配置</span>
+        </div>
+        <ol id="collection-workflow-steps" class="workflow-steps" aria-label="自动收集流程"></ol>
+        <p class="workflow-fallback">
+          自动检查重复图片；收录后如需用于语义检索，仍需到「语义化」页面手动生成索引。
+        </p>
+      </section>
+    </div>
+
+    <script>
+      const collectionSteps = [
+        [
+          "来源与目标",
+          "符合范围的聊天图片进入收集；目标包决定分类依据和收录位置。",
+          "collect",
+          [
+            ["enabled", "收集开关"],
+            ["scope", "来源范围"],
+            ["target_pack_id", "目标表情包"],
+          ],
+        ],
+        [
+          "采样与间隔",
+          "先限制每条消息的图片数，再抽样并检查来源冷却。抽样概率仅作用于平台表情；普通图片首次只记录，重复出现后逐步提高识别概率。",
+          "collect-limits",
+          [
+            ["max_images_per_message", "单条图片上限"],
+            ["sampling_probability", "平台表情抽样"],
+            ["cooldown_seconds", "来源冷却"],
+          ],
+        ],
+        [
+          "视觉识别",
+          "待审箱有容量才继续；有缓存时复用，否则检查每日额度并调用支持图片输入的模型。",
+          "collect-recognition",
+          [
+            ["pending_limit", "待审核容量"],
+            ["daily_recognition_limit", "每日识别上限"],
+            ["vision_provider_id", "视觉模型"],
+          ],
+        ],
+        [
+          "质量与分类",
+          "非表情或表情置信度不足时不收录；分类置信度决定自动入包时是否归入待分类。",
+          "collect-quality",
+          [
+            ["min_meme_confidence", "表情置信度"],
+            ["min_category_confidence", "分类置信度"],
+          ],
+        ],
+        [
+          "审核与入包",
+          "按审核开关决定由你确认，还是自动接收入包。",
+          "collect-review",
+          [["manual_review", "人工审核"]],
+        ],
+      ];
+
+      for (const [index, [title, description, group, settings]] of collectionSteps.entries()) {
+        const stepNumber = index + 1;
+        const item = document.createElement("li");
+        item.dataset.step = stepNumber;
+        const node = document.createElement("div");
+        node.className = "workflow-node collection-workflow-node";
+        const badge = document.createElement("div");
+        badge.className = "workflow-step-badge";
+        badge.textContent = stepNumber;
+        const heading = document.createElement("strong");
+        heading.textContent = title;
+        const detail = document.createElement("span");
+        detail.textContent = description;
+        node.append(badge, heading, detail);
+        const links = document.createElement("div");
+        links.className = "collection-workflow-links";
+        links.dataset.step = stepNumber;
+        for (const [path, label] of settings) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "ghost";
+          button.dataset.workflowTarget = group;
+          button.dataset.workflowField = `auto_collect.${path}`;
+          const icon = document.createElement("i");
+          icon.className = "fas fa-gear";
+          icon.setAttribute("aria-hidden", "true");
+          button.append(icon, document.createTextNode(` ${label}`));
+          const arrow = document.createElement("i");
+          arrow.className = "fas fa-arrow-right";
+          arrow.style.marginLeft = "auto";
+          arrow.setAttribute("aria-hidden", "true");
+          button.append(arrow);
+          links.append(button);
+        }
+        node.append(links);
+        item.append(node);
+        document.getElementById("collection-workflow-steps").append(item);
+      }
+    </script>
+  </body>
+</html>

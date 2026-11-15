@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>流水线时间线演示</title>
+  <style>
+    :root {
+      --bg: #fafafa;
+      --panel: #ffffff;
+      --ink: #1a1a1a;
+      --muted: #666666;
+      --line: #e0e0e0;
+      --brand: #2563eb;
+      --brand-soft: #eff6ff;
+      --brand-strong: #1d4ed8;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      padding: 40px 20px;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 28px;
+      margin-bottom: 8px;
+      font-weight: 700;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin-bottom: 40px;
+      font-size: 14px;
+    }
+
+    #mode-workflow-steps {
+      list-style: none;
+      position: relative;
+      padding-left: 30px;
+    }
+
+    #mode-workflow-steps > li {
+      position: relative;
+      margin-bottom: 32px;
+    }
+
+    #mode-workflow-steps > li::before {
+      content: attr(data-step);
+      position: absolute;
+      left: -30px;
+      top: 16px;
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, var(--brand) 0%, var(--brand-strong) 100%);
+      color: white;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 16px;
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+      transition: all 0.3s ease;
+      z-index: 2;
+    }
+
+    #mode-workflow-steps > li:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      left: -10px;
+      top: 56px;
+      width: 2px;
+      height: calc(100% - 24px);
+      background: linear-gradient(180deg, var(--brand) 0%, var(--line) 100%);
+      z-index: 1;
+    }
+
+    .mode-workflow-row {
+      display: grid;
+      grid-template-columns: minmax(0, 240px) minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+
+    .workflow-node {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 16px;
+      border: 2px solid var(--line);
+      border-radius: 12px;
+      background: linear-gradient(135deg, var(--bg) 0%, var(--panel) 100%);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+      transition: all 0.2s ease;
+    }
+
+    .workflow-node strong {
+      font-size: 15px;
+      font-weight: 650;
+      color: var(--ink);
+    }
+
+    .workflow-node span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .mode-workflow-branches {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      position: relative;
+    }
+
+    .mode-workflow-branches::before {
+      content: "";
+      position: absolute;
+      left: -20px;
+      top: 24px;
+      width: 20px;
+      height: 2px;
+      background: linear-gradient(90deg, var(--brand) 0%, var(--line) 100%);
+      transition: all 0.3s ease;
+    }
+
+    .mode-workflow-branch {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      transition: all 0.2s ease;
+      position: relative;
+    }
+
+    .mode-workflow-branch::before {
+      content: "⚙";
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      font-size: 14px;
+      opacity: 0.4;
+      transition: opacity 0.2s ease;
+    }
+
+    .mode-workflow-branch:hover {
+      border-color: var(--brand);
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+      transform: translateY(-1px);
+    }
+
+    .mode-workflow-branch:hover::before {
+      opacity: 0.8;
+    }
+
+    .mode-workflow-branch summary {
+      font-size: 13px;
+      color: var(--ink);
+      font-weight: 650;
+      cursor: pointer;
+      list-style: none;
+      user-select: none;
+      margin-bottom: 10px;
+    }
+
+    .collection-workflow-links {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .collection-workflow-links button {
+      min-height: 36px;
+      padding: 8px 12px 8px 32px;
+      color: var(--brand-strong);
+      border: 1px solid var(--line);
+      background: var(--bg);
+      font-size: 12px;
+      text-align: left;
+      border-radius: 8px;
+      transition: all 0.15s ease;
+      position: relative;
+      cursor: pointer;
+    }
+
+    .collection-workflow-links button::before {
+      content: "→";
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 12px;
+      opacity: 0.6;
+      transition: transform 0.2s ease;
+    }
+
+    .collection-workflow-links button:hover {
+      border-color: var(--brand);
+      background: var(--brand-soft);
+      transform: translateX(2px);
+    }
+
+    .collection-workflow-links button:hover::before {
+      transform: translateY(-50%) translateX(2px);
+    }
+
+    /* Hover effects */
+    #mode-workflow-steps > li:hover .mode-workflow-branches {
+      animation: highlight-branches 0.3s ease;
+    }
+
+    #mode-workflow-steps > li:hover .mode-workflow-branch {
+      border-color: var(--brand);
+      background: var(--brand-soft);
+    }
+
+    #mode-workflow-steps > li:hover .mode-workflow-branches::before {
+      background: var(--brand);
+      width: 24px;
+    }
+
+    #mode-workflow-steps > li:hover::before {
+      transform: scale(1.1);
+      box-shadow: 0 4px 16px rgba(37, 99, 235, 0.4), 0 0 0 6px var(--bg);
+    }
+
+    @keyframes highlight-branches {
+      0% { transform: translateX(0); }
+      50% { transform: translateX(4px); }
+      100% { transform: translateX(0); }
+    }
+
+    @media (max-width: 700px) {
+      .mode-workflow-row {
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+
+      .mode-workflow-branches {
+        grid-template-columns: 1fr;
+      }
+
+      .mode-workflow-branches::before {
+        top: -12px;
+        left: 24px;
+        width: 2px;
+        height: 12px;
+        background: linear-gradient(180deg, var(--brand) 0%, var(--line) 100%);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>表情包选取流水线</h1>
+    <p class="subtitle">清晰展示每个环节及其可配置的设置</p>
+
+    <ul id="mode-workflow-steps">
+      <li data-step="1">
+        <div class="mode-workflow-row">
+          <div class="workflow-node">
+            <strong>触发检测</strong>
+            <span>判断是否需要发送表情包</span>
+          </div>
+          <div class="mode-workflow-branches">
+            <details class="mode-workflow-branch" open>
+              <summary>触发与数量</summary>
+              <div class="collection-workflow-links">
+                <button>触发概率设置</button>
+                <button>发送数量限制</button>
+              </div>
+            </details>
+          </div>
+        </div>
+      </li>
+
+      <li data-step="2">
+        <div class="mode-workflow-row">
+          <div class="workflow-node">
+            <strong>模式选择</strong>
+            <span>确定使用哪种选图策略</span>
+          </div>
+          <div class="mode-workflow-branches">
+            <details class="mode-workflow-branch" open>
+              <summary>当前模式</summary>
+              <div class="collection-workflow-links">
+                <button>选图模式配置</button>
+                <button>辅助模型设置</button>
+              </div>
+            </details>
+            <details class="mode-workflow-branch" open>
+              <summary>提示词模板</summary>
+              <div class="collection-workflow-links">
+                <button>分类提示词</button>
+                <button>选图提示词</button>
+              </div>
+            </details>
+          </div>
+        </div>
+      </li>
+
+      <li data-step="3">
+        <div class="mode-workflow-row">
+          <div class="workflow-node">
+            <strong>检索匹配</strong>
+            <span>从表情包库中找到合适的图片</span>
+          </div>
+          <div class="mode-workflow-branches">
+            <details class="mode-workflow-branch" open>
+              <summary>匹配与检索</summary>
+              <div class="collection-workflow-links">
+                <button>匹配算法配置</button>
+                <button>检索参数调整</button>
+              </div>
+            </details>
+            <details class="mode-workflow-branch" open>
+              <summary>标签与分类</summary>
+              <div class="collection-workflow-links">
+                <button>标签管理</button>
+                <button>分类示例</button>
+              </div>
+            </details>
+          </div>
+        </div>
+      </li>
+
+      <li data-step="4">
+        <div class="mode-workflow-row">
+          <div class="workflow-node">
+            <strong>回退处理</strong>
+            <span>当无法找到合适图片时的备选方案</span>
+          </div>
+          <div class="mode-workflow-branches">
+            <details class="mode-workflow-branch" open>
+              <summary>不可用时的回退</summary>
+              <div class="collection-workflow-links">
+                <button>回退策略</button>
+                <button>降级选项</button>
+              </div>
+            </details>
+          </div>
+        </div>
+      </li>
+
+      <li data-step="5">
+        <div class="mode-workflow-row">
+          <div class="workflow-node">
+            <strong>发送输出</strong>
+            <span>将选中的表情包发送给用户</span>
+          </div>
+          <div class="mode-workflow-branches">
+            <details class="mode-workflow-branch" open>
+              <summary>发送方式</summary>
+              <div class="collection-workflow-links">
+                <button>发送格式</button>
+                <button>附加消息设置</button>
+              </div>
+            </details>
+            <details class="mode-workflow-branch" open>
+              <summary>表情包使用规则</summary>
+              <div class="collection-workflow-links">
+                <button>编辑使用规则</button>
+              </div>
+            </details>
+          </div>
+        </div>
+      </li>
+    </ul>
+  </div>
+
+  <script>
+    // 模拟点击按钮的行为
+    document.querySelectorAll('.collection-workflow-links button').forEach(button => {
+      button.addEventListener('click', () => {
+        alert(`打开设置：${button.textContent}`);
+      });
+    });
+  </script>
+</body>
+</html>
