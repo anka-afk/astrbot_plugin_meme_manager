@@ -131,6 +131,27 @@ def test_index_file_accepts_only_generated_snapshot_names(tmp_path):
     )
 
 
+def test_faiss_index_round_trip_under_unicode_path(tmp_path, monkeypatch):
+    faiss = pytest.importorskip("faiss")
+    np = pytest.importorskip("numpy")
+    monkeypatch.setattr(index, "_FAISS_INDEX_CACHE", index._FAISS_INDEX_CACHE.copy())
+    data_dir = tmp_path / "分类"
+    pack_id = "pack-id"
+    faiss_index = faiss.IndexIDMap2(faiss.IndexFlatIP(2))
+    vectors = np.array([[1, 0], [0, 1]], dtype=np.float32)
+    faiss_index.add_with_ids(vectors, np.array([10, 20], dtype=np.int64))
+
+    filename = index._write_faiss_index(data_dir, pack_id, faiss_index)
+    manifest = {"index_file": filename}
+    snapshot = index._index_file(data_dir, pack_id, manifest)
+    assert snapshot.read_bytes() == faiss.serialize_index(faiss_index).tobytes()
+
+    index._FAISS_INDEX_CACHE.clear()
+    loaded = index._read_faiss_index(data_dir, pack_id, manifest)
+    assert loaded is not None
+    assert loaded.search(vectors, 1)[1].tolist() == [[10], [20]]
+
+
 def test_manifest_writer_and_snapshot_cleanup(tmp_path):
     index._write_manifest(tmp_path, "pack-id", {"item_count": 1})
     assert index.load_index_manifest(tmp_path, "pack-id") == {"item_count": 1}
