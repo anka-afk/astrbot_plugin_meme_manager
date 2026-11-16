@@ -1,6 +1,6 @@
 import hashlib
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from backend.semantic import query
@@ -166,8 +166,39 @@ def test_validate_selected_id_accepts_matching_unchanged_file(tmp_path, monkeypa
     )
 
 
+def test_batch_lookup_reuses_metadata_and_chooses_a_valid_copy(tmp_path, monkeypatch):
+    packs = {name: tmp_path / name for name in ("primary", "backup")}
+    relative_path = "memes/happy/meme.png"
+    for directory in packs.values():
+        image = directory / relative_path
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"image")
+    record = {
+        "relative_path": relative_path,
+        "category": "happy",
+        "content_sha256": CONTENT_HASH,
+    }
+    load_metadata = Mock(return_value={"images": {ENTRY_ID: record}})
+    monkeypatch.setattr(query, "load_metadata", load_metadata)
+    context = {"pack_ids": list(packs), "pack_dirs": packs}
+    event = FakeEvent()
+    short_id = f"meme:{ENTRY_ID[:12]}"
+    full_id = f"meme:{ENTRY_ID}"
+    assert query.validate_selected_id(event, full_id, context) == (
+        packs["primary"] / relative_path
+    )
+
+    (packs["primary"] / relative_path).write_bytes(b"changed")
+    load_metadata.reset_mock()
+    backup = (ENTRY_ID, packs["backup"] / relative_path)
+    assert query.validate_selected_ids(
+        event, [short_id, full_id, "meme:ffffffffffff"], context
+    ) == {short_id: backup, full_id: backup}
+    assert load_metadata.call_args_list == [call(path) for path in packs.values()]
+
+
 @pytest.mark.parametrize(
-    "mutation", ["missing-candidate", "wrong-entry", "review", "hash"]
+    "mutation", ["wrong-entry", "review", "hash"]
 )
 def test_validate_selected_id_rejects_stale_or_forbidden_selection(
     tmp_path, monkeypatch, mutation
@@ -183,13 +214,9 @@ def test_validate_selected_id_rejects_stale_or_forbidden_selection(
     metadata = {"images": {ENTRY_ID: record}}
     monkeypatch.setattr(query, "load_metadata", lambda pack_dir: metadata)
     event = FakeEvent()
-    if mutation != "missing-candidate":
+    if mutation == "wrong-entry":
         event.extra["meme_manager_semantic_candidates"] = {
-            "meme:123456789abc": {
-                "entry_id": "abcdef123456" + "0" * 52
-                if mutation == "wrong-entry"
-                else ENTRY_ID
-            }
+            "meme:123456789abc": {"entry_id": "abcdef123456" + "0" * 52}
         }
     if mutation == "review":
         record["category"] = query.REVIEW_CATEGORY

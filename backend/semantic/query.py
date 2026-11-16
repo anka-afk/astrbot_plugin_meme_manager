@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -295,52 +295,136 @@ def remember_candidates(event: Any, candidates: list[dict[str, Any]]) -> None:
 def validate_selected_id(
     event: Any, value: str, pack_dir: Path | str | dict[str, Any]
 ) -> Path | None:
-    """根据当前绑定的来源表情包校验候选。
+    """Return the verified path for a single image ID, if available.
 
     Args:
-        event: 包含本轮搜索候选的事件。
-        value: 模型选中的确切公开候选 ID。
-        pack_dir: 当前运行时上下文，或单包调用方使用的目录。
+        event: Message event with any search candidates.
+        value: Full or abbreviated image ID.
+        pack_dir: Bound pack context or a single pack directory.
 
     Returns:
-        已验证的图片路径；选择过时或无效时返回 None。
+        Verified path, or None if the ID is unavailable or ambiguous.
     """
-    prefix = parse_meme_id(value)
-    if not prefix:
-        return None
+    selection = validate_selected_ids(event, (value,), pack_dir).get(value)
+    return selection[1] if selection else None
+
+
+def validate_selected_ids(
+    event: Any, values: Iterable[str], pack_dir: Path | str | dict[str, Any]
+) -> dict[str, tuple[str, Path]]:
+    """Resolve image IDs using one metadata read per directory in this batch.
+
+    Args:
+        event: Message event with any search candidates.
+        values: Full or abbreviated image IDs.
+        pack_dir: Bound pack context or a single pack directory.
+
+    Returns:
+        Valid input IDs mapped to their full entry IDs and verified paths.
+    """
     candidate_map = (
         event.get_extra("meme_manager_semantic_candidates")
         if hasattr(event, "get_extra")
         else None
     )
-    candidate = (
-        candidate_map.get(str(value).strip())
-        if isinstance(candidate_map, dict)
-        else None
-    )
-    if not isinstance(candidate, dict):
-        return None
-    if isinstance(pack_dir, dict):
-        context = pack_dir
-        source_pack_id = candidate.get("_source_pack_id")
-        if source_pack_id:
-            if source_pack_id not in context.get("pack_ids", []):
-                return None
-            pack_dir = context.get("pack_dirs", {}).get(source_pack_id)
-        else:
-            pack_dir = context.get("pack_dir")
-        if pack_dir is None:
+    if not isinstance(candidate_map, dict):
+        candidate_map = {}
+    images_by_directory: dict[Path | str, dict[str, Any]] = {}
+    resolved = {}
+    for value in values:
+        prefix = parse_meme_id(value)
+        if not prefix:
+            continue
+        image = _resolve_selected_image(
+            prefix, candidate_map.get(str(value).strip()), pack_dir, images_by_directory
+        )
+        if image:
+            resolved[value] = image
+    return resolved
+
+
+def _resolve_selected_image(
+    prefix: str,
+    candidate: Any,
+    pack_dir: Path | str | dict[str, Any],
+    images_by_directory: dict[Path | str, dict[str, Any]],
+) -> tuple[str, Path] | None:
+    """Select a valid copy of a single entry without accepting ambiguous prefixes.
+
+    Args:
+        prefix: Parsed image entry ID or prefix.
+        candidate: Search result with an exact entry ID and optional source pack.
+        pack_dir: Bound pack context or a single pack directory.
+        images_by_directory: Metadata already loaded for this batch.
+
+    Returns:
+        Full entry ID and verified path, when they resolve unambiguously.
+    """
+    entry_id = None
+    source_pack_id = None
+    if isinstance(candidate, dict):
+        entry_id = str(candidate.get("entry_id") or "")
+        if not entry_id.startswith(prefix):
             return None
-    entry_id = str(candidate.get("entry_id") or "")
-    if not entry_id.startswith(prefix):
-        return None
-    metadata = load_metadata(pack_dir)
-    record = metadata.get("images", {}).get(entry_id)
-    if not isinstance(record, dict):
-        return None
+        source_pack_id = candidate.get("_source_pack_id")
+
+    if isinstance(pack_dir, dict):
+        pack_ids = pack_dir.get("pack_ids", [])
+        pack_dirs = pack_dir.get("pack_dirs", {})
+        if source_pack_id:
+            if source_pack_id not in pack_ids:
+                return None
+            directories = [pack_dirs.get(source_pack_id)]
+        elif entry_id is not None:
+            directories = [pack_dir.get("pack_dir")]
+        else:
+            directories = [pack_dirs.get(key) for key in pack_ids]
+    else:
+        directories = [pack_dir]
+
+    exact_id = entry_id or (prefix if len(prefix) == 64 else None)
+    matched_id = None
+    selected_path = None
+    for directory in directories:
+        if directory is None:
+            continue
+        if directory not in images_by_directory:
+            images_by_directory[directory] = load_metadata(directory).get("images", {})
+        images = images_by_directory[directory]
+        keys = (
+            (exact_id,)
+            if exact_id
+            else (key for key in images if key.startswith(prefix))
+        )
+        for key in keys:
+            record = images.get(key)
+            if not isinstance(record, dict):
+                continue
+            if matched_id is not None and matched_id != key:
+                return None
+            matched_id = key
+            if selected_path is None:
+                selected_path = _verified_image_path(directory, record)
+                if exact_id and selected_path is not None:
+                    return key, selected_path
+    if matched_id is not None and selected_path is not None:
+        return matched_id, selected_path
+    return None
+
+
+def _verified_image_path(directory: Path | str, record: dict[str, Any]) -> Path | None:
+    """Check that a metadata record still refers to an available image.
+
+    Args:
+        directory: Pack directory that contains the image.
+        record: Image metadata from the pack.
+
+    Returns:
+        Safe path to an unchanged image outside the review category, if present.
+    """
     if str(record.get("category") or "") == REVIEW_CATEGORY:
         return None
-    path = safe_relative_path(pack_dir, record.get("relative_path", ""))
+    path = safe_relative_path(directory, record.get("relative_path", ""))
     if path is None or not path.is_file():
         return None
     try:

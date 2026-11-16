@@ -266,7 +266,9 @@ def _read_faiss_index(
             _FAISS_INDEX_CACHE.move_to_end(cache_key)
             return cached[1]
         faiss, _ = _import_faiss_modules()
-        index = faiss.read_index(str(path))
+        # Python handles Unicode paths that FAISS's filename API cannot open on Windows.
+        with path.open("rb") as file_obj:
+            index = faiss.read_index(faiss.PyCallbackIOReader(file_obj.read))
         _FAISS_INDEX_CACHE[cache_key] = (fingerprint, index)
         while len(_FAISS_INDEX_CACHE) > INDEX_CACHE_SIZE:
             _FAISS_INDEX_CACHE.popitem(last=False)
@@ -281,15 +283,14 @@ def _write_faiss_index(plugin_data_dir: Path | str, pack_id: str, index: Any) ->
     path = index_dir(plugin_data_dir, pack_id) / filename
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=".index.", suffix=".faiss", dir=path.parent)
-    os.close(fd)
     try:
-        faiss.write_index(index, temp_name)
-        try:
-            with open(temp_name, "rb+") as file_obj:
-                file_obj.flush()
+        with os.fdopen(fd, "wb") as file_obj:
+            faiss.write_index(index, faiss.PyCallbackIOWriter(file_obj.write))
+            file_obj.flush()
+            try:
                 os.fsync(file_obj.fileno())
-        except OSError:
-            pass
+            except OSError:
+                pass
         os.replace(temp_name, path)
         stat = path.stat()
         cache_key = str(path)

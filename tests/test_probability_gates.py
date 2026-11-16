@@ -9,6 +9,7 @@ import pytest
 from astrbot_plugin_meme_manager import main as plugin_main
 from astrbot_plugin_meme_manager.main import MemeSender
 from astrbot_plugin_meme_manager.mixins import event_handlers
+from test_meme_only_replies import mock_semantic_validation
 from test_meme_only_replies import reply_context as reply_context
 
 from astrbot.core.agent.tool import FunctionTool, ToolSet
@@ -50,9 +51,8 @@ def tool_reply(reply_context, monkeypatch):
     monkeypatch.setattr(
         plugin_main, "candidate_records_multi_pack", lambda packs, items: items
     )
-    monkeypatch.setattr(
-        event_handlers,
-        "validate_selected_id",
+    mock_semantic_validation(
+        monkeypatch,
         lambda ev, value, ctx: (
             root / "happy/meme.png"
             if value in (ev.get_extra("meme_manager_semantic_candidates") or {})
@@ -367,9 +367,7 @@ async def test_all_delivery_paths_use_gate(
     sender._semantic_mode_active = lambda ev: semantic
     selected = "meme:0123456789ab" if semantic else "happy"
     state["meme_manager_semantic_mode"] = "tool" if semantic else ""
-    monkeypatch.setattr(
-        event_handlers, "validate_selected_id", lambda *args: root / "happy/meme.png"
-    )
+    mock_semantic_validation(monkeypatch, lambda *args: root / "happy/meme.png")
     response = LLMResponse(role="assistant", completion_text=f"&&{selected}&&")
     await sender._resp_impl(event, response)
     state["result"] = MessageEventResult(

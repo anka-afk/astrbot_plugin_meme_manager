@@ -209,18 +209,28 @@ def semantic_runtime(runtime, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("streaming", [False, True])
-async def test_secondary_search_candidate_is_delivered(semantic_runtime, streaming):
+@pytest.mark.parametrize(
+    ("streaming", "search_first"), [(False, True), (True, True), (True, False)]
+)
+async def test_secondary_image_id_is_delivered(semantic_runtime, streaming, search_first):
     sender, event, state, context = semantic_runtime
-    result = json.loads(await sender.search_memes_tool(event, "happy"))
-    candidates = result["candidates"]
-    assert len(candidates) == 2
-    assert len({item["id"] for item in candidates}) == 2
-    assert candidates[0]["_source_pack_id"] == "pack-b"
-    assert "entry_id" not in candidates[0] and "score" not in candidates[0]
-    selected = candidates[0]["id"]
-    response = LLMResponse(role="assistant", completion_text=f"Hello &&{selected}&&")
-    await sender._resp_semantic_impl(event, response, response.completion_text)
+    if search_first:
+        result = json.loads(await sender.search_memes_tool(event, "happy"))
+        candidates = result["candidates"]
+        assert len(candidates) == 2
+        assert len({item["id"] for item in candidates}) == 2
+        assert candidates[0]["_source_pack_id"] == "pack-b"
+        assert "entry_id" not in candidates[0] and "score" not in candidates[0]
+        selected = candidates[0]["id"]
+    else:
+        selected = "meme:123456789abc1111"
+        assert query.validate_selected_id(event, "meme:123456789abc", context) is None
+    text = f"Hello &&{selected}&&"
+    if not search_first:
+        full_id = "meme:123456789abc" + "1" * 52
+        text += f"\n&&{full_id}&&"
+    response = LLMResponse(role="assistant", completion_text=text)
+    await sender._resp_impl(event, response)
     assert state["meme_manager_semantic_selected_ids"] == [selected]
     state["result"] = MessageEventResult(
         chain=[Plain(response.completion_text)],
@@ -234,6 +244,7 @@ async def test_secondary_search_candidate_is_delivered(semantic_runtime, streami
         await sender._on_decorating_result_impl(event)
         (image,) = state["meme_manager_pending_images"]
     assert "pack-b" in image.file
+    assert bool(state.get("meme_manager_semantic_search_completed")) is search_first
     changed_context = {**context, "pack_ids": ["pack-a"]}
     assert query.validate_selected_id(event, selected, changed_context) is None
 
