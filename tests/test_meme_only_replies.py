@@ -36,6 +36,18 @@ from astrbot.core.platform.sources.webchat.webchat_event import WebChatMessageEv
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
 
 
+def mock_semantic_validation(monkeypatch, resolve):
+    def resolve_batch(event, values, pack):
+        return {
+            value: (value, path)
+            for value in values
+            if (path := resolve(event, value, pack)) is not None
+        }
+
+    monkeypatch.setattr(event_handlers, "validate_selected_id", resolve)
+    monkeypatch.setattr(event_handlers, "validate_selected_ids", resolve_batch)
+
+
 @pytest.fixture
 def reply_context(tmp_path):
     mapping = {"happy": "开心", "sad": "难过", "angry": "生气"}
@@ -628,7 +640,7 @@ async def test_unterminated_semantic_reply_cleans_marker_and_validates_candidate
         validated.append(value)
         return root / "happy" / "meme.png" if candidate_valid else None
 
-    monkeypatch.setattr(event_handlers, "validate_selected_id", validate)
+    mock_semantic_validation(monkeypatch, validate)
     text = f"{body}&&{identifier}"
 
     async def source():
@@ -668,11 +680,7 @@ async def test_semantic_image_only_reply_keeps_multiple_selections(
         f"meme:{index:012x}": root / tag / "meme.png"
         for index, tag in enumerate(("happy", "sad", "angry"), 1)
     }
-    monkeypatch.setattr(
-        event_handlers,
-        "validate_selected_id",
-        lambda event, value, pack: paths.get(value),
-    )
+    mock_semantic_validation(monkeypatch, lambda event, value, pack: paths.get(value))
     text = "\n".join(f"&&{value}&&" for value in paths)
     response = LLMResponse(role="assistant", completion_text=text)
     await sender._resp_semantic_impl(event, response, text)
@@ -703,9 +711,8 @@ async def test_semantic_abstention_does_not_send_first_candidate(
     sender._semantic_mode_active = lambda event: True
     state["meme_manager_semantic_mode"] = "tool"
     state["meme_manager_semantic_default_id"] = "meme:000000000001"
-    monkeypatch.setattr(
-        event_handlers,
-        "validate_selected_id",
+    mock_semantic_validation(
+        monkeypatch,
         lambda event, value, pack: (
             root / "happy" / "meme.png" if value == "meme:000000000001" else None
         ),
@@ -780,9 +787,8 @@ async def test_reply_meme_limit_preserves_text_and_selection_order(
             f"meme:{index:012x}": root / tag / "meme.png"
             for index, tag in enumerate(tags, 1)
         }
-        monkeypatch.setattr(
-            event_handlers,
-            "validate_selected_id",
+        mock_semantic_validation(
+            monkeypatch,
             lambda event, value, pack: paths.get(value),
         )
         markers = " ".join(f"&&{value}&&" for value in paths)

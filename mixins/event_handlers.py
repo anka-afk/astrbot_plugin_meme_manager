@@ -64,6 +64,7 @@ from ..backend.semantic.query import (
     remember_candidates,
     search_memes_multi_pack,
     validate_selected_id,
+    validate_selected_ids,
 )
 from ..backend.semantic.query_builder import build_semantic_query
 from ..backend.semantic.storage import invalidate_semantic_metadata
@@ -923,9 +924,18 @@ class EventHandlerMixin:
         context = self._resolve_runtime_pack_context(event=event)
         if semantic and not self._semantic_mode_active(event):
             return images, temp_files
-        for selection in self._limit_meme_selection(selections, event):
+        limited_selections = self._limit_meme_selection(selections, event)
+        resolved_images = (
+            await asyncio.to_thread(
+                validate_selected_ids, event, limited_selections, context
+            )
+            if semantic and limited_selections
+            else {}
+        )
+        for selection in limited_selections:
             if semantic:
-                source = validate_selected_id(event, selection, context)
+                resolved = resolved_images.get(selection)
+                source = resolved[1] if resolved else None
             else:
                 files = self._get_category_meme_files(event, selection)
                 source = random.choice(files) if files else None
@@ -939,7 +949,10 @@ class EventHandlerMixin:
                 final_path = await asyncio.shield(conversion)
                 current = self._resolve_runtime_pack_context(event=event)
                 valid = (
-                    validate_selected_id(event, selection, current) == source
+                    await asyncio.to_thread(
+                        validate_selected_id, event, selection, current
+                    )
+                    == source
                     if semantic
                     else source in self._get_category_meme_files(event, selection)
                 )
@@ -2252,12 +2265,23 @@ class EventHandlerMixin:
         parser = self._make_meme_parser((), semantic=True)
         clean_text = parser.feed(text or "") + parser.finish()
         referenced_ids = parser.selections
+        resolved_images = (
+            await asyncio.to_thread(
+                validate_selected_ids, event, referenced_ids, pack_context
+            )
+            if referenced_ids
+            else {}
+        )
+        selected_entries = set()
         for value in referenced_ids:
-            if validate_selected_id(event, value, pack_context):
-                if value not in selected_ids:
-                    selected_ids.append(value)
-            else:
+            resolved = resolved_images.get(value)
+            if resolved is None:
                 logger.warning("无法在当前会话图包中定位有效的语义图片 ID: %s", value)
+                continue
+            entry_id, _ = resolved
+            if entry_id not in selected_entries:
+                selected_entries.add(entry_id)
+                selected_ids.append(value)
         if selected_ids:
             logger.info("[meme_manager] 已选择语义表情：%s", selected_ids)
         else:
@@ -2476,7 +2500,9 @@ class EventHandlerMixin:
                 for selected_id in self._limit_meme_selection(
                     semantic_selected_ids, event
                 ):
-                    image_path = validate_selected_id(event, selected_id, pack_context)
+                    image_path = await asyncio.to_thread(
+                        validate_selected_id, event, selected_id, pack_context
+                    )
                     if image_path is None:
                         continue
                     final_path = await asyncio.to_thread(
@@ -2592,7 +2618,9 @@ class EventHandlerMixin:
         elif semantic:
             if not self._semantic_mode_active(event, include_direct=True):
                 return json.dumps({"ok": False, "reason": "semantic_unavailable"})
-            source = validate_selected_id(event, target, context)
+            source = await asyncio.to_thread(
+                validate_selected_id, event, target, context
+            )
             if source is None:
                 if event.get_extra("meme_manager_semantic_candidates"):
                     instruction = (
@@ -2644,7 +2672,8 @@ class EventHandlerMixin:
                 final_path = await asyncio.shield(conversion)
             current = self._resolve_runtime_pack_context(event=event)
             if current.get("pack_ids") != context.get("pack_ids") or (
-                validate_selected_id(event, target, current) != source
+                await asyncio.to_thread(validate_selected_id, event, target, current)
+                != source
                 if semantic
                 else source not in self._get_category_meme_files(event, category)
             ):

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from astrbot_plugin_meme_manager.mixins import event_handlers
+from test_meme_only_replies import mock_semantic_validation
 from test_meme_only_replies import reply_context as reply_context
 
 from astrbot.core.config.default import DEFAULT_CONFIG
@@ -42,9 +43,8 @@ async def test_plugin_stream_delivers_without_final_decoration(
     sender.emotions_probability = 100
     sender._semantic_mode_active = lambda event: semantic
     selected_id = "meme:0123456789ab"
-    monkeypatch.setattr(
-        event_handlers,
-        "validate_selected_id",
+    mock_semantic_validation(
+        monkeypatch,
         lambda event, value, pack: (
             root / "happy" / "meme.png" if value == selected_id else None
         ),
@@ -202,9 +202,8 @@ async def test_incomplete_stream_never_sends_images(
     sender.emotions_probability = 100
     sender._semantic_mode_active = lambda event: semantic
     selected_id = "meme:0123456789ab"
-    monkeypatch.setattr(
-        event_handlers,
-        "validate_selected_id",
+    mock_semantic_validation(
+        monkeypatch,
         lambda event, value, pack: (
             root / "happy" / "meme.png" if value == selected_id else None
         ),

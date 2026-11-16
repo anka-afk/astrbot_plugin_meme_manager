@@ -225,7 +225,11 @@ async def test_secondary_image_id_is_delivered(semantic_runtime, streaming, sear
     else:
         selected = "meme:123456789abc1111"
         assert query.validate_selected_id(event, "meme:123456789abc", context) is None
-    response = LLMResponse(role="assistant", completion_text=f"Hello &&{selected}&&")
+    text = f"Hello &&{selected}&&"
+    if not search_first:
+        full_id = "meme:123456789abc" + "1" * 52
+        text += f"\n&&{full_id}&&"
+    response = LLMResponse(role="assistant", completion_text=text)
     await sender._resp_impl(event, response)
     assert state["meme_manager_semantic_selected_ids"] == [selected]
     state["result"] = MessageEventResult(
