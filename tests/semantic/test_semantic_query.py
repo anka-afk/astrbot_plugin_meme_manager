@@ -167,7 +167,7 @@ def test_validate_selected_id_accepts_matching_unchanged_file(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize(
-    "mutation", ["missing-candidate", "wrong-entry", "review", "hash"]
+    "mutation", ["wrong-entry", "review", "hash"]
 )
 def test_validate_selected_id_rejects_stale_or_forbidden_selection(
     tmp_path, monkeypatch, mutation
@@ -183,13 +183,9 @@ def test_validate_selected_id_rejects_stale_or_forbidden_selection(
     metadata = {"images": {ENTRY_ID: record}}
     monkeypatch.setattr(query, "load_metadata", lambda pack_dir: metadata)
     event = FakeEvent()
-    if mutation != "missing-candidate":
+    if mutation == "wrong-entry":
         event.extra["meme_manager_semantic_candidates"] = {
-            "meme:123456789abc": {
-                "entry_id": "abcdef123456" + "0" * 52
-                if mutation == "wrong-entry"
-                else ENTRY_ID
-            }
+            "meme:123456789abc": {"entry_id": "abcdef123456" + "0" * 52}
         }
     if mutation == "review":
         record["category"] = query.REVIEW_CATEGORY

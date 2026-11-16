@@ -295,15 +295,15 @@ def remember_candidates(event: Any, candidates: list[dict[str, Any]]) -> None:
 def validate_selected_id(
     event: Any, value: str, pack_dir: Path | str | dict[str, Any]
 ) -> Path | None:
-    """根据当前绑定的来源表情包校验候选。
+    """解析并校验当前会话可用的图片 ID。
 
     Args:
-        event: 包含本轮搜索候选的事件。
-        value: 模型选中的确切公开候选 ID。
+        event: 可能包含本轮检索候选及其来源的事件。
+        value: 完整图片 ID 或可唯一匹配的缩写 ID。
         pack_dir: 当前运行时上下文，或单包调用方使用的目录。
 
     Returns:
-        已验证的图片路径；选择过时或无效时返回 None。
+        已验证的图片路径；ID 无效、过时或有歧义时返回 None。
     """
     prefix = parse_meme_id(value)
     if not prefix:
@@ -318,29 +318,50 @@ def validate_selected_id(
         if isinstance(candidate_map, dict)
         else None
     )
-    if not isinstance(candidate, dict):
-        return None
-    if isinstance(pack_dir, dict):
-        context = pack_dir
-        source_pack_id = candidate.get("_source_pack_id")
-        if source_pack_id:
-            if source_pack_id not in context.get("pack_ids", []):
-                return None
-            pack_dir = context.get("pack_dirs", {}).get(source_pack_id)
-        else:
-            pack_dir = context.get("pack_dir")
-        if pack_dir is None:
+    entry_id = None
+    source_pack_id = None
+    if isinstance(candidate, dict):
+        entry_id = str(candidate.get("entry_id") or "")
+        if not entry_id.startswith(prefix):
             return None
-    entry_id = str(candidate.get("entry_id") or "")
-    if not entry_id.startswith(prefix):
+        source_pack_id = candidate.get("_source_pack_id")
+
+    if isinstance(pack_dir, dict):
+        pack_ids = pack_dir.get("pack_ids", [])
+        pack_dirs = pack_dir.get("pack_dirs", {})
+        if source_pack_id:
+            if source_pack_id not in pack_ids:
+                return None
+            directories = [pack_dirs.get(source_pack_id)]
+        elif entry_id is not None:
+            directories = [pack_dir.get("pack_dir")]
+        else:
+            directories = [pack_dirs.get(key) for key in pack_ids]
+    else:
+        directories = [pack_dir]
+
+    match = None
+    for directory in directories:
+        if directory is None:
+            continue
+        images = load_metadata(directory).get("images", {})
+        if entry_id is not None or len(prefix) == 64:
+            keys = (entry_id or prefix,)
+        else:
+            keys = (key for key in images if key.startswith(prefix))
+        for key in keys:
+            record = images.get(key)
+            if not isinstance(record, dict):
+                continue
+            if match is not None:
+                return None
+            match = directory, record
+    if match is None:
         return None
-    metadata = load_metadata(pack_dir)
-    record = metadata.get("images", {}).get(entry_id)
-    if not isinstance(record, dict):
-        return None
+    directory, record = match
     if str(record.get("category") or "") == REVIEW_CATEGORY:
         return None
-    path = safe_relative_path(pack_dir, record.get("relative_path", ""))
+    path = safe_relative_path(directory, record.get("relative_path", ""))
     if path is None or not path.is_file():
         return None
     try:

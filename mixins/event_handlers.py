@@ -1653,10 +1653,6 @@ class EventHandlerMixin:
                 for key, description in mapping.items()
                 if self._get_category_meme_files(event, key)
             }
-            semantic_send = bool(
-                semantic_active
-                and (can_search or event.get_extra("meme_manager_semantic_candidates"))
-            )
             preview_available = bool(
                 catalog
                 and preview_tool
@@ -1664,7 +1660,7 @@ class EventHandlerMixin:
                 and getattr(self, "preview_images_per_page", 0)
                 and self._reply_model_supports_tools(event, require_image_input=True)
             )
-            if catalog or semantic_send:
+            if catalog or semantic_active:
                 req.system_prompt += (
                     f"\n\n{SEND_TOOL_PROMPT_MARKER_START}\n"
                     "[主动发送表情工具]\n"
@@ -1681,14 +1677,13 @@ class EventHandlerMixin:
                         else ""
                     )
                     + (
-                        "需要按图片内容选图时，先调用 search_memes，再将本轮候选的完整 ID 作为 target。\n"
-                        if semantic_send and can_search
+                        "需要查找图片时，先调用 search_memes，再将选中图片的 ID 作为 target。\n"
+                        if semantic_active and can_search
                         else ""
                     )
                     + (
-                        "本轮已有候选时，可以直接将候选的完整 ID 作为 target。\n"
-                        if semantic_send
-                        and event.get_extra("meme_manager_semantic_candidates")
+                        "已知当前表情包内的图片 ID 时，可以直接将它作为 target。\n"
+                        if semantic_active
                         else ""
                     )
                     + "每次成功调用发送一张图片，由你按对话需要决定调用次数。"
@@ -2250,7 +2245,7 @@ class EventHandlerMixin:
     async def _resp_semantic_impl(
         self, event: AstrMessageEvent, response: LLMResponse, text: str
     ):
-        """清理语义图片标记并记录本轮经过候选校验的精确 ID。"""
+        """清理语义图片标记并记录有效的图片 ID。"""
         pack_context = self._resolve_runtime_pack_context(event=event)
         selected_ids: list[str] = []
 
@@ -2262,7 +2257,7 @@ class EventHandlerMixin:
                 if value not in selected_ids:
                     selected_ids.append(value)
             else:
-                logger.warning("忽略不在本轮候选中的语义图片 ID: %s", value)
+                logger.warning("无法在当前会话图包中定位有效的语义图片 ID: %s", value)
         if selected_ids:
             logger.info("[meme_manager] 已选择语义表情：%s", selected_ids)
         else:
@@ -2538,7 +2533,7 @@ class EventHandlerMixin:
 
         Args:
             event: 工具已通过请求过滤的当前聊天事件。
-            target: 确切的绑定分类，或本轮检索到的候选 ID。
+            target: 当前绑定图包的分类、图片 ID 或预览编号。
 
         Returns:
             JSON，表示适配器已确认的发送结果或稳定失败原因。
@@ -2565,7 +2560,7 @@ class EventHandlerMixin:
                 {
                     "ok": False,
                     "reason": "invalid_target",
-                    "instruction": "请将当前可用的分类键或本轮候选的完整 ID 作为 target。",
+                    "instruction": "请将当前可用的分类键或图片 ID 作为 target。",
                 }
             )
         context = self._resolve_runtime_pack_context(event=event)

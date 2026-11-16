@@ -64,7 +64,7 @@ def semantic_sender(semantic_runtime):
 
 
 @pytest.mark.parametrize(
-    "mutation", ["unknown", "other_turn", "changed", "missing", "review", "unbound"]
+    "mutation", ["unknown", "changed", "missing", "review", "unbound"]
 )
 async def test_semantic_tool_rejects_invalid_candidates_without_random_fallback(
     semantic_sender, mutation
@@ -77,8 +77,6 @@ async def test_semantic_tool_rejects_invalid_candidates_without_random_fallback(
     source = pack / "memes/happy/meme.png"
     if mutation == "unknown":
         target = "meme:" + "f" * 12
-    elif mutation == "other_turn":
-        state["meme_manager_semantic_candidates"] = {}
     elif mutation == "changed":
         source.write_bytes(b"changed")
     elif mutation == "missing":
@@ -95,11 +93,24 @@ async def test_semantic_tool_rejects_invalid_candidates_without_random_fallback(
     assert response["reason"] == (
         "semantic_unavailable" if mutation == "unbound" else "invalid_candidate"
     )
-    if mutation not in {"unbound", "other_turn"}:
+    if mutation != "unbound":
         assert "本轮搜索结果" in response["instruction"]
     assert not state.get("meme_manager_direct_send_attempted")
     sender.context.send_message.assert_not_awaited()
     sender._get_category_meme_files.assert_not_called()
+
+
+async def test_tool_sends_known_image_id_without_search(semantic_sender):
+    sender, event, state, context = semantic_sender
+    source_pack = context["pack_dirs"]["pack-b"]
+    entry_id = next(iter(semantic_query.load_metadata(source_pack)["images"]))
+
+    result = json.loads(await sender.send_meme_tool(event, f"meme:{entry_id}"))
+
+    assert result["status"] == "sent"
+    assert not state.get("meme_manager_semantic_search_completed")
+    chain = sender.context.send_message.await_args.args[1]
+    assert "pack-b" in chain.chain[0].file
 
 
 async def test_semantic_candidate_is_revalidated_after_conversion(semantic_sender):
@@ -375,6 +386,9 @@ async def test_category_sending_modes(tool_reply, tool_only, indexed, delivery):
     expect_tags = not tool_only or not supports_tools
     assert ("Category tags" in request.system_prompt) is expect_tags
     assert ("标签与工具二选一" in request.system_prompt) is (not tool_only)
+    assert ("已知当前表情包内的图片 ID" in request.system_prompt) is (
+        indexed and supports_tools
+    )
     provider.text_chat.assert_not_awaited()
     search.assert_not_awaited()
 
@@ -393,7 +407,7 @@ async def test_category_sending_modes(tool_reply, tool_only, indexed, delivery):
         request.func_tool = shared
         await sender._inject_meme_prompt_impl(event, request)
         assert request.func_tool.get_tool("search_memes") is None
-        assert "本轮已有候选" in request.system_prompt
+        assert "已知当前表情包内的图片 ID" in request.system_prompt
     assert json.loads(await sender.send_meme_tool(event, target))["ok"]
     sender._send_meme_image.assert_awaited_once()
     assert not state.get("meme_manager_semantic_selected_ids")
