@@ -2,6 +2,13 @@
 
 本文件记录 AstrBot 表情包管理器的主要版本更新，最新版本排在最前。
 
+## v5.4.2
+
+- 修复主动发图摘要混入普通对话历史，导致模型在未发图时输出发送回执的问题。 [#225](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/225)
+- 开启 `keep_send_summary` 时，模型通过成功的 `send_meme` 工具结果回顾发图分类和预览编号。预览图、候选列表和失败的发送结果会在保存历史前清理。
+
+升级后请重载插件。已经出现假回执的旧会话建议开启新会话，避免继续加载旧摘要。
+
 ## v5.4.1
 
 - 修复 Windows 中文路径下 FAISS 语义索引读写失败的问题，兼容已有索引文件。[#223](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/223)
