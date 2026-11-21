@@ -2,8 +2,10 @@
 
 import hashlib
 import io
+import json
 import math
 import sqlite3
+from collections import defaultdict, deque
 from contextlib import closing
 from pathlib import Path
 
@@ -132,13 +134,19 @@ def build_meme_preview(
 
 
 def discard_meme_tool_context(
-    messages: list[Message], *, preview_only: bool = False
+    messages: list[Message],
+    *,
+    preview_only: bool = False,
+    keep_successful_sends: bool = False,
 ) -> bool:
     """Drop preview images and matched meme tool calls from the agent context.
 
     Args:
         messages: Live AstrBot messages, edited in place before reuse or saving.
         preview_only: Preserve search and send results while the agent is still running.
+        keep_successful_sends: Keep matched successful send calls and compact results
+            when cleaning up at the end of the turn.
+
 
     Returns:
         Whether a matching tool call was present in the context.
@@ -146,25 +154,70 @@ def discard_meme_tool_context(
     tool_names = (
         {PREVIEW_TOOL} if preview_only else {PREVIEW_TOOL, "search_memes", "send_meme"}
     )
-    removed_ids = set()
-    for message in messages:
-        for call in message.tool_calls or ():
-            if isinstance(call, dict):
-                call = ToolCall.model_validate(call)
-            if call.function.name in tool_names:
-                removed_ids.add(call.id)
+    removed_calls: set[tuple[int, int]] = set()
+    result_edits: dict[int, str | None] = {}
+    pending_calls: defaultdict[str, deque[tuple[int, bool]]] = defaultdict(deque)
+    decoder = json.JSONDecoder()
+    batch_index = 0
+    for index, message in enumerate(messages):
+        if message.role != "tool":
+            # Each assistant batch owns its following tool results. Providers can
+            # reuse IDs across batches and for repeated calls in the same batch.
+            pending_calls.clear()
+            batch_index = index
+            for position, call in enumerate(message.tool_calls or ()):
+                if isinstance(call, dict):
+                    call = ToolCall.model_validate(call)
+                if call.function.name in tool_names:
+                    removed_calls.add((index, position))
+                keep = (
+                    keep_successful_sends
+                    and call.function.name == "send_meme"
+                    and not message._no_save
+                )
+                pending_calls[call.id].append((position, keep))
+            continue
+
+        if message.tool_call_id is None:
+            continue
+        pending = pending_calls.get(message.tool_call_id)
+        if not pending:
+            continue
+        position, keep = pending.popleft()
+        location = (batch_index, position)
+        if location not in removed_calls:
+            continue
+        result_edits[index] = None
+        if not keep or not isinstance(message.content, str):
+            continue
+        # AstrBot can append turn-specific notices after the tool's JSON.
+        content = message.content.lstrip()
+        try:
+            result, end = decoder.raw_decode(content)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(result, dict)
+            and result.get("ok") is True
+            and result.get("status") == "sent"
+        ):
+            removed_calls.remove(location)
+            result_edits[index] = content[:end]
 
     retained = []
     marker = f"[Image from tool '{PREVIEW_TOOL}', path='"
-    for message in messages:
-        if message.role == "tool" and message.tool_call_id in removed_ids:
-            continue
-        if message.tool_calls:
+    for index, message in enumerate(messages):
+        if index in result_edits:
+            content = result_edits[index]
+            if content is None:
+                continue
+            if message.content != content:
+                message = message.model_copy(update={"content": content})
+        elif message.tool_calls:
             calls = [
                 call
-                for call in message.tool_calls
-                if (call.get("id") if isinstance(call, dict) else call.id)
-                not in removed_ids
+                for position, call in enumerate(message.tool_calls)
+                if (index, position) not in removed_calls
             ]
             if len(calls) != len(message.tool_calls):
                 if not calls:
@@ -193,4 +246,4 @@ def discard_meme_tool_context(
                 message = message.model_copy(update={"content": parts})
         retained.append(message)
     messages[:] = retained
-    return bool(removed_ids)
+    return bool(removed_calls)

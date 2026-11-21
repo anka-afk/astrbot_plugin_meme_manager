@@ -486,6 +486,7 @@ async def test_exact_semantic_candidates_ignore_attachment_limits(semantic_sende
             "ok": True,
             "status": "sent",
             "sent_count": 1,
+            "category": "happy",
         }
         chain = sender.context.send_message.await_args.args[1]
         expected = (

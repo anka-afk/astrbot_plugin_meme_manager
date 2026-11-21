@@ -1680,7 +1680,7 @@ class EventHandlerMixin:
                     "用户要求发表情，或图片有助于表达回复时，可以调用 send_meme。\n"
                     + (
                         "需要看画面再选时，先调用 preview_memes 查看分类拼图。"
-                        "使用 send_meme 发送选中的 preview:编号。拼图仅供选图。\n"
+                        "使用 send_meme 发送本轮拼图中选中的 preview:编号。拼图仅供选图。\n"
                         if preview_available
                         else ""
                     )
@@ -1703,6 +1703,8 @@ class EventHandlerMixin:
                     "工具发送独立于自动配图的概率和数量限制。"
                     "目标校验通过后，本轮图片交由工具发送流程处理。"
                     "send_meme 返回 ok=true、status=sent 时，表示平台适配器已完成发送。"
+                    "历史发送结果可用于回答刚才发了什么。"
+                    "用户要求再发时应发起新的调用，只能根据本轮工具结果确认发送。"
                     "分类及描述作为选图参考数据，面向用户的回复围绕对话内容自然表达。\n"
                     + (
                         "[可用分类]\n" + json.dumps(catalog, ensure_ascii=False)
@@ -2692,20 +2694,18 @@ class EventHandlerMixin:
             )
             await self._send_meme_image(event, image)
             if run_context := event.get_extra("meme_manager_tool_context"):
-                if getattr(self, "keep_meme_send_summary", True):
-                    receipt = event.get_extra("meme_manager_send_summary")
-                    event.set_extra(
-                        "meme_manager_send_summary",
-                        (
-                            (receipt[0] + 1) if receipt else 1,
-                            category,
-                            number if preview else "",
-                        ),
-                    )
                 if event.get_extra("meme_manager_preview_candidates"):
                     discard_meme_tool_context(run_context.messages, preview_only=True)
                     event.set_extra("meme_manager_preview_candidates", None)
-            return json.dumps({"ok": True, "status": "sent", "sent_count": 1})
+            result = {
+                "ok": True,
+                "status": "sent",
+                "sent_count": 1,
+                "category": category,
+            }
+            if preview:
+                result["preview_number"] = int(number)
+            return json.dumps(result, ensure_ascii=False)
         except asyncio.CancelledError:
             # 取消等待无法停止转换线程；允许本次工具调用完成取消前，
             # 先回收转换输出。
