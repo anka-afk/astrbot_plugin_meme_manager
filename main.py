@@ -13,12 +13,7 @@ from astrbot.api.event.filter import EventMessageType
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star
 
-from .astrbot_compat import (
-    ContextWrapper,
-    Message,
-    TextPart,
-    get_star_handlers_registry,
-)
+from .astrbot_compat import ContextWrapper, get_star_handlers_registry
 from .backend.auto_collect import AutoCollectManager
 from .backend.decision import DecisionClient
 from .backend.manual_collect import ManualCollectManager
@@ -449,7 +444,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         run_context: ContextWrapper,
         response: LLMResponse,
     ):
-        """Keep at most one delivery summary before AstrBot saves the turn.
+        """Compact meme tool history before AstrBot saves the turn.
 
         Args:
             event: Message event for the completed turn.
@@ -460,37 +455,10 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             return
         event.set_extra("meme_manager_tool_context", None)
         event.set_extra("meme_manager_preview_candidates", None)
-        receipt = event.get_extra("meme_manager_send_summary")
-        event.set_extra("meme_manager_send_summary", None)
-        messages = run_context.messages
-        discard_meme_tool_context(messages)
-        if receipt is None or not self.keep_meme_send_summary:
-            return
-
-        count, category, number = receipt
-        detail = ""
-        if count == 1:
-            category = " ".join(category.split())[:32]
-            detail = f"（{category}，#{number}）" if number else f"（{category}）"
-        summary = f"已发送 {count} 张表情{detail}。"
-        last = messages[-1] if messages else None
-        if (
-            last
-            and last.role == "assistant"
-            and not last.tool_calls
-            and not last._no_save
-        ):
-            content = last.content
-            if isinstance(content, list):
-                content = [
-                    *content,
-                    TextPart(text=f"\n\n{summary}" if content else summary),
-                ]
-            else:
-                content = f"{content}\n\n{summary}" if content else summary
-            messages[-1] = last.model_copy(update={"content": content})
-        else:
-            messages.append(Message(role="assistant", content=summary))
+        discard_meme_tool_context(
+            run_context.messages,
+            keep_successful_sends=self.keep_meme_send_summary,
+        )
 
     @filter.on_decorating_result(priority=99999)
     async def on_decorating_result(self, event: AstrMessageEvent):
@@ -1373,9 +1341,9 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 preview_memes 中选中的 preview:编号。
 
         Returns:
-            平台适配器完成投递后，返回包含 ok=true、status=sent
-            及 sent_count=1 的 JSON。ok=false 时，reason 描述
-            结果；若包含 instruction，则给出下一步操作指引。
+            发送成功时返回包含 ok=true、status=sent、sent_count=1 和 category
+            的 JSON。通过预览选图时附上 preview_number。失败时返回 ok=false、
+            reason 和可选的 instruction。
         """
         return await self._send_meme_tool_impl(event, target)
 

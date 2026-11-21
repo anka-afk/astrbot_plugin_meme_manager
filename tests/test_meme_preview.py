@@ -14,17 +14,34 @@ from astrbot_plugin_meme_manager.backend.packs.preview import (
     build_meme_preview,
     discard_meme_tool_context,
 )
-from mcp.types import CallToolResult, ImageContent
+from astrbot_plugin_meme_manager.mixins.event_handlers import (
+    LLM_REQUEST_ORIGIN_EXTRA_KEY,
+)
+from mcp.types import CallToolResult, ImageContent, TextContent
 from PIL import Image
 from test_meme_only_replies import reply_context as reply_context
 from test_probability_gates import tool_reply as tool_reply
 
-from astrbot.core.agent.message import ImageURLPart, Message, TextPart, ToolCall
+from astrbot.core.agent.hooks import BaseAgentRunHooks
+from astrbot.core.agent.message import (
+    ImageURLPart,
+    Message,
+    TextPart,
+    ToolCall,
+    bind_checkpoint_messages,
+    dump_messages_with_checkpoints,
+)
+from astrbot.core.agent.run_context import ContextWrapper
+from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
+from astrbot.core.provider.entities import LLMResponse, ProviderRequest
 from astrbot.core.provider.register import llm_tools
 
 
-def tool_call(name):
-    return ToolCall(id=name, function={"name": name, "arguments": "{}"})
+def tool_call(name, **arguments):
+    return ToolCall(
+        id=name,
+        function={"name": name, "arguments": json.dumps(arguments)},
+    )
 
 
 def test_numbering_survives_renames_replacements_and_simultaneous_previews(tmp_path):
@@ -170,48 +187,180 @@ async def test_numbered_preview_sends_the_current_original(preview_request):
         "candidate_changed"
     )
     path.write_bytes(original)
-    assert json.loads(await sender.send_meme_tool(event, "preview:2"))["status"] == "sent"
+    receipt = await sender.send_meme_tool(event, "preview:2")
+    assert json.loads(receipt) == {
+        "ok": True,
+        "status": "sent",
+        "sent_count": 1,
+        "category": "happy",
+        "preview_number": 2,
+    }
     emitted = sender._send_meme_image.await_args.args[1]
     assert base64.b64decode(emitted.file.removeprefix("base64://")) == original
     assert not run_context.messages
-    await sender.compact_meme_tool_history(event, run_context, None)
-    assert run_context.messages == [
-        Message(role="assistant", content="已发送 1 张表情（happy，#2）。")
+    send = tool_call("send_meme", target="preview:2")
+    pair = [
+        Message(role="assistant", tool_calls=[send]),
+        Message(role="tool", tool_call_id=send.id, content=receipt),
     ]
+    run_context.messages.extend(pair)
+    await sender.compact_meme_tool_history(event, run_context, None)
+    assert run_context.messages == pair
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("keep_summary", "sends", "summary"),
-    [(True, 0, ""), (False, 1, ""), (True, 2, "已发送 2 张表情。")],
-)
-async def test_tool_history_preserves_only_success_summary(
-    preview_request, keep_summary, sends, summary
+@pytest.mark.parametrize("keep_summary", [True, False])
+async def test_tool_history_round_trip_preserves_only_successful_sends(
+    preview_request, keep_summary
 ):
-    sender, event, request, provider, _ = preview_request
+    sender, event, request, provider, category = preview_request
     sender.keep_meme_send_summary = keep_summary
     sender.preview_images_per_page = 0
+    sad = category.with_name("sad")
+    sad.mkdir()
+    (sad / "a.png").write_bytes((category / "a.png").read_bytes())
     await sender._inject_meme_prompt_impl(event, request)
     run_context = SimpleNamespace(messages=[])
     await sender.track_meme_tool_context(event, run_context)
-    for _ in range(sends):
-        assert json.loads(await sender.send_meme_tool(event, "happy"))["status"] == "sent"
-    tool_name = "send_meme" if sends else PREVIEW_TOOL
+    first = tool_call("send_meme", target="happy")
+    failed = tool_call("send_meme", target="missing")
+    second = tool_call("send_meme", target="sad")
+    other = tool_call("weather")
+    first_result = Message(
+        role="tool",
+        tool_call_id=first.id,
+        content=await sender.send_meme_tool(event, "happy"),
+    )
+    failed_result = Message(
+        role="tool",
+        tool_call_id=failed.id,
+        content=await sender.send_meme_tool(event, "missing"),
+    )
+    second_result = Message(
+        role="tool",
+        tool_call_id=second.id,
+        content=await sender.send_meme_tool(event, "sad"),
+    )
+    other_result = Message(role="tool", tool_call_id=other.id, content="Sunny")
+    reply = Message(role="assistant", content=[TextPart(text="Done")])
+    follow_up = Message(role="user", content="再发一张难过的")
     run_context.messages.extend(
         [
-            Message(
-                role="assistant",
-                content=[TextPart(text="Temporary image selection notes")],
-                tool_calls=[tool_call(tool_name)],
+            Message(role="assistant", tool_calls=[first, failed, other]),
+            first_result,
+            failed_result,
+            other_result,
+            reply,
+            follow_up,
+            Message(role="assistant", tool_calls=[second]),
+            second_result.model_copy(
+                update={"content": f"{second_result.content}\n\n[Current turn budget]"}
             ),
-            Message(role="tool", tool_call_id=tool_name, content="Temporary tool output"),
-            Message(role="assistant", content=[TextPart(text="Done")]),
         ]
     )
+    assert json.loads(first_result.content)["category"] == "happy"
+    assert json.loads(failed_result.content)["ok"] is False
+    assert json.loads(second_result.content)["category"] == "sad"
+
     await sender.compact_meme_tool_history(event, run_context, None)
-    assert len(run_context.messages) == 1
-    expected_content = [TextPart(text="Done")]
-    if summary:
-        expected_content.append(TextPart(text=f"\n\n{summary}"))
-    assert run_context.messages[0].content == expected_content
+    saved = json.loads(json.dumps(dump_messages_with_checkpoints(run_context.messages)))
+    reloaded = bind_checkpoint_messages(saved)
+    kept_calls = [first, other] if keep_summary else [other]
+    kept_results = [first_result] if keep_summary else []
+    follow_up_results = (
+        [Message(role="assistant", tool_calls=[second]), second_result]
+        if keep_summary
+        else []
+    )
+    assert reloaded == [
+        Message(role="assistant", tool_calls=kept_calls),
+        *kept_results,
+        other_result,
+        reply,
+        follow_up,
+        *follow_up_results,
+    ]
+    assert sender._send_meme_image.await_count == 2
     provider.text_chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agent_replays_send_receipt_and_sends_again(preview_request):
+    sender, event, template, provider, _ = preview_request
+    sender.preview_images_per_page = 0
+    turns = [
+        ("发一张开心的", 1, []),
+        ("刚才发了什么类型？", 1, ["happy"]),
+        ("再发一张", 2, ["happy"]),
+    ]
+    saved_history = []
+
+    async def execute(*, tool, run_context, target):
+        receipt = await sender.send_meme_tool(event, target)
+        yield CallToolResult(content=[TextContent(type="text", text=receipt)])
+
+    hooks = BaseAgentRunHooks()
+    hooks.on_agent_begin = lambda context: sender.track_meme_tool_context(event, context)
+    hooks.on_agent_done = lambda context, response: sender.compact_meme_tool_history(
+        event, context, response
+    )
+
+    for prompt, delivered, expected_categories in turns:
+        extras = {LLM_REQUEST_ORIGIN_EXTRA_KEY: "chat"}
+        event.get_extra = extras.get
+        event.set_extra = extras.__setitem__
+        request = ProviderRequest(
+            prompt=prompt,
+            system_prompt=template.system_prompt,
+            func_tool=template.func_tool,
+            contexts=saved_history,
+        )
+        extras["provider_request"] = request
+        await sender._inject_meme_prompt_impl(event, request)
+
+        runner = ToolLoopAgentRunner()
+        context = ContextWrapper(context=None)
+        if delivered != sender._send_meme_image.await_count:
+            provider.text_chat.side_effect = [
+                LLMResponse(
+                    role="tool",
+                    tools_call_name=["send_meme"],
+                    tools_call_args=[{"target": "happy"}],
+                    tools_call_ids=[f"call_{delivered}"],
+                ),
+                LLMResponse(role="assistant", completion_text="给你一张开心的。"),
+            ]
+        else:
+            provider.text_chat.side_effect = [
+                LLMResponse(role="assistant", completion_text="开心。")
+            ]
+        provider.text_chat.reset_mock()
+        await runner.reset(
+            provider=provider,
+            request=request,
+            run_context=context,
+            tool_executor=SimpleNamespace(execute=execute),
+            agent_hooks=hooks,
+        )
+        async for _ in runner.step_until_done(4):
+            pass
+        assert runner.done()
+        assert sender._send_meme_image.await_count == delivered
+        first_request = [
+            Message.model_validate(message)
+            for message in provider.text_chat.await_args_list[0].kwargs["contexts"]
+        ]
+        historical_receipts = [
+            json.loads(message.content)
+            for message in first_request
+            if message.role == "tool"
+        ]
+        assert [item["category"] for item in historical_receipts] == expected_categories
+        saved_history = dump_messages_with_checkpoints(
+            [message for message in context.messages if message.role != "system"]
+        )
+        assert all(
+            "已发送" not in str(message.get("content"))
+            for message in saved_history
+            if message["role"] == "assistant"
+        )
