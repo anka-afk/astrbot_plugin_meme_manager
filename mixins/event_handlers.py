@@ -33,6 +33,7 @@ from ..astrbot_compat import (
     get_image_chat_routing,
     is_aiocqhttp_message_event,
     is_builtin_message_tool,
+    resolve_effective_persona_id,
 )
 from ..backend.delivery_history import DeliveryHistory
 from ..backend.meme_parser import MemeParser
@@ -1039,27 +1040,10 @@ class EventHandlerMixin:
         event.set_extra("persona_id", "")
         event.persona_id = ""
         try:
-            manager = self.context.conversation_manager
-            cid = await manager.get_curr_conversation_id(event.unified_msg_origin)
-            conversation = (
-                await manager.get_conversation(event.unified_msg_origin, cid)
-                if cid
-                else None
+            event.set_extra(
+                "meme_manager_resolved_persona_id",
+                await resolve_effective_persona_id(self.context, event),
             )
-            (
-                persona_id,
-                _,
-                _,
-                _,
-            ) = await self.context.persona_manager.resolve_selected_persona(
-                umo=event.unified_msg_origin,
-                conversation_persona_id=getattr(conversation, "persona_id", None),
-                platform_name=event.get_platform_name(),
-                provider_settings=self.context.get_config(event.unified_msg_origin).get(
-                    "provider_settings", {}
-                ),
-            )
-            event.set_extra("meme_manager_resolved_persona_id", persona_id or "")
         except Exception:
             logger.warning("[meme_manager] 无法解析外发消息的目标人格", exc_info=True)
         context = self._resolve_runtime_pack_context(event=event)
@@ -1595,21 +1579,10 @@ class EventHandlerMixin:
             req.func_tool = local_tools
         event.set_extra("meme_manager_resolved_persona_id", None)
         try:
-            # 与 AstrBot 的会话覆盖和继承默认人格选择保持一致。
-            (
-                persona_id,
-                _,
-                _,
-                _,
-            ) = await self.context.persona_manager.resolve_selected_persona(
-                umo=event.unified_msg_origin,
-                conversation_persona_id=getattr(req.conversation, "persona_id", None),
-                platform_name=event.get_platform_name(),
-                provider_settings=self.context.get_config(event.unified_msg_origin).get(
-                    "provider_settings", {}
-                ),
+            event.set_extra(
+                "meme_manager_resolved_persona_id",
+                await resolve_effective_persona_id(self.context, event, req),
             )
-            event.set_extra("meme_manager_resolved_persona_id", persona_id or "")
         except Exception:
             logger.warning(
                 "无法解析表情选择使用的当前人格",
@@ -1800,11 +1773,12 @@ class EventHandlerMixin:
                         if provider is None:
                             raise ValueError("Reply provider is unavailable")
                         if req.image_urls:
-                            model_config = (
-                                self.context.get_config(event.unified_msg_origin)
-                                .get("agent_runner", {})
-                                .get("config", {})
-                                .get("model", {})
+                            config = self.context.get_config(event.unified_msg_origin)
+                            runner_config = config.get(
+                                "agent", config.get("agent_runner", {})
+                            )
+                            model_config = runner_config.get("config", {}).get(
+                                "model", {}
                             )
                             fallback_ids = model_config.get("fallback_provider_ids", [])
                             if fallback_ids:

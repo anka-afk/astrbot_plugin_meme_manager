@@ -22,19 +22,25 @@ from PIL import Image
 from test_meme_only_replies import reply_context as reply_context
 from test_probability_gates import tool_reply as tool_reply
 
+from astrbot.core.agent import message as agent_message
 from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.agent.message import (
     ImageURLPart,
     Message,
     TextPart,
     ToolCall,
-    bind_checkpoint_messages,
-    dump_messages_with_checkpoints,
 )
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest
 from astrbot.core.provider.register import llm_tools
+
+if hasattr(agent_message, "dump_messages"):
+    dump_history = agent_message.dump_messages
+    load_history = agent_message.load_messages
+else:
+    dump_history = agent_message.dump_messages_with_checkpoints
+    load_history = agent_message.bind_checkpoint_messages
 
 
 def tool_call(name, **arguments):
@@ -263,8 +269,8 @@ async def test_tool_history_round_trip_preserves_only_successful_sends(
     assert json.loads(second_result.content)["category"] == "sad"
 
     await sender.compact_meme_tool_history(event, run_context, None)
-    saved = json.loads(json.dumps(dump_messages_with_checkpoints(run_context.messages)))
-    reloaded = bind_checkpoint_messages(saved)
+    saved = json.loads(json.dumps(dump_history(run_context.messages)))
+    reloaded = load_history(saved)
     kept_calls = [first, other] if keep_summary else [other]
     kept_results = [first_result] if keep_summary else []
     follow_up_results = (
@@ -288,6 +294,7 @@ async def test_tool_history_round_trip_preserves_only_successful_sends(
 async def test_agent_replays_send_receipt_and_sends_again(preview_request):
     sender, event, template, provider, _ = preview_request
     sender.preview_images_per_page = 0
+    provider.get_model = lambda: "test-model"
     turns = [
         ("发一张开心的", 1, []),
         ("刚才发了什么类型？", 1, ["happy"]),
@@ -356,7 +363,7 @@ async def test_agent_replays_send_receipt_and_sends_again(preview_request):
             if message.role == "tool"
         ]
         assert [item["category"] for item in historical_receipts] == expected_categories
-        saved_history = dump_messages_with_checkpoints(
+        saved_history = dump_history(
             [message for message in context.messages if message.role != "system"]
         )
         assert all(

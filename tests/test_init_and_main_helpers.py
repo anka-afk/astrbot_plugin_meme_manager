@@ -246,19 +246,38 @@ async def test_webchat_pack_rules_use_effective_persona(
 
     manager = object.__new__(persona_mgr.PersonaManager)
     manager.personas_v3 = [{"name": "default"}, {"name": "other"}]
-    manager.acm = SimpleNamespace(
-        get_conf=lambda umo: {
+    if hasattr(persona_mgr, "get_overrides"):
+        effective_persona = forced_persona or conversation_persona
+        config = {
+            "agent": {
+                "runtime": "astrbot",
+                "config": {
+                    "persona": {"persona_id": effective_persona or default_persona}
+                },
+            }
+        }
+        monkeypatch.setattr(
+            persona_mgr,
+            "get_overrides",
+            AsyncMock(
+                return_value={"agent.config.persona.persona_id"}
+                if effective_persona
+                else set()
+            ),
+        )
+    else:
+        config = {
             "agent_runner": {
                 "runner_type": "local",
                 "config": {"persona": {"persona_id": default_persona}},
             }
         }
-    )
-    monkeypatch.setattr(
-        persona_mgr.sp,
-        "get_async",
-        AsyncMock(return_value={"persona_id": forced_persona}),
-    )
+        monkeypatch.setattr(
+            persona_mgr.sp,
+            "get_async",
+            AsyncMock(return_value={"persona_id": forced_persona}),
+        )
+    manager.acm = SimpleNamespace(get_conf=lambda umo: config)
     monkeypatch.setattr(pack_resolver, "PACKS_DIR", tmp_path / "packs")
     monkeypatch.setattr(pack_resolver, "REGISTRY_PATH", tmp_path / "registry.json")
     monkeypatch.setattr(pack_resolver, "SELECTION_RULES_PATH", tmp_path / "rules.json")

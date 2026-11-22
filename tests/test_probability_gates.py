@@ -225,8 +225,9 @@ async def test_preflight_preserves_provider_model_and_request(tool_reply):
 @pytest.mark.parametrize(
     "primary_tools,fallback_tools", [(True, True), (False, True), (True, False)]
 )
+@pytest.mark.parametrize("runner_key", ["agent", "agent_runner"])
 async def test_preflight_uses_core_image_fallback_provider(
-    tool_reply, primary_tools, fallback_tools
+    tool_reply, primary_tools, fallback_tools, runner_key
 ):
     from astrbot_plugin_meme_manager.astrbot_compat import get_image_chat_routing
 
@@ -250,7 +251,7 @@ async def test_preflight_uses_core_image_fallback_provider(
         "vision": fallback,
     }[value]
     sender.context.get_config = lambda *args: {
-        "agent_runner": {"config": {"model": {"fallback_provider_ids": ["vision"]}}}
+        runner_key: {"config": {"model": {"fallback_provider_ids": ["vision"]}}}
     }
     request.image_urls = ["fixture.png"]
     # 调用本钩子前，AstrBot 已选择图片备用提供方，
