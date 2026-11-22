@@ -2,6 +2,13 @@
 
 本文件记录 AstrBot 表情包管理器的主要版本更新，最新版本排在最前。
 
+## v5.4.3
+
+- 适配 AstrBot 4.30.0-beta.1 的 Agent 运行时，支持内置 `send_message_to_user` 的表情标记处理，并在带图的语义检索预检中沿用核心的备用模型选择。[#228](https://github.com/anka-afk/astrbot_plugin_meme_manager/pull/228)
+- 普通对话按当前会话生效的人格选包，跨会话发送按目标会话的人格选包。最低支持版本为 AstrBot 4.28.2。
+
+在 AstrBot 4.28.2、4.29.4 和 4.30.0-beta.1 上通过回归测试。新版已实测插件加载、管理页预览和 WebChat 发图。升级后请重载插件。
+
 ## v5.4.2
 
 - 修复主动发图摘要混入普通对话历史，导致模型在未发图时输出发送回执的问题。 [#225](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/225)
