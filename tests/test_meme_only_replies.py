@@ -144,7 +144,8 @@ async def test_qq_reply_stickers_through_pipeline(
         astrbot_config=config,
         plugin_manager=SimpleNamespace(
             context=SimpleNamespace(
-                get_using_tts_provider_async=AsyncMock(return_value=None)
+                get_using_tts_provider_async=AsyncMock(return_value=None),
+                get_config=lambda **kwargs: config,
             )
         ),
     )

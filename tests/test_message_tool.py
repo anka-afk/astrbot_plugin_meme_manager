@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import json
+from importlib.util import find_spec
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -17,7 +18,17 @@ from test_probability_gates import tool_reply as tool_reply
 
 from astrbot.api.provider import LLMResponse
 from astrbot.core.message.components import At, Image, Plain
-from astrbot.core.tools.message_tools import SendMessageToUserTool
+
+if find_spec("astrbot.core.astr_agent_runtime") is not None:
+    from astrbot.core.astr_agent_runtime.context import AstrAgentContext
+    from astrbot.core.astr_agent_runtime.tool_executor import FunctionToolExecutor
+    from astrbot.core.astr_agent_runtime.tools.message_tools import (
+        SendMessageToUserTool,
+    )
+else:
+    from astrbot.core.astr_agent_context import AstrAgentContext
+    from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+    from astrbot.core.tools.message_tools import SendMessageToUserTool
 
 pytestmark = pytest.mark.asyncio
 ORIGIN = "test:GroupMessage:123"
@@ -71,7 +82,9 @@ def wire(sender, event, state):
         ),
     )
     context = SimpleNamespace(
-        context=SimpleNamespace(context=sender.context, event=event)
+        context=SimpleNamespace(
+            context=sender.context, event=event, _output_turn=None, send_to_user=True
+        )
     )
     return MemeMessageTool(SendMessageToUserTool(), sender), context, captured
 
@@ -282,6 +295,9 @@ async def test_remote_session_uses_destination_persona_and_pack(reply_context, r
     await tool.call(
         context, session="456", messages=[{"type": "plain", "text": "Hi &&happy&&"}]
     )
+    sender.context.persona_manager.resolve_selected_persona.assert_awaited_once_with(
+        umo="test:GroupMessage:456", platform_name="test"
+    )
     assert all(target == "test:GroupMessage:456" for target, _ in sent)
     image = sent[1][1].chain[0]
     assert "pack-b" in image.file
@@ -400,8 +416,6 @@ async def test_marker_tool_attempt_blocks_direct_tool_even_if_probability_misses
 
 async def test_real_agent_context_and_executor_keep_original_identity(reply_context):
     from astrbot.core.agent.run_context import ContextWrapper
-    from astrbot.core.astr_agent_context import AstrAgentContext
-    from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
     from astrbot.core.platform.astr_message_event import AstrMessageEvent
     from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
     from astrbot.core.platform.message_type import MessageType

@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from astrbot_plugin_meme_manager.mixins import event_handlers
 from test_meme_only_replies import mock_semantic_validation
 from test_meme_only_replies import reply_context as reply_context
 
@@ -84,6 +83,8 @@ async def test_plugin_stream_delivers_without_final_decoration(
     context = SimpleNamespace(
         get_config=lambda **kwargs: config,
         conversation_manager=AsyncMock(),
+        get_using_tts_provider_async=AsyncMock(return_value=None),
+        locale=lambda umo: "zh-CN",
     )
     ctx = SimpleNamespace(
         astrbot_config=config, plugin_manager=SimpleNamespace(context=context)
@@ -91,61 +92,93 @@ async def test_plugin_stream_delivers_without_final_decoration(
     text = f"Hello &&{selected_id if semantic else 'happy'}&&"
     response = LLMResponse(role="assistant", completion_text=text)
     request = ProviderRequest(prompt="hello")
-    runner = MagicMock()
-    runner.done.return_value = True
-    runner.get_final_llm_resp.return_value = response
-    runner.stats.to_dict.return_value = {}
-    provider = MagicMock()
-    provider.provider_config = {"id": "test", "api_base": ""}
-    provider.get_model.return_value = "test"
-    runner.provider = provider
-    monkeypatch.setattr(
-        internal,
-        "build_main_agent",
-        AsyncMock(
-            return_value=SimpleNamespace(
-                agent_runner=runner,
-                provider_request=request,
-                provider=provider,
-                reset_coro=None,
-            )
-        ),
-    )
-    monkeypatch.setattr(internal, "try_capture_follow_up", lambda event: None)
-    monkeypatch.setattr(internal, "register_active_runner", lambda *args: None)
-    monkeypatch.setattr(internal, "unregister_active_runner", lambda *args: None)
-    monkeypatch.setattr(internal, "_record_internal_agent_stats", AsyncMock())
-    monkeypatch.setattr(internal.Metric, "upload", AsyncMock())
-    monkeypatch.setattr(internal.InternalAgentSubStage, "_save_to_history", AsyncMock())
-    if hasattr(internal, "SessionServiceManager"):
-        monkeypatch.setattr(
-            internal.SessionServiceManager,
-            "should_process_llm_request",
-            AsyncMock(return_value=True),
-        )
-    if hasattr(internal, "_select_provider"):
-        # 旧版核心会在模拟的 Agent 构造器之前准备请求。
-        monkeypatch.setattr(
-            internal, "_select_provider", AsyncMock(return_value=provider)
-        )
-        monkeypatch.setattr(
-            internal,
-            "collect_initial_request",
-            AsyncMock(return_value=(request, None)),
-        )
 
     async def hook(ev, kind, *args):
         if kind == EventType.OnWaitingLLMRequestEvent:
             await sender._mark_llm_request_origin_impl(ev)
         return False
 
-    monkeypatch.setattr(internal, "call_event_hook", hook)
+    if hasattr(internal, "prepare_agent_input"):
+        from astrbot.core.agent.events import TextDelta, TurnResult
+        from astrbot.core.agent.output import PlainOutput
+        from astrbot.core.agent.runtime import AgentSession
 
-    async def run(agent, *_args, **_kwargs):
-        yield MessageChain([Plain(text)])
-        await sender._resp_impl(event, response)
+        from astrbot.core import agent_input
+        from astrbot.core.pipeline import context_utils
 
-    monkeypatch.setattr(internal, "run_agent", run)
+        class TestSession(AgentSession):
+            async def execute_turn(self, turn):
+                turn.emit(TextDelta(message_id="reply", part_index=0, text=text))
+                await sender._resp_impl(event, response)
+                return TurnResult(content=(PlainOutput(text=response.completion_text),))
+
+            async def history(self):
+                return []
+
+        session = TestSession("test", event.unified_msg_origin)
+        ctx.agent_runtimes = {
+            "astrbot": SimpleNamespace(
+                active_turn=lambda umo: session.active_turn,
+                open_session=AsyncMock(return_value=session),
+            )
+        }
+        monkeypatch.setattr(context_utils, "call_event_hook", hook)
+        monkeypatch.setattr(
+            agent_input, "collect_plugin_capabilities", lambda *_: (None, [])
+        )
+    else:
+        runner = MagicMock()
+        runner.done.return_value = True
+        runner.get_final_llm_resp.return_value = response
+        runner.stats.to_dict.return_value = {}
+        provider = MagicMock()
+        provider.provider_config = {"id": "test", "api_base": ""}
+        provider.get_model.return_value = "test"
+        runner.provider = provider
+        monkeypatch.setattr(
+            internal,
+            "build_main_agent",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    agent_runner=runner,
+                    provider_request=request,
+                    provider=provider,
+                    reset_coro=None,
+                )
+            ),
+        )
+        monkeypatch.setattr(internal, "try_capture_follow_up", lambda event: None)
+        monkeypatch.setattr(internal, "register_active_runner", lambda *args: None)
+        monkeypatch.setattr(internal, "unregister_active_runner", lambda *args: None)
+        monkeypatch.setattr(internal, "_record_internal_agent_stats", AsyncMock())
+        monkeypatch.setattr(internal.Metric, "upload", AsyncMock())
+        monkeypatch.setattr(
+            internal.InternalAgentSubStage, "_save_to_history", AsyncMock()
+        )
+        if hasattr(internal, "SessionServiceManager"):
+            monkeypatch.setattr(
+                internal.SessionServiceManager,
+                "should_process_llm_request",
+                AsyncMock(return_value=True),
+            )
+        if hasattr(internal, "_select_provider"):
+            # 旧版核心会在模拟的 Agent 构造器之前准备请求。
+            monkeypatch.setattr(
+                internal, "_select_provider", AsyncMock(return_value=provider)
+            )
+            monkeypatch.setattr(
+                internal,
+                "collect_initial_request",
+                AsyncMock(return_value=(request, None)),
+            )
+
+        monkeypatch.setattr(internal, "call_event_hook", hook)
+
+        async def run(agent, *_args, **_kwargs):
+            yield MessageChain([Plain(text)])
+            await sender._resp_impl(event, response)
+
+        monkeypatch.setattr(internal, "run_agent", run)
 
     async def plugin_handler(ev):
         ev.call_llm = True

@@ -1,7 +1,6 @@
 """受支持的新旧 AstrBot 版本共用的协议约定。"""
 
 import ast
-import builtins
 from pathlib import Path
 
 import pytest
@@ -36,17 +35,24 @@ def test_session_and_context_contract():
     assert astrbot_compat.get_star_handlers_registry() is not None
 
 
-def test_image_routing_does_not_mask_missing_dependencies(monkeypatch):
-    original_import = builtins.__import__
-
-    def import_with_missing_dependency(name, *args, **kwargs):
-        if name == "astrbot.core.astr_main_agent.providers":
+@pytest.mark.parametrize(
+    "module_with_missing_dependency",
+    [
+        "astrbot.core.astr_agent_runtime.main_agent.providers",
+        "astrbot.core.astr_main_agent.providers",
+    ],
+)
+def test_image_routing_does_not_mask_missing_dependencies(
+    monkeypatch, module_with_missing_dependency
+):
+    def import_with_missing_dependency(name):
+        if name == module_with_missing_dependency:
             raise ModuleNotFoundError(
                 "Missing routing dependency", name="routing_dependency"
             )
-        return original_import(name, *args, **kwargs)
+        raise ModuleNotFoundError("Routing module unavailable", name=name)
 
-    monkeypatch.setattr(builtins, "__import__", import_with_missing_dependency)
+    monkeypatch.setattr(astrbot_compat, "import_module", import_with_missing_dependency)
     with pytest.raises(ModuleNotFoundError) as error:
         astrbot_compat.get_image_chat_routing()
     assert error.value.name == "routing_dependency"
