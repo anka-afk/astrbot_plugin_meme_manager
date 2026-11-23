@@ -2,6 +2,12 @@
 
 本文件记录 AstrBot 表情包管理器的主要版本更新，最新版本排在最前。
 
+## v5.4.4
+
+- 修复静态 WebP 在 LM Studio 视觉模型中语义化失败的问题。语义化和自动收集会将静态 WebP 临时转换为保留透明度的 PNG，原始图片保留。 [#230](https://github.com/anka-afk/astrbot_plugin_meme_manager/issues/230)
+
+升级后请重载插件。此前处理失败的静态 WebP 可以重新运行语义化。
+
 ## v5.4.3
 
 - 适配 AstrBot 4.30.0-beta.1 的 Agent 运行时，支持内置 `send_message_to_user` 的表情标记处理，并在带图的语义检索预检中沿用核心的备用模型选择。[#228](https://github.com/anka-afk/astrbot_plugin_meme_manager/pull/228)
