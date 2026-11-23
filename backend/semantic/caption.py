@@ -289,22 +289,24 @@ def prepare_visual_inputs(path: Path | str) -> tuple[list[str], list[str]]:
         path: 原始图片路径。
 
     Returns:
-        视觉输入路径，以及调用方必须清理的临时帧路径。
+        视觉输入路径，以及调用方必须清理的临时 PNG 路径。
 
     Raises:
-        ValueError: 已确认图片为动图，但无法读取其帧。
+        ValueError: WebP 图片或动图帧无法处理。
     """
     source = Path(path).resolve()
     temp_paths: list[str] = []
     confirmed_animated = False
+    image_format = None
     try:
         from PIL import Image
 
         with Image.open(source) as image:
+            image_format = image.format
             frame_count = max(1, int(getattr(image, "n_frames", 1) or 1))
-            if frame_count <= 1:
+            if frame_count == 1 and image_format != "WEBP":
                 return [str(source)], []
-            confirmed_animated = True
+            confirmed_animated = frame_count > 1
             sample_count = min(frame_count, MAX_GIF_FRAMES)
             if sample_count <= 1:
                 frame_indexes = [0]
@@ -316,24 +318,32 @@ def prepare_visual_inputs(path: Path | str) -> tuple[list[str], list[str]]:
             for frame_index in frame_indexes:
                 image.seek(frame_index)
                 frame = image.convert("RGBA")
-                output = tempfile.NamedTemporaryFile(
+                with tempfile.NamedTemporaryFile(
                     prefix=f"meme_frame_{frame_index}_",
                     suffix=".png",
                     delete=False,
-                )
-                try:
+                ) as output:
+                    temp_paths.append(output.name)
                     frame.save(output, format="PNG")
-                finally:
-                    output.close()
-                temp_paths.append(output.name)
             return list(temp_paths), temp_paths
     except Exception as exc:
         for temp_path in temp_paths:
             Path(temp_path).unlink(missing_ok=True)
-        # 对未知静态格式保留旧版回退逻辑；已知动图格式处理失败时应明确报错，
-        # 避免将损坏的输入静默发送给视觉模型。
-        if not confirmed_animated and source.suffix.lower() not in {".gif", ".webp"}:
-            return [str(source)], []
+        if not confirmed_animated:
+            suffix = source.suffix.lower()
+            if image_format is None and suffix != ".webp":
+                # Pillow may fail before identifying a damaged WebP with a different suffix.
+                try:
+                    with source.open("rb") as input_file:
+                        header = input_file.read(12)
+                except OSError:
+                    header = b""
+                if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+                    image_format = "WEBP"
+            if image_format == "WEBP" or suffix == ".webp":
+                raise ValueError(f"WebP 图片预处理失败：{exc}") from exc
+            if suffix != ".gif":
+                return [str(source)], []
         raise ValueError(f"动图多帧处理失败：{exc}") from exc
 
 
