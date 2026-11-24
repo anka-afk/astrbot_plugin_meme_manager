@@ -73,6 +73,7 @@ async function initCatalogPage() {
   let pendingInstallAction = null;
   let activeInstallJobId = "";
   let installBusy = true;
+  let updateBusy = false;
   let installedStateKnown = false;
   let indexLoading = false;
   let updateStates = {};
@@ -80,7 +81,7 @@ async function initCatalogPage() {
   const updates = setupCatalogUpdates({
     apiGet,
     apiPost,
-    onBusy: setInstallBusy,
+    onBusy: setUpdateBusy,
     async onDone() {
       await refreshInstalledSet();
       renderCatalog();
@@ -126,25 +127,41 @@ async function initCatalogPage() {
     }
   }
 
-  function setInstallBusy(busy) {
-    installBusy = busy;
+  function applyBusyState() {
+    const busy = installBusy || updateBusy;
     installSourceBtn.disabled = busy;
     document.querySelectorAll(".pack-update").forEach((button) => {
-      button.disabled = button.dataset.blocked === "true";
+      const isRestore = button.classList.contains("ghost");
+      button.disabled =
+        button.dataset.blocked === "true" ||
+        installBusy ||
+        (isRestore && updateBusy);
     });
     document.querySelectorAll(".pack-install").forEach((button) => {
       button.disabled =
         busy || !installedStateKnown || button.dataset.installed === "true";
       if (busy && button.dataset.installed !== "true") {
-        button.title = "请等待当前安装任务结束";
+        button.title = updateBusy
+          ? "请等待当前更新任务结束"
+          : "请等待当前安装任务结束";
       } else {
         button.removeAttribute("title");
       }
     });
   }
 
+  function setInstallBusy(busy) {
+    installBusy = Boolean(busy);
+    applyBusyState();
+  }
+
+  function setUpdateBusy(busy) {
+    updateBusy = Boolean(busy);
+    applyBusyState();
+  }
+
   function openInstallDialog(packName, onConfirm) {
-    if (installBusy) return;
+    if (installBusy || updateBusy) return;
     pendingInstallAction = onConfirm;
     installDialogPackName.textContent = `目标: ${packName || "未命名"}`;
     installDialogOverwriteCheckbox.checked = false;
@@ -571,14 +588,20 @@ async function initCatalogPage() {
       : `pack-install${isInstalled ? " ghost" : ""}`;
     installBtn.dataset.installed = String(isInstalled);
     installBtn.disabled = canUpdate
-      ? false
-      : isInstalled || installBusy || !installedStateKnown;
+      ? installBusy
+      : isInstalled || installBusy || updateBusy || !installedStateKnown;
+    if (!canUpdate && !isInstalled && (installBusy || updateBusy)) {
+      installBtn.title = updateBusy
+        ? "请等待当前更新任务结束"
+        : "请等待当前安装任务结束";
+    }
     installBtn.setAttribute(
       "aria-label",
       `${installBtn.textContent} ${pack.name || pack.id || "未命名资源包"}`,
     );
     installBtn.addEventListener("click", () => {
       if (canUpdate) {
+        if (installBusy) return;
         void updates.open(pack, updateState);
         return;
       }
@@ -675,11 +698,11 @@ async function initCatalogPage() {
         restore.type = "button";
         restore.className = "pack-update ghost";
         restore.textContent = "恢复备份";
-        restore.disabled = installBusy;
-        restore.addEventListener(
-          "click",
-          () => void updates.open(pack, updateState, true),
-        );
+        restore.disabled = installBusy || updateBusy;
+        restore.addEventListener("click", () => {
+          if (installBusy || updateBusy) return;
+          void updates.open(pack, updateState, true);
+        });
         actions.append(restore);
       }
       if (actions.children.length) card.append(actions);
@@ -846,27 +869,29 @@ async function initCatalogPage() {
   }
 
   async function installByPack(pack, button, options = {}) {
-    if (installBusy) return;
-    await refreshInstalledSet();
-    if (!installedStateKnown) return;
-    if (installedPackIds.has(pack.id) && !options.overwrite) {
-      renderCatalog();
-      addLog("此包已安装，请使用更新功能或明确选择覆盖安装", true);
-      return;
-    }
-    const packId = String(pack?.id || "").trim();
-    const source =
-      pack && typeof pack.source === "object" && pack.source
-        ? pack.source
-        : null;
-    if (!packId) {
-      addLog("无效的 pack_id", true);
-      return;
-    }
-
+    if (installBusy || updateBusy) return;
     setInstallBusy(true);
-    setLoading(button, "安装中…");
+    let loadingStarted = false;
     try {
+      await refreshInstalledSet();
+      if (!installedStateKnown) return;
+      if (installedPackIds.has(pack.id) && !options.overwrite) {
+        renderCatalog();
+        addLog("此包已安装，请使用更新功能或明确选择覆盖安装", true);
+        return;
+      }
+      const packId = String(pack?.id || "").trim();
+      const source =
+        pack && typeof pack.source === "object" && pack.source
+          ? pack.source
+          : null;
+      if (!packId) {
+        addLog("无效的 pack_id", true);
+        return;
+      }
+
+      setLoading(button, "安装中…");
+      loadingStarted = true;
       const payload = {
         pack_id: packId,
         overwrite: Boolean(options.overwrite),
@@ -888,19 +913,24 @@ async function initCatalogPage() {
       renderCatalog();
     } catch (error) {
       if (error?.name === "AbortError") {
-        addLog(`已取消安装: ${pack.name || packId}`);
+        addLog(`已取消安装: ${pack.name || pack?.id || ""}`);
         window.MemeUI?.toast?.("已取消安装", "info");
       } else {
-        addLog(`安装失败(${packId}): ${error?.message || String(error)}`, true);
+        addLog(
+          `安装失败(${pack?.id || ""}): ${error?.message || String(error)}`,
+          true,
+        );
       }
     } finally {
-      clearLoading(button);
+      if (loadingStarted) {
+        clearLoading(button);
+      }
       setInstallBusy(false);
     }
   }
 
   async function installBySource(options = {}) {
-    if (installBusy) return;
+    if (installBusy || updateBusy) return;
     const repo = String(sourceRepoInput.value || "").trim();
     const ref = String(sourceRefInput.value || "").trim();
     const subpath = normalizeGithubSubpath(sourceSubpathInput.value);
@@ -942,7 +972,7 @@ async function initCatalogPage() {
 
   sourceInstallForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (installBusy) return;
+    if (installBusy || updateBusy) return;
     const repo = sourceRepoInput.value.trim();
     const ref = sourceRefInput.value.trim();
     const subpath = normalizeGithubSubpath(sourceSubpathInput.value);
@@ -970,7 +1000,13 @@ async function initCatalogPage() {
   catalogSearch.addEventListener("input", renderCatalog);
   let refreshingVisibility = false;
   const refreshOnReturn = async () => {
-    if (document.hidden || installBusy || indexLoading || refreshingVisibility)
+    if (
+      document.hidden ||
+      installBusy ||
+      updateBusy ||
+      indexLoading ||
+      refreshingVisibility
+    )
       return;
     refreshingVisibility = true;
     try {
@@ -1033,7 +1069,9 @@ async function initCatalogPage() {
   await restoreActiveInstall();
   await loadCachedIndex({ silentOnMissing: true });
   await fetchIndex();
-  await updates.resume();
+  if (!installBusy && !updateBusy) {
+    await updates.resume();
+  }
 }
 
 void initCatalogPage().catch((error) => {

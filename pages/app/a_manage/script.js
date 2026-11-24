@@ -936,6 +936,8 @@ async function initApp() {
   };
   const uploadStateByCategory = new Map();
   let initialStatusTimerId = null;
+  let syncStatusRequestId = 0;
+  let imgHostSyncStatusRequestId = 0;
   let activeCategoryEdit = null;
   let pendingMoveTargetItems = [];
   let imagePreviewState = null;
@@ -1640,7 +1642,11 @@ async function initApp() {
         "success",
       );
       await loadManagePackSwitcher(importedPackId);
+      clearSelections();
+      setClipboardItems([]);
       await refreshUi({ emojis: true, syncStatus: true });
+      resetImgHostSyncStatusDisplay();
+      void checkImgHostSyncStatus(false);
       await refreshPackExportCapability(importedPackId);
       showToast(`表情包 ${importedPackId} 已导入。`, "success", "导入成功");
       await maybeOfferVectorRebuild(importedPackId, data);
@@ -1896,6 +1902,7 @@ async function initApp() {
     moveResult.classList.add("hidden");
     const previousActivePackId = activeManagePackId;
     clearSelections();
+    setClipboardItems([]);
     activeManagePackId = targetPackId;
     void loadCollectionReview();
     applySemanticReviewData({ available: false });
@@ -1903,6 +1910,9 @@ async function initApp() {
     try {
       syncManagedPackQuery(targetPackId);
       await refreshUi({ emojis: true });
+      resetImgHostSyncStatusDisplay();
+      void checkSyncStatus(false);
+      void checkImgHostSyncStatus(false);
       await refreshPackExportCapability(targetPackId);
       showToast(`已切换管理视图到 ${targetPackId}。`, "success", "切换成功");
       await maybeOfferVectorRebuild(targetPackId);
@@ -1950,8 +1960,12 @@ async function initApp() {
     try {
       const data = await apiPost("packs/uninstall", { pack_id: targetPackId });
       const switchedPackId = String(data?.switched_default_to || "").trim();
+      clearSelections();
+      setClipboardItems([]);
       await loadManagePackSwitcher(switchedPackId);
       await refreshUi({ emojis: true, syncStatus: true });
+      resetImgHostSyncStatusDisplay();
+      void checkImgHostSyncStatus(false);
       const switchedHint = switchedPackId ? `，已切换到 ${switchedPackId}` : "";
       const createdHint = data?.auto_created_empty_pack
         ? "（已自动创建空表情包）"
@@ -1976,8 +1990,12 @@ async function initApp() {
         set_as_default: true,
       });
       const installedPackId = String(data?.pack_id || "").trim();
+      clearSelections();
+      setClipboardItems([]);
       await loadManagePackSwitcher(installedPackId);
       await refreshUi({ emojis: true, syncStatus: true });
+      resetImgHostSyncStatusDisplay();
+      void checkImgHostSyncStatus(false);
       const installedName = String(
         data?.selected_pack_name ||
           data?.name ||
@@ -4266,36 +4284,65 @@ async function initApp() {
 
     const failedUploads = [];
     const duplicateUploads = [];
+    let refreshError = null;
 
-    for (const file of uniqueFiles) {
-      uploadState.currentFileName = file.name;
-      refreshUploadDropzones(category);
+    try {
+      for (const file of uniqueFiles) {
+        uploadState.currentFileName = file.name;
+        refreshUploadDropzones(category);
 
-      try {
-        await uploadEmoji(category, file, packId);
-        uploadState.completed += 1;
-      } catch (error) {
-        if (error.code === "duplicate_emoji" || error.status === 409) {
-          uploadState.duplicates += 1;
-          duplicateUploads.push({ fileName: file.name, error });
-        } else {
-          uploadState.failed += 1;
-          failedUploads.push({ fileName: file.name, error });
+        try {
+          await uploadEmoji(category, file, packId);
+          uploadState.completed += 1;
+        } catch (error) {
+          if (
+            error?.code === "duplicate_emoji" ||
+            String(error?.message || "").includes("同一分类中已存在相同文件")
+          ) {
+            uploadState.duplicates += 1;
+            duplicateUploads.push({ fileName: file.name, error });
+          } else {
+            uploadState.failed += 1;
+            failedUploads.push({ fileName: file.name, error });
+          }
         }
+
+        refreshUploadDropzones(category);
       }
 
+      if (uploadState.completed > 0 && activeManagePackId === packId) {
+        uploadState.refreshing = true;
+        uploadState.currentFileName = "";
+        refreshUploadDropzones(category);
+        try {
+          await refreshUi({ emojis: true });
+        } catch (error) {
+          refreshError = error;
+        }
+      }
+    } finally {
+      uploadStateByCategory.delete(uploadKey);
       refreshUploadDropzones(category);
     }
 
-    if (uploadState.completed > 0 && activeManagePackId === packId) {
-      uploadState.refreshing = true;
-      uploadState.currentFileName = "";
-      refreshUploadDropzones(category);
-      await refreshUi({ emojis: true });
+    if (refreshError) {
+      const summaryParts = [`已上传 ${uploadState.completed} 个文件`];
+      if (uploadState.duplicates > 0) {
+        summaryParts.push(`跳过重复 ${uploadState.duplicates} 个`);
+      }
+      if (uploadState.failed > 0) {
+        summaryParts.push(`失败 ${uploadState.failed} 个`);
+      }
+      showToast(
+        `${summaryParts.join("，")}，但刷新列表失败：${
+          refreshError?.message || String(refreshError)
+        }`,
+        "warning",
+        "列表刷新失败",
+        4500,
+      );
+      return;
     }
-
-    uploadStateByCategory.delete(uploadKey);
-    refreshUploadDropzones(category);
 
     if (uploadState.failed === 0 && uploadState.duplicates === 0) {
       showToast(
@@ -6687,11 +6734,18 @@ async function initApp() {
     const statusDiv = document.getElementById("sync-status");
     if (!statusDiv) return;
 
+    const requestId = ++syncStatusRequestId;
+    const requestedPackId = String(activeManagePackId || "").trim();
+    const isCurrentRequest = () =>
+      requestId === syncStatusRequestId &&
+      requestedPackId === String(activeManagePackId || "").trim();
+
     const btn = document.getElementById("check-sync-btn");
     setButtonBusy(btn, "正在检查中...");
 
     try {
       const data = await apiGet("sync/status");
+      if (!isCurrentRequest()) return;
       if (data.status === "error") throw new Error(data.message);
 
       const differences = normalizeSyncDifferences(data);
@@ -6701,13 +6755,16 @@ async function initApp() {
         showToast("配置状态已刷新。", "success", "检查完成");
       }
     } catch (error) {
+      if (!isCurrentRequest()) return;
       console.error("检查同步状态失败:", error);
       renderSyncStatusError(statusDiv, error.message);
       if (showAlert) {
         showToast(error.message, "error", "检查失败");
       }
     } finally {
-      restoreButton(btn);
+      if (requestId === syncStatusRequestId) {
+        restoreButton(btn);
+      }
     }
   }
 
@@ -6941,7 +6998,7 @@ async function initApp() {
   // 保存类别修改
   async function saveCategory(oldName = activeCategoryEdit) {
     const newName = categoryEditNameInput?.value.trim() || "";
-    const newDesc = categoryEditDescInput?.value.trim() || "";
+    const newDesc = categoryEditDescInput?.value.trim() || "请添加描述";
 
     if (!newName) {
       showToast("类别名称不能为空。", "warning", "保存失败");
@@ -6954,6 +7011,7 @@ async function initApp() {
     }
 
     setButtonBusy(categoryEditSaveBtn, "保存中...");
+    let renamed = false;
 
     try {
       if (oldName !== newName) {
@@ -6961,6 +7019,11 @@ async function initApp() {
           old_name: oldName,
           new_name: newName,
         });
+        renamed = true;
+        activeCategoryEdit = newName;
+        if (categoryEditModalTitle) {
+          categoryEditModalTitle.textContent = `编辑类别「${newName}」`;
+        }
       }
 
       await apiPost("category/update_description", {
@@ -6973,6 +7036,9 @@ async function initApp() {
       showToast(`类别「${newName}」已保存。`, "success", "保存成功");
     } catch (error) {
       console.error("保存类别修改失败:", error);
+      if (renamed) {
+        await refreshUi({ emojis: true, syncStatus: true }).catch(() => {});
+      }
       showToast(error.message, "error", "保存失败");
     } finally {
       restoreButton(categoryEditSaveBtn);
@@ -7172,10 +7238,14 @@ async function initApp() {
         });
         createPackDialog.close();
         clearSelections();
+        setClipboardItems([]);
         lastMove = null;
         moveResult.classList.add("hidden");
         await loadManagePackSwitcher(result.pack_id);
         await refreshUi({ emojis: true });
+        resetImgHostSyncStatusDisplay();
+        void checkSyncStatus(false);
+        void checkImgHostSyncStatus(false);
         showToast(`已创建 ${result.name}`, "success", "创建成功");
       } catch (error) {
         errorLabel.textContent = error?.message || String(error);
@@ -7230,8 +7300,44 @@ async function initApp() {
       .catch((error) => console.warn("无法恢复图片同步进度：", error));
   }, 180);
 
+  function resetImgHostSyncStatusDisplay() {
+    const placeholderIds = [
+      "upload-count",
+      "download-count",
+      "remote-extra-count",
+      "local-extra-count",
+      "img-host-provider",
+      "remote-image-count",
+      "remote-storage-size",
+    ];
+    for (const id of placeholderIds) {
+      const element = document.getElementById(id);
+      if (element) {
+        element.textContent = "--";
+      }
+    }
+    const conflictCount = document.getElementById("conflict-count");
+    if (conflictCount) {
+      conflictCount.textContent = "0";
+    }
+    const conflictsBox = document.getElementById("img-host-conflicts");
+    if (conflictsBox) {
+      conflictsBox.classList.add("hidden");
+    }
+    const conflictFiles = document.getElementById("img-host-conflict-files");
+    if (conflictFiles) {
+      conflictFiles.replaceChildren();
+    }
+  }
+
   // 检查图床同步状态
   async function checkImgHostSyncStatus(showAlert = true) {
+    const requestId = ++imgHostSyncStatusRequestId;
+    const requestedPackId = String(activeManagePackId || "").trim();
+    const isCurrentRequest = () =>
+      requestId === imgHostSyncStatusRequestId &&
+      requestedPackId === String(activeManagePackId || "").trim();
+
     const uploadCountElement = document.getElementById("upload-count");
     const downloadCountElement = document.getElementById("download-count");
     const remoteExtraCountElement =
@@ -7246,6 +7352,7 @@ async function initApp() {
 
     try {
       const data = await apiGet("img_host/sync/status");
+      if (!isCurrentRequest()) return;
       const conflicts = data.conflicts || [];
       document.getElementById("conflict-count").textContent = conflicts.length;
       document
@@ -7323,28 +7430,9 @@ async function initApp() {
         );
       }
     } catch (error) {
+      if (!isCurrentRequest()) return;
       console.error("检查图床同步状态失败:", error);
-      if (uploadCountElement) {
-        uploadCountElement.textContent = "--";
-      }
-      if (downloadCountElement) {
-        downloadCountElement.textContent = "--";
-      }
-      if (remoteExtraCountElement) {
-        remoteExtraCountElement.textContent = "--";
-      }
-      if (localExtraCountElement) {
-        localExtraCountElement.textContent = "--";
-      }
-      if (providerElement) {
-        providerElement.textContent = "--";
-      }
-      if (remoteImageCountElement) {
-        remoteImageCountElement.textContent = "--";
-      }
-      if (remoteStorageSizeElement) {
-        remoteStorageSizeElement.textContent = "--";
-      }
+      resetImgHostSyncStatusDisplay();
       if (showAlert) {
         showToast(error.message, "error", "检查失败");
       }

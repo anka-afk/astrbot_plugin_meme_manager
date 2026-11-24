@@ -130,6 +130,47 @@ for (const failFirst of [false, true]) {
   });
 }
 
+test("upload distinguishes 409 lock conflicts from duplicates and clears lock if refreshUi throws", async () => {
+  const c = manageContext("pack-a");
+  const toasts = [];
+  Object.assign(c, {
+    uploadStateByCategory: new Map(),
+    normalizeUploadFiles: (files) => ({ validFiles: files, invalidCount: 0 }),
+    dedupeUploadFiles: (files) => ({ uniqueFiles: files, duplicateCount: 0 }),
+    refreshUploadDropzones() {},
+    showToast(message, type, title) {
+      toasts.push({ message, type, title });
+    },
+    refreshUi: async () => {
+      throw new Error("刷新接口超时");
+    },
+  });
+  c.window.AstrBotPluginPage.upload = async (_, file) => {
+    if (file.name === "busy.png") {
+      throw Object.assign(new Error("当前表情包正在执行导出任务"), { status: 409 });
+    }
+    if (file.name === "dup.png") {
+      throw new Error("同一分类中已存在相同文件：dup.png");
+    }
+    return {};
+  };
+  vm.runInContext(
+    between("  function isCategoryUploading(", "  function createUploadDropzone("),
+    c,
+  );
+  await c.uploadFilesToCategory("开心", [
+    { name: "ok.png" },
+    { name: "busy.png" },
+    { name: "dup.png" },
+  ]);
+  assert.equal(c.uploadStateByCategory.size, 0);
+  const summaryToast = toasts.at(-1);
+  assert.equal(summaryToast.title, "列表刷新失败");
+  assert.match(summaryToast.message, /已上传 1 个文件/);
+  assert.match(summaryToast.message, /跳过重复 1 个/);
+  assert.match(summaryToast.message, /失败 1 个/);
+});
+
 test("large archives are uploaded in chunks", async () => {
   const posted = [];
   const uploaded = [];

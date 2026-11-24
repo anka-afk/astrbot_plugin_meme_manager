@@ -305,9 +305,7 @@ class StarDotsProvider(ImageHostInterface):
             "url": urlunsplit((url.scheme, url.netloc, url.path, "", "")),
             "size": len(content),
             "sha256": hashlib.sha256(content).hexdigest(),
-            "modified": str(int(result["ts"] / 1000))
-            if isinstance(result.get("ts"), (int, float))
-            else "",
+            "modified": "",
         }
 
     def delete_image(self, image_id: str) -> bool:
@@ -390,7 +388,7 @@ class StarDotsProvider(ImageHostInterface):
                         "url": urlunsplit((url.scheme, url.netloc, url.path, "", "")),
                         "size": self._extract_image_size(source),
                         "modified": str(source["uploadedAt"])
-                        if "uploadedAt" in source
+                        if source.get("uploadedAt") is not None
                         else "",
                     }
                 )

@@ -472,3 +472,59 @@ test("updatable packs appear in both update and source sections, then hide when 
   assert.equal(updatesZone.hidden, true);
   assert.equal(context.updatesGrid.children.length, 0);
 });
+
+test("resume opens the update dialog for persisted jobs and isolates install/update busy flags", async () => {
+  const state = setup({ runningCheck: true });
+  state.storage.set("meme-community-update-job", "persisted-job");
+  await state.component.resume();
+  assert.equal(state.dialog.open, true);
+  assert.equal(state.storage.size, 0);
+
+  const source = await readFile(
+    new URL("../../pages/app/catalog/script.js", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("  function applyBusyState()");
+  const end = source.indexOf("  function openInstallDialog(", start);
+  const makeButton = (classes = [], attrs = {}) => ({
+    disabled: false,
+    title: "",
+    dataset: { ...attrs },
+    classList: { contains: (name) => classes.includes(name) },
+    removeAttribute(attr) {
+      if (attr === "title") this.title = "";
+    },
+  });
+  const updateBtn = makeButton(["pack-update"]);
+  const restoreBtn = makeButton(["pack-update", "ghost"]);
+  const installBtn = makeButton(["pack-install"], { installed: "false" });
+  const installSourceBtn = makeButton();
+  const context = vm.createContext({
+    installSourceBtn,
+    document: {
+      querySelectorAll(selector) {
+        if (selector === ".pack-update") return [updateBtn, restoreBtn];
+        if (selector === ".pack-install") return [installBtn];
+        return [];
+      },
+    },
+  });
+  vm.runInContext(
+    `let installBusy=false, updateBusy=false, installedStateKnown=true; ${source.slice(start, end)}`,
+    context,
+  );
+  context.setInstallBusy(true);
+  context.setUpdateBusy(true);
+  context.setUpdateBusy(false);
+  assert.equal(installSourceBtn.disabled, true);
+  assert.equal(installBtn.disabled, true);
+  assert.equal(updateBtn.disabled, true);
+  assert.equal(restoreBtn.disabled, true);
+
+  context.setInstallBusy(false);
+  context.setUpdateBusy(true);
+  assert.equal(installSourceBtn.disabled, true);
+  assert.equal(installBtn.disabled, true);
+  assert.equal(updateBtn.disabled, false);
+  assert.equal(restoreBtn.disabled, true);
+});

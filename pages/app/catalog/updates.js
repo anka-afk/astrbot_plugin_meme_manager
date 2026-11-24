@@ -467,7 +467,7 @@ export function setupCatalogUpdates({ apiGet, apiPost, onDone, onBusy }) {
           } catch {
             /* 浏览器存储可能不可用。 */
           }
-          if (job.result.session) {
+          if (job.result?.session) {
             recovering = false;
             data = {
               session: job.result.session,
@@ -605,6 +605,7 @@ export function setupCatalogUpdates({ apiGet, apiPost, onDone, onBusy }) {
         await preview();
       } else {
         status.textContent = "正在准备下载更新…";
+        working = true;
         onBusy(true);
         try {
           const result = await apiPost("community/update", {
@@ -614,11 +615,13 @@ export function setupCatalogUpdates({ apiGet, apiPost, onDone, onBusy }) {
           await monitor(result.job_id);
         } catch (reason) {
           error.textContent = reason?.message || String(reason);
+          working = false;
           onBusy(false);
         }
       }
     },
     async resume() {
+      if (working) return;
       let jobId;
       try {
         jobId = sessionStorage.getItem(storageKey);
@@ -626,6 +629,20 @@ export function setupCatalogUpdates({ apiGet, apiPost, onDone, onBusy }) {
         return;
       }
       if (jobId) {
+        recovering = false;
+        get("cancel").disabled = false;
+        get("cancel").textContent = "取消下载";
+        previewRequest += 1;
+        plan = null;
+        error.textContent = "";
+        get("title").textContent = "正在恢复更新任务";
+        get("review").hidden = true;
+        get("recovery").hidden = true;
+        submit.disabled = true;
+        status.textContent = "正在恢复后台更新任务…";
+        if (!dialog.open) {
+          dialog.showModal();
+        }
         await monitor(jobId);
       }
     },
