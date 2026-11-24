@@ -9,6 +9,7 @@ import time
 import zipfile
 from pathlib import Path
 
+from ..semantic.models import REVIEW_CATEGORY
 from ..semantic.storage import (
     load_metadata,
     reconcile_metadata,
@@ -730,6 +731,7 @@ def apply_update(data: dict, operation_guard=None) -> dict:
         metadata["requires_local_index_rebuild"] = any(
             item.get("embedding_status") != "done"
             for item in metadata["images"].values()
+            if isinstance(item, dict) and item.get("category") != REVIEW_CATEGORY
         )
         save_metadata(prepared, metadata)
     storage._save_json(

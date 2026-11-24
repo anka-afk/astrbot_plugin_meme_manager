@@ -62,6 +62,16 @@ def test_kaomoji_backtick_does_not_hide_markers(semantic, marker, selected, sepa
             "text `\n```python\n&&sad&&\n```\n",
             ["happy"],
         ),
+        (
+            "text `\n```js\nconst s = `hi`;\n```\n&&happy&&",
+            "text `\n```js\nconst s = `hi`;\n```\n",
+            ["happy"],
+        ),
+        (
+            "text `\n```\n`\n```\n&&happy&&",
+            "text `\n```\n`\n```\n",
+            ["happy"],
+        ),
         ("```python\n&&happy&&", "```python\n&&happy&&", []),
         ("text \\` &&happy&&", "text \\` ", ["happy"]),
     ],
@@ -122,6 +132,17 @@ def test_pending_inline_buffer_is_bounded_without_leaking_filtered_markers(filte
         if baseline is None:
             baseline = parser.tokens
         assert parser.tokens == baseline
+
+
+def test_streaming_filter_all_matches_batch_across_chunk_boundaries():
+    for text in ("foo:bar:\n", "ameme:abcdef123456\n", "user:id: 123\n"):
+        batch = MemeParser.parse(text, {"happy"}, filter_all=True).text
+        for split in range(1, len(text)):
+            parser = MemeParser({"happy"}, filter_all=True)
+            streamed = (
+                parser.feed(text[:split]) + parser.feed(text[split:]) + parser.finish()
+            )
+            assert streamed == batch, (text, split)
 
 
 def test_replayed_unmatched_code_keeps_reasoning_resource_guard():

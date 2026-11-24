@@ -1393,6 +1393,16 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             await self.auto_collect_manager.close()
         if getattr(self, "decision_client", None):
             await self.decision_client.close()
+        for job in getattr(self, "_community_install_jobs", {}).values():
+            if isinstance(job, dict) and job.get("status") in {"running", "cancelling"}:
+                job["cancel_requested"] = True
+        for job in getattr(self, "_community_update_jobs", {}).values():
+            if (
+                isinstance(job, dict)
+                and job.get("state") == "running"
+                and job.get("action") == "prepare"
+            ):
+                job["cancel_requested"] = True
         install_tasks = list(getattr(self, "_community_install_tasks", set()))
         install_tasks.extend(getattr(self, "_community_update_tasks", set()))
         for task in install_tasks:

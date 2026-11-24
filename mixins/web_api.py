@@ -729,36 +729,50 @@ class WebAPIMixin:
         )
         return guidance
 
+    def _get_runtime_file_lock(self) -> asyncio.Lock:
+        if not hasattr(self, "_runtime_file_lock"):
+            self._runtime_file_lock = asyncio.Lock()
+        return self._runtime_file_lock
+
     async def _run_guarded_pack_file_operation(
         self,
         pack_id: str,
         operation: str,
         function,
         *args,
+        serialize_runtime_metadata: bool = False,
         **kwargs,
     ):
         """在整个文件快照期间阻止同一表情包启动语义任务。"""
-        manager = getattr(self, "semantic_task_manager", None)
-        locked = False
-        if manager is not None and pack_id:
-            manager.begin_external_pack_operation(pack_id, operation)
-            locked = True
-        kwargs["operation_guard"] = None if locked else self._semantic_operation_guard
-        worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-        try:
-            return await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            # 浏览器断开或请求超时时，to_thread 中的磁盘操作不会自动停止。
-            # 必须等它真正收尾后再释放外部操作锁，否则语义任务可能与仍在
-            # 运行的导出/覆盖线程同时改动同一个表情包。
+        async def _execute():
+            manager = getattr(self, "semantic_task_manager", None)
+            locked = False
+            if manager is not None and pack_id:
+                manager.begin_external_pack_operation(pack_id, operation)
+                locked = True
+            kwargs["operation_guard"] = (
+                None if locked else self._semantic_operation_guard
+            )
+            worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
             try:
-                await asyncio.shield(worker)
-            except Exception:
-                pass
-            raise
-        finally:
-            if locked:
-                manager.end_external_pack_operation(pack_id)
+                return await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                # 浏览器断开或请求超时时，to_thread 中的磁盘操作不会自动停止。
+                # 必须等它真正收尾后再释放外部操作锁，否则语义任务可能与仍在
+                # 运行的导出/覆盖线程同时改动同一个表情包。
+                try:
+                    await asyncio.shield(worker)
+                except Exception:
+                    pass
+                raise
+            finally:
+                if locked:
+                    manager.end_external_pack_operation(pack_id)
+
+        if serialize_runtime_metadata:
+            async with self._get_runtime_file_lock():
+                return await _execute()
+        return await _execute()
 
     async def _run_guarded_runtime_file_operation(
         self,
@@ -768,9 +782,7 @@ class WebAPIMixin:
         **kwargs,
     ):
         """在运行时全局文件操作期间持有所有已安装表情包的锁。"""
-        if not hasattr(self, "_runtime_file_lock"):
-            self._runtime_file_lock = asyncio.Lock()
-        async with self._runtime_file_lock:
+        async with self._get_runtime_file_lock():
             manager = getattr(self, "semantic_task_manager", None)
             pack_ids = (
                 sorted(path.name for path in PACKS_DIR.iterdir() if path.is_dir())
@@ -2990,8 +3002,9 @@ class WebAPIMixin:
             pack_id = str((data or {}).get("pack_id") or "").strip()
             if not pack_id:
                 return jsonify({"message": "pack_id 不能为空"}), 400
-            result = set_default_pack(pack_id)
-            self._reload_personas()
+            async with self._get_runtime_file_lock():
+                result = set_default_pack(pack_id)
+                self._reload_personas()
             result.update(self._semantic_rebuild_guidance(pack_id))
             return jsonify({"message": "默认表情包设置成功", **result}), 200
         except FileNotFoundError as e:
@@ -3159,7 +3172,9 @@ class WebAPIMixin:
 
             temp_dir = TEMP_DIR
             temp_dir.mkdir(parents=True, exist_ok=True)
-            safe_name = f"import_{int(time.time() * 1000)}.zip"
+            safe_name = (
+                f"import_{int(time.time() * 1000)}_{secrets.token_hex(8)}.zip"
+            )
             temp_zip_path = (temp_dir / safe_name).resolve()
             await self._save_uploaded_file(archive_file, temp_zip_path)
 
@@ -3175,6 +3190,7 @@ class WebAPIMixin:
                     "覆盖安装资源包",
                     import_pack_archive,
                     temp_zip_path,
+                    serialize_runtime_metadata=True,
                     overwrite=True,
                     set_as_default=set_as_default,
                     suggested_pack_id=suggested_pack_id,
@@ -3492,6 +3508,7 @@ class WebAPIMixin:
                     "覆盖安装资源包",
                     import_pack_archive,
                     archive_path,
+                    serialize_runtime_metadata=True,
                     **import_kwargs,
                 )
             else:
@@ -3529,6 +3546,7 @@ class WebAPIMixin:
                 "卸载资源包",
                 uninstall_pack,
                 pack_id,
+                serialize_runtime_metadata=True,
             )
             self._reload_personas()
             return jsonify({"message": "卸载成功", **result}), 200
@@ -4402,16 +4420,17 @@ class WebAPIMixin:
         try:
             data = await request.get_json()
             rules = (data or {}).get("rules", [])
-            before = get_selection_rules()
-            before_map = {
-                str(item.get("id") or ""): _normalize_pack_ids(
-                    item.get("pack_ids") or item.get("pack_id")
-                )
-                for item in before.get("rules", [])
-                if isinstance(item, dict)
-            }
-            saved = save_selection_rules(rules)
-            self._reload_personas()
+            async with self._get_runtime_file_lock():
+                before = get_selection_rules()
+                before_map = {
+                    str(item.get("id") or ""): _normalize_pack_ids(
+                        item.get("pack_ids") or item.get("pack_id")
+                    )
+                    for item in before.get("rules", [])
+                    if isinstance(item, dict)
+                }
+                saved = save_selection_rules(rules)
+                self._reload_personas()
             rebuild_packs = []
             if bool(getattr(self, "semantic_enabled", False)):
                 for item in saved.get("rules", []):
@@ -4538,7 +4557,9 @@ class WebAPIMixin:
             }
 
             TEMP_DIR.mkdir(parents=True, exist_ok=True)
-            safe_name = f"runtime_restore_{int(time.time() * 1000)}.zip"
+            safe_name = (
+                f"runtime_restore_{int(time.time() * 1000)}_{secrets.token_hex(8)}.zip"
+            )
             temp_zip_path = (TEMP_DIR / safe_name).resolve()
 
             files = await request.files

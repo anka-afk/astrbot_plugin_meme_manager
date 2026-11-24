@@ -2365,10 +2365,13 @@ class EventHandlerMixin:
         except Exception as e:
             logger.exception("处理消息装饰失败：%s", e)
 
-    @filter.after_message_sent()
     async def _after_message_sent_impl(self, event: AstrMessageEvent):
         """消息发送后处理。用于发送未混合的表情图片。"""
         pending_images = event.get_extra("meme_manager_pending_images")
+        if pending_images is not None:
+            event.set_extra("meme_manager_pending_images", None)
+        if event.get_extra("meme_manager_qq_reply_stickers"):
+            event.set_extra("meme_manager_qq_reply_stickers", None)
 
         try:
             if pending_images:
@@ -2377,13 +2380,10 @@ class EventHandlerMixin:
         except Exception as e:
             logger.exception("发送表情图片失败：%s", e)
         finally:
-            event.set_extra("meme_manager_pending_images", None)
-            if event.get_extra("meme_manager_qq_reply_stickers"):
-                event.set_extra("meme_manager_qq_reply_stickers", None)
-
-            # 清理临时文件
+            # 清理临时文件（兼容混合消息模式：此时 pending_images 为空但仍需清理临时文件）
             temp_files = event.get_extra("meme_manager_temp_files")
             if temp_files:
+                event.set_extra("meme_manager_temp_files", None)
                 for temp_file in temp_files:
                     try:
                         if os.path.exists(temp_file):
@@ -2391,7 +2391,6 @@ class EventHandlerMixin:
                             logger.debug(f"[meme_manager] 已清理临时文件: {temp_file}")
                     except Exception as e:
                         logger.error(f"[meme_manager] 清理临时文件失败: {e}")
-                event.set_extra("meme_manager_temp_files", None)
 
     # 辅助方法
     def _convert_to_gif(self, image_path: str) -> str:

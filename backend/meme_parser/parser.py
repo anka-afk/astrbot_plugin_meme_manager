@@ -261,6 +261,25 @@ class MemeParser:
             编辑已识别标记后，该行尚未输出的部分。
         """
         line = self._line
+        flushed_prefix = ""
+        if (
+            literal_ticks is None
+            and self._pending_lines
+            and self._context.ticks
+            and not self._context.fence
+            and not self._context.comment
+            and not self._context.reasoning
+            and not self._context.link
+        ):
+            fence = self._context._fence.match(line.rstrip("\r\n"))
+            if fence and not (fence[1][0] == "`" and "`" in fence[2]):
+                flushed_prefix = self._flush_pending(final=True)
+                if self._passthrough:
+                    out = flushed_prefix + line[self._emitted :]
+                    self._offset += len(line)
+                    self._line = ""
+                    self._emitted = 0
+                    return out
         checkpoint = (
             copy.deepcopy(self._context)
             if literal_ticks is None and not self._pending_lines and "`" in line
@@ -280,7 +299,9 @@ class MemeParser:
             self._pending_size += len(line)
             self._line = ""
             self._emitted = 0
-            return self._flush_pending() if not self._context.ticks else ""
+            return flushed_prefix + (
+                self._flush_pending() if not self._context.ticks else ""
+            )
         if self._context.overflow and not self.filter_all:
             self._passthrough = True
             self.diagnostics.append("context_limit_exceeded")
@@ -299,7 +320,7 @@ class MemeParser:
             self._offset += len(line)
             self._line = ""
             self._emitted = 0
-            return ""
+            return flushed_prefix
         protected_index = 0
         for match in self._markers.finditer(line):
             while (
@@ -416,6 +437,7 @@ class MemeParser:
                     )
                 )
 
+        prefix = line[: self._emitted]
         parts = []
         previous = self._emitted
         for start, end in edits:
@@ -426,7 +448,14 @@ class MemeParser:
         self._line = ""
         self._emitted = 0
         visible = "".join(parts)
-        # 在常规选择之后执行清理，避免抑制有效图片。
+        # 在常规选择之后执行清理，避免抑制有效图片，同时保留已输出前缀以维持负向后行断言。
         if self.filter_all:
-            visible = self._markers.sub("", visible)
-        return visible
+            edited_full = prefix + visible
+            filtered = []
+            cursor = len(prefix)
+            for match in self._markers.finditer(edited_full, pos=cursor):
+                filtered.append(edited_full[cursor : match.start()])
+                cursor = match.end()
+            filtered.append(edited_full[cursor:])
+            visible = "".join(filtered)
+        return flushed_prefix + visible

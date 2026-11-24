@@ -134,6 +134,15 @@ def test_vector_normalization_and_cosine_similarity():
     assert math.sqrt(sum(value * value for value in vector)) == pytest.approx(1)
     assert models.cosine_similarity(vector, vector) == pytest.approx(1)
     assert models.cosine_similarity([1, 0], [0, 1]) == 0
+    assert models.normalize_vector([1e200, 1e200]) == pytest.approx(
+        [math.sqrt(0.5), math.sqrt(0.5)]
+    )
+
+    class ArrayLike:
+        def tolist(self):
+            return [3, 4]
+
+    assert models.normalize_vector(ArrayLike()) == pytest.approx([0.6, 0.8])
 
 
 @pytest.mark.parametrize("vector", [None, [], [0, 0], [float("nan")], [float("inf")]])

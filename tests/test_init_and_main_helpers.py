@@ -435,3 +435,30 @@ def test_custom_quantity_prompt_is_independent_of_hard_limit(limit):
         == "Persona"
     )
     assert sender._strip_meme_prompt("Persona" + semantic) == "Persona"
+
+
+@pytest.mark.asyncio
+async def test_terminate_sets_cancel_requested_for_running_community_jobs():
+    sender = make_sender()
+    sender.context = SimpleNamespace(
+        provider_manager=SimpleNamespace(personas=[])
+    )
+    sender.img_sync = None
+    sender.prompt_head = ""
+    sender.prompt_tail = ""
+    sender.sys_prompt_add = ""
+    sender.category_mapping_string = ""
+    sender.persona_base_prompts = {}
+    install_job = {"status": "running", "cancel_requested": False}
+    prepare_job = {"state": "running", "action": "prepare", "cancel_requested": False}
+    apply_job = {"state": "running", "action": "apply", "cancel_requested": False}
+    sender._community_install_jobs = {"i1": install_job}
+    sender._community_update_jobs = {"u1": prepare_job, "u2": apply_job}
+    sender._community_install_tasks = set()
+    sender._community_update_tasks = set()
+
+    await sender.terminate()
+
+    assert install_job["cancel_requested"] is True
+    assert prepare_job["cancel_requested"] is True
+    assert apply_job["cancel_requested"] is False

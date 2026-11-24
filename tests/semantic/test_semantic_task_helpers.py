@@ -452,3 +452,85 @@ async def test_rebuild_preserves_paused_or_interrupted_queue(manager, tmp_path, 
     assert manager._load_state("pack") == state
     assert not manager._index_tasks
     provider.assert_not_called()
+
+
+def test_review_category_excluded_from_embedding_queue_and_force_pending_counted(
+    manager, tmp_path, monkeypatch
+):
+    from astrbot_plugin_meme_manager.backend.semantic import storage as semantic_storage
+    from astrbot_plugin_meme_manager.backend.semantic.models import (
+        REVIEW_CATEGORY,
+        semantic_entry_id,
+    )
+
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    monkeypatch.setattr(manager, "_pack_dir", lambda pack_id: pack)
+    monkeypatch.setattr(task_module, "index_is_ready", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        manager,
+        "_embedding_adapter",
+        lambda pack_id: SimpleNamespace(
+            ready=True, provider=None, provider_id="p", model_name="m", dimension=2
+        ),
+    )
+    monkeypatch.setattr(manager, "_load_selection", lambda pack_id: {})
+    monkeypatch.setattr(
+        manager,
+        "_vision_provider_details",
+        lambda: {"id": "v", "model": "vm", "ready": True},
+    )
+    monkeypatch.setattr(manager, "capabilities", lambda *args, **kwargs: {})
+    rev_digest = "a" * 64
+    forced_digest = "b" * 64
+    rev_id = semantic_entry_id(rev_digest, REVIEW_CATEGORY, "memes/needs_review/a.png")
+    forced_id = semantic_entry_id(forced_digest, "happy", "memes/happy/b.png")
+    semantic_storage.save_metadata(
+        pack,
+        {
+            "images": {
+                rev_id: {
+                    "entry_id": rev_id,
+                    "content_sha256": rev_digest,
+                    "relative_path": "memes/needs_review/a.png",
+                    "category": REVIEW_CATEGORY,
+                    "caption": "review item",
+                    "tags": ["tag"],
+                    "caption_status": "done",
+                    "embedding_status": "pending",
+                },
+                forced_id: {
+                    "entry_id": forced_id,
+                    "content_sha256": forced_digest,
+                    "relative_path": "memes/happy/b.png",
+                    "category": "happy",
+                    "caption": "old caption",
+                    "tags": ["tag"],
+                    "caption_status": "done",
+                    "embedding_status": "pending",
+                },
+            }
+        },
+    )
+    manager._save_state(
+        "pack",
+        {
+            "task_status": "paused",
+            "task_phase": "captioning",
+            "mode": "full",
+            "force": True,
+            "force_pending_ids": [forced_id],
+        },
+    )
+    status = manager.status("pack")
+    assert status["queued_caption_tasks"] == 1
+    assert status["queued_embedding_tasks"] == 0
+    assert not manager._item_is_queued(
+        {
+            "category": REVIEW_CATEGORY,
+            "caption": "review item",
+            "tags": ["tag"],
+            "caption_status": "done",
+            "embedding_status": "pending",
+        }
+    )

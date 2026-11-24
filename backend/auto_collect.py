@@ -543,7 +543,15 @@ class AutoCollectManager:
             else:
                 context = self.plugin._resolve_runtime_pack_context(event=event)
                 target_pack_id = str(context.get("pack_id") or "").strip()
-                categories = dict(context.get("category_mapping") or {})
+                if "primary_category_mapping" in context:
+                    categories = dict(context.get("primary_category_mapping") or {})
+                elif target_pack_id and (
+                    len(context.get("pack_ids") or ()) > 1
+                    or (PACKS_DIR / target_pack_id).is_dir()
+                ):
+                    categories = load_pack_category_mapping(target_pack_id)
+                else:
+                    categories = dict(context.get("category_mapping") or {})
         except Exception as exc:
             logger.warning("[meme_manager] 解析自动收集目标失败：%s", exc)
             return False
@@ -2033,9 +2041,14 @@ class AutoCollectManager:
                 if not isinstance(selection, dict):
                     raise ValueError("图片选择格式无效")
                 record_id = str(selection.get("id") or "")
-                source = self.pending_image_path(
-                    pack_id, record_id, _record=items.get(record_id, {})
-                )
+                try:
+                    source = self.pending_image_path(
+                        pack_id, record_id, _record=items.get(record_id, {})
+                    )
+                except (FileNotFoundError, ValueError):
+                    if not manual_confirmed:
+                        continue
+                    raise
                 item = items[record_id]
                 if not manual_confirmed:
                     classification = item.get("classification", {})
@@ -2056,6 +2069,8 @@ class AutoCollectManager:
                     or REVIEW_CATEGORY
                 )
                 if category not in categories and category != REVIEW_CATEGORY:
+                    if not manual_confirmed:
+                        continue
                     raise ValueError("请选择当前表情包中的分类")
                 validated[record_id] = (source, category)
             result["skipped_review"] = len(skipped_review_ids)
@@ -2177,6 +2192,8 @@ class AutoCollectManager:
         Args:
             pack_id: 包含关闭复核时收集的候选图片的表情包。
         """
+        attempted: list[str] = []
+        cancelled = False
         try:
             while not self.manual_review and self._pending_auto_accept.get(pack_id):
                 try:
@@ -2201,6 +2218,7 @@ class AutoCollectManager:
                     selections = sorted(pending)[:2000]
                 if not selections:
                     break
+                attempted = selections
                 acceptance = asyncio.create_task(
                     self.accept_pending(
                         pack_id,
@@ -2221,13 +2239,22 @@ class AutoCollectManager:
                             pack_id, "accept collected images"
                         )
                     except RuntimeError:
+                        attempted = []
                         await asyncio.sleep(2)
                         continue
                     raise
-                self._pending_auto_accept[pack_id].difference_update(selections)
+                pending_set = self._pending_auto_accept.get(pack_id)
+                if pending_set is not None:
+                    pending_set.difference_update(selections)
+                attempted = []
         except asyncio.CancelledError:
+            cancelled = True
             raise
         except Exception:
+            if attempted:
+                pending_set = self._pending_auto_accept.get(pack_id)
+                if pending_set is not None:
+                    pending_set.difference_update(attempted)
             logger.warning(
                 "表情包 %s 的延后自动接收失败，候选图片仍保留，可手动重试",
                 pack_id,
@@ -2235,7 +2262,13 @@ class AutoCollectManager:
             )
         finally:
             self._auto_accept_tasks.pop(pack_id, None)
-            self._pending_auto_accept.pop(pack_id, None)
+            remaining = self._pending_auto_accept.get(pack_id)
+            if cancelled or self._closing or self.manual_review or not remaining:
+                self._pending_auto_accept.pop(pack_id, None)
+            else:
+                self._auto_accept_tasks[pack_id] = asyncio.create_task(
+                    self._retry_auto_accept(pack_id)
+                )
 
     async def discard_pending(
         self, pack_id: str, ids: list[str], remember_rejection: bool = False

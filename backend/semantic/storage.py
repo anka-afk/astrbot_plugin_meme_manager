@@ -2325,7 +2325,9 @@ def reconcile_metadata(
         or any(
             item.get("embedding_status") != "done"
             for entry_id, item in images.items()
-            if entry_id in scanned_by_id and isinstance(item, dict)
+            if entry_id in scanned_by_id
+            and isinstance(item, dict)
+            and item.get("category") != REVIEW_CATEGORY
         )
     )
     return result

@@ -268,8 +268,11 @@ def resolve_pack_context(
 
     # 合并全部表情包的分类映射，主表情包优先。
     merged_mapping = {}
+    primary_mapping = {}
     for pack_id in reversed(pack_ids):
         pack_mapping = load_pack_category_mapping(pack_id)
+        if pack_id == primary_pack_id:
+            primary_mapping = dict(pack_mapping)
         merged_mapping.update(pack_mapping)
 
     return {
@@ -281,4 +284,5 @@ def resolve_pack_context(
         "metadata_path": paths["metadata_path"],
         "manifest_path": paths["manifest_path"],
         "category_mapping": merged_mapping,
+        "primary_category_mapping": primary_mapping,
     }
