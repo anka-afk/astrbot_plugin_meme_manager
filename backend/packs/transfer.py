@@ -73,7 +73,11 @@ def transfer_pack_images(packs_root: Path, data: dict) -> dict:
         )
         if memes.is_dir():
             for folder in memes.iterdir():
-                if folder.is_dir() and not folder.is_symlink():
+                if (
+                    folder.is_dir()
+                    and not folder.is_symlink()
+                    and not folder.name.startswith(".")
+                ):
                     descriptions.setdefault(folder.name, "")
         contexts.append((pack, memes, documents, descriptions))
     source, target = contexts

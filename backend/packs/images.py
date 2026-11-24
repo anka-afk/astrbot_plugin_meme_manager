@@ -233,6 +233,8 @@ async def scan_emoji_folder():
         memes_root = _get_memes_root()
         memes_root.mkdir(parents=True, exist_ok=True)
         for category in os.listdir(memes_root):
+            if category.startswith(".") or not is_safe_category_name(category):
+                continue
             category_path = _get_category_path(category)
             if not category_path.is_dir():
                 continue
@@ -637,7 +639,11 @@ def clear_all_emojis(pack_id: str | None = None) -> dict[str, object]:
         return {"deleted_by_category": deleted_by_category}
 
     for category_path in memes_root.iterdir():
-        if not category_path.is_dir():
+        if (
+            not category_path.is_dir()
+            or category_path.name.startswith(".")
+            or not is_safe_category_name(category_path.name)
+        ):
             continue
         result = clear_category_emojis(category_path.name, pack_id)
         deleted_files = result["deleted_files"]

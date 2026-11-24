@@ -439,7 +439,9 @@ class SemanticTaskManager:
                 [
                     category_path
                     for category_path in memes_root.iterdir()
-                    if category_path.is_dir() and not category_path.is_symlink()
+                    if category_path.is_dir()
+                    and not category_path.is_symlink()
+                    and not category_path.name.startswith(".")
                 ]
                 if memes_root.is_dir()
                 else []
@@ -1650,11 +1652,21 @@ class SemanticTaskManager:
             images = metadata.get("images", {})
             if not isinstance(images, dict) or not images:
                 raise RuntimeError("还没有可建立索引的图片描述")
+            memes_root = (pack_dir / "memes").resolve()
             incomplete = sum(
                 1
                 for item in images.values()
                 if (
-                    not isinstance(item, dict) or not semantic_caption_is_complete(item)
+                    isinstance(item, dict)
+                    and (
+                        source := safe_relative_path(
+                            pack_dir, item.get("relative_path", "")
+                        )
+                    )
+                    is not None
+                    and source.is_relative_to(memes_root)
+                    and source.is_file()
+                    and not semantic_caption_is_complete(item)
                 )
             )
             if incomplete and force:
@@ -2016,7 +2028,9 @@ class SemanticTaskManager:
                     {
                         path.name: str(descriptions.get(path.name) or "")
                         for path in memes_root.iterdir()
-                        if path.is_dir() and path.name != REVIEW_CATEGORY
+                        if path.is_dir()
+                        and not path.name.startswith(".")
+                        and path.name != REVIEW_CATEGORY
                     }
                     if memes_root.is_dir()
                     else {}

@@ -2,6 +2,7 @@ import asyncio
 import base64
 import copy
 import re
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -536,6 +537,41 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 current_dir = None
 
         if current_dir != target_memes_dir.resolve():
+            # 将同步状态移出 memes/，避免被各类目录扫描误识别为表情分类或随导出包泄漏。
+            sync_state_root = PLUGIN_DATA_DIR / "sync_state"
+            sync_state_dir = sync_state_root / target_pack_id
+            legacy_state_dir = target_memes_dir / ".sync-state"
+            if (
+                legacy_state_dir.is_dir()
+                and not legacy_state_dir.is_symlink()
+                and not getattr(legacy_state_dir, "is_junction", lambda: False)()
+                and sync_state_dir.parent == sync_state_root
+                and not sync_state_root.is_symlink()
+                and not getattr(sync_state_root, "is_junction", lambda: False)()
+                and not sync_state_dir.is_symlink()
+                and not getattr(sync_state_dir, "is_junction", lambda: False)()
+            ):
+                try:
+                    sync_state_dir.mkdir(parents=True, exist_ok=True)
+                    for legacy_item in legacy_state_dir.iterdir():
+                        if (
+                            not legacy_item.is_file()
+                            or legacy_item.is_symlink()
+                            or legacy_item.name == "worker.lock"
+                        ):
+                            continue
+                        target_item = sync_state_dir / legacy_item.name
+                        if target_item.is_symlink():
+                            continue
+                        if not target_item.exists():
+                            shutil.copy2(legacy_item, target_item)
+                        legacy_item.unlink(missing_ok=True)
+                    (legacy_state_dir / "worker.lock").unlink(missing_ok=True)
+                    legacy_state_dir.rmdir()
+                except OSError as exc:
+                    logger.warning(
+                        "迁移旧版同步状态目录 %s 失败：%s", legacy_state_dir, exc
+                    )
             # 构建适配器时仅验证配置，不发起网络探测。
             try:
                 previous_sync = self.img_sync
@@ -543,6 +579,7 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                     config=self.img_sync_config,
                     local_dir=target_memes_dir,
                     provider_type=self.img_sync_provider_type,
+                    state_dir=sync_state_dir,
                 )
                 if previous_sync:
                     previous_sync.close()

@@ -14,7 +14,7 @@ def is_safe_category_name(category: str) -> bool:
     """判断分类名称是否严格位于表情目录的单个路径段内。"""
     if not category or category != category.strip():
         return False
-    if category in {".", ".."}:
+    if category in {".", ".."} or category.startswith("."):
         return False
     return (
         "/" not in category and "\\" not in category and Path(category).name == category
@@ -163,7 +163,11 @@ class CategoryManager:
         try:
             memes_dir = self._paths()["memes_dir"]
             ensure_dir_exists(memes_dir)
-            return {d for d in os.listdir(memes_dir) if os.path.isdir(memes_dir / d)}
+            return {
+                d
+                for d in os.listdir(memes_dir)
+                if not d.startswith(".") and os.path.isdir(memes_dir / d)
+            }
         except Exception as e:
             logger.error(f"获取本地类别失败: {e}")
             return set()

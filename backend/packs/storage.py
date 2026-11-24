@@ -336,7 +336,7 @@ def _count_images(memes_dir: Path) -> int:
         return 0
     total = 0
     for category_dir in memes_dir.iterdir():
-        if not category_dir.is_dir():
+        if not category_dir.is_dir() or category_dir.name.startswith("."):
             continue
         for file_path in category_dir.iterdir():
             if file_path.is_file() and file_path.suffix.lower() in {
@@ -547,7 +547,13 @@ def list_installed_packs() -> list[dict]:
             "is_default": pack_id == default_pack_id,
             "image_count": image_count,
             "category_count": (
-                len([d for d in memes_dir.iterdir() if d.is_dir()])
+                len(
+                    [
+                        d
+                        for d in memes_dir.iterdir()
+                        if d.is_dir() and not d.name.startswith(".")
+                    ]
+                )
                 if memes_dir.is_dir()
                 else 0
             ),
@@ -576,7 +582,7 @@ def get_pack_detail(pack_id: str) -> dict:
     categories = []
     if memes_dir.is_dir():
         for category_dir in sorted(memes_dir.iterdir(), key=lambda x: x.name):
-            if category_dir.is_dir():
+            if category_dir.is_dir() and not category_dir.name.startswith("."):
                 categories.append(
                     {
                         "name": category_dir.name,
@@ -702,7 +708,7 @@ def _legacy_descriptions(root: Path, memes_dir: Path) -> dict[str, str]:
     }
     if memes_dir.is_dir():
         for category_dir in memes_dir.iterdir():
-            if category_dir.is_dir():
+            if category_dir.is_dir() and not category_dir.name.startswith("."):
                 descriptions.setdefault(category_dir.name, "请添加描述")
     return descriptions
 
@@ -738,7 +744,9 @@ def _copy_legacy_pack(
     descriptions = _legacy_descriptions(legacy_root, target_memes)
     if not descriptions:
         descriptions = {
-            path.name: "请添加描述" for path in target_memes.iterdir() if path.is_dir()
+            path.name: "请添加描述"
+            for path in target_memes.iterdir()
+            if path.is_dir() and not path.name.startswith(".")
         }
     if not descriptions:
         raise ValueError("旧版压缩包中没有可导入的表情图片")
@@ -1289,7 +1297,11 @@ def export_pack_archive(
         )
     with tempfile.TemporaryDirectory(dir=TEMP_DIR, prefix="pack_export_") as tmp_dir:
         staging = Path(tmp_dir) / pack_id
-        shutil.copytree(pack_dir, staging)
+        shutil.copytree(
+            pack_dir,
+            staging,
+            ignore=shutil.ignore_patterns(".sync-state"),
+        )
         (staging / ".community-origin.json").unlink(missing_ok=True)
         semantic_file = staging / "semantic_metadata.json"
         vectors_included = False
@@ -1361,7 +1373,8 @@ def uninstall_pack(
     if not pack_dir.is_dir():
         raise FileNotFoundError(f"表情包 {pack_id} 不存在")
     index_dir = PLUGIN_DATA_DIR / "semantic_indexes" / pack_id
-    for directory in (pack_dir, index_dir):
+    sync_state_dir = PLUGIN_DATA_DIR / "sync_state" / pack_id
+    for directory in (pack_dir, index_dir, sync_state_dir):
         if directory.is_symlink() or getattr(directory, "is_junction", lambda: False)():
             raise ValueError("卸载目录不能是符号链接或目录联接")
     if operation_guard:
@@ -1369,6 +1382,7 @@ def uninstall_pack(
 
     shutil.rmtree(pack_dir)
     shutil.rmtree(index_dir, ignore_errors=True)
+    shutil.rmtree(sync_state_dir, ignore_errors=True)
 
     registry = _load_registry()
     registry["installed_packs"] = [
@@ -1923,7 +1937,12 @@ def export_runtime_backup(
                 for pack_dir in PACKS_DIR.iterdir():
                     if pack_dir.is_dir():
                         operation_guard(pack_dir.name, "导出全量备份")
-            shutil.copytree(PACKS_DIR, snapshot_root / "packs", dirs_exist_ok=True)
+            shutil.copytree(
+                PACKS_DIR,
+                snapshot_root / "packs",
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns(".sync-state"),
+            )
             for copied_pack_dir in (snapshot_root / "packs").iterdir():
                 semantic_file = copied_pack_dir / "semantic_metadata.json"
                 if not copied_pack_dir.is_dir() or not semantic_file.is_file():

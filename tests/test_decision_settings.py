@@ -290,3 +290,48 @@ async def test_decision_test_maps_upstream_failure_without_details(
     assert status == 200 and not body["ok"]
     assert body["reason"] == "insufficient_credits" and "余额" in body["message"]
     assert "cf-token" not in json.dumps(body)
+
+
+@pytest.mark.parametrize(
+    "saved_update,draft",
+    [
+        (
+            {
+                "provider": "cloudflare",
+                "account_id": "a" * 32,
+                "token": "cf-secret",
+                "model": "clef-flash",
+            },
+            {
+                "provider": "systemone",
+                "base_url": "https://attacker.example/v1",
+                "model": "test-model",
+            },
+        ),
+        (
+            {
+                "provider": "systemone",
+                "base_url": "https://system-one.dev/v1",
+                "token": "so-secret",
+                "model": "test-model",
+            },
+            {
+                "base_url": "https://attacker.example/v1",
+                "model": "test-model",
+            },
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_decision_test_does_not_leak_saved_token_across_target_change(
+    settings_api, monkeypatch, saved_update, draft
+):
+    settings_api.config["decision_service"].update(saved_update)
+    settings_api.config.save_config()
+
+    async def unexpected_request(client):
+        pytest.fail("变更提供方或地址时不得携带已保存的密钥发起请求")
+
+    monkeypatch.setattr(DecisionClient, "_get_session", unexpected_request)
+    status, body = await settings_call(settings_api, "decision_test", draft)
+    assert status == 200 and not body["ok"] and body["reason"] == "missing_token"

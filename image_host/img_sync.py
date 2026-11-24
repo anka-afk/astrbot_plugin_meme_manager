@@ -26,7 +26,11 @@ class ImageSync:
     """将一个本地图片库绑定到一个明确选定的远端目标。"""
 
     def __init__(
-        self, config: dict, local_dir: str | Path, provider_type: str = "stardots"
+        self,
+        config: dict,
+        local_dir: str | Path,
+        provider_type: str = "stardots",
+        state_dir: str | Path | None = None,
     ):
         self.config = dict(config)
         self.local_dir = Path(local_dir).resolve()
@@ -68,13 +72,23 @@ class ImageSync:
         self.scope = hashlib.sha256(
             json.dumps(identity, ensure_ascii=False).encode()
         ).hexdigest()[:24]
-        self._state_dir = self.local_dir / ".sync-state"
+        custom_state_dir = (
+            str(state_dir).strip() if state_dir is not None else ""
+        )
+        raw_state_dir = (
+            Path(custom_state_dir)
+            if custom_state_dir
+            else self.local_dir / ".sync-state"
+        )
         if (
-            self._state_dir.is_symlink()
-            or getattr(self._state_dir, "is_junction", lambda: False)()
+            raw_state_dir.is_symlink()
+            or getattr(raw_state_dir, "is_junction", lambda: False)()
         ):
             self.provider.close()
             raise ValueError("Sync state directory cannot be a filesystem link")
+        self._state_dir = (
+            raw_state_dir.resolve() if custom_state_dir else raw_state_dir
+        )
         self.upload_tracker = UploadTracker(self._state_dir / f"{self.scope}.json")
         self.sync_manager = SyncManager(
             self.provider, self.local_dir, self.upload_tracker
@@ -238,6 +252,7 @@ class ImageSync:
                     str(self._progress_path),
                     self._task_id,
                     self._cancel_event,
+                    str(self._state_dir),
                 ),
             )
             process.start()
@@ -305,6 +320,7 @@ def run_sync_process(
     progress_path: str = "",
     task_id: str = "",
     cancel_event=None,
+    state_dir: str | None = None,
 ):
     """运行持锁的同步任务，即使规划失败也保存失败状态。
 
@@ -316,6 +332,7 @@ def run_sync_process(
         progress_path: 持久保存任务进度的文件。
         task_id: 父进程生成的任务标识符。
         cancel_event: 协作取消信号。
+        state_dir: 可选的外部同步状态目录。
     """
     sync = None
     lock_stream = None
@@ -323,7 +340,11 @@ def run_sync_process(
     try:
         if task not in SYNC_TASKS:
             raise ValueError(f"Unsupported sync task: {task}")
-        sync = ImageSync(config, local_dir, provider_type)
+        sync = (
+            ImageSync(config, local_dir, provider_type)
+            if state_dir is None
+            else ImageSync(config, local_dir, provider_type, state_dir)
+        )
         lock_path = sync._state_dir / "worker.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_stream = lock_path.open("a+b")

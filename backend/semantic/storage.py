@@ -1730,6 +1730,7 @@ def _is_safe_category_key(category: str) -> bool:
     return bool(
         value
         and value not in {".", ".."}
+        and not value.startswith(".")
         and "/" not in value
         and "\\" not in value
         and Path(value).name == value
@@ -2276,20 +2277,8 @@ def reconcile_metadata(
         item["text_hash"] = calculated_hash if item.get("caption") else ""
         normalized_item = SemanticImage.from_dict(item).to_dict()
         images[entry_id] = normalized_item
-    # 仅保留本次外部导入中缺图的记录供用户排查；本地已删除、移动或重命名
-    # 产生的旧记录必须移除，否则旧分类标签会进入下一次索引队列。
-    for source in (external_images,):
-        for entry_id, value in source.items():
-            if entry_id in images or not isinstance(value, dict):
-                continue
-            item = dict(value)
-            if safe_relative_path(root, item.get("relative_path", "")) is None:
-                item["relative_path"] = ""
-            item["caption_status"] = "pending"
-            item["embedding_status"] = "pending"
-            item["error"] = "图片不存在或内容哈希不匹配"
-            item["updated_at"] = utc_now()
-            images[str(entry_id)] = SemanticImage.from_dict(item).to_dict()
+    # 本地不存在或哈希不匹配的外部记录不再注入 images，避免其进入 FAISS 索引并破坏
+    # refresh_metadata_inventory_snapshot() 的 1:1 磁盘清单不变量。
     result = dict(existing)
     if external_migrated:
         result["imported_from_schema_version"] = str(

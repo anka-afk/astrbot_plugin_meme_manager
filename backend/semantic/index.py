@@ -507,19 +507,35 @@ async def build_index(
         raise RuntimeError("未配置 AstrBot 核心向量模型")
     faiss, np = await _run_blocking(_import_faiss_modules)
     metadata = await _run_blocking(load_metadata, pack_dir)
-    candidates: list[tuple[str, dict[str, Any]]] = []
-    for digest, value in metadata.get("images", {}).items():
-        if (
-            not isinstance(value, dict)
-            or value.get("category") == REVIEW_CATEGORY
-            or not semantic_caption_is_complete(value)
-        ):
-            continue
-        if not value.get("caption") or not value.get("tags"):
-            continue
-        current_hash = text_hash(SemanticImage.from_dict(value).vector_text)
-        value["text_hash"] = current_hash
-        candidates.append((str(digest), value))
+    def collect_candidates() -> tuple[list[tuple[str, dict[str, Any]]], list[str]]:
+        memes_root = (Path(pack_dir).resolve() / "memes").resolve()
+        collected: list[tuple[str, dict[str, Any]]] = []
+        stale: list[str] = []
+        for digest, value in metadata.get("images", {}).items():
+            if not isinstance(value, dict):
+                stale.append(digest)
+                continue
+            source = safe_relative_path(pack_dir, value.get("relative_path", ""))
+            if (
+                source is None
+                or not source.is_relative_to(memes_root)
+                or not source.is_file()
+            ):
+                stale.append(digest)
+                continue
+            if (
+                value.get("category") == REVIEW_CATEGORY
+                or not semantic_caption_is_complete(value)
+            ):
+                continue
+            if not value.get("caption") or not value.get("tags"):
+                continue
+            current_hash = text_hash(SemanticImage.from_dict(value).vector_text)
+            value["text_hash"] = current_hash
+            collected.append((str(digest), value))
+        return collected, stale
+
+    candidates, stale_keys = await _run_blocking(collect_candidates)
     if not candidates:
         raise RuntimeError("没有已完成的语义描述，无法建立索引")
 
@@ -584,6 +600,11 @@ async def build_index(
                 "现有索引缺少其他图片的可复用向量，无法只更新当前图片；"
                 "请先在语义页完成一次整包向量重建"
             )
+    if stale_keys:
+        images_map = metadata.get("images")
+        if isinstance(images_map, dict):
+            for stale_key in stale_keys:
+                images_map.pop(stale_key, None)
     for _, item in pending:
         item["embedding_status"] = "running"
     for digest, item in candidates:

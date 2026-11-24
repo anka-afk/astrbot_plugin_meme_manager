@@ -12,6 +12,7 @@ import time
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from PIL import Image as PILImage
 from quart import jsonify, make_response, request, send_file
@@ -1008,7 +1009,7 @@ class WebAPIMixin:
         if not memes_dir.is_dir():
             return emojis
         for category_dir in memes_dir.iterdir():
-            if not category_dir.is_dir():
+            if not category_dir.is_dir() or category_dir.name.startswith("."):
                 continue
             category = category_dir.name
             files = []
@@ -4107,6 +4108,46 @@ class WebAPIMixin:
         saved = values.get("decision_service")
         saved = saved if isinstance(saved, dict) else {}
         draft = {name: data.get(name, saved.get(name)) for name in names}
+        if "token" not in data:
+            saved_provider = (
+                str(saved.get("provider") or "systemone").strip().casefold()
+                or "systemone"
+            )
+            draft_provider = (
+                str(draft.get("provider") or "systemone").strip().casefold()
+                or "systemone"
+            )
+            same_target = draft_provider == saved_provider
+            if same_target and draft_provider == "systemone":
+                saved_url_client = DecisionClient(
+                    {"provider": "systemone", "base_url": saved.get("base_url")}
+                )
+                draft_url_client = DecisionClient(
+                    {"provider": "systemone", "base_url": draft.get("base_url")}
+                )
+                if (
+                    saved_url_client._base_url_valid()
+                    and draft_url_client._base_url_valid()
+                ):
+                    saved_parts = urlsplit(saved_url_client._endpoint())
+                    draft_parts = urlsplit(draft_url_client._endpoint())
+                    saved_port = saved_parts.port or (
+                        443 if saved_parts.scheme.lower() == "https" else 80
+                    )
+                    draft_port = draft_parts.port or (
+                        443 if draft_parts.scheme.lower() == "https" else 80
+                    )
+                    same_target = (
+                        saved_parts.scheme.lower() == draft_parts.scheme.lower()
+                        and (saved_parts.hostname or "").lower()
+                        == (draft_parts.hostname or "").lower()
+                        and saved_port == draft_port
+                        and saved_parts.path == draft_parts.path
+                    )
+                else:
+                    same_target = False
+            if not same_target:
+                draft["token"] = ""
         draft["timeout"] = data.get("timeout", saved.get("timeout", 15))
         draft["max_concurrency"] = 1
         client = DecisionClient(draft)

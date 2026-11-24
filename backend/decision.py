@@ -128,24 +128,26 @@ class DecisionClient:
             return "closed"
         if not self._provider_valid:
             return "invalid_provider"
-        if not self.token:
-            return "missing_token"
-        if any(ord(char) < 33 or ord(char) == 127 for char in self.token):
-            return "invalid_token"
         if self.provider == "cloudflare":
             if not self.account_id:
                 return "missing_account_id"
             if not CLOUDFLARE_ACCOUNT_ID.fullmatch(self.account_id):
                 return "invalid_account_id"
-            if not self.model:
-                return "missing_model"
-            if self.model not in CLOUDFLARE_MODELS:
-                return "unsupported_model"
         else:
             if not self.base_url:
                 return "missing_base_url"
             if not self._base_url_valid():
                 return "invalid_base_url"
+        if not self.token:
+            return "missing_token"
+        if any(ord(char) < 33 or ord(char) == 127 for char in self.token):
+            return "invalid_token"
+        if self.provider == "cloudflare":
+            if not self.model:
+                return "missing_model"
+            if self.model not in CLOUDFLARE_MODELS:
+                return "unsupported_model"
+        else:
             if not self.model:
                 return "missing_model"
             if len(self.model) > 128 or any(

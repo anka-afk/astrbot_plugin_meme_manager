@@ -64,6 +64,13 @@ def snapshot(pack: Path) -> dict:
         if not path.is_file():
             continue
         relative = path.relative_to(pack).as_posix()
+        rel_parts = Path(relative).parts
+        if (
+            rel_parts
+            and rel_parts[0] == "memes"
+            and any(part.startswith(".") for part in rel_parts[1:])
+        ):
+            continue
         digest = hashlib.sha256()
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):

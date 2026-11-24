@@ -230,3 +230,27 @@ def test_worker_persists_initialization_failure(tmp_path):
     status = json.loads(progress_path.read_text())
     assert status["task_id"] == "task-id"
     assert status["phase"] == "failed"
+
+
+def test_sync_state_dir_can_live_outside_local_dir_and_hidden_dirs_ignored(
+    tmp_path, monkeypatch
+):
+    from astrbot_plugin_meme_manager.backend.packs.categories import (
+        is_safe_category_name,
+    )
+
+    monkeypatch.setattr(
+        sync_module, "WebDAVProvider", lambda config: SimpleNamespace(close=lambda: None)
+    )
+    memes_dir = tmp_path / "memes"
+    memes_dir.mkdir()
+    external_state = tmp_path / "sync_state" / "demo"
+    sync = ImageSync(
+        {"url": "https://dav.example", "username": "u", "password": "p"},
+        memes_dir,
+        "webdav",
+        state_dir=external_state,
+    )
+    assert sync._state_dir == external_state.resolve()
+    assert not (memes_dir / ".sync-state").exists()
+    assert not is_safe_category_name(".sync-state")

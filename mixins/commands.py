@@ -671,6 +671,8 @@ class CommandMixin:
                     )
                     if os.path.exists(local_memes_dir):
                         for category in os.listdir(local_memes_dir):
+                            if category.startswith("."):
+                                continue
                             category_path = os.path.join(local_memes_dir, category)
                             if os.path.isdir(category_path):
                                 files = [
@@ -889,6 +891,8 @@ class CommandMixin:
             )
             if os.path.exists(local_memes_dir):
                 for category in os.listdir(local_memes_dir):
+                    if category.startswith("."):
+                        continue
                     category_path = os.path.join(local_memes_dir, category)
                     if os.path.isdir(category_path):
                         files = [
