@@ -1,5 +1,6 @@
 import json
 import os
+import secrets
 import shutil
 from pathlib import Path
 
@@ -14,7 +15,12 @@ def is_safe_category_name(category: str) -> bool:
     """判断分类名称是否严格位于表情目录的单个路径段内。"""
     if not category or category != category.strip():
         return False
-    if category in {".", ".."} or category.startswith("."):
+    if (
+        category in {".", ".."}
+        or category.startswith(".")
+        or category.endswith(".")
+        or any(char in category for char in ':*?"<>|\x00')
+    ):
         return False
     return (
         "/" not in category and "\\" not in category and Path(category).name == category
@@ -73,12 +79,24 @@ class CategoryManager:
             "manifest_path": Path(context["manifest_path"]),
         }
 
+    @staticmethod
+    def _read_json_dict_strict(path: Path) -> dict:
+        if not path.exists():
+            return {}
+        with path.open(encoding="utf-8-sig") as file_obj:
+            data = json.load(file_obj)
+        if not isinstance(data, dict):
+            raise ValueError(f"JSON 根节点必须是对象: {path}")
+        return data
+
     def _sync_manifest(self) -> bool:
         """将当前分类描述同步到当前默认资源包清单。"""
         paths = self._paths()
-        manifest = load_json(paths["manifest_path"], {})
-        if not isinstance(manifest, dict):
-            manifest = {}
+        try:
+            manifest = self._read_json_dict_strict(paths["manifest_path"])
+        except Exception as exc:
+            logger.error(f"读取 manifest.json 失败，已中止覆盖写入: {exc}")
+            return False
         pack_id = paths["pack_dir"].name
         manifest.setdefault("schema_version", 1)
         manifest.setdefault("id", pack_id)
@@ -135,18 +153,20 @@ class CategoryManager:
 
         return descriptions
 
-    def _load_descriptions(self) -> dict[str, str]:
+    def _load_descriptions(self, strict: bool = False) -> dict[str, str]:
         """加载类别描述配置"""
         metadata_path = self._paths()["metadata_path"]
         if not metadata_path.exists():
             if not self.ensure_files:
                 return {}
             self._ensure_data_file()
+        if strict:
+            return self._read_json_dict_strict(metadata_path)
         return load_json(metadata_path, {})
 
-    def reload_descriptions(self) -> dict[str, str]:
+    def reload_descriptions(self, strict: bool = False) -> dict[str, str]:
         """从磁盘重新加载分类描述。"""
-        self.descriptions = self._load_descriptions()
+        self.descriptions = self._load_descriptions(strict=strict)
         return self.descriptions
 
     def _invalidate_semantic_if_present(self) -> None:
@@ -191,7 +211,7 @@ class CategoryManager:
             category = str(category or "").strip()
             if not is_safe_category_name(category):
                 return False
-            self.reload_descriptions()
+            self.reload_descriptions(strict=True)
             original_descriptions = self.descriptions.copy()
             old_description = str(self.descriptions.get(category) or "")
             self.descriptions[category] = description  # 更新内存中的描述映射
@@ -236,7 +256,7 @@ class CategoryManager:
     def rename_category(self, old_name: str, new_name: str) -> bool:
         """重命名类别"""
         try:
-            self.reload_descriptions()
+            self.reload_descriptions(strict=True)
             old_name = str(old_name or "").strip()
             new_name = str(new_name or "").strip()
             if (
@@ -250,7 +270,13 @@ class CategoryManager:
             memes_dir = self._paths()["memes_dir"]
             old_path = memes_dir / old_name
             new_path = memes_dir / new_name
-            if new_name != old_name and new_path.exists():
+            case_only_same_dir = (
+                new_name != old_name
+                and old_path.exists()
+                and new_path.exists()
+                and os.path.samefile(old_path, new_path)
+            )
+            if new_name != old_name and new_path.exists() and not case_only_same_dir:
                 return False
 
             original_descriptions = self.descriptions.copy()
@@ -261,18 +287,32 @@ class CategoryManager:
             del self.descriptions[old_name]
             self.descriptions[new_name] = description
 
-            # 更新文件夹名称
+            # 更新文件夹名称（Windows 大小写仅变更时经由临时中间名过渡）
             directory_renamed = new_name != old_name and old_path.exists()
             if directory_renamed:
-                os.rename(old_path, new_path)
+                if case_only_same_dir:
+                    temp_path = memes_dir / f".rename_{secrets.token_hex(6)}"
+                    os.rename(old_path, temp_path)
+                    try:
+                        os.rename(temp_path, new_path)
+                    except Exception:
+                        os.rename(temp_path, old_path)
+                        raise
+                else:
+                    os.rename(old_path, new_path)
 
             saved = save_json(self.descriptions, self._paths()["metadata_path"])
             if saved and self._sync_manifest():
                 self._invalidate_semantic_if_present()
                 return True
 
-            if directory_renamed and new_path.exists() and not old_path.exists():
-                os.rename(new_path, old_path)
+            if directory_renamed:
+                if case_only_same_dir and new_path.exists():
+                    temp_path = memes_dir / f".rename_{secrets.token_hex(6)}"
+                    os.rename(new_path, temp_path)
+                    os.rename(temp_path, old_path)
+                elif new_path.exists() and not old_path.exists():
+                    os.rename(new_path, old_path)
             self.descriptions = original_descriptions
             save_json(self.descriptions, self._paths()["metadata_path"])
             self._sync_manifest()
@@ -287,7 +327,7 @@ class CategoryManager:
             category = str(category or "").strip()
             if not is_safe_category_name(category):
                 return False
-            self.reload_descriptions()
+            self.reload_descriptions(strict=True)
             original_descriptions = self.descriptions.copy()
             # 从配置中删除
             if category in self.descriptions:
@@ -326,7 +366,7 @@ class CategoryManager:
             category = str(category or "").strip()
             if not is_safe_category_name(category):
                 return False
-            self.reload_descriptions()
+            self.reload_descriptions(strict=True)
             if category not in self.descriptions:
                 return False
             del self.descriptions[category]
@@ -347,7 +387,7 @@ class CategoryManager:
     def sync_with_filesystem(self) -> bool:
         """同步文件系统和配置：将配置强制对齐为实际文件夹结构"""
         try:
-            self.reload_descriptions()
+            self.reload_descriptions(strict=True)
             local_categories = self.get_local_categories()
             changed = False
 

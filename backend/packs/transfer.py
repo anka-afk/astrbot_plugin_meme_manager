@@ -3,13 +3,13 @@
 import hashlib
 import json
 import os
-import re
 import secrets
 import shutil
 from pathlib import Path
 
 from ..semantic.storage import invalidate_semantic_metadata
 from .categories import is_safe_category_name, resolve_safe_category_directory
+from .protocol import validate_pack_id
 from .images import IMAGE_EXTENSIONS
 
 
@@ -34,12 +34,12 @@ def transfer_pack_images(packs_root: Path, data: dict) -> dict:
     root = packs_root.resolve()
     for field in ("source_pack_id", "target_pack_id"):
         pack_id = data.get(field)
-        if (
-            not isinstance(pack_id, str)
-            or not re.fullmatch(r"[A-Za-z0-9._-]{2,64}", pack_id)
-            or pack_id in {"..", "."}
-        ):
+        if not isinstance(pack_id, str):
             raise ValueError("表情包 ID 无效")
+        try:
+            pack_id = validate_pack_id(pack_id)
+        except ValueError as exc:
+            raise ValueError("表情包 ID 无效") from exc
         pack = root / pack_id
         if pack.is_symlink() or pack.resolve().parent != root or not pack.is_dir():
             raise ValueError("表情包不存在或路径无效")
@@ -81,7 +81,7 @@ def transfer_pack_images(packs_root: Path, data: dict) -> dict:
                     descriptions.setdefault(folder.name, "")
         contexts.append((pack, memes, documents, descriptions))
     source, target = contexts
-    if source[0] == target[0]:
+    if source[0].resolve() == target[0].resolve():
         raise ValueError("请选择其他表情包；同包移动请使用移动分类")
     mode = data.get("mode")
     if not isinstance(mode, str) or mode not in {"target", "preserve"}:

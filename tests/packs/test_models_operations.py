@@ -202,3 +202,24 @@ def test_update_emoji_rejects_unsafe_new_filename(memes_root, filename):
     (category / "old.png").write_bytes(b"old")
     with pytest.raises(ValueError):
         models.update_emoji_in_category("happy", "old.png", SavedFile(filename, b"new"))
+
+
+def test_failed_upload_and_update_preserve_existing_images(memes_root):
+    category = memes_root / "happy"
+    category.mkdir()
+    existing = category / "cat.png"
+    existing.write_bytes(b"precious")
+
+    with pytest.raises(OSError):
+        models.add_emoji_to_category("happy", UploadedFile("cat.png", b""))
+    assert existing.read_bytes() == b"precious"
+
+    class FailingSave:
+        filename = "replacement.png"
+
+        def save(self, target):
+            raise OSError("disk full")
+
+    with pytest.raises(OSError):
+        models.update_emoji_in_category("happy", "cat.png", FailingSave())
+    assert existing.read_bytes() == b"precious"

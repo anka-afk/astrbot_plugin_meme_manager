@@ -94,3 +94,22 @@ async def test_cancel_endpoint_rejects_other_pack_and_stops_off_loop(api_harness
     assert (await response.get_json())["phase"] == "cancelled"
     assert operations[0][0] == "stop"
     assert operations[0][1] != event_thread
+
+
+@pytest.mark.asyncio
+async def test_sync_endpoints_reject_missing_managed_pack_id(api_harness):
+    api, _, _, _ = api_harness
+
+    def missing_pack(pack_id=None):
+        raise FileNotFoundError(f"表情包 {pack_id} 不存在")
+
+    api._ensure_img_sync_for_pack = missing_pack
+    app = Quart(__name__)
+    async with app.test_request_context("/?managed_pack_id=deleted-pack", method="GET"):
+        _, code = await api._api_img_host_sync_status()
+    assert code == 404
+    async with app.test_request_context(
+        "/", method="POST", json={"managed_pack_id": "deleted-pack"}
+    ):
+        _, code = await api._api_img_host_sync_overwrite_from_remote()
+    assert code == 404

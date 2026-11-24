@@ -371,3 +371,20 @@ async def test_agent_replays_send_receipt_and_sends_again(preview_request):
             for message in saved_history
             if message["role"] == "assistant"
         )
+
+
+def test_discard_meme_tool_context_preserves_assistant_visible_text():
+    call = tool_call("send_meme", target="happy")
+    messages = [
+        Message(
+            role="assistant",
+            content=[TextPart(text="给你发一张图！")],
+            tool_calls=[call],
+        ),
+        Message(role="tool", tool_call_id=call.id, content='{"ok": false}'),
+    ]
+    assert discard_meme_tool_context(messages) is True
+    assert len(messages) == 1
+    assert messages[0].role == "assistant"
+    assert messages[0].tool_calls is None
+    assert messages[0].content == [TextPart(text="给你发一张图！")]

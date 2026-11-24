@@ -645,3 +645,14 @@ async def test_runtime_operations_serialize_when_no_pack_exists(tmp_path, monkey
         ]
     )
     assert registry == ["first", "second"]
+
+
+def test_plan_update_avoids_case_insensitive_filename_overwrite(workspace):
+    local, remote, data, record = workspace
+    (local / "memes" / "happy" / "Cat.png").write_bytes(b"local-cat")
+    (remote / "memes" / "happy" / "cat.png").write_bytes(b"remote-cat")
+    record["remote"] = updates.snapshot(remote)
+    storage._save_json(remote.parent / "session.json", record)
+    plan = updates.plan_update(data)
+    cat_row = next(row for row in plan["rows"] if row["path"] == "memes/happy/cat.png")
+    assert cat_row["destination"] == "memes/happy/cat_upstream_1.png"

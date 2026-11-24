@@ -140,7 +140,7 @@ class DecisionClient:
                 return "invalid_base_url"
         if not self.token:
             return "missing_token"
-        if any(ord(char) < 33 or ord(char) == 127 for char in self.token):
+        if any(ord(char) < 33 or ord(char) >= 127 for char in self.token):
             return "invalid_token"
         if self.provider == "cloudflare":
             if not self.model:

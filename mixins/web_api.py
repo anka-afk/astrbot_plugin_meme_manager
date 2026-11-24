@@ -10,7 +10,7 @@ import re
 import secrets
 import time
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -1834,14 +1834,14 @@ class WebAPIMixin:
         if status.get("running"):
             raise RuntimeError("已有同步任务正在运行，请等待当前任务完成")
 
-        self._invalidate_img_host_status_cache(pack_id)
-        self._last_img_host_sync_task_status = None
-        changes_local_files = task in {"overwrite_from_remote", "download"}
         effective_pack_id = str(
-            pack_id
-            or getattr(self, "_img_sync_pack_id", "")
+            getattr(self, "_img_sync_pack_id", "")
+            or pack_id
             or self._resolve_runtime_pack_context().get("pack_id")
         ).strip()
+        self._invalidate_img_host_status_cache(effective_pack_id or pack_id)
+        self._last_img_host_sync_task_status = None
+        changes_local_files = task in {"overwrite_from_remote", "download"}
         manager = getattr(self, "semantic_task_manager", None)
         if changes_local_files and manager is not None and effective_pack_id:
             operation_name = (
@@ -1883,8 +1883,11 @@ class WebAPIMixin:
 
             task_status = self._get_img_host_sync_task_status()
             cache_ttl = self._get_img_host_status_cache_ttl()
+            resolved_pack_id = str(
+                getattr(self, "_img_sync_pack_id", "") or pack_id
+            ).strip()
             cache_key = self._make_img_host_status_cache_key(
-                pack_id, getattr(sync_client, "local_dir", "")
+                resolved_pack_id, getattr(sync_client, "local_dir", "")
             )
             cache_store = self._ensure_img_host_status_cache()
             now = time.monotonic()
@@ -1907,8 +1910,8 @@ class WebAPIMixin:
             status["provider_label"] = self._get_provider_label()
             status["status_cache_hit"] = False
             status["status_cache_ttl"] = cache_ttl
-            if pack_id:
-                status["managed_pack_id"] = pack_id
+            if resolved_pack_id:
+                status["managed_pack_id"] = resolved_pack_id
 
             if not task_status.get("running") and cache_ttl > 0:
                 cache_store[cache_key] = {
@@ -1916,6 +1919,10 @@ class WebAPIMixin:
                     "payload": dict(status),
                 }
             return jsonify(status)
+        except FileNotFoundError as e:
+            return jsonify({"error": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         except Exception as e:
             error_text = str(e)
             lower_error_text = error_text.lower()
@@ -1950,6 +1957,10 @@ class WebAPIMixin:
                 return jsonify({"message": "图床服务未配置"}), 400
             task_status = self._start_img_host_sync_task("upload", pack_id=pack_id)
             return jsonify({"success": True, "task": task_status})
+        except FileNotFoundError as e:
+            return jsonify({"message": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
         except Exception as e:
             status_code = (
                 409
@@ -1971,6 +1982,10 @@ class WebAPIMixin:
                 "overwrite_to_remote", pack_id=pack_id
             )
             return jsonify({"success": True, "task": task_status})
+        except FileNotFoundError as e:
+            return jsonify({"message": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
         except Exception as e:
             status_code = (
                 409
@@ -1992,6 +2007,10 @@ class WebAPIMixin:
                 "overwrite_from_remote", pack_id=pack_id
             )
             return jsonify({"success": True, "task": task_status})
+        except FileNotFoundError as e:
+            return jsonify({"message": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
         except Exception as e:
             status_code = (
                 409
@@ -2011,6 +2030,10 @@ class WebAPIMixin:
                 return jsonify({"message": "图床服务未配置"}), 400
             task_status = self._start_img_host_sync_task("download", pack_id=pack_id)
             return jsonify({"success": True, "task": task_status})
+        except FileNotFoundError as e:
+            return jsonify({"message": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
         except Exception as e:
             status_code = (
                 409
@@ -2979,12 +3002,52 @@ class WebAPIMixin:
             logger.error(f"设置默认表情包失败: {e}", exc_info=True)
             return jsonify({"message": f"设置默认表情包失败: {str(e)}"}), 500
 
+    @staticmethod
+    def _resolve_webui_export_output_dir(output_dir: Any) -> Path | None:
+        """限制 WebUI 导出路径仅允许默认备份目录或其内部相对子目录。"""
+        if output_dir is None:
+            return None
+        if not isinstance(output_dir, str):
+            raise ValueError("导出目录格式无效")
+        raw = output_dir.strip()
+        if not raw:
+            return None
+        if "\x00" in raw or raw.startswith("~"):
+            raise ValueError("导出目录仅支持默认备份目录下的相对子目录")
+        rel = Path(raw)
+        win_rel = PureWindowsPath(raw)
+        if (
+            rel.is_absolute()
+            or rel.root
+            or win_rel.drive
+            or win_rel.root
+            or ".." in rel.parts
+        ):
+            raise ValueError("导出目录仅支持默认备份目录下的相对子目录")
+        backup_root = pack_storage.BACKUP_DIR.resolve()
+        candidate = backup_root / rel
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(backup_root)
+        except ValueError as exc:
+            raise ValueError("导出目录超出了允许的备份目录") from exc
+        current = candidate
+        while current != backup_root and current != current.parent:
+            if current.is_symlink() or getattr(current, "is_junction", lambda: False)():
+                raise ValueError("导出目录不能包含符号链接或目录联接")
+            current = current.parent
+        return resolved
+
     async def _api_export_pack(self):
         try:
             data = await request.get_json()
+            if data is not None and not isinstance(data, dict):
+                return jsonify({"message": "请求格式无效"}), 400
             payload = data or {}
             pack_id = str(payload.get("pack_id") or "").strip()
-            output_dir = payload.get("output_dir")
+            output_dir = self._resolve_webui_export_output_dir(
+                payload.get("output_dir")
+            )
             export_mode = str(payload.get("export_mode") or "share").strip().lower()
             include_value = payload.get(
                 "include_semantic", payload.get("semantic", True)
@@ -4377,13 +4440,19 @@ class WebAPIMixin:
     async def _api_export_runtime_backup(self):
         try:
             data = await request.get_json()
-            output_dir = (data or {}).get("output_dir")
+            if data is not None and not isinstance(data, dict):
+                return jsonify({"message": "请求格式无效"}), 400
+            output_dir = self._resolve_webui_export_output_dir(
+                (data or {}).get("output_dir")
+            )
             result = await self._run_guarded_runtime_file_operation(
                 "导出全量备份",
                 export_runtime_backup,
                 output_dir=output_dir,
             )
             return jsonify({"message": "全量备份导出成功", **result}), 200
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
         except RuntimeError as e:
             return jsonify({"message": str(e)}), 409
         except Exception as e:

@@ -345,7 +345,7 @@ def plan_update(data: dict, operation_guard=None) -> dict:
     for path, digest in local["files"].items():
         hashes.setdefault(digest, []).append(path)
     rows, categories = [], {}
-    destinations = set(local["files"])
+    destinations = {item.casefold() for item in local["files"]}
     baseline_hashes = set(base.values())
     counts = {
         "added": 0,
@@ -437,17 +437,18 @@ def plan_update(data: dict, operation_guard=None) -> dict:
                 if target:
                     destination = f"memes/{target}/{Path(path).name}"
             if action == "copy" or (
-                destination != local_path and destination in destinations
+                (action == "add" or destination != local_path)
+                and destination.casefold() in destinations
             ):
                 original = Path(destination)
                 number = 1
-                while destination in destinations:
+                while destination.casefold() in destinations:
                     destination = (
                         original.parent
                         / f"{original.stem}_upstream_{number}{original.suffix}"
                     ).as_posix()
                     number += 1
-            destinations.add(destination)
+            destinations.add(destination.casefold())
         rows.append(
             {
                 "path": path,

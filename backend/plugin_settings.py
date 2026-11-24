@@ -208,7 +208,7 @@ def validate_settings_changes(
             if not valid_url:
                 raise ValueError(f"「{label}」需要填写完整的 HTTP 或 HTTPS 地址。")
         if path == "decision_service.token" and any(
-            ord(char) < 33 or ord(char) == 127 for char in value
+            ord(char) < 33 or ord(char) >= 127 for char in value
         ):
             raise ValueError("决策服务密钥包含无效字符。")
         if path == "decision_service.model" and (
@@ -246,6 +246,7 @@ def validate_settings_changes(
             reason = {
                 "missing_base_url": "请填写决策服务基础地址。",
                 "missing_token": "请填写决策服务密钥。",
+                "invalid_token": "决策服务密钥包含无效字符。",
                 "missing_model": "请填写决策模型 ID。",
                 "missing_account_id": "请填写 Cloudflare 账户 ID。",
                 "invalid_account_id": "Cloudflare 账户 ID 需为 32 位十六进制字符。",

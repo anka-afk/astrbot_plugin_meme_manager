@@ -497,16 +497,18 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         return dict(provider_config) if isinstance(provider_config, dict) else {}
 
     def _resolve_sync_pack_target(self, preferred_pack_id: str | None = None):
-        from .backend.packs.resolver import get_pack_paths, resolve_pack_id
+        from .backend.packs.resolver import (
+            get_pack_paths,
+            resolve_pack_id,
+            resolve_pack_paths,
+        )
 
         pack_id = str(preferred_pack_id or "").strip()
         if pack_id:
-            paths = get_pack_paths(pack_id)
-            pack_dir = paths["pack_dir"]
-            if pack_dir.is_dir():
-                memes_dir = paths["memes_dir"]
-                memes_dir.mkdir(parents=True, exist_ok=True)
-                return pack_id, memes_dir
+            paths = resolve_pack_paths(pack_id)
+            memes_dir = paths["memes_dir"]
+            memes_dir.mkdir(parents=True, exist_ok=True)
+            return paths["pack_dir"].name, memes_dir
 
         resolved_pack_id = resolve_pack_id()
         paths = get_pack_paths(resolved_pack_id)

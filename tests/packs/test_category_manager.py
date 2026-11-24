@@ -140,3 +140,39 @@ def test_semantic_invalidation_only_runs_when_metadata_exists(
     )
     assert manager.update_description("happy", "最开心")
     assert calls == [category_context["pack_dir"].resolve()]
+
+
+def test_category_manager_handles_utf8_bom_corrupt_json_and_unsafe_names(
+    category_context,
+):
+    metadata_path = category_context["metadata_path"]
+    manifest_path = category_context["manifest_path"]
+    metadata_path.write_bytes(
+        json.dumps({"happy": "开心", "sad": "难过"}, ensure_ascii=False).encode(
+            "utf-8-sig"
+        )
+    )
+    manifest_path.write_bytes(
+        json.dumps(
+            {
+                "id": "demo",
+                "name": "Original",
+                "version": "2.3.4",
+                "source": {"type": "github"},
+                "categories": {"happy": {"description": "开心"}},
+            },
+            ensure_ascii=False,
+        ).encode("utf-8-sig")
+    )
+    manager = category_module.CategoryManager()
+    assert manager.update_description("happy", "超级开心")
+    assert manager.get_descriptions() == {"happy": "超级开心", "sad": "难过"}
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    assert manifest["version"] == "2.3.4" and manifest["source"] == {"type": "github"}
+
+    assert not category_module.is_safe_category_name("happy.")
+    assert not category_module.is_safe_category_name("happy:ads")
+
+    metadata_path.write_text("{corrupt", encoding="utf-8")
+    assert not manager.update_description("happy", "覆盖失败")
+    assert metadata_path.read_text(encoding="utf-8") == "{corrupt"

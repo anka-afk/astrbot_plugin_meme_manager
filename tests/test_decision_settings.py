@@ -82,6 +82,7 @@ def test_service_required_only_for_active_consumers(shared_config, consumer):
         ("timeout", 0),
         ("max_concurrency", 65),
         ("token", "value\nheader"),
+        ("token", "sk-test”"),
     ],
 )
 def test_invalid_service_config_does_not_mutate_values(shared_config, path, value):

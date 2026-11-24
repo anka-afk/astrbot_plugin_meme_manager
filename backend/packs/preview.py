@@ -133,6 +133,23 @@ def build_meme_preview(
         return output.getvalue(), seen, next_after
 
 
+def _has_visible_content(content: object) -> bool:
+    """判断助手消息是否包含需要保留的可见正文或非思考内容。"""
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        for part in content:
+            part_type = getattr(part, "type", None)
+            if part_type == "think":
+                continue
+            if isinstance(part, TextPart) or part_type == "text":
+                if str(getattr(part, "text", "") or "").strip():
+                    return True
+            elif part is not None:
+                return True
+    return False
+
+
 def discard_meme_tool_context(
     messages: list[Message],
     *,
@@ -221,8 +238,11 @@ def discard_meme_tool_context(
             ]
             if len(calls) != len(message.tool_calls):
                 if not calls:
-                    continue
-                message = message.model_copy(update={"tool_calls": calls})
+                    if not _has_visible_content(message.content):
+                        continue
+                    message = message.model_copy(update={"tool_calls": None})
+                else:
+                    message = message.model_copy(update={"tool_calls": calls})
         elif message.role == "user" and isinstance(message.content, list):
             parts = []
             for part in message.content:

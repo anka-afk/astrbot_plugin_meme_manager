@@ -8,7 +8,7 @@ import zipfile
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import requests
 
@@ -74,16 +74,58 @@ class InstallCancelledError(RuntimeError):
     """操作人员取消正在进行的表情包安装时抛出。"""
 
 
+MAX_REMOTE_INDEX_BYTES = 16 * 1024 * 1024
+MAX_REMOTE_MANIFEST_BYTES = 4 * 1024 * 1024
+
+
+def _validate_http_url(url: str, label: str = "URL") -> str:
+    value = str(url or "").strip()
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or any(char.isspace() or ord(char) < 32 for char in value)
+    ):
+        raise ValueError(f"{label} 仅支持有效的 http/https 地址")
+    return value
+
+
+def _read_bounded_json_response(
+    response: requests.Response, max_bytes: int, label: str
+) -> object:
+    headers = getattr(response, "headers", None)
+    if hasattr(headers, "get"):
+        content_length = _safe_nonnegative_int(headers.get("content-length"))
+        if content_length is not None and content_length > max_bytes:
+            raise ValueError(f"{label} 体积超出限制")
+    if hasattr(response, "iter_content"):
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_content(chunk_size=65536):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError(f"{label} 体积超出限制")
+            chunks.append(chunk)
+        return json.loads(b"".join(chunks).decode("utf-8-sig"))
+    return response.json()
+
+
 def _build_accelerated_url(raw_url: str, github_accelerator_url: str) -> str:
     accelerator = str(github_accelerator_url or "").strip()
     url = str(raw_url or "").strip()
     if not accelerator or not url:
         return url
-    if "{url}" in accelerator:
-        return accelerator.replace("{url}", url)
-    if accelerator.endswith("/"):
-        return f"{accelerator}{url}"
-    return f"{accelerator}/{url}"
+    probe_url = (
+        accelerator.replace("{url}", url)
+        if "{url}" in accelerator
+        else f"{accelerator}{url}"
+        if accelerator.endswith("/")
+        else f"{accelerator}/{url}"
+    )
+    _validate_http_url(probe_url, "GitHub 加速地址")
+    return probe_url
 
 
 def _http_get_with_optional_acceleration(
@@ -1109,8 +1151,13 @@ def import_pack_archive(
                 )
 
         target_index_dir = PLUGIN_DATA_DIR / "semantic_indexes" / pack_id
-        old_pack_dir = workspace / "replaced_pack"
-        old_index_dir = workspace / "replaced_index"
+        # 将回滚来源保留在 TemporaryDirectory 之外，避免回滚失败时临时目录自动清理销毁原包。
+        old_pack_dir = PACKS_DIR.with_name(f".pack-{pack_id}-{workspace.name}.old")
+        old_index_dir = (PLUGIN_DATA_DIR / "semantic_indexes").with_name(
+            f".index-{pack_id}-{workspace.name}.old"
+        )
+        if old_pack_dir.exists() or old_index_dir.exists():
+            raise FileExistsError("恢复暂存目录已存在，请稍后重试")
         target_existed = target_pack_dir.exists()
         if target_existed and not overwrite:
             raise FileExistsError(f"表情包 {pack_id} 已存在，请重新检查后再导入")
@@ -1199,14 +1246,20 @@ def import_pack_archive(
                 set_as_default=bool(set_as_default and not preserve_existing_selection),
                 operation_guard=operation_guard,
             )
+            shutil.rmtree(old_pack_dir, ignore_errors=True)
+            shutil.rmtree(old_index_dir, ignore_errors=True)
         except Exception:
             if new_pack_installed:
                 shutil.rmtree(target_pack_dir, ignore_errors=True)
             if old_index_moved:
                 shutil.rmtree(target_index_dir, ignore_errors=True)
-            if old_pack_moved and old_pack_dir.exists():
+            if old_pack_moved and old_pack_dir.exists() and not target_pack_dir.exists():
                 shutil.move(str(old_pack_dir), str(target_pack_dir))
-            if old_index_moved and old_index_dir.exists():
+            if (
+                old_index_moved
+                and old_index_dir.exists()
+                and not target_index_dir.exists()
+            ):
                 target_index_dir.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(old_index_dir), str(target_index_dir))
             if previous_empty_dir is not None and previous_empty_snapshot.is_dir():
@@ -1510,7 +1563,9 @@ def _download_github_archive(
         InstallCancelledError: 操作者取消安装时抛出。
         ValueError: 下载失败、超时或压缩包超过安全大小限制时抛出。
     """
-    archive_url = f"https://github.com/{repo}/archive/{ref}.zip"
+    archive_url = (
+        f"https://github.com/{quote(repo, safe='/')}/archive/{quote(ref, safe='/')}.zip"
+    )
     accelerated_url = _build_accelerated_url(archive_url, github_accelerator_url)
     download_urls = [accelerated_url] if accelerated_url != archive_url else []
     download_urls.append(archive_url)
@@ -1579,19 +1634,26 @@ def fetch_and_cache_community_index(
     index_url = str(index_url or "").strip()
     if not index_url:
         raise ValueError("index_url 不能为空")
+    _validate_http_url(index_url, "index_url")
 
     response = _http_get_with_optional_acceleration(
         index_url,
         timeout=20,
         github_accelerator_url=github_accelerator_url,
+        stream=True,
     )
-    if response.status_code != 200:
-        raise ValueError(f"下载社区索引失败，状态码: {response.status_code}")
-
     try:
-        index_data = response.json()
-    except Exception as exc:
-        raise ValueError(f"社区索引不是有效 JSON: {exc}") from exc
+        if response.status_code != 200:
+            raise ValueError(f"下载社区索引失败，状态码: {response.status_code}")
+
+        try:
+            index_data = _read_bounded_json_response(
+                response, MAX_REMOTE_INDEX_BYTES, "社区索引"
+            )
+        except Exception as exc:
+            raise ValueError(f"社区索引不是有效 JSON: {exc}") from exc
+    finally:
+        response.close()
 
     index_data = validate_community_index(index_data)
     for entry in index_data["packs"]:
@@ -1600,18 +1662,24 @@ def fetch_and_cache_community_index(
         source = entry["source"]
         manifest_url = (
             f"https://raw.githubusercontent.com/{quote(source['repo'], safe='/')}/"
-            f"{quote(source['ref'], safe='')}/{quote(source['subpath'], safe='/')}/manifest.json"
+            f"{quote(source['ref'], safe='/')}/{quote(source['subpath'], safe='/')}/manifest.json"
         )
         try:
             manifest_response = _http_get_with_optional_acceleration(
-                manifest_url, timeout=10, github_accelerator_url=github_accelerator_url
+                manifest_url,
+                timeout=10,
+                github_accelerator_url=github_accelerator_url,
+                stream=True,
             )
             try:
                 if manifest_response.status_code != 200:
                     raise ValueError("无法读取远端版本")
-                manifest = manifest_response.json()
+                manifest = _read_bounded_json_response(
+                    manifest_response, MAX_REMOTE_MANIFEST_BYTES, "远端清单"
+                )
                 if (
-                    manifest.get("id") != entry["id"]
+                    not isinstance(manifest, dict)
+                    or manifest.get("id") != entry["id"]
                     or not str(manifest.get("version") or "").strip()
                 ):
                     raise ValueError("远端版本信息无效")
