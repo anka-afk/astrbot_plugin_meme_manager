@@ -372,3 +372,29 @@ async def test_supplementary_send_failure_preserves_delivered_text(reply_context
     await sender._mark_llm_request_origin_impl(event)
     assert await event.send_streaming(source()) == "delivered"
     sender._send_memes_streaming.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_decorating_handles_invalid_cleanup_regex_and_skips_non_llm_results(
+    reply_context,
+):
+    sender, event, state, _ = reply_context
+    sender.content_cleanup_rule = "[unclosed"
+
+    llm_result = MessageEventResult(
+        chain=[Plain("Hello &&happy&&")],
+        result_content_type=ResultContentType.LLM_RESULT,
+    )
+    state["result"] = llm_result
+    await sender._on_decorating_result_impl(event)
+    assert [c.text for c in llm_result.chain if isinstance(c, Plain)] == ["Hello"]
+
+    cmd_result = MessageEventResult(
+        chain=[Plain("  command &&happy&&  ")],
+        result_content_type=ResultContentType.GENERAL_RESULT,
+    )
+    state["result"] = cmd_result
+    await sender._on_decorating_result_impl(event)
+    assert [c.text for c in cmd_result.chain if isinstance(c, Plain)] == [
+        "  command &&happy&&  "
+    ]

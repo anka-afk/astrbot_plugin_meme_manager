@@ -950,6 +950,50 @@ class WebAPIMixin:
         self._img_host_local_operation = None
 
     @staticmethod
+    def _resolve_webui_read_pack_context() -> tuple[dict | None, tuple | None]:
+        """解析 WebUI 只读接口的显式 managed_pack_id；未指定时回退默认包，非法或不存在时返回错误。"""
+        managed_pack_id = str(request.args.get("managed_pack_id") or "").strip()
+        if not managed_pack_id:
+            return None, None
+        try:
+            managed_pack_id = validate_pack_id(managed_pack_id)
+        except ValueError as exc:
+            return None, (jsonify({"message": str(exc)}), 400)
+
+        pack_dir = (PACKS_DIR / managed_pack_id).resolve()
+        packs_root = PACKS_DIR.resolve()
+        try:
+            pack_dir.relative_to(packs_root)
+        except ValueError:
+            return None, (jsonify({"message": "目标表情包路径无效"}), 400)
+        if not pack_dir.is_dir():
+            return None, (jsonify({"message": f"表情包不存在: {managed_pack_id}"}), 404)
+
+        return (
+            {
+                "pack_id": managed_pack_id,
+                "pack_dir": pack_dir,
+                "memes_dir": pack_dir / "memes",
+                "memes_data_path": pack_dir / "memes_data.json",
+                "manifest_path": pack_dir / "manifest.json",
+            },
+            None,
+        )
+
+    @staticmethod
+    async def _read_json_object(*, allow_empty: bool = False):
+        """安全解析 JSON 对象请求体；非对象或损坏的 JSON 输入统一返回 400。"""
+        raw = (await request.get_data()).strip()
+        if not raw:
+            if allow_empty:
+                return {}, None
+            return None, (jsonify({"message": "请求体必须为 JSON 对象"}), 400)
+        data = await request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return None, (jsonify({"message": "请求体必须为 JSON 对象"}), 400)
+        return data, None
+
+    @staticmethod
     def _resolve_webui_pack_view_context() -> dict | None:
         managed_pack_id = str(request.args.get("managed_pack_id") or "").strip()
         if not managed_pack_id:
@@ -1081,7 +1125,9 @@ class WebAPIMixin:
         return descriptions
 
     async def _api_get_emojis(self):
-        view_context = self._resolve_webui_pack_view_context()
+        view_context, error = self._resolve_webui_read_pack_context()
+        if error:
+            return error
         if view_context:
             emoji_data = await asyncio.to_thread(
                 self._scan_pack_emojis, view_context["memes_dir"]
@@ -1104,7 +1150,9 @@ class WebAPIMixin:
     async def _api_get_emoji_by_category(self, category):
         if not is_safe_category_name(str(category or "")):
             return jsonify({"message": "分类名称非法"}), 400
-        view_context = self._resolve_webui_pack_view_context()
+        view_context, error = self._resolve_webui_read_pack_context()
+        if error:
+            return error
         if view_context:
             category_path = view_context["memes_dir"] / category
             if not category_path.is_dir():
@@ -1169,6 +1217,7 @@ class WebAPIMixin:
                 result = await self._run_pack_mutation(
                     target_pack_id, "上传表情图片", mutate
                 )
+                self._reload_personas()
                 logger.info(f"表情添加成功: {result['path']}")
                 return (
                     jsonify(
@@ -1195,6 +1244,10 @@ class WebAPIMixin:
                     ),
                     409,
                 )
+            except ValueError as e:
+                return jsonify({"message": str(e)}), 400
+            except FileNotFoundError as e:
+                return jsonify({"message": str(e)}), 404
             except RuntimeError as e:
                 return jsonify({"message": str(e)}), 409
         except Exception as e:
@@ -1202,7 +1255,9 @@ class WebAPIMixin:
             return jsonify({"message": f"处理上传请求时出错: {str(e)}"}), 500
 
     async def _api_delete_emoji(self):
-        data = await request.get_json()
+        data, error = await self._read_json_object()
+        if error:
+            return error
         category = data.get("category")
         image_file = data.get("image_file")
         if category and not is_safe_category_name(str(category)):
@@ -1237,7 +1292,9 @@ class WebAPIMixin:
         return jsonify({"message": "表情未找到"}), 404
 
     async def _api_batch_delete_emojis(self):
-        data = await request.get_json()
+        data, error = await self._read_json_object()
+        if error:
+            return error
         category = data.get("category")
         image_files = data.get("image_files")
         if category and not is_safe_category_name(str(category)):
@@ -1275,7 +1332,9 @@ class WebAPIMixin:
         )
 
     async def _api_move_emoji(self):
-        data = await request.get_json()
+        data, error = await self._read_json_object()
+        if error:
+            return error
         source_category = data.get("source_category")
         target_category = data.get("target_category")
         image_file = data.get("image_file")
@@ -1384,7 +1443,9 @@ class WebAPIMixin:
                 manager.end_external_pack_operation(pack_id)
 
     async def _api_batch_move_emojis(self):
-        data = await request.get_json()
+        data, error = await self._read_json_object()
+        if error:
+            return error
         source_category = data.get("source_category")
         target_category = data.get("target_category")
         image_files = data.get("image_files")
@@ -1442,7 +1503,9 @@ class WebAPIMixin:
         )
 
     async def _api_batch_copy_emojis(self):
-        data = await request.get_json()
+        data, error = await self._read_json_object()
+        if error:
+            return error
         source_category = data.get("source_category")
         target_category = data.get("target_category")
         image_files = data.get("image_files")
@@ -1498,7 +1561,9 @@ class WebAPIMixin:
         )
 
     async def _api_clear_all_emojis(self):
-        data = await request.get_json(silent=True) or {}
+        data, error = await self._read_json_object(allow_empty=True)
+        if error:
+            return error
         pack_id, error = self._resolve_webui_write_pack(data)
         if error:
             return error
@@ -1528,7 +1593,9 @@ class WebAPIMixin:
 
     async def _api_get_emotions(self):
         try:
-            view_context = self._resolve_webui_pack_view_context()
+            view_context, error = self._resolve_webui_read_pack_context()
+            if error:
+                return error
             if view_context:
                 descriptions = await asyncio.to_thread(
                     self._load_pack_descriptions, view_context
@@ -1544,7 +1611,9 @@ class WebAPIMixin:
 
     async def _api_delete_category(self):
         try:
-            data = await request.get_json()
+            data, error = await self._read_json_object()
+            if error:
+                return error
             category = data.get("category")
             if not category:
                 return jsonify({"message": "分类不能为空"}), 400
@@ -1557,6 +1626,7 @@ class WebAPIMixin:
                 lambda: self._category_manager_for(pack_id).delete_category(category),
             )
             if deleted:
+                self._reload_personas()
                 return jsonify({"message": "分类删除成功"}), 200
             return jsonify({"message": "分类删除失败"}), 500
         except RuntimeError as e:
@@ -1565,7 +1635,9 @@ class WebAPIMixin:
             return jsonify({"message": f"分类删除失败: {str(e)}"}), 500
 
     async def _api_clear_category(self):
-        data = await request.get_json()
+        data, error = await self._read_json_object()
+        if error:
+            return error
         category = data.get("category")
         if category and not is_safe_category_name(str(category)):
             return jsonify({"message": "分类名称非法"}), 400
@@ -1601,7 +1673,9 @@ class WebAPIMixin:
 
     async def _api_restore_category(self):
         try:
-            data = await request.get_json()
+            data, error = await self._read_json_object()
+            if error:
+                return error
             category = data.get("category")
             description = data.get("description", "请添加描述")
             if not category:
@@ -1617,6 +1691,7 @@ class WebAPIMixin:
                 ),
             )
             if created:
+                self._reload_personas()
                 return (
                     jsonify({"message": "分类创建成功", "description": description}),
                     200,
@@ -1629,7 +1704,9 @@ class WebAPIMixin:
 
     async def _api_rename_category(self):
         try:
-            data = await request.get_json()
+            data, error = await self._read_json_object()
+            if error:
+                return error
             old_name = data.get("old_name")
             new_name = data.get("new_name")
             if not old_name or not new_name:
@@ -1645,6 +1722,7 @@ class WebAPIMixin:
                 ),
             )
             if renamed:
+                self._reload_personas()
                 return jsonify({"message": "分类重命名成功"}), 200
             return jsonify({"message": "分类重命名失败"}), 500
         except RuntimeError as e:
@@ -1654,7 +1732,9 @@ class WebAPIMixin:
 
     async def _api_update_description(self):
         try:
-            data = await request.get_json()
+            data, error = await self._read_json_object()
+            if error:
+                return error
             category = data.get("tag")
             description = data.get("description")
             if not category or not description:
@@ -1670,6 +1750,7 @@ class WebAPIMixin:
                 ),
             )
             if updated:
+                self._reload_personas()
                 return jsonify({"category": category, "description": description}), 200
             return jsonify({"message": "更新分类描述失败"}), 500
         except RuntimeError as e:
@@ -1679,7 +1760,9 @@ class WebAPIMixin:
 
     async def _api_remove_from_config(self):
         try:
-            data = await request.get_json()
+            data, error = await self._read_json_object()
+            if error:
+                return error
             category = data.get("category")
             if not category:
                 return jsonify({"message": "分类不能为空"}), 400
@@ -1694,6 +1777,7 @@ class WebAPIMixin:
                 ),
             )
             if removed:
+                self._reload_personas()
                 return jsonify({"message": "已从配置中移除分类"}), 200
             return jsonify({"message": "从配置中移除分类失败"}), 500
         except RuntimeError as e:
@@ -1703,7 +1787,9 @@ class WebAPIMixin:
 
     async def _api_sync_status(self):
         try:
-            view_context = self._resolve_webui_pack_view_context()
+            view_context, error = self._resolve_webui_read_pack_context()
+            if error:
+                return error
             missing_in_config, deleted_categories = await asyncio.to_thread(
                 lambda: self._category_manager_for(
                     view_context["pack_id"] if view_context else "",
@@ -1727,7 +1813,9 @@ class WebAPIMixin:
 
     async def _api_sync_config(self):
         try:
-            data = await request.get_json(silent=True) or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id, error = self._resolve_webui_write_pack(data)
             if error:
                 return error
@@ -1738,6 +1826,7 @@ class WebAPIMixin:
                 lambda: self._category_manager_for(pack_id).sync_with_filesystem(),
             )
             if synced:
+                self._reload_personas()
                 logger.info("配置同步成功")
                 return jsonify({"message": "配置同步成功"}), 200
             logger.warning("配置同步失败")
@@ -2387,7 +2476,9 @@ class WebAPIMixin:
 
     async def _api_semantic_propose_image_revision(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
             (
                 pack_id,
                 category,
@@ -2423,7 +2514,9 @@ class WebAPIMixin:
 
     async def _api_semantic_save_image_impl(self, *, update_vector: bool):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
             (
                 pack_id,
                 category,
@@ -2481,7 +2574,9 @@ class WebAPIMixin:
 
     async def _api_semantic_restore_image_auto(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
             (
                 pack_id,
                 category,
@@ -2532,7 +2627,9 @@ class WebAPIMixin:
 
     async def _api_semantic_confirm_category(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
             (
                 pack_id,
                 category,
@@ -2685,7 +2782,9 @@ class WebAPIMixin:
 
     async def _api_semantic_start(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id = await self._semantic_request_pack_id(data)
             self._get_img_host_sync_task_status()
             external_data = (
@@ -2849,7 +2948,9 @@ class WebAPIMixin:
             包含导入计数的 Quart JSON 响应。
         """
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id = await self._semantic_request_pack_id(data)
             manager = getattr(self, "auto_collect_manager", None)
             if manager is None:
@@ -2895,7 +2996,9 @@ class WebAPIMixin:
 
     async def _api_semantic_retry(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id = await self._semantic_request_pack_id(data)
             self._get_img_host_sync_task_status()
             result = await self.semantic_task_manager.start(
@@ -2916,7 +3019,9 @@ class WebAPIMixin:
 
     async def _api_semantic_task_action(self, action: str):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id = await self._semantic_request_pack_id(data)
             self._get_img_host_sync_task_status()
             if action == "resume":
@@ -2938,7 +3043,9 @@ class WebAPIMixin:
 
     async def _api_semantic_rebuild_index(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id = await self._semantic_request_pack_id(data)
             self._get_img_host_sync_task_status()
             result = await self.semantic_task_manager.rebuild_index(
@@ -2957,7 +3064,9 @@ class WebAPIMixin:
 
     async def _api_semantic_clear_local_state(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id = await self._semantic_request_pack_id(data)
             result = await self.semantic_task_manager.clear_local_semantic_state(
                 pack_id
@@ -2977,7 +3086,9 @@ class WebAPIMixin:
 
     async def _api_semantic_delete_all(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id = await self._semantic_request_pack_id(data)
             result = await self.semantic_task_manager.delete_all_semantic_data(pack_id)
             return jsonify(
@@ -2998,8 +3109,10 @@ class WebAPIMixin:
 
     async def _api_set_default_pack(self):
         try:
-            data = await request.get_json()
-            pack_id = str((data or {}).get("pack_id") or "").strip()
+            data, error = await self._read_json_object()
+            if error:
+                return error
+            pack_id = str(data.get("pack_id") or "").strip()
             if not pack_id:
                 return jsonify({"message": "pack_id 不能为空"}), 400
             async with self._get_runtime_file_lock():
@@ -3305,7 +3418,9 @@ class WebAPIMixin:
         """
         try:
             self._cleanup_pack_import_sessions()
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
             session_id = secrets.token_hex(16)
             filename = str(data.get("filename") or "").strip()
             total_chunks = _parse_int(data.get("total_chunks"), 0)
@@ -3470,7 +3585,9 @@ class WebAPIMixin:
     async def _api_apply_pack_import(self):
         try:
             self._cleanup_pack_import_sessions()
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
             token = str(data.get("import_token") or "").strip()
             archive_path, metadata_path = self._pack_import_session_paths(token)
             if not archive_path.is_file() or not metadata_path.is_file():
@@ -3537,8 +3654,10 @@ class WebAPIMixin:
 
     async def _api_uninstall_pack(self):
         try:
-            data = await request.get_json()
-            pack_id = str((data or {}).get("pack_id") or "").strip()
+            data, error = await self._read_json_object()
+            if error:
+                return error
+            pack_id = str(data.get("pack_id") or "").strip()
             if not pack_id:
                 return jsonify({"message": "pack_id 不能为空"}), 400
             result = await self._run_guarded_pack_file_operation(
@@ -3567,7 +3686,9 @@ class WebAPIMixin:
             已创建的表情包标识或校验错误。
         """
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
             result = await self._run_guarded_runtime_file_operation(
                 "创建表情包",
                 create_local_pack,
@@ -3826,8 +3947,10 @@ class WebAPIMixin:
     async def _api_install_community_pack(self):
         data = None
         try:
-            data = await request.get_json()
-            payload = data or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
+            payload = data
             overwrite = bool(payload.get("overwrite", False))
             set_as_default = bool(payload.get("set_as_default", False))
             pack_id = str(payload.get("pack_id") or "").strip()
@@ -3876,7 +3999,9 @@ class WebAPIMixin:
     async def _api_start_community_pack_install(self):
         """创建后台安装任务，供资源广场轮询真实下载进度。"""
         try:
-            payload = (await request.get_json()) or {}
+            payload, error = await self._read_json_object()
+            if error:
+                return error
             source = payload.get("source")
             pack_id = str(payload.get("pack_id") or "").strip()
             if not isinstance(source, dict):
@@ -4069,7 +4194,9 @@ class WebAPIMixin:
 
     async def _api_cancel_community_pack_install(self):
         """请求协作式取消正在运行的社区表情包安装任务。"""
-        payload = (await request.get_json()) or {}
+        payload, error = await self._read_json_object()
+        if error:
+            return error
         job_id = str(payload.get("job_id") or "").strip()
         if not job_id:
             return jsonify({"message": "job_id 不能为空"}), 400
@@ -4091,8 +4218,10 @@ class WebAPIMixin:
     async def _api_install_official_first_pack(self):
         data = None
         try:
-            data = await request.get_json()
-            payload = data or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
+            payload = data
             overwrite = bool(payload.get("overwrite", False))
             set_as_default = bool(payload.get("set_as_default", True))
 
@@ -4418,8 +4547,10 @@ class WebAPIMixin:
                 return jsonify({"message": f"获取规则失败: {str(e)}"}), 500
 
         try:
-            data = await request.get_json()
-            rules = (data or {}).get("rules", [])
+            data, error = await self._read_json_object()
+            if error:
+                return error
+            rules = data.get("rules", [])
             async with self._get_runtime_file_lock():
                 before = get_selection_rules()
                 before_map = {

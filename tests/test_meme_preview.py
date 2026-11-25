@@ -388,3 +388,30 @@ def test_discard_meme_tool_context_preserves_assistant_visible_text():
     assert messages[0].role == "assistant"
     assert messages[0].tool_calls is None
     assert messages[0].content == [TextPart(text="给你发一张图！")]
+
+
+@pytest.mark.asyncio
+async def test_preview_accepts_integral_float_cursor_and_converts_static_to_gif(
+    preview_request,
+):
+    sender, event, request, _, _ = preview_request
+    sender.convert_static_to_gif = True
+    await sender._inject_meme_prompt_impl(event, request)
+    await sender.track_meme_tool_context(event, SimpleNamespace(messages=[]))
+
+    for bad_after in (True, False, 1.5, -1, -1.0, float("nan"), float("inf"), "0"):
+        assert (
+            json.loads(await sender.preview_memes_tool(event, "happy", after=bad_after))[
+                "reason"
+            ]
+            == "invalid_preview_arguments"
+        )
+
+    assert isinstance(
+        await sender.preview_memes_tool(event, "happy", after=0.0), CallToolResult
+    )
+    receipt = json.loads(await sender.send_meme_tool(event, "preview:1"))
+    assert receipt["ok"] is True
+    emitted = sender._send_meme_image.await_args.args[1]
+    raw = base64.b64decode(emitted.file.removeprefix("base64://"))
+    assert raw[:6] in (b"GIF87a", b"GIF89a")

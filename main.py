@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import copy
+import math
 import re
 import shutil
 import sqlite3
@@ -1303,7 +1304,13 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         count = event.get_extra("meme_manager_preview_count") or 0
         if count >= MAX_PREVIEW_PAGES:
             return dumps_result({"ok": False, "reason": "preview_limit"})
-        if not isinstance(category, str) or type(after) is not int or after < 0:
+        if isinstance(after, bool) or not isinstance(after, (int, float)):
+            return dumps_result({"ok": False, "reason": "invalid_preview_arguments"})
+        if isinstance(after, float):
+            if not math.isfinite(after) or not after.is_integer():
+                return dumps_result({"ok": False, "reason": "invalid_preview_arguments"})
+            after = int(after)
+        if not isinstance(category, str) or after < 0:
             return dumps_result({"ok": False, "reason": "invalid_preview_arguments"})
         category = category.strip()
         context = self._resolve_runtime_pack_context(event=event)

@@ -12,6 +12,7 @@ from astrbot.api.util import session_waiter
 from ..astrbot_compat import SessionFilter
 from ..backend.packs.categories import resolve_safe_category_directory
 from ..backend.packs.images import (
+    IMAGE_EXTENSIONS,
     clear_all_emojis,
     clear_category_emojis,
     get_emoji_by_category,
@@ -364,6 +365,7 @@ class CommandMixin:
                 index_url=COMMUNITY_INDEX_URL,
                 overwrite=False,
                 set_as_default=True,
+                github_accelerator_url=self._get_github_accelerator_url(),
             )
             selected_name = str(
                 result.get("selected_pack_name")
@@ -531,6 +533,7 @@ class CommandMixin:
         )
 
     # 同步相关命令
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @meme_manager.command("同步状态")
     async def check_sync_status(self, event: AstrMessageEvent, detail: str = None):
         """检查表情包与图床的同步状态"""
@@ -678,9 +681,8 @@ class CommandMixin:
                                 files = [
                                     f
                                     for f in os.listdir(category_path)
-                                    if f.endswith(
-                                        (".jpg", ".jpeg", ".png", ".gif", ".webp")
-                                    )
+                                    if os.path.isfile(os.path.join(category_path, f))
+                                    and f.lower().endswith(IMAGE_EXTENSIONS)
                                 ]
                                 count = len(files)
                                 local_stats[category] = count
@@ -854,6 +856,7 @@ class CommandMixin:
             )
             success = await sync_client.start_sync("overwrite_from_remote")
             if success:
+                await self.reload_emotions()
                 yield event.plain_result(
                     "从云端覆盖任务已完成！本地现在与云端完全一致。"
                 )
@@ -872,6 +875,7 @@ class CommandMixin:
             finally:
                 self.semantic_task_manager.end_external_pack_operation(pack_id)
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @meme_manager.command("图库统计")
     async def show_library_stats(self, event: AstrMessageEvent):
         """显示图库详细统计信息"""
@@ -898,7 +902,8 @@ class CommandMixin:
                         files = [
                             f
                             for f in os.listdir(category_path)
-                            if f.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp"))
+                            if os.path.isfile(os.path.join(category_path, f))
+                            and f.lower().endswith(IMAGE_EXTENSIONS)
                         ]
                         count = len(files)
                         local_stats[category] = count
