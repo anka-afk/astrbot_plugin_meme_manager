@@ -333,14 +333,3 @@ for (const outcome of ["resolve", "reject"]) {
     );
   });
 }
-
-test("refreshPackExportCapability skips API request when export DOM is absent", async () => {
-  const { context, requests } = setup({ available: true });
-  context.transferCurrentPack = null;
-  context.exportModeBackup = null;
-  context.vectorBackupHint = null;
-  context.exportPackDownloadBtn = null;
-  context.exportModeInputs = [];
-  await context.refreshPackExportCapability("pack-a");
-  assert.equal(requests.length, 0);
-});

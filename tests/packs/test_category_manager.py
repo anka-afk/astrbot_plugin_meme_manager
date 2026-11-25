@@ -172,6 +172,7 @@ def test_category_manager_handles_utf8_bom_corrupt_json_and_unsafe_names(
 
     assert not category_module.is_safe_category_name("happy.")
     assert not category_module.is_safe_category_name("happy:ads")
+    assert not category_module.is_safe_category_name(".sync-state")
 
     metadata_path.write_text("{corrupt", encoding="utf-8")
     assert not manager.update_description("happy", "覆盖失败")

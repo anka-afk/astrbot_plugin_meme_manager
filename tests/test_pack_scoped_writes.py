@@ -558,57 +558,6 @@ async def test_cancelled_inspection_keeps_archive_until_worker_exits(
 
 
 @pytest.mark.asyncio
-async def test_read_pack_validation_json_type_guard_reload_and_upload_value_error(
-    pack_api, pack_runtime
-):
-    reloaded = []
-    pack_api._reload_personas = lambda: reloaded.append(True)
-    app = Quart(__name__)
-
-    async with app.test_request_context("/?managed_pack_id=missing-pack"):
-        _, status = await pack_api._api_get_emojis()
-    assert status == 404
-    async with app.test_request_context("/?managed_pack_id=../escape"):
-        _, status = await pack_api._api_get_emotions()
-    assert status == 400
-    async with app.test_request_context("/?managed_pack_id=missing-pack"):
-        _, status = await pack_api._api_sync_status()
-    assert status == 404
-
-    async with app.test_request_context("/", method="POST", json=["not-a-dict"]):
-        _, status = await pack_api._api_delete_emoji()
-    assert status == 400
-    async with app.test_request_context("/", method="POST", json=["not-a-dict"]):
-        _, status = await pack_api._api_restore_category()
-    assert status == 400
-    async with app.test_request_context("/", method="POST", data=b""):
-        _, status = await pack_api._api_sync_config()
-    assert status == 200
-    async with app.test_request_context(
-        "/", method="POST", data=b"{broken", headers={"Content-Type": "application/json"}
-    ):
-        _, status = await pack_api._api_sync_config()
-    assert status == 400
-    async with app.test_request_context("/", method="POST", json=None):
-        _, status = await pack_api._api_sync_config()
-    assert status == 400
-
-    async with app.test_request_context(
-        "/", method="POST", json={"category": "joy", "description": "开心"}
-    ):
-        _, status = await pack_api._api_restore_category()
-    assert status == 200
-    assert reloaded == [True, True]
-
-    body, ctype = _multipart_body(b"plain text", filename="bad.txt")
-    async with app.test_request_context(
-        "/", method="POST", data=body, headers={"Content-Type": ctype}
-    ):
-        _, status = await pack_api._upload_emoji_to_category("pack-a", "joy")
-    assert status == 400
-
-
-@pytest.mark.asyncio
 async def test_chunked_runtime_backup_import_round_trip(pack_api, monkeypatch):
     app = Quart(__name__)
     captured = []

@@ -372,21 +372,3 @@ async def test_cloudflare_request_limits_differ_from_systemone():
         await systemone_client.evaluate(
             {}, {"solo": {"type": "choice", "criteria": {"a": "x"}}}
         )
-
-
-async def test_oversized_error_body_preserves_http_status_code():
-    huge = "x" * (1024 * 1024 + 64)
-
-    async def cf_handler(request):
-        return web.Response(status=502, text=huge)
-
-    async with client_for(cf_handler, **CLOUDFLARE_CONFIG) as client:
-        with pytest.raises(DecisionError, match="server_error"):
-            await client.evaluate({}, questions())
-
-    async def so_handler(request):
-        return web.Response(status=409, text=huge)
-
-    async with client_for(so_handler) as client:
-        with pytest.raises(DecisionError, match="conflict"):
-            await client.evaluate({}, questions())

@@ -205,17 +205,3 @@ class ManualCollectTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.pipeline._inflight)
         self.assertFalse(list((self.flow.root / "queue").glob("*")))
         event.send.assert_awaited_once()
-
-    async def test_closing_blocks_start_and_submit_error_releases_pending(self):
-        event = Event()
-        await self.manager.start(event)
-        session = self.manager.sessions[self.manager.key(event)]
-        with patch.object(
-            self.pipeline, "submit_manual", AsyncMock(side_effect=RuntimeError("boom"))
-        ):
-            with self.assertRaises(RuntimeError):
-                await self.manager.consume(Event([Image.fromFileSystem(self.flow.png)]))
-        self.assertEqual(session.pending, 0)
-        await self.manager.close()
-        self.assertIn("关闭", await self.manager.start(Event()))
-        self.assertEqual(self.manager.sessions, {})

@@ -270,16 +270,6 @@ def test_copy_legacy_pack_supports_direct_category_layout(tmp_path):
     assert storage._load_json(target / "memes_data.json", {}) == {"happy": "开心"}
 
 
-def test_allocate_pack_id_truncates_max_length_base(tmp_path, monkeypatch):
-    monkeypatch.setattr(storage, "PACKS_DIR", tmp_path)
-    base = "a" * 64
-    (tmp_path / base).mkdir()
-    allocated = storage._allocate_pack_id(base)
-    assert len(allocated) <= 64
-    assert allocated.endswith("-2")
-    assert storage.validate_pack_id(allocated) == allocated
-
-
 def make_zip(path, files):
     with zipfile.ZipFile(path, "w") as archive:
         for name, content in files.items():

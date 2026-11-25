@@ -83,6 +83,8 @@ def test_all_providers_receive_local_root_without_network_probe(tmp_path, monkey
         assert calls[-1]["local_dir"] == str(tmp_path.resolve())
         assert sync.sync_process is None
         assert sync._state_dir == tmp_path / ".sync-state"
+    external = tmp_path / "external-state"
+    assert ImageSync({}, tmp_path, "webdav", state_dir=external)._state_dir == external.resolve()
 
 
 def test_destination_scopes_change_for_storage_but_not_password_rotation(
@@ -232,25 +234,22 @@ def test_worker_persists_initialization_failure(tmp_path):
     assert status["phase"] == "failed"
 
 
-def test_sync_state_dir_can_live_outside_local_dir_and_hidden_dirs_ignored(
-    tmp_path, monkeypatch
-):
-    from astrbot_plugin_meme_manager.backend.packs.categories import (
-        is_safe_category_name,
-    )
+def test_close_defers_provider_close_while_call_is_active(client):
+    started, release, closed = threading.Event(), threading.Event(), threading.Event()
+    closes = []
+    client.provider.close = lambda: (closes.append(1), closed.set())
 
-    monkeypatch.setattr(
-        sync_module, "WebDAVProvider", lambda config: SimpleNamespace(close=lambda: None)
-    )
-    memes_dir = tmp_path / "memes"
-    memes_dir.mkdir()
-    external_state = tmp_path / "sync_state" / "demo"
-    sync = ImageSync(
-        {"url": "https://dav.example", "username": "u", "password": "p"},
-        memes_dir,
-        "webdav",
-        state_dir=external_state,
-    )
-    assert sync._state_dir == external_state.resolve()
-    assert not (memes_dir / ".sync-state").exists()
-    assert not is_safe_category_name(".sync-state")
+    def slow_list():
+        started.set()
+        assert release.wait(5)
+        return []
+
+    client.provider.get_image_list = slow_list
+    worker = threading.Thread(target=client.get_remote_files)
+    worker.start()
+    assert started.wait(5)
+    client.close()
+    assert not closed.is_set()
+    release.set()
+    worker.join(5)
+    assert closes == [1]
