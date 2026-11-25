@@ -686,3 +686,62 @@ class AutoCollectReviewTests(unittest.IsolatedAsyncioTestCase):
         event = SimpleNamespace(message_obj=SimpleNamespace(message=[]))
         self.assertFalse(await self.manager.submit(event))
         self.assertEqual(self.manager.counters, {})
+
+    async def test_orphan_discard_missing_record_cooldown_and_provider_signature(self):
+        # 12a & 12b: missing record raises FileNotFoundError; orphaned file can be discarded
+        with self.assertRaises(FileNotFoundError):
+            self.manager.pending_image_path("pack-a", "pack-a:nonexistent")
+        record_id, _ = await self.add_candidate((12, 34, 56))
+        orphan_path = self.manager.pending_image_path("pack-a", record_id)
+        orphan_path.unlink()
+        discarded = await self.manager.discard_pending("pack-a", [record_id])
+        self.assertEqual(discarded["discarded"], 1)
+        self.assertEqual((await self.manager.pending_status("pack-a"))["count"], 0)
+        # 12d: first image is allowed even when monotonic() < cooldown_seconds, second is throttled
+        self.manager._ready = True
+        self.manager.cooldown_seconds = 30
+        self.manager.sampling_probability = 100
+        img1 = self.root / "c1.png"
+        img2 = self.root / "c2.png"
+        img1.write_bytes(png_bytes((1, 2, 3)))
+        img2.write_bytes(png_bytes((4, 5, 6)))
+        from astrbot.api.message_components import Image as AstrImage
+
+        with patch.object(
+            auto_collect,
+            "time",
+            SimpleNamespace(
+                monotonic=Mock(side_effect=[1.0, 2.0]),
+                time=auto_collect.time.time,
+            ),
+        ):
+            self.assertTrue(
+                await self.manager._snapshot_and_enqueue(
+                    AstrImage.fromFileSystem(str(img1)),
+                    "pack-a",
+                    {"happy": "happy"},
+                    "group",
+                    "g1",
+                    marked=True,
+                )
+            )
+            self.assertFalse(
+                await self.manager._snapshot_and_enqueue(
+                    AstrImage.fromFileSystem(str(img2)),
+                    "pack-a",
+                    {"happy": "happy"},
+                    "group",
+                    "g1",
+                    marked=True,
+                )
+            )
+        # 12e: decision_service signature includes provider
+        self.plugin.decision_client = SimpleNamespace(
+            provider="systemone", base_url="", model="m", timeout=10, max_concurrency=1
+        )
+        sig_a = self.manager._decision_service_signature()
+        self.plugin.decision_client = SimpleNamespace(
+            provider="cloudflare", base_url="", model="m", timeout=10, max_concurrency=1
+        )
+        sig_b = self.manager._decision_service_signature()
+        self.assertNotEqual(sig_a, sig_b)

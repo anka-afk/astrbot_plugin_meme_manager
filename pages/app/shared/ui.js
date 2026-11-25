@@ -249,6 +249,38 @@ async function uploadPackArchiveInChunks(file, { onProgress } = {}) {
   return result;
 }
 
+async function uploadRuntimeBackupInChunks(
+  file,
+  { overwrite = false, onProgress } = {},
+) {
+  const pageApi = window.AstrBotPluginPage;
+  if (!pageApi) {
+    throw new Error("页面无法连接 AstrBot");
+  }
+  const totalChunks = Math.max(
+    1,
+    Math.ceil((file?.size || 0) / PACK_ARCHIVE_CHUNK_SIZE),
+  );
+  const session = await pageApi.apiPost("settings/backup/import/session", {
+    filename: String(file?.name || "backup.zip"),
+    total_chunks: totalChunks,
+    overwrite: Boolean(overwrite),
+  });
+  const sessionId = session.session_id;
+  let result = null;
+  for (let index = 0; index < totalChunks; index += 1) {
+    const start = index * PACK_ARCHIVE_CHUNK_SIZE;
+    const end = Math.min(start + PACK_ARCHIVE_CHUNK_SIZE, file.size);
+    const chunk = file.slice(start, end);
+    result = await pageApi.upload(
+      `settings/backup/import/session/chunk/${sessionId}/${index}/${totalChunks}`,
+      chunk,
+    );
+    onProgress?.(index + 1, totalChunks);
+  }
+  return result;
+}
+
 window.MemeUI = {
   get navAuthToken() {
     return navAuthToken;
@@ -257,6 +289,7 @@ window.MemeUI = {
   ensureNavAuthToken,
   applySecureNavLinks,
   uploadPackArchiveInChunks,
+  uploadRuntimeBackupInChunks,
   toast(message, type = "info") {
     let container = document.getElementById("toast-container");
     if (!container) {

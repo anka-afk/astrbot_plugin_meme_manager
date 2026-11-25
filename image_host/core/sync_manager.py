@@ -430,6 +430,10 @@ class SyncManager:
                         if task == "overwrite_to_remote":
                             if not self.image_host.delete_image(image["id"]):
                                 raise OSError("Provider did not confirm deletion")
+                            if self.upload_tracker:
+                                self.upload_tracker.remove_record(
+                                    Path(image["filename"]), image["category"]
+                                )
                         else:
                             path = self.file_handler.get_file_path(
                                 image["category"],

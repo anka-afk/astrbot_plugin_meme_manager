@@ -433,7 +433,11 @@ class StarDotsProvider(ImageHostInterface):
                     f"StarDots download failed: HTTP {response.status_code}"
                 )
             size = image_info.get("size")
-            if size is None and response.headers.get("Content-Length", "").isdigit():
+            if (
+                size is None
+                and not response.headers.get("Content-Encoding")
+                and response.headers.get("Content-Length", "").isdigit()
+            ):
                 size = int(response.headers["Content-Length"])
             save_image_stream(
                 response.iter_content(chunk_size=1024 * 1024),

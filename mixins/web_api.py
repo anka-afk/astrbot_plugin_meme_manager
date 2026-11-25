@@ -534,6 +534,18 @@ class WebAPIMixin:
             "导入运行时全量备份",
         )
         self._register_webui_api(
+            "settings/backup/import/session",
+            self._api_start_runtime_backup_import_session,
+            ["POST"],
+            "创建运行时全量备份分片导入会话",
+        )
+        self._register_webui_api(
+            "settings/backup/import/session/chunk/<session_id>/<index>/<total_chunks>",
+            self._api_upload_runtime_backup_import_chunk,
+            ["POST"],
+            "上传运行时全量备份分片（表单字段 file）",
+        )
+        self._register_webui_api(
             "bridge/auth_token",
             self._api_bridge_auth_token,
             ["GET"],
@@ -2984,7 +2996,9 @@ class WebAPIMixin:
                 pack_id, data.get("items")
             )
             return jsonify(result), 200
-        except (ValueError, FileNotFoundError) as exc:
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except ValueError as exc:
             return jsonify({"message": str(exc)}), 400
         except RuntimeError as exc:
             return jsonify({"message": str(exc)}), 409
@@ -3006,7 +3020,9 @@ class WebAPIMixin:
                 pack_id, data.get("ids"), data.get("remember_rejection", False)
             )
             return jsonify(result), 200
-        except (ValueError, FileNotFoundError) as exc:
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except ValueError as exc:
             return jsonify({"message": str(exc)}), 400
 
     async def _api_semantic_import_auto_inbox(self):
@@ -4819,3 +4835,180 @@ class WebAPIMixin:
                     temp_zip_path.unlink()
                 except Exception:
                     pass
+
+    @staticmethod
+    def _runtime_backup_import_session_dir() -> Path:
+        session_dir = (TEMP_DIR / "runtime_backup_import_sessions").resolve()
+        session_dir.mkdir(parents=True, exist_ok=True)
+        return session_dir
+
+    def _runtime_backup_import_session_paths(self, session_id: str) -> tuple[Path, Path]:
+        normalized = str(session_id or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{32}", normalized):
+            raise ValueError("无效的备份导入会话，请重新选择备份文件")
+        session_dir = self._runtime_backup_import_session_dir()
+        return (
+            (session_dir / f"{normalized}.zip").resolve(),
+            (session_dir / f"{normalized}.json").resolve(),
+        )
+
+    def _cleanup_runtime_backup_import_sessions(self) -> None:
+        session_dir = self._runtime_backup_import_session_dir()
+        now = time.time()
+        for path in session_dir.iterdir():
+            try:
+                if path.is_file() and now - path.stat().st_mtime > 1800:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                continue
+
+    async def _api_start_runtime_backup_import_session(self):
+        """创建运行时全量备份分片导入会话，突破单次 JSON/请求体大小上限。"""
+        try:
+            self._cleanup_runtime_backup_import_sessions()
+            data, error = await self._read_json_object()
+            if error:
+                return error
+            session_id = secrets.token_hex(16)
+            filename = str(data.get("filename") or "").strip()
+            total_chunks = _parse_int(data.get("total_chunks"), 0)
+            overwrite_raw = data.get("overwrite", False)
+            overwrite = (
+                overwrite_raw
+                if isinstance(overwrite_raw, bool)
+                else str(overwrite_raw).strip().lower() in {"1", "true", "yes", "on"}
+            )
+            if not filename or not filename.lower().endswith(".zip"):
+                raise ValueError("仅支持 zip 备份文件")
+            if not 1 <= total_chunks <= 2000:
+                raise ValueError("分片数量无效")
+            archive_path, metadata_path = self._runtime_backup_import_session_paths(
+                session_id
+            )
+            archive_path.write_bytes(b"")
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "filename": filename,
+                        "total_chunks": total_chunks,
+                        "received_chunks": 0,
+                        "overwrite": overwrite,
+                        "created_at": time.time(),
+                        "state": "uploading",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            return (
+                jsonify(
+                    {
+                        "message": "备份导入会话已创建",
+                        "session_id": session_id,
+                        "total_chunks": total_chunks,
+                    }
+                ),
+                200,
+            )
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
+        except (OSError, RuntimeError, TypeError, KeyError) as exc:
+            logger.error("创建运行时备份导入会话失败：%s", exc, exc_info=True)
+            return jsonify({"message": "创建备份导入会话失败"}), 500
+
+    async def _api_upload_runtime_backup_import_chunk(
+        self, session_id, index, total_chunks
+    ):
+        """追加运行时全量备份分片，收齐后立即执行恢复并清理临时文件。"""
+        archive_path = None
+        metadata_path = None
+        discard_session = False
+        try:
+            self._prepare_archive_upload_request()
+            self._cleanup_runtime_backup_import_sessions()
+            archive_path, metadata_path = self._runtime_backup_import_session_paths(
+                session_id
+            )
+            files = await request.files
+            if not files or "file" not in files:
+                raise ValueError("缺少上传文件字段 file")
+            uploaded_file = files["file"]
+            read = getattr(uploaded_file, "read", None) or uploaded_file.stream.read
+            if inspect.iscoroutinefunction(read):
+                chunk = await read()
+            else:
+                chunk = await asyncio.to_thread(read)
+                if inspect.isawaitable(chunk):
+                    chunk = await chunk
+
+            if not metadata_path.is_file():
+                raise ValueError("备份导入会话已失效，请重新选择备份文件")
+            session_data = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if not isinstance(session_data, dict):
+                raise TypeError("备份导入会话已失效，请重新选择备份文件")
+            if session_data.get("state") != "uploading":
+                return jsonify({"message": "备份已上传完成，请勿重复上传分片"}), 409
+            chunk_index = _parse_int(index)
+            chunk_total = _parse_int(total_chunks)
+            if chunk_total != int(session_data.get("total_chunks") or 0):
+                raise ValueError("分片总数与会话不一致，请重新上传")
+            if not 0 <= chunk_index < chunk_total:
+                raise ValueError("分片序号无效")
+            if chunk_index != session_data["received_chunks"]:
+                return jsonify({"message": "分片重复或顺序错误，请按顺序上传"}), 409
+            if archive_path.stat().st_size + len(chunk) > MAX_PACK_ARCHIVE_BYTES:
+                raise RequestEntityTooLarge()
+            discard_session = True
+            with archive_path.open("ab") as handle:
+                handle.write(chunk)
+            session_data["received_chunks"] = chunk_index + 1
+            if chunk_index + 1 == chunk_total:
+                session_data["state"] = "importing"
+            metadata_path.write_text(
+                json.dumps(session_data, ensure_ascii=False), encoding="utf-8"
+            )
+            if chunk_index + 1 < chunk_total:
+                discard_session = False
+                return (
+                    jsonify(
+                        {
+                            "message": "分片已接收",
+                            "received": chunk_index + 1,
+                            "total": chunk_total,
+                        }
+                    ),
+                    200,
+                )
+
+            import_task = asyncio.create_task(
+                self._run_guarded_runtime_file_operation(
+                    "恢复全量备份",
+                    import_runtime_backup,
+                    archive_path,
+                    overwrite=bool(session_data.get("overwrite", False)),
+                )
+            )
+            try:
+                result = await asyncio.shield(import_task)
+            except asyncio.CancelledError:
+                await asyncio.gather(import_task, return_exceptions=True)
+                raise
+            self._reload_personas()
+            return jsonify({"message": "全量备份导入成功", **result}), 200
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except RequestEntityTooLarge:
+            return jsonify({"message": "备份文件超过 1 GB，无法通过 WebUI 导入"}), 413
+        except (FileNotFoundError, TypeError, ValueError, zipfile.BadZipFile) as exc:
+            return jsonify({"message": str(exc)}), 400
+        except (OSError, KeyError) as exc:
+            logger.error("分片导入运行时备份失败：%s", exc, exc_info=True)
+            return jsonify({"message": "分片导入全量备份失败"}), 500
+        finally:
+            if discard_session:
+                for path in (archive_path, metadata_path):
+                    if path:
+                        try:
+                            path.unlink(missing_ok=True)
+                        except OSError:
+                            pass

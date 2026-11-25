@@ -576,16 +576,14 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                         "迁移旧版同步状态目录 %s 失败：%s", legacy_state_dir, exc
                     )
             # 构建适配器时仅验证配置，不发起网络探测。
+            previous_sync = self.img_sync
             try:
-                previous_sync = self.img_sync
                 self.img_sync = ImageSync(
                     config=self.img_sync_config,
                     local_dir=target_memes_dir,
                     provider_type=self.img_sync_provider_type,
                     state_dir=sync_state_dir,
                 )
-                if previous_sync:
-                    previous_sync.close()
             except Exception as exc:
                 logger.error(
                     "图床 %s 初始化失败，无法同步：%s",
@@ -593,7 +591,17 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                     exc,
                 )
                 self.img_sync = None
+                if previous_sync:
+                    try:
+                        previous_sync.close()
+                    except Exception as close_exc:
+                        logger.warning("关闭旧图床客户端失败：%s", close_exc)
                 return None
+            if previous_sync:
+                try:
+                    previous_sync.close()
+                except Exception as close_exc:
+                    logger.warning("关闭旧图床客户端失败：%s", close_exc)
 
         self._img_sync_pack_id = target_pack_id
         return self.img_sync

@@ -205,3 +205,47 @@ test("large archives are uploaded in chunks", async () => {
   assert.match(uploaded[2].endpoint, /^packs\/import\/session\/chunk\/[0-9a-f]{32}\/2\/3$/);
   assert.deepEqual(result, { import_token: "token" });
 });
+
+test("apiPost preserves caller-supplied pack id and runtime backup uploads in chunks", async () => {
+  const c = manageContext("pack-b");
+  await c.apiPost("emoji/delete", {
+    managed_pack_id: "pack-a",
+    category: "happy",
+    image_file: "a.png",
+  });
+  assert.equal(c.posted[0].body.managed_pack_id, "pack-a");
+
+  const posted = [];
+  const uploaded = [];
+  const context = vm.createContext({
+    window: {
+      AstrBotPluginPage: {
+        apiPost: async (endpoint, body) => {
+          posted.push({ endpoint, body });
+          return { session_id: "c".repeat(32) };
+        },
+        upload: async (endpoint, file) => {
+          uploaded.push({ endpoint, file });
+          return { restored_items: ["packs"] };
+        },
+      },
+    },
+  });
+  vm.runInContext(chunkHelpers, context);
+  const file = {
+    size: 10 * 1024 * 1024,
+    name: "backup.zip",
+    slice: (start, end) => ({ size: end - start, name: "backup.zip" }),
+  };
+  const result = await context.uploadRuntimeBackupInChunks(file, {
+    overwrite: true,
+  });
+  assert.equal(posted[0].endpoint, "settings/backup/import/session");
+  assert.equal(posted[0].body.overwrite, true);
+  assert.equal(uploaded.length, 2);
+  assert.match(
+    uploaded[1].endpoint,
+    /^settings\/backup\/import\/session\/chunk\/[0-9a-f]{32}\/1\/2$/,
+  );
+  assert.deepEqual(result, { restored_items: ["packs"] });
+});

@@ -635,9 +635,9 @@ class CommandMixin:
 
                     # 显示所有文件类别的统计
                     try:
-                        if hasattr(sync_client.provider, "get_image_list"):
+                        if hasattr(sync_client, "get_remote_files"):
                             remote_images = await asyncio.to_thread(
-                                sync_client.provider.get_image_list
+                                sync_client.get_remote_files
                             )
                             remote_stats = {}
                             for img in remote_images:
@@ -929,7 +929,7 @@ class CommandMixin:
 
                 try:
                     remote_images = await asyncio.to_thread(
-                        sync_client.provider.get_image_list
+                        sync_client.get_remote_files
                     )
                     remote_stats = {}
                     remote_total = len(remote_images)

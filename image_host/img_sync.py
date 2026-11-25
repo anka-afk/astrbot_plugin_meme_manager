@@ -96,10 +96,34 @@ class ImageSync:
         self.sync_process = None
         self._sync_task = None
         self._process_lock = threading.Lock()
+        self._use_lock = threading.Lock()
+        self._active_calls = 0
+        self._close_requested = False
+        self._provider_closed = False
         self._cancel_event = None
         self._progress_path = self._state_dir / f"{self.scope}.task.json"
         self._task_id = ""
         self._last_progress: dict = {}
+
+    def _begin_provider_call(self) -> None:
+        with self._use_lock:
+            if self._close_requested or self._provider_closed:
+                raise RuntimeError("图床同步客户端已关闭，请重试")
+            self._active_calls += 1
+
+    def _end_provider_call(self) -> None:
+        should_close = False
+        with self._use_lock:
+            self._active_calls = max(0, self._active_calls - 1)
+            if (
+                self._active_calls == 0
+                and self._close_requested
+                and not self._provider_closed
+            ):
+                self._provider_closed = True
+                should_close = True
+        if should_close:
+            self.provider.close()
 
     def check_status(self) -> dict:
         """返回当前目标的完整内容比较结果。
@@ -107,7 +131,11 @@ class ImageSync:
         Returns:
             规划中的增量传输项、冲突项及镜像候选项。
         """
-        return self.sync_manager.check_sync_status()
+        self._begin_provider_call()
+        try:
+            return self.sync_manager.check_sync_status()
+        finally:
+            self._end_provider_call()
 
     async def start_sync(self, task: str) -> bool:
         """启动受保护的工作进程，并在事件循环外等待捕获的进程。
@@ -190,7 +218,11 @@ class ImageSync:
 
     def get_remote_files(self) -> list[dict]:
         """返回完整的远端图片清单。"""
-        return self.provider.get_image_list()
+        self._begin_provider_call()
+        try:
+            return self.provider.get_image_list()
+        finally:
+            self._end_provider_call()
 
     def delete_remote_file(self, image_id: str) -> bool:
         """没有同步工作进程运行时，删除不透明的远端 ID。
@@ -201,10 +233,14 @@ class ImageSync:
         Returns:
             删除是否成功。
         """
-        with self._process_lock:
-            if self.sync_process and self.sync_process.is_alive():
-                raise RuntimeError("已有同步任务正在运行，请等待完成后再试")
-            return self.provider.delete_image(image_id)
+        self._begin_provider_call()
+        try:
+            with self._process_lock:
+                if self.sync_process and self.sync_process.is_alive():
+                    raise RuntimeError("已有同步任务正在运行，请等待完成后再试")
+                return self.provider.delete_image(image_id)
+        finally:
+            self._end_provider_call()
 
     def _start_sync_process(self, task: str) -> multiprocessing.Process:
         """串行化所有工作进程入口，包括 WebUI 与聊天命令。
@@ -307,9 +343,16 @@ class ImageSync:
         return progress
 
     def close(self) -> None:
-        """停止工作进程并释放提供方的连接池。"""
+        """停止工作进程并释放提供方的连接池；若有后台读请求在途，延迟至其结束后释放。"""
         self.stop_sync()
-        self.provider.close()
+        should_close = False
+        with self._use_lock:
+            self._close_requested = True
+            if self._active_calls == 0 and not self._provider_closed:
+                self._provider_closed = True
+                should_close = True
+        if should_close:
+            self.provider.close()
 
 
 def run_sync_process(

@@ -100,6 +100,8 @@ class ManualCollectManager:
         Returns:
             开始收集的指引，或可据此处理的配置错误。
         """
+        if self.closing:
+            return "收集服务正在关闭，无法开始收集。"
         key = self.key(event)
         if key in self.sessions:
             return "已在收集中；发送 /表情管理 结束收集 可结束。"
@@ -107,6 +109,8 @@ class ManualCollectManager:
             pack_id, categories = await self.collection.prepare_manual(event)
         except (ValueError, OSError) as exc:
             return f"无法开始收集：{exc}"
+        if self.closing:
+            return "收集服务正在关闭，无法开始收集。"
         # 提供方启动时可能让出执行权，保留已创建的会话。
         if key in self.sessions:
             return "已在收集中；发送 /表情管理 结束收集 可结束。"
@@ -149,10 +153,14 @@ class ManualCollectManager:
                 if reply is not None
                 else "请引用含图片的消息，或附带图片发送 /表情管理 收集表情。"
             )
+        if self.closing:
+            return "收集服务正在关闭，无法收集。"
         try:
             pack_id, categories = await self.collection.prepare_manual(event)
         except (ValueError, OSError) as exc:
             return f"无法收集：{exc}"
+        if self.closing:
+            return "收集服务正在关闭，无法收集。"
         session = ManualCollection(pack_id, categories, event, closed=True)
         return await self._submit(event, session, images)
 
@@ -230,30 +238,36 @@ class ManualCollectManager:
         session.total += len(images)
         session.counts["limit"] += len(images) - len(selected)
         session.pending += len(selected)
-        snapshot = asyncio.create_task(
-            self.collection.submit_manual(
-                event, selected, session.pack_id, session.categories
-            )
-        )
-        self.tasks.add(snapshot)
-        snapshot.add_done_callback(self.tasks.discard)
-        completions = await snapshot
-        if self.closing:
-            return ""
-        note = (
-            f"，另有 {len(images) - len(selected)} 张超出单条上限"
-            if len(images) > len(selected)
-            else ""
-        )
-        acknowledgment = f"已提交 {len(selected)} 张至表情包「{session.pack_id}」处理{note}；识别、去重与入包结果以处理汇总为准。"
+        observed = False
         try:
-            await event.send(event.plain_result(acknowledgment))
+            snapshot = asyncio.create_task(
+                self.collection.submit_manual(
+                    event, selected, session.pack_id, session.categories
+                )
+            )
+            self.tasks.add(snapshot)
+            snapshot.add_done_callback(self.tasks.discard)
+            completions = await snapshot
+            if self.closing:
+                return ""
+            note = (
+                f"，另有 {len(images) - len(selected)} 张超出单条上限"
+                if len(images) > len(selected)
+                else ""
+            )
+            acknowledgment = f"已提交 {len(selected)} 张至表情包「{session.pack_id}」处理{note}；识别、去重与入包结果以处理汇总为准。"
+            try:
+                await event.send(event.plain_result(acknowledgment))
+            finally:
+                if not self.closing:
+                    task = asyncio.create_task(self._observe(session, completions))
+                    observed = True
+                    self.tasks.add(task)
+                    task.add_done_callback(self.tasks.discard)
+            return ""
         finally:
-            if not self.closing:
-                task = asyncio.create_task(self._observe(session, completions))
-                self.tasks.add(task)
-                task.add_done_callback(self.tasks.discard)
-        return ""
+            if not observed:
+                session.pending = max(0, session.pending - len(selected))
 
     async def _observe(
         self, session: ManualCollection, completions: list[asyncio.Future[str]]

@@ -233,10 +233,13 @@ def validate_settings_changes(
         model = str(decision.get("model") or "").strip()
         if model and model not in CLOUDFLARE_MODELS:
             raise ValueError("决策模型 ID 仅支持 clef、clef-flash、clef-omni。")
-    selection = updated.get("generation", {}).get("emotion", {}).get("llm", {})
+    emotion = updated.get("generation", {}).get("emotion", {})
+    selection = emotion.get("llm", {})
     collection = updated.get("auto_collect", {})
     decision_used = (
-        selection.get("enabled") and selection.get("backend") == "decision"
+        not emotion.get("tool_only")
+        and selection.get("enabled")
+        and selection.get("backend") == "decision"
     ) or (
         collection.get("enabled") and collection.get("judgment_backend") == "decision"
     )

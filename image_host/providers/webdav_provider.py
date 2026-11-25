@@ -160,7 +160,7 @@ class WebDAVProvider(ImageHostInterface):
                 if response.status_code == 404 and remote_dir == self.base_path:
                     self.listing_exists = False
                     return []
-                entries = self._parse_propfind_response(response.text, remote_dir)
+                entries = self._parse_propfind_response(response.content, remote_dir)
             finally:
                 response.close()
             for entry in entries:
@@ -221,7 +221,11 @@ class WebDAVProvider(ImageHostInterface):
                     f"WebDAV download failed: HTTP {response.status_code}"
                 )
             size = image_info.get("size")
-            if size is None and response.headers.get("Content-Length", "").isdigit():
+            if (
+                size is None
+                and not response.headers.get("Content-Encoding")
+                and response.headers.get("Content-Length", "").isdigit()
+            ):
                 size = int(response.headers["Content-Length"])
             save_image_stream(
                 response.iter_content(chunk_size=1024 * 1024),
@@ -260,7 +264,7 @@ class WebDAVProvider(ImageHostInterface):
         return response
 
     def _parse_propfind_response(
-        self, xml_text: str, requested_path: str
+        self, xml_text: bytes | str, requested_path: str
     ) -> list[dict]:
         """要求资源类型状态成功，并保留可选元数据。
 

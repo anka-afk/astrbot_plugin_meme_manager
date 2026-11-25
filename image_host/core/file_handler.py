@@ -5,6 +5,7 @@ import json
 import ntpath
 import os
 import tempfile
+import time
 from collections.abc import Iterable
 from pathlib import Path, PureWindowsPath
 
@@ -104,7 +105,16 @@ def write_json_atomic(target: Path, data: dict) -> None:
             json.dump(data, stream, ensure_ascii=False)
             stream.flush()
             os.fsync(stream.fileno())
-        temporary.replace(target)
+        attempts = 10 if os.name == "nt" else 1
+        for attempt in range(attempts):
+            try:
+                temporary.replace(target)
+                temporary = None
+                break
+            except PermissionError:
+                if attempt + 1 >= attempts:
+                    raise
+                time.sleep(min(0.01 * (attempt + 1), 0.1))
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)

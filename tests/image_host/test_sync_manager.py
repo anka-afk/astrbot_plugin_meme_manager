@@ -368,3 +368,55 @@ def test_remote_root_disappearing_before_cleanup_preserves_local(
     assert not manager.overwrite_from_remote()
     assert local.is_file()
     assert "disappeared" in manager.progress["message"]
+
+
+def test_overwrite_to_remote_removes_deleted_upload_tracker_record(
+    manager, host, make_image
+):
+    path = make_image("happy/meme.png")
+    assert manager.sync_to_remote()
+    assert manager.upload_tracker.is_uploaded(path, "happy")
+    assert manager.upload_tracker.get_uploaded_count() == 1
+    path.unlink()
+    assert manager.overwrite_to_remote()
+    assert manager.upload_tracker.get_uploaded_count() == 0
+
+
+def test_image_sync_close_defers_provider_close_during_active_call(tmp_path):
+    import threading
+    from unittest.mock import Mock
+    from image_host.img_sync import ImageSync
+
+    started = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+
+    sync = object.__new__(ImageSync)
+    sync.sync_process = None
+    sync._sync_task = None
+    sync._process_lock = threading.Lock()
+    sync._use_lock = threading.Lock()
+    sync._active_calls = 0
+    sync._close_requested = False
+    sync._provider_closed = False
+    sync._cancel_event = None
+    sync._last_progress = {}
+    sync.provider = Mock()
+    sync.provider.close.side_effect = closed.set
+    sync.sync_manager = Mock()
+
+    def slow_status():
+        started.set()
+        assert release.wait(5)
+        return {"is_synced": True}
+
+    sync.sync_manager.check_sync_status.side_effect = slow_status
+    worker = threading.Thread(target=sync.check_status)
+    worker.start()
+    assert started.wait(5)
+    sync.close()
+    assert not closed.is_set()
+    release.set()
+    worker.join(5)
+    assert closed.is_set()
+    sync.provider.close.assert_called_once()

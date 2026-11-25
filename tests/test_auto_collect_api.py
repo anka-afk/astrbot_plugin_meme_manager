@@ -188,3 +188,18 @@ async def test_discard_remembers_only_explicit_rejection(review_api):
         assert (await response.get_json())["discarded"] == 1
     state = json.loads(auto_collect.AUTO_COLLECT_STATE_PATH.read_text("utf-8"))
     assert record_id.split(":", 1)[1] in state["rejected"]["first"]
+
+
+@pytest.mark.asyncio
+async def test_missing_record_returns_404_on_accept_and_discard(review_api):
+    app, subject, _, _ = review_api
+    async with app.test_request_context(
+        "/", method="POST", json={"pack_id": "first", "items": [{"id": "first:missing"}]}
+    ):
+        _, status = await subject._api_auto_collect_accept()
+        assert status == 404
+    async with app.test_request_context(
+        "/", method="POST", json={"pack_id": "first", "ids": ["first:missing"]}
+    ):
+        _, status = await subject._api_auto_collect_discard()
+        assert status == 404

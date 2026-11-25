@@ -614,3 +614,37 @@ def test_webdav_collection_trailing_slash_and_weak_etag_skips_if_match(
         "https://dav.example/root/memes/happy/meme.png",
         {},
     )
+
+
+def test_webdav_utf8_propfind_and_compressed_download_length_skip(
+    webdav, stardots, response, monkeypatch, make_image, tmp_path
+):
+    xml_bytes = (
+        '<D:multistatus xmlns:D="DAV:"><D:response><D:href>/root/memes/%E5%BC%80%E5%BF%83.png</D:href>'
+        "<D:propstat><D:prop><D:resourcetype/><D:getcontentlength>10</D:getcontentlength></D:prop>"
+        "<D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"
+    ).encode("utf-8")
+    parsed = webdav._parse_propfind_response(xml_bytes, "memes")
+    assert parsed[0]["path"] == "memes/开心.png"
+
+    path = make_image("happy/meme.png")
+    content = path.read_bytes()
+    headers = {"Content-Encoding": "gzip", "Content-Length": "1"}
+    monkeypatch.setattr(
+        webdav.session,
+        "request",
+        lambda *args, **kwargs: response(200, content=content, headers=headers),
+    )
+    assert webdav.download_image({"id": "happy/meme.png"}, tmp_path / "dav.png")
+
+    monkeypatch.setattr(
+        stardots,
+        "_make_request",
+        lambda *args, **kwargs: {"data": {"ticket": "t"}},
+    )
+    monkeypatch.setattr(
+        stardots.session,
+        "get",
+        lambda *args, **kwargs: response(200, content=content, headers=headers),
+    )
+    assert stardots.download_image({"id": "meme.png"}, tmp_path / "sd.png")

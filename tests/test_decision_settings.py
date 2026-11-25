@@ -336,3 +336,29 @@ async def test_decision_test_does_not_leak_saved_token_across_target_change(
     monkeypatch.setattr(DecisionClient, "_get_session", unexpected_request)
     status, body = await settings_call(settings_api, "decision_test", draft)
     assert status == 200 and not body["ok"] and body["reason"] == "missing_token"
+
+
+def test_tool_only_skips_decision_requirement_for_selection_only(shared_config):
+    snapshot, values = describe_settings(shared_config)
+    updated = validate_settings_changes(
+        values,
+        snapshot["fields"],
+        {
+            "generation.emotion.tool_only": True,
+            "generation.emotion.llm.enabled": True,
+            "generation.emotion.llm.backend": "decision",
+        },
+        shared_config.schema,
+    )
+    assert updated["generation"]["emotion"]["tool_only"] is True
+    with pytest.raises(ValueError, match="密钥"):
+        validate_settings_changes(
+            values,
+            snapshot["fields"],
+            {
+                "generation.emotion.tool_only": True,
+                "auto_collect.enabled": True,
+                "auto_collect.judgment_backend": "decision",
+            },
+            shared_config.schema,
+        )

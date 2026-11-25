@@ -883,10 +883,12 @@ class AutoCollectManager:
                 return False
             cooldown_key = f"{source_kind}:{source_id}"
             now = time.monotonic()
+            last_seen = self._cooldowns.get(cooldown_key)
             if (
                 not manual
                 and not same_message
-                and now - self._cooldowns.get(cooldown_key, 0.0) < self.cooldown_seconds
+                and last_seen is not None
+                and now - last_seen < self.cooldown_seconds
             ):
                 self.counters["cooldown"] = self.counters.get("cooldown", 0) + 1
                 logger.info(
@@ -911,7 +913,18 @@ class AutoCollectManager:
             )
             queued = True
             if not manual:
+                self._cooldowns.pop(cooldown_key, None)
                 self._cooldowns[cooldown_key] = now
+                if len(self._cooldowns) > 1024:
+                    expired = [
+                        key
+                        for key, ts in self._cooldowns.items()
+                        if now - ts >= self.cooldown_seconds
+                    ]
+                    for key in expired:
+                        self._cooldowns.pop(key, None)
+                    while len(self._cooldowns) > 4096:
+                        self._cooldowns.pop(next(iter(self._cooldowns)), None)
             return True
         except asyncio.CancelledError:
             if copy_task is not None and not copy_task.done():
@@ -1046,7 +1059,7 @@ class AutoCollectManager:
         client = getattr(self.plugin, "decision_client", None)
         public_config = {
             key: getattr(client, key, "")
-            for key in ("base_url", "model", "timeout", "max_concurrency")
+            for key in ("provider", "base_url", "model", "timeout", "max_concurrency")
         }
         return hashlib.sha256(
             json.dumps(public_config, sort_keys=True, default=str).encode()
@@ -1546,23 +1559,37 @@ class AutoCollectManager:
         pack_id = validate_pack_id(pack_id, "自动收集目标表情包")
         if not is_safe_category_name(category):
             raise ValueError("自动收集分类名不安全")
-        pack_dir = (PACKS_DIR / pack_id).resolve()
+        raw_pack_dir = PACKS_DIR / pack_id
+        if raw_pack_dir.is_symlink() or getattr(
+            raw_pack_dir, "is_junction", lambda: False
+        )():
+            raise ValueError("自动收集目标表情包不可用")
+        pack_dir = raw_pack_dir.resolve()
         packs_root = PACKS_DIR.resolve()
         try:
             pack_dir.relative_to(packs_root)
         except ValueError as exc:
             raise ValueError("自动收集表情包路径超出了表情包根目录") from exc
-        if not pack_dir.is_dir() or (PACKS_DIR / pack_id).is_symlink():
+        if not pack_dir.is_dir():
             raise ValueError("自动收集目标表情包不可用")
         if AutoCollectManager._pack_contains_digest(pack_id, digest):
             return None
-        category_dir = (pack_dir / "memes" / category).resolve()
+        raw_memes_dir = pack_dir / "memes"
+        if raw_memes_dir.is_symlink() or getattr(
+            raw_memes_dir, "is_junction", lambda: False
+        )():
+            raise ValueError("自动收集表情目录不能是符号链接")
+        raw_category_dir = raw_memes_dir / category
+        if raw_category_dir.is_symlink() or getattr(
+            raw_category_dir, "is_junction", lambda: False
+        )():
+            raise ValueError("自动收集分类目录不能是符号链接")
+        memes_root = raw_memes_dir.resolve()
+        category_dir = raw_category_dir.resolve()
         try:
-            category_dir.relative_to(pack_dir / "memes")
+            category_dir.relative_to(memes_root)
         except ValueError as exc:
             raise ValueError("自动收集分类路径超出了目标表情包") from exc
-        if category_dir.exists() and category_dir.is_symlink():
-            raise ValueError("自动收集分类目录不能是符号链接")
         category_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{int(time.time() * 1000)}_{digest[:12]}{extension}"
         target = category_dir / filename
@@ -1962,8 +1989,15 @@ class AutoCollectManager:
             },
         }
 
+    _MISSING_RECORD = object()
+
     def pending_image_path(
-        self, pack_id: str, record_id: str, *, _record: dict[str, Any] | None = None
+        self,
+        pack_id: str,
+        record_id: str,
+        *,
+        _record: Any = _MISSING_RECORD,
+        require_file: bool = True,
     ) -> Path:
         """解析候选图片，并校验表情包归属与文件路径边界。
 
@@ -1971,9 +2005,10 @@ class AutoCollectManager:
             pack_id: 目标表情包标识符。
             record_id: 候选记录标识符。
             _record: 持有待审箱锁时读取的内部批量记录。
+            require_file: 为 False 时允许孤立记录（磁盘文件已缺失）通过校验。
 
         Returns:
-            安全且存在的图片路径。
+            安全且（在 require_file=True 时）存在的图片路径。
 
         Raises:
             ValueError: 记录属于其他表情包，或路径不安全。
@@ -1981,7 +2016,7 @@ class AutoCollectManager:
         """
         pack_id = validate_pack_id(pack_id, "表情包")
         item = _record
-        if item is None:
+        if item is self._MISSING_RECORD:
             metadata = self._load_json(AUTO_COLLECT_INBOX_METADATA_PATH, {"items": {}})
             items = metadata.get("items", {})
             item = items.get(record_id) if isinstance(items, dict) else None
@@ -2000,7 +2035,7 @@ class AutoCollectManager:
             or source.resolve().parent != AUTO_COLLECT_INBOX_IMAGES_DIR.resolve()
         ):
             raise ValueError("待审核图片路径无效")
-        if not source.is_file():
+        if require_file and not source.is_file():
             raise FileNotFoundError("待审核图片文件不存在")
         return source
 
@@ -2043,7 +2078,7 @@ class AutoCollectManager:
                 record_id = str(selection.get("id") or "")
                 try:
                     source = self.pending_image_path(
-                        pack_id, record_id, _record=items.get(record_id, {})
+                        pack_id, record_id, _record=items.get(record_id)
                     )
                 except (FileNotFoundError, ValueError):
                     if not manual_confirmed:
@@ -2286,6 +2321,7 @@ class AutoCollectManager:
         Raises:
             ValueError: 选择内容或表情包归属无效。
         """
+        pack_id = validate_pack_id(pack_id, "表情包")
         if (
             not isinstance(ids, list)
             or not ids
@@ -2298,7 +2334,10 @@ class AutoCollectManager:
             items = metadata.get("items", {})
             paths = {
                 record_id: self.pending_image_path(
-                    pack_id, record_id, _record=items.get(record_id, {})
+                    pack_id,
+                    record_id,
+                    _record=items.get(record_id),
+                    require_file=False,
                 )
                 for record_id in ids
             }
