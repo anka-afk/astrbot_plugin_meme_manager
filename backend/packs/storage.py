@@ -768,6 +768,7 @@ def _copy_legacy_pack(
 
     target_memes = target_root / "memes"
     target_memes.mkdir(parents=True, exist_ok=True)
+    seen_by_category: dict[str, set[str]] = {}
     for source_path in sorted(source_memes.rglob("*")):
         if (
             not source_path.is_file()
@@ -775,11 +776,27 @@ def _copy_legacy_pack(
         ):
             continue
         relative = source_path.relative_to(source_memes)
-        if not relative.parts or relative.parts[0].startswith("."):
+        if not relative.parts or any(part.startswith(".") for part in relative.parts):
             continue
         if len(relative.parts) == 1:
-            relative = Path("default") / relative
-        target_path = target_memes / relative
+            category = "default"
+            filename = relative.parts[0]
+        elif len(relative.parts) == 2:
+            category, filename = relative.parts
+        else:
+            category = relative.parts[0]
+            prefix = "_".join(relative.parts[1:-1])
+            filename = f"{prefix}_{relative.parts[-1]}"
+        used = seen_by_category.setdefault(category.casefold(), set())
+        stem = Path(filename).stem
+        suffix = Path(filename).suffix
+        candidate_name = filename
+        counter = 2
+        while candidate_name.casefold() in used:
+            candidate_name = f"{stem}_{counter}{suffix}"
+            counter += 1
+        used.add(candidate_name.casefold())
+        target_path = target_memes / category / candidate_name
         target_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, target_path)
 
@@ -1006,7 +1023,10 @@ def _allocate_pack_id(base_pack_id: str) -> str:
         return base
     index = 2
     while True:
-        candidate = f"{base}-{index}"
+        suffix = f"-{index}"
+        max_prefix_len = max(1, 64 - len(suffix))
+        prefix = base[:max_prefix_len].rstrip("-") or base[:max_prefix_len]
+        candidate = validate_pack_id(f"{prefix}{suffix}")
         if not (PACKS_DIR / candidate).exists():
             return candidate
         index += 1

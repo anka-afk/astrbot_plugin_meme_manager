@@ -576,8 +576,8 @@ class SemanticImage:
         )
 
 
-def parse_caption_result(value: Any) -> tuple[str, list[str], str]:
-    """严格校验视觉模型结果，只返回可用于向量化的三个字段。"""
+def _extract_caption_payload(value: Any) -> dict[str, Any]:
+    """从视觉模型原始输出中提取单个一致的 JSON 对象。"""
     if isinstance(value, str):
         raw = value.strip()
         try:
@@ -610,9 +610,15 @@ def parse_caption_result(value: Any) -> tuple[str, list[str], str]:
                 raise ValueError("视觉模型没有返回 JSON")
     if not isinstance(value, dict):
         raise ValueError("视觉模型结果必须是 JSON 对象")
-    caption = str(value.get("caption") or "").strip()
-    tags = normalize_tags(value.get("tags"))
-    visible_text = str(value.get("visible_text") or "").strip()
+    return value
+
+
+def parse_caption_result(value: Any) -> tuple[str, list[str], str]:
+    """严格校验视觉模型结果，只返回可用于向量化的三个字段。"""
+    payload = _extract_caption_payload(value)
+    caption = str(payload.get("caption") or "").strip()
+    tags = normalize_tags(payload.get("tags"))
+    visible_text = str(payload.get("visible_text") or "").strip()
     if not caption or not tags:
         raise ValueError("视觉模型结果缺少 caption 或 tags")
     return caption, tags, visible_text
@@ -622,26 +628,8 @@ def parse_caption_result_with_review(
     value: Any,
 ) -> tuple[str, list[str], str, str, str, str]:
     """解析带分类符合判断的视觉结果，并兼容旧模型的三字段结果。"""
-    original = value
-    if isinstance(value, str):
-        raw = value.strip()
-        try:
-            value = json.loads(raw)
-        except json.JSONDecodeError:
-            decoder = json.JSONDecoder()
-            candidates = []
-            for start, character in enumerate(raw):
-                if character != "{":
-                    continue
-                try:
-                    candidate, _ = decoder.raw_decode(raw[start:])
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(candidate, dict) and candidate.get("caption"):
-                    candidates.append(candidate)
-            value = candidates[-1] if candidates else original
-    caption, tags, visible_text = parse_caption_result(original)
-    payload = value if isinstance(value, dict) else {}
+    payload = _extract_caption_payload(value)
+    caption, tags, visible_text = parse_caption_result(payload)
     category_fit = str(payload.get("category_fit") or "uncertain").strip().lower()
     if category_fit not in CATEGORY_FITS:
         raise ValueError("视觉模型结果的 category_fit 无效")

@@ -19,6 +19,8 @@ _DATA_IMAGE_RE = re.compile(
 _BASE64_IMAGE_RE = re.compile(r"^base64://[a-z0-9+/=_-]+$", re.IGNORECASE)
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[a-z]:[\\/]", re.IGNORECASE)
 _UNC_PATH_RE = re.compile(r"^(?:\\\\|//)[^\\/]+[\\/][^\\/]+")
+_UNIX_PREFIX_PATH_RE = re.compile(r"^(?:/(?!/)|\.\.?/|~/)[^\s&`\"'<>]+$")
+_FILE_EXT_PATH_RE = re.compile(r"\.[a-z0-9]{1,8}$", re.IGNORECASE)
 _MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]\r\n]*\]\([^)\r\n]*\)")
 _INLINE_CODE_RE = re.compile(r"(?P<fence>`+)[^\r\n]*?(?P=fence)")
 _URI_RE = re.compile(
@@ -128,7 +130,10 @@ def strip_internal_image_ref_lines(text: str) -> str:
                     active_fence = None
             continue
 
-        if fence_match:
+        if fence_match and not (
+            fence_match.group("fence")[0] == "`"
+            and "`" in line_body[fence_match.end() :]
+        ):
             fence = fence_match.group("fence")
             active_fence = (fence[0], len(fence))
             kept_lines.append(line)
@@ -146,13 +151,39 @@ def strip_internal_image_ref_lines(text: str) -> str:
     return "".join(kept_lines)
 
 
-def _token_is_reference(token: str) -> bool:
-    if "/" in token or "\\" in token:
+def _looks_like_path_token(cleaned: str) -> bool:
+    if not cleaned or "&&" in cleaned:
+        return False
+    if _WINDOWS_ABSOLUTE_PATH_RE.match(cleaned) or _UNC_PATH_RE.match(cleaned):
         return True
+    if _UNIX_PREFIX_PATH_RE.match(cleaned):
+        return True
+    if "/" in cleaned:
+        parts = [part for part in cleaned.split("/") if part]
+        if len(parts) >= 3:
+            return True
+        if len(parts) == 2 and bool(_FILE_EXT_PATH_RE.search(parts[-1])):
+            return True
+    if "\\" in cleaned:
+        parts = [part for part in cleaned.split("\\") if part]
+        if len(parts) >= 3 and not cleaned.startswith("\\"):
+            return True
+        if (
+            len(parts) == 2
+            and not cleaned.startswith("\\")
+            and bool(_FILE_EXT_PATH_RE.search(parts[-1]))
+        ):
+            return True
+    return False
+
+
+def _token_is_reference(token: str) -> bool:
     if _REFERENCE_SCHEME_RE.search(token) or _DOMAIN_RE.search(token):
         return True
 
     filename_token = token.strip("\"'`<>()[]{}，。！？；：、,.!?;:")
+    if _looks_like_path_token(filename_token):
+        return True
     return _has_supported_image_suffix(filename_token)
 
 
@@ -171,7 +202,10 @@ def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
 
 
 def _protected_reference_spans(
-    text: str, *, protect_inline_code: bool = True
+    text: str,
+    *,
+    protect_inline_code: bool = True,
+    protect_code_blocks: bool = True,
 ) -> list[tuple[int, int]]:
     """定位引用及可选的同一行代码示例。
 
@@ -179,6 +213,8 @@ def _protected_reference_spans(
         text: 待检查的来源文本。
         protect_inline_code: 为旧调用方提供近似代码区间。
             有状态的扫描器会自行处理反引号序列。
+        protect_code_blocks: 是否按整行扫描围栏/缩进代码块。
+            有状态的扫描器会自行处理 CommonMark 代码块状态。
 
     Returns:
         合并后的受保护来源区间。
@@ -193,34 +229,40 @@ def _protected_reference_spans(
         for match in pattern.finditer(text)
     ]
 
-    active_fence: tuple[str, int] | None = None
-    offset = 0
-    for line in text.splitlines(keepends=True):
-        line_body = line.rstrip("\r\n")
-        fence_match = _FENCE_RE.match(line_body)
-        leading_spaces = len(line_body) - len(line_body.lstrip(" "))
-        content_after_indent = line_body[leading_spaces:]
-        is_indented_code = leading_spaces >= 4 or content_after_indent.startswith("\t")
+    if protect_code_blocks:
+        active_fence: tuple[str, int] | None = None
+        offset = 0
+        for line in text.splitlines(keepends=True):
+            line_body = line.rstrip("\r\n")
+            fence_match = _FENCE_RE.match(line_body)
+            leading_spaces = len(line_body) - len(line_body.lstrip(" "))
+            content_after_indent = line_body[leading_spaces:]
+            is_indented_code = leading_spaces >= 4 or content_after_indent.startswith(
+                "\t"
+            )
 
-        if active_fence is not None:
-            spans.append((offset, offset + len(line)))
-            if fence_match:
+            if active_fence is not None:
+                spans.append((offset, offset + len(line)))
+                if fence_match:
+                    fence = fence_match.group("fence")
+                    is_closing_fence = not line_body[fence_match.end() :].strip()
+                    if (
+                        fence[0] == active_fence[0]
+                        and len(fence) >= active_fence[1]
+                        and is_closing_fence
+                    ):
+                        active_fence = None
+            elif fence_match and not (
+                fence_match.group("fence")[0] == "`"
+                and "`" in line_body[fence_match.end() :]
+            ):
                 fence = fence_match.group("fence")
-                is_closing_fence = not line_body[fence_match.end() :].strip()
-                if (
-                    fence[0] == active_fence[0]
-                    and len(fence) >= active_fence[1]
-                    and is_closing_fence
-                ):
-                    active_fence = None
-        elif fence_match:
-            fence = fence_match.group("fence")
-            active_fence = (fence[0], len(fence))
-            spans.append((offset, offset + len(line)))
-        elif is_indented_code:
-            spans.append((offset, offset + len(line)))
+                active_fence = (fence[0], len(fence))
+                spans.append((offset, offset + len(line)))
+            elif is_indented_code:
+                spans.append((offset, offset + len(line)))
 
-        offset += len(line)
+            offset += len(line)
 
     spans.extend(
         match.span()

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -505,14 +507,32 @@ def _tool_call_is_unsupported(exc: Exception) -> bool:
     return mentions_tool and unsupported
 
 
+CAPTION_TOOL_MISS_CACHE_ATTR = "_meme_manager_caption_tool_misses"
+CAPTION_TOOL_SOFT_JSON_TTL_SECONDS = 600.0
+CAPTION_TOOL_MISS_THRESHOLD = 3
+
+
 def _caption_output_mode(context: Any, provider_id: str) -> str:
     cache = getattr(context, CAPTION_OUTPUT_MODE_CACHE_ATTR, None)
     if not isinstance(cache, dict):
         return ""
-    return str(cache.get(provider_id) or "")
+    entry = cache.get(provider_id)
+    if isinstance(entry, dict):
+        expires_at = entry.get("expires_at")
+        if isinstance(expires_at, (int, float)) and time.monotonic() >= expires_at:
+            cache.pop(provider_id, None)
+            return ""
+        return str(entry.get("mode") or "")
+    return str(entry or "")
 
 
-def _remember_caption_output_mode(context: Any, provider_id: str, mode: str) -> None:
+def _remember_caption_output_mode(
+    context: Any,
+    provider_id: str,
+    mode: str,
+    *,
+    ttl_seconds: float | None = None,
+) -> None:
     cache = getattr(context, CAPTION_OUTPUT_MODE_CACHE_ATTR, None)
     if not isinstance(cache, dict):
         cache = {}
@@ -520,7 +540,39 @@ def _remember_caption_output_mode(context: Any, provider_id: str, mode: str) -> 
             setattr(context, CAPTION_OUTPUT_MODE_CACHE_ATTR, cache)
         except (AttributeError, TypeError):
             return
-    cache[provider_id] = mode
+    if ttl_seconds is not None and ttl_seconds > 0:
+        cache[provider_id] = {
+            "mode": mode,
+            "expires_at": time.monotonic() + ttl_seconds,
+        }
+    else:
+        cache[provider_id] = mode
+
+
+def _record_caption_tool_outcome(
+    context: Any, provider_id: str, *, used_tool: bool
+) -> None:
+    misses = getattr(context, CAPTION_TOOL_MISS_CACHE_ATTR, None)
+    if not isinstance(misses, dict):
+        misses = {}
+        try:
+            setattr(context, CAPTION_TOOL_MISS_CACHE_ATTR, misses)
+        except (AttributeError, TypeError):
+            return
+    if used_tool:
+        misses.pop(provider_id, None)
+        return
+    count = int(misses.get(provider_id, 0) or 0) + 1
+    if count >= CAPTION_TOOL_MISS_THRESHOLD:
+        misses.pop(provider_id, None)
+        _remember_caption_output_mode(
+            context,
+            provider_id,
+            "json",
+            ttl_seconds=CAPTION_TOOL_SOFT_JSON_TTL_SECONDS,
+        )
+    else:
+        misses[provider_id] = count
 
 
 def _caption_tool_call_payload(response: Any) -> tuple[bool, Any]:
@@ -621,7 +673,7 @@ async def generate_caption(
     """调用 AstrBot 的视觉聊天模型；失败由任务层记录为单张 failed。"""
     if context is None or not callable(getattr(context, "llm_generate", None)):
         raise RuntimeError("当前没有可用的视觉模型上下文")
-    visual_paths, temp_paths = prepare_visual_inputs(image_path)
+    visual_paths, temp_paths = await asyncio.to_thread(prepare_visual_inputs, image_path)
     try:
         selected_provider = provider_id
         if not selected_provider:
@@ -670,10 +722,13 @@ async def generate_caption(
                     visual_paths,
                 )
         usages.append(extract_token_usage(response))
-        if used_tool_mode and not _caption_tool_call_payload(response)[0]:
-            # AstrBot 的部分 Provider 会在发现模型不支持工具时，自动用同一
-            # 请求改走普通文本。记住这个结果，避免后续每张图重复试错。
-            _remember_caption_output_mode(context, selected_provider, "json")
+        if used_tool_mode:
+            # 仅在连续多次未返回工具调用时才临时降级到 JSON，单次偶发文本回复不永久锁死。
+            _record_caption_tool_outcome(
+                context,
+                selected_provider,
+                used_tool=bool(_caption_tool_call_payload(response)[0]),
+            )
         raw = _caption_response_payload(response)
         try:
             (

@@ -252,13 +252,32 @@ def test_copy_legacy_pack_supports_direct_category_layout(tmp_path):
     category = source / "happy"
     category.mkdir(parents=True)
     (category / "meme.png").write_bytes(b"image")
+    nested = category / "sub"
+    nested.mkdir()
+    (nested / "deep.png").write_bytes(b"deep")
+    hidden = category / ".hidden"
+    hidden.mkdir()
+    (hidden / "skip.png").write_bytes(b"skip")
     (source / "memes_data.json").write_text(
         json.dumps({"happy": "开心"}, ensure_ascii=False), encoding="utf-8"
     )
     manifest = storage._copy_legacy_pack(source, target, "My Pack")
     assert manifest["id"] == "my-pack"
     assert (target / "memes" / "happy" / "meme.png").is_file()
+    assert (target / "memes" / "happy" / "sub_deep.png").is_file()
+    assert not (target / "memes" / "happy" / "sub").exists()
+    assert not (target / "memes" / "happy" / ".hidden").exists()
     assert storage._load_json(target / "memes_data.json", {}) == {"happy": "开心"}
+
+
+def test_allocate_pack_id_truncates_max_length_base(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "PACKS_DIR", tmp_path)
+    base = "a" * 64
+    (tmp_path / base).mkdir()
+    allocated = storage._allocate_pack_id(base)
+    assert len(allocated) <= 64
+    assert allocated.endswith("-2")
+    assert storage.validate_pack_id(allocated) == allocated
 
 
 def make_zip(path, files):

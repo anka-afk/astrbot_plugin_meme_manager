@@ -40,6 +40,8 @@ def build_meme_preview(
         JPEG bytes, visible numbers mapped to original paths and hashes, and
         the cursor for another page if one exists.
     """
+    if limit <= 0:
+        return None, {}, None
     roots = [
         (pack_id, (Path(path) / "memes").resolve())
         for pack_id, path in pack_dirs.items()
@@ -48,13 +50,19 @@ def build_meme_preview(
     for path in sorted(
         files, key=lambda item: (str(item.parent), item.name.casefold(), item.name)
     ):
-        pack_id = next(
-            (pack_id for pack_id, root in roots if path.is_relative_to(root)), None
-        )
-        if pack_id is None or path.is_symlink():
+        if path.is_symlink():
             continue
         try:
-            assets.setdefault((pack_id, file_sha256(path)), path)
+            resolved = path.resolve()
+        except OSError:
+            continue
+        pack_id = next(
+            (pack_id for pack_id, root in roots if resolved.is_relative_to(root)), None
+        )
+        if pack_id is None:
+            continue
+        try:
+            assets.setdefault((pack_id, file_sha256(resolved)), path)
         except OSError:
             continue
     if not assets:
@@ -93,7 +101,7 @@ def build_meme_preview(
     seen = {}
     next_after = None
     for number, (path, digest) in sorted(numbered.items()):
-        if len(thumbnails) == limit:
+        if len(thumbnails) >= limit:
             next_after = next(reversed(thumbnails))
             break
         try:

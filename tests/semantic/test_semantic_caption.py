@@ -247,3 +247,15 @@ def test_caption_tool_and_response_payloads():
     assert caption._caption_response_payload(SimpleNamespace(text="object text")) == (
         "object text"
     )
+
+
+def test_caption_tool_mode_requires_consecutive_misses_before_soft_downgrade():
+    context = SimpleNamespace()
+    caption._record_caption_tool_outcome(context, "p1", used_tool=False)
+    assert caption._caption_output_mode(context, "p1") == ""
+    caption._record_caption_tool_outcome(context, "p1", used_tool=True)
+    caption._record_caption_tool_outcome(context, "p1", used_tool=False)
+    caption._record_caption_tool_outcome(context, "p1", used_tool=False)
+    assert caption._caption_output_mode(context, "p1") == ""
+    caption._record_caption_tool_outcome(context, "p1", used_tool=False)
+    assert caption._caption_output_mode(context, "p1") == "json"

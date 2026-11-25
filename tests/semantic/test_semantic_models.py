@@ -320,3 +320,12 @@ def test_parse_caption_result_with_review_handles_legacy_and_invalid_fit():
         models.parse_caption_result_with_review(
             {"caption": "猫", "tags": ["可爱"], "category_fit": "invalid"}
         )
+
+
+def test_parse_caption_result_with_review_uses_single_consistent_json_object():
+    mixed = (
+        '{"caption": "猫在笑", "tags": ["开心"], "category_fit": "match"} '
+        '{"caption": "不完整对象", "category_fit": "conflict", "suggested_category": "sad"}'
+    )
+    result = models.parse_caption_result_with_review(mixed)
+    assert result == ("猫在笑", ["开心"], "", "match", "", "")

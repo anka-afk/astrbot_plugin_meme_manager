@@ -377,3 +377,21 @@ def test_nested_brackets_do_not_rescan_each_inner_label(monkeypatch):
     result = MemeParser.parse(text, {"happy"}, alternative=True)
     assert result.text == text
     assert calls < len(text) * 4
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_text"),
+    [
+        ("```code``` &&happy&&", "```code``` "),
+        ("<!--\n    --> &&happy&&", "<!--\n    --> "),
+        ("\\\\&&happy&&", "\\\\"),
+        ("//&&happy&&", "//"),
+        ("开心/激动&&happy&&", "开心/激动"),
+    ],
+)
+def test_parser_does_not_swallow_tags_after_inline_code_comment_or_slash_prose(
+    text, expected_text
+):
+    result = MemeParser.parse(text, {"happy"})
+    assert result.selections == ("happy",)
+    assert result.text == expected_text

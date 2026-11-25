@@ -876,8 +876,11 @@ async def search_index(
             result_limit = min(result_limit * 2, int(index.ntotal))
         if not ranked:
             return []
-        # 公开 ID 必须在完整的已保存索引中保持无歧义。
-        id_map = build_id_map(raw_manifest_items)
+        # 公开 ID 必须在完整元数据集（包含未索引与待审核条目）中保持无歧义。
+        all_entry_ids = set(raw_manifest_items)
+        if isinstance(data.get("images"), dict):
+            all_entry_ids.update(str(key) for key in data["images"])
+        id_map = build_id_map(all_entry_ids)
         return [
             {
                 "id": id_map[digest],

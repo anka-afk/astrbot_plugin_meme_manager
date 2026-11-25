@@ -415,3 +415,25 @@ async def test_preview_accepts_integral_float_cursor_and_converts_static_to_gif(
     emitted = sender._send_meme_image.await_args.args[1]
     raw = base64.b64decode(emitted.file.removeprefix("base64://"))
     assert raw[:6] in (b"GIF87a", b"GIF89a")
+
+
+def test_build_meme_preview_handles_non_positive_limit_and_relative_paths(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    pack_dir = tmp_path / "pack"
+    image_path = pack_dir / "memes" / "happy" / "a.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (32, 32), (10, 20, 30)).save(image_path, "PNG")
+    monkeypatch.chdir(tmp_path)
+    rel_file = Path("pack/memes/happy/a.png")
+    assert build_meme_preview(
+        tmp_path / "preview.sqlite3", [rel_file], {"pack": pack_dir}, 0, limit=0
+    ) == (None, {}, None)
+    jpeg, candidates, next_after = build_meme_preview(
+        tmp_path / "preview.sqlite3", [rel_file], {"pack": pack_dir}, 0, limit=1
+    )
+    assert jpeg is not None
+    assert 1 in candidates
+    assert next_after is None

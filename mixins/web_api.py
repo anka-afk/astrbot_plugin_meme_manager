@@ -929,25 +929,84 @@ class WebAPIMixin:
         except Exception as exc:
             logger.error("图片变更后刷新语义元数据失败: %s", exc, exc_info=True)
 
-    def _finish_img_host_local_operation(self) -> None:
+    async def _run_img_host_local_cleanup(self, active: dict) -> None:
+        pack_id = str(active.get("pack_id") or "").strip()
+        manager = getattr(self, "semantic_task_manager", None)
+        try:
+            if manager is not None and pack_id:
+                pack_dir = PACKS_DIR / pack_id
+                if (pack_dir / "semantic_metadata.json").is_file():
+                    try:
+                        await asyncio.to_thread(invalidate_semantic_metadata, pack_dir)
+                    except Exception as exc:
+                        logger.error(
+                            "图床任务结束后刷新语义元数据失败: %s",
+                            exc,
+                            exc_info=True,
+                        )
+        finally:
+            if manager is not None and pack_id:
+                manager.end_external_pack_operation(pack_id)
+            if getattr(self, "_img_host_local_operation", None) is active:
+                self._img_host_local_operation = None
+
+    async def _finish_img_host_local_operation_async(self) -> None:
         active = getattr(self, "_img_host_local_operation", None)
         if not isinstance(active, dict):
             return
+        cleanup_task = active.get("cleanup_task")
+        if cleanup_task is None:
+            if active.get("finishing"):
+                return
+            active["finishing"] = True
+            cleanup_task = asyncio.create_task(self._run_img_host_local_cleanup(active))
+            active["cleanup_task"] = cleanup_task
+            self._img_host_cleanup_task = cleanup_task
+        await cleanup_task
+
+    def _finish_img_host_local_operation(self, *, skip_invalidation: bool = False) -> None:
+        active = getattr(self, "_img_host_local_operation", None)
+        if not isinstance(active, dict) or active.get("finishing"):
+            return
         pack_id = str(active.get("pack_id") or "").strip()
         manager = getattr(self, "semantic_task_manager", None)
-        if manager is not None and pack_id:
-            pack_dir = PACKS_DIR / pack_id
-            if (pack_dir / "semantic_metadata.json").is_file():
-                try:
-                    invalidate_semantic_metadata(pack_dir)
-                except Exception as exc:
-                    logger.error(
-                        "图床任务结束后刷新语义元数据失败: %s",
-                        exc,
-                        exc_info=True,
-                    )
-            manager.end_external_pack_operation(pack_id)
-        self._img_host_local_operation = None
+        pack_dir = PACKS_DIR / pack_id if pack_id else None
+        needs_invalidation = bool(
+            not skip_invalidation
+            and manager is not None
+            and pack_dir is not None
+            and (pack_dir / "semantic_metadata.json").is_file()
+        )
+        if needs_invalidation:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                active["finishing"] = True
+                cleanup_task = loop.create_task(
+                    self._run_img_host_local_cleanup(active)
+                )
+                active["cleanup_task"] = cleanup_task
+                self._img_host_cleanup_task = cleanup_task
+                return
+        active["finishing"] = True
+        try:
+            if manager is not None and pack_id:
+                if needs_invalidation and pack_dir is not None:
+                    try:
+                        invalidate_semantic_metadata(pack_dir)
+                    except Exception as exc:
+                        logger.error(
+                            "图床任务结束后刷新语义元数据失败: %s",
+                            exc,
+                            exc_info=True,
+                        )
+        finally:
+            if manager is not None and pack_id:
+                manager.end_external_pack_operation(pack_id)
+            if getattr(self, "_img_host_local_operation", None) is active:
+                self._img_host_local_operation = None
 
     @staticmethod
     def _resolve_webui_read_pack_context() -> tuple[dict | None, tuple | None]:
@@ -1954,24 +2013,31 @@ class WebAPIMixin:
             self._img_host_local_operation = {
                 "pack_id": effective_pack_id,
                 "operation": operation_name,
+                "finishing": False,
             }
         try:
             sync_client.sync_process = sync_client._start_sync_process(task)
-            # 即使浏览器断开，也要回收并释放表情包操作。
-            monitor = asyncio.create_task(
-                asyncio.to_thread(sync_client.sync_process.join)
-            )
+
+            async def _monitor_img_host_sync() -> None:
+                joined = False
+                try:
+                    await asyncio.to_thread(sync_client.sync_process.join)
+                    joined = True
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error("等待图床同步进程结束失败: %s", exc, exc_info=True)
+                finally:
+                    await self._finish_img_host_local_operation_async()
+                if joined:
+                    self._get_img_host_sync_task_status()
+
+            # 即使浏览器断开，也要在工作线程刷新语义元数据并释放表情包操作。
+            monitor = asyncio.create_task(_monitor_img_host_sync())
             self._img_host_sync_monitor = monitor
-            monitor.add_done_callback(
-                lambda completed: (
-                    None
-                    if completed.cancelled() or completed.exception()
-                    else self._get_img_host_sync_task_status()
-                )
-            )
         except Exception:
             if changes_local_files:
-                self._finish_img_host_local_operation()
+                self._finish_img_host_local_operation(skip_invalidation=True)
             raise
         return self._get_img_host_sync_task_status()
 
@@ -2409,7 +2475,9 @@ class WebAPIMixin:
             return jsonify({"message": "图片不存在"}), 404
 
         try:
-            detail = get_image_semantic_detail(pack_dir, file_path)
+            detail = await asyncio.to_thread(
+                get_image_semantic_detail, pack_dir, file_path
+            )
             return jsonify(
                 {
                     "pack_id": pack_id,
@@ -4708,11 +4776,20 @@ class WebAPIMixin:
                     return jsonify({"message": "仅支持 zip 备份文件"}), 400
                 if not file_b64:
                     return jsonify({"message": "缺少 file_b64"}), 400
-                try:
+                max_b64_length = ((MAX_PACK_ARCHIVE_BYTES + 2) // 3) * 4
+                if len(file_b64) > max_b64_length:
+                    raise RequestEntityTooLarge()
+
+                def _decode_and_write_backup() -> None:
                     raw_bytes = base64.b64decode(file_b64, validate=True)
+                    if len(raw_bytes) > MAX_PACK_ARCHIVE_BYTES:
+                        raise RequestEntityTooLarge()
+                    temp_zip_path.write_bytes(raw_bytes)
+
+                try:
+                    await asyncio.to_thread(_decode_and_write_backup)
                 except (ValueError, binascii.Error):
                     return jsonify({"message": "file_b64 非法"}), 400
-                temp_zip_path.write_bytes(raw_bytes)
             else:
                 return (
                     jsonify({"message": "缺少上传文件字段 file 或 JSON file_b64"}),
