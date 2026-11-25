@@ -66,10 +66,10 @@ def test_main_image_host_type_ignores_old_selection():
         "webdav"
     )
     assert (
-        make_sender({"image_host": "cloudflare_r2"})._get_image_host_type()
-        == "stardots"
+        make_sender({"image_host": "stardots"})._get_image_host_type()
+        == "cloudflare_r2"
     )
-    assert make_sender({})._get_image_host_type() == "stardots"
+    assert make_sender({})._get_image_host_type() == "cloudflare_r2"
 
 
 def test_main_image_sync_init_failure_degrades_gracefully(tmp_path, monkeypatch):
@@ -462,3 +462,30 @@ async def test_terminate_sets_cancel_requested_for_running_community_jobs():
     assert install_job["cancel_requested"] is True
     assert prepare_job["cancel_requested"] is True
     assert apply_job["cancel_requested"] is False
+
+
+@pytest.mark.asyncio
+async def test_sync_commands_handle_ensure_img_sync_errors_and_utils_bare_filename(
+    tmp_path, monkeypatch
+):
+    from astrbot_plugin_meme_manager import utils as plugin_utils
+
+    monkeypatch.chdir(tmp_path)
+    plugin_utils.ensure_dir_exists("")
+    assert plugin_utils.save_json({"ok": True}, "bare.json") is True
+    assert (tmp_path / "bare.json").is_file()
+
+    sender = make_sender()
+    sender._ensure_img_sync_for_pack = lambda *a, **kw: (_ for _ in ()).throw(
+        RuntimeError("已有同步任务正在运行")
+    )
+    event = SimpleNamespace(plain_result=lambda text: text)
+    for method_name in (
+        "check_sync_status",
+        "sync_to_remote",
+        "sync_from_remote",
+        "overwrite_to_remote",
+        "overwrite_from_remote",
+    ):
+        outputs = [msg async for msg in getattr(sender, method_name)(event)]
+        assert len(outputs) == 1 and "已有同步任务正在运行" in outputs[0]

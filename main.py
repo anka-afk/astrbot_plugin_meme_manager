@@ -473,9 +473,9 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
     def _get_image_host_type(self) -> str:
         image_host = self._read_config_value(
             ("storage", "provider"),
-            default="stardots",
+            default="cloudflare_r2",
         )
-        return str(image_host or "stardots").strip().lower()
+        return str(image_host or "cloudflare_r2").strip().lower()
 
     def _read_path(self, path: tuple[str, ...], missing=None):
         current = self.config

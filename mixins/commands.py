@@ -537,7 +537,12 @@ class CommandMixin:
     @meme_manager.command("同步状态")
     async def check_sync_status(self, event: AstrMessageEvent, detail: str = None):
         """检查表情包与图床的同步状态"""
-        sync_client = self._ensure_img_sync_for_pack()
+        try:
+            sync_client = self._ensure_img_sync_for_pack()
+        except Exception as e:
+            logger.error(f"检查同步状态失败: {str(e)}")
+            yield event.plain_result(f"检查同步状态失败: {str(e)}")
+            return
         if not sync_client:
             yield event.plain_result(
                 "图床服务尚未配置，请先在插件页面的配置中完成图床配置哦。"
@@ -740,7 +745,12 @@ class CommandMixin:
     @meme_manager.command("同步到云端")
     async def sync_to_remote(self, event: AstrMessageEvent):
         """将本地表情包同步到云端"""
-        sync_client = self._ensure_img_sync_for_pack()
+        try:
+            sync_client = self._ensure_img_sync_for_pack()
+        except Exception as e:
+            logger.error(f"同步到云端失败: {str(e)}")
+            yield event.plain_result(f"同步到云端失败: {str(e)}")
+            return
         if not sync_client:
             yield event.plain_result(
                 "图床服务尚未配置，请先在配置文件中完成图床配置哦。"
@@ -762,7 +772,12 @@ class CommandMixin:
     @meme_manager.command("从云端同步")
     async def sync_from_remote(self, event: AstrMessageEvent):
         """从云端同步表情包到本地"""
-        sync_client = self._ensure_img_sync_for_pack()
+        try:
+            sync_client = self._ensure_img_sync_for_pack()
+        except Exception as e:
+            logger.error(f"从云端同步失败: {str(e)}")
+            yield event.plain_result(f"从云端同步失败: {str(e)}")
+            return
         if not sync_client:
             yield event.plain_result(
                 "图床服务尚未配置，请先在配置文件中完成图床配置哦。"
@@ -806,7 +821,12 @@ class CommandMixin:
     @meme_manager.command("覆盖到云端")
     async def overwrite_to_remote(self, event: AstrMessageEvent):
         """让云端完全和本地一致（会删除云端多出的图）"""
-        sync_client = self._ensure_img_sync_for_pack()
+        try:
+            sync_client = self._ensure_img_sync_for_pack()
+        except Exception as e:
+            logger.error(f"覆盖到云端失败: {str(e)}")
+            yield event.plain_result(f"覆盖到云端失败: {str(e)}")
+            return
         if not sync_client:
             yield event.plain_result(
                 "图床服务尚未配置，请先在配置文件中完成图床配置哦。"
@@ -832,7 +852,12 @@ class CommandMixin:
     @meme_manager.command("从云端覆盖")
     async def overwrite_from_remote(self, event: AstrMessageEvent):
         """让本地完全和云端一致（会删除本地多出的图）"""
-        sync_client = self._ensure_img_sync_for_pack()
+        try:
+            sync_client = self._ensure_img_sync_for_pack()
+        except Exception as e:
+            logger.error(f"从云端覆盖失败: {str(e)}")
+            yield event.plain_result(f"从云端覆盖失败: {str(e)}")
+            return
         if not sync_client:
             yield event.plain_result(
                 "图床服务尚未配置，请先在配置文件中完成图床配置哦。"

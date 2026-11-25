@@ -997,7 +997,15 @@ async function initApp() {
 
   async function refreshPackExportCapability(packId = activeManagePackId) {
     const normalizedPackId = String(packId || "").trim();
+    const hasExportUi = Boolean(
+      transferCurrentPack ||
+        exportModeBackup ||
+        vectorBackupHint ||
+        exportPackDownloadBtn ||
+        exportModeInputs.length,
+    );
     if (
+      !hasExportUi ||
       !managePageActive ||
       exportDownloadInFlight ||
       normalizedPackId !== String(activeManagePackId || "").trim()

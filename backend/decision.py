@@ -454,8 +454,11 @@ class DecisionClient:
     async def _conflict_reason(response: aiohttp.ClientResponse) -> str:
         header_code = response.headers.get("X-System-One-Error-Code", "")
         try:
-            body = await DecisionClient._read_bounded(response)
-            payload = json.loads(body.decode("utf-8")) if not header_code else {}
+            if header_code:
+                payload = {}
+            else:
+                body = await DecisionClient._read_bounded(response)
+                payload = json.loads(body.decode("utf-8"))
             error = payload.get("error") if isinstance(payload, dict) else None
             code = (
                 error.get("code")
@@ -467,7 +470,7 @@ class DecisionClient:
             normalized = (
                 str(header_code or code or "").strip().casefold().replace("-", "_")
             )
-        except (aiohttp.ClientError, UnicodeError, ValueError, TypeError):
+        except (DecisionError, aiohttp.ClientError, UnicodeError, ValueError, TypeError):
             return "conflict"
         if normalized in {"idempotency_conflict", "idempotency_payload_mismatch"}:
             return "idempotency_conflict"
@@ -508,7 +511,7 @@ class DecisionClient:
         try:
             body = await self._read_bounded(response)
             payload = json.loads(body.decode("utf-8"))
-        except (aiohttp.ClientError, UnicodeError, ValueError, TypeError):
+        except (DecisionError, aiohttp.ClientError, UnicodeError, ValueError, TypeError):
             payload = None
         if isinstance(payload, dict) and isinstance(payload.get("errors"), list):
             errors = payload["errors"]

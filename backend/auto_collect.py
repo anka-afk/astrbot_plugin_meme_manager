@@ -1815,21 +1815,25 @@ class AutoCollectManager:
                 < self.min_category_confidence
             ):
                 category = REVIEW_CATEGORY
+        memes_dir = get_pack_paths(job.target_pack_id)["memes_dir"]
         match = await asyncio.to_thread(
             _IMAGE_INDEX.lookup,
-            get_pack_paths(job.target_pack_id)["memes_dir"],
+            memes_dir,
             digest,
             job.snapshot_path,
         )
         if match.similar_path is not None:
-            decision = {
-                **decision,
-                "near_duplicate": str(
-                    match.similar_path.relative_to(
-                        get_pack_paths(job.target_pack_id)["memes_dir"]
-                    )
-                ).replace("\\", "/"),
-            }
+            try:
+                near_dup_rel = str(
+                    match.similar_path.relative_to(memes_dir.resolve())
+                ).replace("\\", "/")
+            except ValueError:
+                near_dup_rel = ""
+            if near_dup_rel:
+                decision = {
+                    **decision,
+                    "near_duplicate": near_dup_rel,
+                }
         saved = await self._save_to_inbox(
             job, content, digest, extension, category, decision
         )
