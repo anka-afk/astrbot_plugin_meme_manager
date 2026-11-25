@@ -83,6 +83,8 @@ def test_all_providers_receive_local_root_without_network_probe(tmp_path, monkey
         assert calls[-1]["local_dir"] == str(tmp_path.resolve())
         assert sync.sync_process is None
         assert sync._state_dir == tmp_path / ".sync-state"
+    external = tmp_path / "external-state"
+    assert ImageSync({}, tmp_path, "webdav", state_dir=external)._state_dir == external.resolve()
 
 
 def test_destination_scopes_change_for_storage_but_not_password_rotation(
@@ -230,3 +232,24 @@ def test_worker_persists_initialization_failure(tmp_path):
     status = json.loads(progress_path.read_text())
     assert status["task_id"] == "task-id"
     assert status["phase"] == "failed"
+
+
+def test_close_defers_provider_close_while_call_is_active(client):
+    started, release, closed = threading.Event(), threading.Event(), threading.Event()
+    closes = []
+    client.provider.close = lambda: (closes.append(1), closed.set())
+
+    def slow_list():
+        started.set()
+        assert release.wait(5)
+        return []
+
+    client.provider.get_image_list = slow_list
+    worker = threading.Thread(target=client.get_remote_files)
+    worker.start()
+    assert started.wait(5)
+    client.close()
+    assert not closed.is_set()
+    release.set()
+    worker.join(5)
+    assert closes == [1]

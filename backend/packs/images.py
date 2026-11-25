@@ -233,6 +233,8 @@ async def scan_emoji_folder():
         memes_root = _get_memes_root()
         memes_root.mkdir(parents=True, exist_ok=True)
         for category in os.listdir(memes_root):
+            if category.startswith(".") or not is_safe_category_name(category):
+                continue
             category_path = _get_category_path(category)
             if not category_path.is_dir():
                 continue
@@ -297,7 +299,7 @@ def add_emoji_to_category(category, image_file, pack_id: str | None = None):
         logger.info(f"文件名已从 {filename} 修改为安全的文件名 {safe_filename}")
         filename = safe_filename
 
-    file_path = category_path / filename
+    created_path: Path | None = None
 
     try:
         # 检查目录是否可写
@@ -335,7 +337,8 @@ def add_emoji_to_category(category, image_file, pack_id: str | None = None):
         # 记录日志，包括绝对路径
         logger.info(f"准备保存文件到: {file_path.absolute()}")
 
-        # 以二进制写入模式保存文件
+        # 以二进制写入模式保存文件，仅记录本次真正新建的文件路径
+        created_path = file_path
         with open(file_path, "wb") as f:
             f.write(content)
 
@@ -356,11 +359,11 @@ def add_emoji_to_category(category, image_file, pack_id: str | None = None):
         if isinstance(e, DuplicateEmojiError):
             raise
         logger.error(f"保存文件时出错: {str(e)}", exc_info=True)
-        # 如果文件已部分创建，尝试删除
-        if file_path.exists():
+        # 仅删除本次新建的部分上传文件，避免误删同名已有表情
+        if created_path is not None and created_path.exists():
             try:
-                file_path.unlink()  # 删除文件
-                logger.info(f"已删除部分上传的文件: {file_path}")
+                created_path.unlink()  # 删除文件
+                logger.info(f"已删除部分上传的文件: {created_path}")
             except Exception as del_e:
                 logger.error(f"无法删除部分上传的文件: {del_e}")
         raise OSError(f"保存文件时出错: {str(e)}")
@@ -637,7 +640,11 @@ def clear_all_emojis(pack_id: str | None = None) -> dict[str, object]:
         return {"deleted_by_category": deleted_by_category}
 
     for category_path in memes_root.iterdir():
-        if not category_path.is_dir():
+        if (
+            not category_path.is_dir()
+            or category_path.name.startswith(".")
+            or not is_safe_category_name(category_path.name)
+        ):
             continue
         result = clear_category_emojis(category_path.name, pack_id)
         deleted_files = result["deleted_files"]
@@ -659,7 +666,20 @@ def update_emoji_in_category(category, old_image_file, new_image_file):
         filename = secure_filename(str(new_image_file.filename or ""))
         if not filename or not _is_supported_image(filename):
             raise ValueError("表情文件名或扩展名非法")
-        old_image_path.unlink()
-        new_image_file.save(str(category_path / filename))
+        target_path = category_path / filename
+        same_target = target_path.exists() and os.path.samefile(
+            target_path, old_image_path
+        )
+        if not same_target and target_path.exists():
+            target_path = _build_available_file_path(category_path, filename)
+        temp_path = _build_available_file_path(category_path, f".tmp_{filename}")
+        try:
+            new_image_file.save(str(temp_path))
+            os.replace(temp_path, target_path)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+        if not same_target:
+            old_image_path.unlink(missing_ok=True)
         return True
     return False

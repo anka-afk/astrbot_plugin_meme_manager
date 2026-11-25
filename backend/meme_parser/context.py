@@ -57,7 +57,9 @@ class ContextScanner:
         Returns:
             有序且不重叠的受保护字符区间。
         """
-        spans = _protected_reference_spans(line, protect_inline_code=False)
+        spans = _protected_reference_spans(
+            line, protect_inline_code=False, protect_code_blocks=False
+        )
         fence = self._fence.match(line.rstrip("\r\n"))
         if self.fence:
             if (
@@ -71,7 +73,7 @@ class ContextScanner:
         if not self.active and fence and not (fence[1][0] == "`" and "`" in fence[2]):
             self.fence = (fence[1][0], len(fence[1]))
             return [(0, len(line))]
-        if not self.active and line.startswith(("    ", "\t")):
+        if not self.active and re.match(r"^(?: {4}| {0,3}\t)", line):
             return [(0, len(line))]
 
         start = 0 if self.active else None

@@ -252,12 +252,21 @@ def test_copy_legacy_pack_supports_direct_category_layout(tmp_path):
     category = source / "happy"
     category.mkdir(parents=True)
     (category / "meme.png").write_bytes(b"image")
+    nested = category / "sub"
+    nested.mkdir()
+    (nested / "deep.png").write_bytes(b"deep")
+    hidden = category / ".hidden"
+    hidden.mkdir()
+    (hidden / "skip.png").write_bytes(b"skip")
     (source / "memes_data.json").write_text(
         json.dumps({"happy": "开心"}, ensure_ascii=False), encoding="utf-8"
     )
     manifest = storage._copy_legacy_pack(source, target, "My Pack")
     assert manifest["id"] == "my-pack"
     assert (target / "memes" / "happy" / "meme.png").is_file()
+    assert (target / "memes" / "happy" / "sub_deep.png").is_file()
+    assert not (target / "memes" / "happy" / "sub").exists()
+    assert not (target / "memes" / "happy" / ".hidden").exists()
     assert storage._load_json(target / "memes_data.json", {}) == {"happy": "开心"}
 
 

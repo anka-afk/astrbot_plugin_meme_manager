@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import tempfile
+import threading
 import uuid
 from collections import OrderedDict
 from pathlib import Path
@@ -36,6 +38,7 @@ QUERY_CACHE_SIZE = 128
 INDEX_CACHE_SIZE = 16
 _QUERY_VECTOR_CACHE: OrderedDict[tuple[str, str], tuple[float, ...]] = OrderedDict()
 _FAISS_INDEX_CACHE: OrderedDict[str, tuple[tuple[int, int], Any]] = OrderedDict()
+_FAISS_INDEX_CACHE_LOCK = threading.RLock()
 
 
 async def _run_blocking(function: Any, *args: Any, **kwargs: Any) -> Any:
@@ -200,7 +203,15 @@ class EmbeddingAdapter:
             if hasattr(result, "__await__"):
                 result = await result
             if not isinstance(result, (list, tuple)):
-                raise RuntimeError("向量模型返回格式无效")
+                tolist = getattr(result, "tolist", None)
+                if callable(tolist):
+                    converted = tolist()
+                    if isinstance(converted, list):
+                        result = converted
+                    else:
+                        raise RuntimeError("向量模型返回格式无效")
+                else:
+                    raise RuntimeError("向量模型返回格式无效")
             vectors = [normalize_vector(item) for item in result]
             if any(len(vector) != self.dimension for vector in vectors):
                 raise RuntimeError("向量模型返回维度不一致")
@@ -261,17 +272,20 @@ def _read_faiss_index(
         stat = path.stat()
         cache_key = str(path)
         fingerprint = (stat.st_mtime_ns, stat.st_size)
-        cached = _FAISS_INDEX_CACHE.get(cache_key)
-        if cached and cached[0] == fingerprint:
-            _FAISS_INDEX_CACHE.move_to_end(cache_key)
-            return cached[1]
+        with _FAISS_INDEX_CACHE_LOCK:
+            cached = _FAISS_INDEX_CACHE.get(cache_key)
+            if cached and cached[0] == fingerprint:
+                _FAISS_INDEX_CACHE.move_to_end(cache_key)
+                return cached[1]
         faiss, _ = _import_faiss_modules()
         # Python handles Unicode paths that FAISS's filename API cannot open on Windows.
         with path.open("rb") as file_obj:
             index = faiss.read_index(faiss.PyCallbackIOReader(file_obj.read))
-        _FAISS_INDEX_CACHE[cache_key] = (fingerprint, index)
-        while len(_FAISS_INDEX_CACHE) > INDEX_CACHE_SIZE:
-            _FAISS_INDEX_CACHE.popitem(last=False)
+        with _FAISS_INDEX_CACHE_LOCK:
+            _FAISS_INDEX_CACHE[cache_key] = (fingerprint, index)
+            _FAISS_INDEX_CACHE.move_to_end(cache_key)
+            while len(_FAISS_INDEX_CACHE) > INDEX_CACHE_SIZE:
+                _FAISS_INDEX_CACHE.popitem(last=False)
         return index
     except Exception:
         return None
@@ -294,10 +308,11 @@ def _write_faiss_index(plugin_data_dir: Path | str, pack_id: str, index: Any) ->
         os.replace(temp_name, path)
         stat = path.stat()
         cache_key = str(path)
-        _FAISS_INDEX_CACHE[cache_key] = ((stat.st_mtime_ns, stat.st_size), index)
-        _FAISS_INDEX_CACHE.move_to_end(cache_key)
-        while len(_FAISS_INDEX_CACHE) > INDEX_CACHE_SIZE:
-            _FAISS_INDEX_CACHE.popitem(last=False)
+        with _FAISS_INDEX_CACHE_LOCK:
+            _FAISS_INDEX_CACHE[cache_key] = ((stat.st_mtime_ns, stat.st_size), index)
+            _FAISS_INDEX_CACHE.move_to_end(cache_key)
+            while len(_FAISS_INDEX_CACHE) > INDEX_CACHE_SIZE:
+                _FAISS_INDEX_CACHE.popitem(last=False)
         return filename
     finally:
         if os.path.exists(temp_name):
@@ -323,7 +338,8 @@ def _cleanup_old_index_snapshots(
         return
     for stale in snapshots[2:]:
         try:
-            _FAISS_INDEX_CACHE.pop(str(stale), None)
+            with _FAISS_INDEX_CACHE_LOCK:
+                _FAISS_INDEX_CACHE.pop(str(stale), None)
             stale.unlink()
         except OSError:
             continue
@@ -507,19 +523,35 @@ async def build_index(
         raise RuntimeError("未配置 AstrBot 核心向量模型")
     faiss, np = await _run_blocking(_import_faiss_modules)
     metadata = await _run_blocking(load_metadata, pack_dir)
-    candidates: list[tuple[str, dict[str, Any]]] = []
-    for digest, value in metadata.get("images", {}).items():
-        if (
-            not isinstance(value, dict)
-            or value.get("category") == REVIEW_CATEGORY
-            or not semantic_caption_is_complete(value)
-        ):
-            continue
-        if not value.get("caption") or not value.get("tags"):
-            continue
-        current_hash = text_hash(SemanticImage.from_dict(value).vector_text)
-        value["text_hash"] = current_hash
-        candidates.append((str(digest), value))
+    def collect_candidates() -> tuple[list[tuple[str, dict[str, Any]]], list[str]]:
+        memes_root = (Path(pack_dir).resolve() / "memes").resolve()
+        collected: list[tuple[str, dict[str, Any]]] = []
+        stale: list[str] = []
+        for digest, value in metadata.get("images", {}).items():
+            if not isinstance(value, dict):
+                stale.append(digest)
+                continue
+            source = safe_relative_path(pack_dir, value.get("relative_path", ""))
+            if (
+                source is None
+                or not source.is_relative_to(memes_root)
+                or not source.is_file()
+            ):
+                stale.append(digest)
+                continue
+            if (
+                value.get("category") == REVIEW_CATEGORY
+                or not semantic_caption_is_complete(value)
+            ):
+                continue
+            if not value.get("caption") or not value.get("tags"):
+                continue
+            current_hash = text_hash(SemanticImage.from_dict(value).vector_text)
+            value["text_hash"] = current_hash
+            collected.append((str(digest), value))
+        return collected, stale
+
+    candidates, stale_keys = await _run_blocking(collect_candidates)
     if not candidates:
         raise RuntimeError("没有已完成的语义描述，无法建立索引")
 
@@ -584,6 +616,11 @@ async def build_index(
                 "现有索引缺少其他图片的可复用向量，无法只更新当前图片；"
                 "请先在语义页完成一次整包向量重建"
             )
+    if stale_keys:
+        images_map = metadata.get("images")
+        if isinstance(images_map, dict):
+            for stale_key in stale_keys:
+                images_map.pop(stale_key, None)
     for _, item in pending:
         item["embedding_status"] = "running"
     for digest, item in candidates:
@@ -595,16 +632,30 @@ async def build_index(
 
     if pending:
         try:
-            generated = await embedding.embed_many(
-                [SemanticImage.from_dict(item).vector_text for _, item in pending]
-            )
-            if len(generated) != len(pending):
-                raise RuntimeError("向量模型返回数量与输入不一致")
-            for (digest, item), vector in zip(pending, generated):
-                vectors[digest] = vector
-                item["embedding_status"] = "done"
-                item["error"] = None
-                item["updated_at"] = utc_now()
+            try:
+                generated = await embedding.embed_many(
+                    [SemanticImage.from_dict(item).vector_text for _, item in pending]
+                )
+                if len(generated) != len(pending):
+                    raise RuntimeError("向量模型返回数量与输入不一致")
+                for (digest, item), vector in zip(pending, generated):
+                    vectors[digest] = vector
+                    item["embedding_status"] = "done"
+                    item["error"] = None
+                    item["updated_at"] = utc_now()
+            except Exception:
+                for digest, item in pending:
+                    try:
+                        vectors[digest] = await embedding.embed(
+                            SemanticImage.from_dict(item).vector_text,
+                            use_cache=False,
+                        )
+                        item["embedding_status"] = "done"
+                        item["error"] = None
+                    except Exception:
+                        item["embedding_status"] = "failed"
+                        item["error"] = "向量生成失败"
+                    item["updated_at"] = utc_now()
         except asyncio.CancelledError:
             for _, item in pending:
                 item["embedding_status"] = "pending"
@@ -613,19 +664,6 @@ async def build_index(
             metadata["requires_local_index_rebuild"] = True
             await _run_blocking(save_metadata, pack_dir, metadata)
             raise
-        except Exception:
-            for digest, item in pending:
-                try:
-                    vectors[digest] = await embedding.embed(
-                        SemanticImage.from_dict(item).vector_text,
-                        use_cache=False,
-                    )
-                    item["embedding_status"] = "done"
-                    item["error"] = None
-                except Exception:
-                    item["embedding_status"] = "failed"
-                    item["error"] = "向量生成失败"
-                item["updated_at"] = utc_now()
     failed_pending = [
         digest
         for digest, item in pending
@@ -669,6 +707,10 @@ async def build_index(
             for digest, item in sorted(candidates)
             if digest in vectors and item.get("embedding_status") == "done"
         ]
+        if not successful:
+            metadata["requires_local_index_rebuild"] = True
+            save_metadata(pack_dir, metadata)
+            raise RuntimeError("向量生成全部失败，旧索引已保持不变")
         base_index = faiss.IndexFlatIP(embedding.dimension)
         index = faiss.IndexIDMap2(base_index)
         manifest_items: dict[str, dict[str, Any]] = {}
@@ -752,7 +794,12 @@ async def search_index(
     ):
         return []
     index = await _run_blocking(_read_faiss_index, plugin_data_dir, pack_id, manifest)
-    if index is None or int(index.ntotal) <= 0 or int(top_k) <= 0:
+    if (
+        index is None
+        or int(index.ntotal) <= 0
+        or int(index.d) != embedding.dimension
+        or int(top_k) <= 0
+    ):
         return []
     data = metadata or {}
     raw_manifest_items = manifest.get("items", {})
@@ -782,7 +829,10 @@ async def search_index(
         while True:
             scores, ids = index.search(query_vector, result_limit)
             for score, faiss_id in zip(scores[0].tolist(), ids[0].tolist()):
-                if float(score) < float(min_score):
+                score_value = float(score)
+                if not math.isfinite(score_value) or int(faiss_id) < 0:
+                    continue
+                if score_value < float(min_score):
                     break
                 if int(faiss_id) in checked_ids:
                     continue
@@ -812,21 +862,25 @@ async def search_index(
                             continue
                     except OSError:
                         continue
-                ranked.append((float(score), digest, item))
+                ranked.append((score_value, digest, item))
                 if len(ranked) >= int(top_k):
                     break
+            last_score = float(scores[0][-1]) if len(scores[0]) else float("nan")
             if (
                 len(ranked) >= int(top_k)
                 or result_limit >= int(index.ntotal)
-                or float(scores[0][-1]) < float(min_score)
+                or (math.isfinite(last_score) and last_score < float(min_score))
             ):
                 break
             # 复用查询向量，仅校验新获取的候选。
             result_limit = min(result_limit * 2, int(index.ntotal))
         if not ranked:
             return []
-        # 公开 ID 必须在完整的已保存索引中保持无歧义。
-        id_map = build_id_map(raw_manifest_items)
+        # 公开 ID 必须在完整元数据集（包含未索引与待审核条目）中保持无歧义。
+        all_entry_ids = set(raw_manifest_items)
+        if isinstance(data.get("images"), dict):
+            all_entry_ids.update(str(key) for key in data["images"])
+        id_map = build_id_map(all_entry_ids)
         return [
             {
                 "id": id_map[digest],

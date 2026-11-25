@@ -66,10 +66,10 @@ def test_main_image_host_type_ignores_old_selection():
         "webdav"
     )
     assert (
-        make_sender({"image_host": "cloudflare_r2"})._get_image_host_type()
-        == "stardots"
+        make_sender({"image_host": "stardots"})._get_image_host_type()
+        == "cloudflare_r2"
     )
-    assert make_sender({})._get_image_host_type() == "stardots"
+    assert make_sender({})._get_image_host_type() == "cloudflare_r2"
 
 
 def test_main_image_sync_init_failure_degrades_gracefully(tmp_path, monkeypatch):
@@ -91,6 +91,23 @@ def test_main_image_sync_init_failure_degrades_gracefully(tmp_path, monkeypatch)
 
     assert sender._ensure_img_sync_for_pack() is None
     assert sender.img_sync is None
+
+
+def test_resolve_sync_pack_target_validates_explicit_pack(tmp_path, monkeypatch):
+    from astrbot_plugin_meme_manager.backend.packs import resolver
+
+    packs_dir = tmp_path / "packs"
+    (packs_dir / "pack-a" / "memes").mkdir(parents=True)
+    monkeypatch.setattr(resolver, "PACKS_DIR", packs_dir)
+    sender = make_sender()
+
+    pack_id, memes_dir = sender._resolve_sync_pack_target("pack-a")
+    assert pack_id == "pack-a"
+    assert memes_dir == (packs_dir / "pack-a" / "memes").resolve()
+    with pytest.raises(FileNotFoundError):
+        sender._resolve_sync_pack_target("missing-pack")
+    with pytest.raises(ValueError):
+        sender._resolve_sync_pack_target("../escape")
 
 
 def test_main_webdav_does_not_read_old_aliases_or_top_level_config():

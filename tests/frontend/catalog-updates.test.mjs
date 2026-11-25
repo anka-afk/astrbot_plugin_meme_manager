@@ -472,3 +472,11 @@ test("updatable packs appear in both update and source sections, then hide when 
   assert.equal(updatesZone.hidden, true);
   assert.equal(context.updatesGrid.children.length, 0);
 });
+
+test("resume opens the update dialog for persisted jobs", async () => {
+  const state = setup({ runningCheck: true });
+  state.storage.set("meme-community-update-job", "persisted-job");
+  await state.component.resume();
+  assert.equal(state.dialog.open, true);
+  assert.equal(state.storage.size, 0);
+});

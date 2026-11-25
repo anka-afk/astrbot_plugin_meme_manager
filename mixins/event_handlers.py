@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import hashlib
+import io
 import json
 import os
 import random
@@ -360,6 +361,20 @@ class EventHandlerMixin:
             and origin == LLM_REQUEST_ORIGIN_PLUGIN
         )
 
+    @staticmethod
+    def _is_llm_or_streaming_finish_result(result: Any) -> bool:
+        """判断结果是否属于 LLM 回复或流式收尾，跳过普通命令等非 LLM 输出。"""
+        if result is None:
+            return False
+        content_type = getattr(result, "result_content_type", None)
+        content_type_name = str(getattr(content_type, "name", content_type) or "")
+        if content_type_name == "STREAMING_FINISH":
+            return True
+        checker = getattr(result, "is_llm_result", None)
+        if callable(checker):
+            return bool(checker())
+        return content_type_name == "LLM_RESULT"
+
     def _should_attach_for_result(
         self,
         event: AstrMessageEvent,
@@ -370,14 +385,7 @@ class EventHandlerMixin:
             return False
         if not self._scope_allows_llm_origin(event):
             return False
-        content_type = getattr(result, "result_content_type", None)
-        content_type_name = str(getattr(content_type, "name", content_type) or "")
-        if content_type_name == "STREAMING_FINISH":
-            return True
-        checker = getattr(result, "is_llm_result", None)
-        if callable(checker):
-            return bool(checker())
-        return content_type_name == "LLM_RESULT"
+        return self._is_llm_or_streaming_finish_result(result)
 
     @staticmethod
     def _stringify_emotion_context_text(value: Any) -> str:
@@ -702,6 +710,28 @@ class EventHandlerMixin:
                 normalized.append(component)
         return normalized
 
+    def _find_custom_cleanup_spans(self, text: str) -> list[tuple[int, int]]:
+        if not self.content_cleanup_rule or self.content_cleanup_rule == r"&&[a-zA-Z]*&&":
+            return []
+        try:
+            pattern = re.compile(self.content_cleanup_rule)
+        except re.error as exc:
+            logger.warning(
+                "[meme_manager] 忽略无效的 content_cleanup_rule 正则表达式 %r: %s",
+                self.content_cleanup_rule,
+                exc,
+            )
+            return []
+        protected = _protected_reference_spans(text)
+        return [
+            match.span()
+            for match in pattern.finditer(text)
+            if not any(
+                match.start() < end and match.end() > start
+                for start, end in protected
+            )
+        ]
+
     def _clean_outgoing_plain_text(self, event, text: str) -> str:
         context = self._resolve_runtime_pack_context(event=event)
         categories = runtime_category_mapping(context.get("category_mapping") or {})
@@ -711,18 +741,9 @@ class EventHandlerMixin:
             semantic=self._semantic_mode_active(event),
             strip_references=True,
         ).text
-        if self.content_cleanup_rule and self.content_cleanup_rule != r"&&[a-zA-Z]*&&":
-            protected = _protected_reference_spans(cleaned)
-            edits = [
-                match.span()
-                for match in re.finditer(self.content_cleanup_rule, cleaned)
-                if not any(
-                    match.start() < end and match.end() > start
-                    for start, end in protected
-                )
-            ]
-            for start, end in reversed(edits):
-                cleaned = cleaned[:start] + cleaned[end:]
+        edits = self._find_custom_cleanup_spans(cleaned)
+        for start, end in reversed(edits):
+            cleaned = cleaned[:start] + cleaned[end:]
         if getattr(self, "filter_all_tags", False):
             cleaned = MemeParser.parse(cleaned, filter_all=True).text
         return cleaned
@@ -1083,16 +1104,7 @@ class EventHandlerMixin:
         parser.feed(text)
         parser.finish()
         edits = [(token.start, token.end) for token in parser.tokens]
-        if self.content_cleanup_rule and self.content_cleanup_rule != r"&&[a-zA-Z]*&&":
-            protected = _protected_reference_spans(text)
-            edits.extend(
-                match.span()
-                for match in re.finditer(self.content_cleanup_rule, text)
-                if not any(
-                    match.start() < end and match.end() > start
-                    for start, end in protected
-                )
-            )
+        edits.extend(self._find_custom_cleanup_spans(text))
         edits.sort()
         cleaned = []
         offset = 0
@@ -2293,6 +2305,8 @@ class EventHandlerMixin:
 
         if result.result_content_type == ResultContentType.STREAMING_RESULT:
             return
+        if not self._is_llm_or_streaming_finish_result(result):
+            return
 
         try:
             # 第一步：获取并清理原始消息链中的文本
@@ -2365,10 +2379,13 @@ class EventHandlerMixin:
         except Exception as e:
             logger.exception("处理消息装饰失败：%s", e)
 
-    @filter.after_message_sent()
     async def _after_message_sent_impl(self, event: AstrMessageEvent):
         """消息发送后处理。用于发送未混合的表情图片。"""
         pending_images = event.get_extra("meme_manager_pending_images")
+        if pending_images is not None:
+            event.set_extra("meme_manager_pending_images", None)
+        if event.get_extra("meme_manager_qq_reply_stickers"):
+            event.set_extra("meme_manager_qq_reply_stickers", None)
 
         try:
             if pending_images:
@@ -2377,13 +2394,10 @@ class EventHandlerMixin:
         except Exception as e:
             logger.exception("发送表情图片失败：%s", e)
         finally:
-            event.set_extra("meme_manager_pending_images", None)
-            if event.get_extra("meme_manager_qq_reply_stickers"):
-                event.set_extra("meme_manager_qq_reply_stickers", None)
-
-            # 清理临时文件
+            # 清理临时文件（兼容混合消息模式：此时 pending_images 为空但仍需清理临时文件）
             temp_files = event.get_extra("meme_manager_temp_files")
             if temp_files:
+                event.set_extra("meme_manager_temp_files", None)
                 for temp_file in temp_files:
                     try:
                         if os.path.exists(temp_file):
@@ -2391,9 +2405,41 @@ class EventHandlerMixin:
                             logger.debug(f"[meme_manager] 已清理临时文件: {temp_file}")
                     except Exception as e:
                         logger.error(f"[meme_manager] 清理临时文件失败: {e}")
-                event.set_extra("meme_manager_temp_files", None)
 
     # 辅助方法
+    @staticmethod
+    def _pil_image_to_gif_bytes(img: PILImage.Image) -> bytes | None:
+        """将已打开的静态 Pillow 图片转换为 GIF 字节；本身已是 GIF 时返回 None。"""
+        if img.format == "GIF":
+            return None
+
+        if img.mode in ("RGBA", "LA") or (
+            img.mode == "P" and "transparency" in img.info
+        ):
+            background = PILImage.new("RGB", img.size, (255, 255, 255))
+            if img.mode == "P":
+                img = img.convert("RGBA")
+            background.paste(img, mask=img.getchannel("A"))
+            img = background
+        else:
+            img = img.convert("RGB")
+
+        output = io.BytesIO()
+        img.save(output, "GIF")
+        return output.getvalue()
+
+    def _convert_bytes_to_gif(self, image_bytes: bytes) -> bytes:
+        """将内存中的静态图片字节转换为 GIF 字节；跳过或失败时返回原字节。"""
+        if not self.convert_static_to_gif:
+            return image_bytes
+        try:
+            with PILImage.open(io.BytesIO(image_bytes)) as img:
+                converted = self._pil_image_to_gif_bytes(img)
+                return converted if converted is not None else image_bytes
+        except Exception as e:
+            logger.error("[meme_manager] GIF 转换失败：%s", e)
+            return image_bytes
+
     def _convert_to_gif(self, image_path: str) -> str:
         """将静态图片转换为独占的临时 GIF。
 
@@ -2413,22 +2459,9 @@ class EventHandlerMixin:
         temp_filename = None
         try:
             with PILImage.open(image_path) as img:
-                # 检查是否已经是 GIF (虽然后缀不是 .gif，但内容可能是)
-                if img.format == "GIF":
+                gif_bytes = self._pil_image_to_gif_bytes(img)
+                if gif_bytes is None:
                     return image_path
-
-                # 转换为 RGB (如果是 RGBA 需要处理透明度)
-                if img.mode in ("RGBA", "LA") or (
-                    img.mode == "P" and "transparency" in img.info
-                ):
-                    # 创建白色背景
-                    background = PILImage.new("RGB", img.size, (255, 255, 255))
-                    if img.mode == "P":
-                        img = img.convert("RGBA")
-                    background.paste(img, mask=img.getchannel("A"))
-                    img = background
-                else:
-                    img = img.convert("RGB")
 
                 temp_dir = Path(get_astrbot_temp_path())
                 temp_dir.mkdir(parents=True, exist_ok=True)
@@ -2437,7 +2470,7 @@ class EventHandlerMixin:
                 )
                 # 通过自己持有的句柄写入，Windows 上会在投递前关闭句柄。
                 with os.fdopen(fd, "wb") as output:
-                    img.save(output, "GIF")
+                    output.write(gif_bytes)
                 logger.debug("[meme_manager] 已将静态图片转换为 GIF：%s", temp_filename)
                 return temp_filename
         except Exception as e:
@@ -2445,6 +2478,33 @@ class EventHandlerMixin:
                 Path(temp_filename).unlink(missing_ok=True)
             logger.error("[meme_manager] GIF 转换失败：%s", e)
             return image_path
+
+    async def _convert_to_gif_shielded(self, source_path: str) -> str:
+        """在可取消协程中安全执行 GIF 转换，取消时回收已生成的临时文件。"""
+        conversion = asyncio.create_task(
+            asyncio.to_thread(self._convert_to_gif, source_path)
+        )
+        try:
+            return await asyncio.shield(conversion)
+        except asyncio.CancelledError:
+            while not conversion.done():
+                try:
+                    await asyncio.shield(conversion)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not conversion.cancelled():
+                try:
+                    converted_path = conversion.result()
+                except Exception:
+                    converted_path = source_path
+                if converted_path != source_path:
+                    try:
+                        Path(converted_path).unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning("[meme_manager] 取消转换后清理临时 GIF 失败")
+            raise
 
     async def _send_memes_streaming(
         self, event: AstrMessageEvent, *, stream_completed: bool = False
@@ -2481,18 +2541,23 @@ class EventHandlerMixin:
                     )
                     if image_path is None:
                         continue
-                    final_path = await asyncio.to_thread(
-                        self._convert_to_gif, str(image_path)
-                    )
+                    final_path = await self._convert_to_gif_shielded(str(image_path))
                     try:
                         image = Image.fromFileSystem(final_path)
                         self._track_prepared_meme(
-                            event, image, image_path, candidate_id=selected_id
+                            event,
+                            image,
+                            image_path,
+                            category=Path(image_path).parent.name,
+                            candidate_id=selected_id,
                         )
                         await self._send_meme_image(event, image)
                     finally:
-                        if final_path != str(image_path) and os.path.exists(final_path):
-                            os.remove(final_path)
+                        if final_path != str(image_path):
+                            try:
+                                Path(final_path).unlink(missing_ok=True)
+                            except OSError:
+                                logger.warning("[meme_manager] 流式语义模式清理临时 GIF 失败")
             except Exception as exc:
                 logger.error("流式语义表情发送失败: %s", exc, exc_info=True)
             finally:
@@ -2508,9 +2573,7 @@ class EventHandlerMixin:
                 if not memes:
                     continue
                 meme_file = str(random.choice(memes))
-                final_meme_file = await asyncio.to_thread(
-                    self._convert_to_gif, meme_file
-                )
+                final_meme_file = await self._convert_to_gif_shielded(meme_file)
 
                 try:
                     image = Image.fromFileSystem(final_meme_file)
@@ -2520,11 +2583,11 @@ class EventHandlerMixin:
                     logger.error(f"[meme_manager] 流式模式发送表情失败: {e}")
                 finally:
                     # 清理临时文件
-                    if final_meme_file != meme_file and os.path.exists(final_meme_file):
+                    if final_meme_file != meme_file:
                         try:
-                            os.remove(final_meme_file)
-                        except Exception:
-                            pass
+                            Path(final_meme_file).unlink(missing_ok=True)
+                        except OSError:
+                            logger.warning("[meme_manager] 流式模式清理临时 GIF 失败")
         except Exception as e:
             logger.exception("[meme_manager] 流式模式处理表情失败：%s", e)
         finally:
@@ -2639,6 +2702,7 @@ class EventHandlerMixin:
         # 投递失败时仍保留此归属，因为适配器的实际结果可能不确定。
         event.set_extra("meme_manager_direct_send_attempted", True)
         final_path = str(source)
+        send_bytes = original_bytes
         conversion = None
         try:
             if original_bytes is None:
@@ -2646,6 +2710,10 @@ class EventHandlerMixin:
                     asyncio.to_thread(self._convert_to_gif, str(source))
                 )
                 final_path = await asyncio.shield(conversion)
+            elif self.convert_static_to_gif:
+                send_bytes = await asyncio.to_thread(
+                    self._convert_bytes_to_gif, original_bytes
+                )
             current = self._resolve_runtime_pack_context(event=event)
             if current.get("pack_ids") != context.get("pack_ids") or (
                 await asyncio.to_thread(validate_selected_id, event, target, current)
@@ -2655,8 +2723,8 @@ class EventHandlerMixin:
             ):
                 return json.dumps({"ok": False, "reason": "candidate_changed"})
             image = (
-                Image.fromBytes(original_bytes)
-                if original_bytes is not None
+                Image.fromBytes(send_bytes)
+                if send_bytes is not None
                 else Image.fromFileSystem(final_path)
             )
             self._track_prepared_meme(

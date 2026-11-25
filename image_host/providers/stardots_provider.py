@@ -305,9 +305,7 @@ class StarDotsProvider(ImageHostInterface):
             "url": urlunsplit((url.scheme, url.netloc, url.path, "", "")),
             "size": len(content),
             "sha256": hashlib.sha256(content).hexdigest(),
-            "modified": str(int(result["ts"] / 1000))
-            if isinstance(result.get("ts"), (int, float))
-            else "",
+            "modified": "",
         }
 
     def delete_image(self, image_id: str) -> bool:
@@ -390,7 +388,7 @@ class StarDotsProvider(ImageHostInterface):
                         "url": urlunsplit((url.scheme, url.netloc, url.path, "", "")),
                         "size": self._extract_image_size(source),
                         "modified": str(source["uploadedAt"])
-                        if "uploadedAt" in source
+                        if source.get("uploadedAt") is not None
                         else "",
                     }
                 )
@@ -435,7 +433,11 @@ class StarDotsProvider(ImageHostInterface):
                     f"StarDots download failed: HTTP {response.status_code}"
                 )
             size = image_info.get("size")
-            if size is None and response.headers.get("Content-Length", "").isdigit():
+            if (
+                size is None
+                and not response.headers.get("Content-Encoding")
+                and response.headers.get("Content-Length", "").isdigit()
+            ):
                 size = int(response.headers["Content-Length"])
             save_image_stream(
                 response.iter_content(chunk_size=1024 * 1024),

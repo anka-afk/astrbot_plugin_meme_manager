@@ -137,3 +137,16 @@ def test_resolve_pack_context_combines_paths_and_mapping(resolver_paths):
     assert context["pack_id"] == "demo"
     assert context["pack_dir"] == pack_dir
     assert context["category_mapping"] == {"happy": "开心"}
+
+
+def test_resolver_validates_pack_id_respects_disabled_default_and_missing_dir(
+    resolver_paths,
+):
+    assert resolver._pack_exists("../escape") is False
+    assert resolver.load_pack_category_mapping("builtin-default") == {}
+    packs = [
+        {"id": "builtin-default", "enabled": False},
+        {"id": "enabled-pack", "enabled": True},
+    ]
+    write_runtime_data(resolver_paths, packs, [])
+    assert resolver.resolve_pack_ids() == ["enabled-pack"]

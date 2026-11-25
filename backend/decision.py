@@ -128,24 +128,26 @@ class DecisionClient:
             return "closed"
         if not self._provider_valid:
             return "invalid_provider"
-        if not self.token:
-            return "missing_token"
-        if any(ord(char) < 33 or ord(char) == 127 for char in self.token):
-            return "invalid_token"
         if self.provider == "cloudflare":
             if not self.account_id:
                 return "missing_account_id"
             if not CLOUDFLARE_ACCOUNT_ID.fullmatch(self.account_id):
                 return "invalid_account_id"
-            if not self.model:
-                return "missing_model"
-            if self.model not in CLOUDFLARE_MODELS:
-                return "unsupported_model"
         else:
             if not self.base_url:
                 return "missing_base_url"
             if not self._base_url_valid():
                 return "invalid_base_url"
+        if not self.token:
+            return "missing_token"
+        if any(ord(char) < 33 or ord(char) >= 127 for char in self.token):
+            return "invalid_token"
+        if self.provider == "cloudflare":
+            if not self.model:
+                return "missing_model"
+            if self.model not in CLOUDFLARE_MODELS:
+                return "unsupported_model"
+        else:
             if not self.model:
                 return "missing_model"
             if len(self.model) > 128 or any(
@@ -452,8 +454,11 @@ class DecisionClient:
     async def _conflict_reason(response: aiohttp.ClientResponse) -> str:
         header_code = response.headers.get("X-System-One-Error-Code", "")
         try:
-            body = await DecisionClient._read_bounded(response)
-            payload = json.loads(body.decode("utf-8")) if not header_code else {}
+            if header_code:
+                payload = {}
+            else:
+                body = await DecisionClient._read_bounded(response)
+                payload = json.loads(body.decode("utf-8"))
             error = payload.get("error") if isinstance(payload, dict) else None
             code = (
                 error.get("code")
@@ -465,7 +470,7 @@ class DecisionClient:
             normalized = (
                 str(header_code or code or "").strip().casefold().replace("-", "_")
             )
-        except (aiohttp.ClientError, UnicodeError, ValueError, TypeError):
+        except (DecisionError, aiohttp.ClientError, UnicodeError, ValueError, TypeError):
             return "conflict"
         if normalized in {"idempotency_conflict", "idempotency_payload_mismatch"}:
             return "idempotency_conflict"
@@ -506,7 +511,7 @@ class DecisionClient:
         try:
             body = await self._read_bounded(response)
             payload = json.loads(body.decode("utf-8"))
-        except (aiohttp.ClientError, UnicodeError, ValueError, TypeError):
+        except (DecisionError, aiohttp.ClientError, UnicodeError, ValueError, TypeError):
             payload = None
         if isinstance(payload, dict) and isinstance(payload.get("errors"), list):
             errors = payload["errors"]

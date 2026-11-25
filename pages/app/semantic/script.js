@@ -175,10 +175,8 @@ async function initSemanticPage() {
     autoInboxSemanticize.disabled =
       requestRunning ||
       !latestStatus ||
-      pendingAutoInboxCount <= 0 ||
-      !embeddingReady ||
-      !visionReady ||
-      latestStatus?.can_start === false;
+      !packSelect.value ||
+      pendingAutoInboxCount <= 0;
     recordsPrev.disabled =
       requestRunning || statusLoading || recordsCurrentPage <= 1;
     recordsNext.disabled =

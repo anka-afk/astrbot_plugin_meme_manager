@@ -490,5 +490,25 @@ class RuntimePackModelSwitchTests(unittest.TestCase):
                 )
 
 
+class WebUIExportOutputDirSafetyTests(unittest.TestCase):
+    def test_webui_export_output_dir_confines_to_backup_dir(self):
+        web_api_module = importlib.import_module(
+            "astrbot_plugin_meme_manager.mixins.web_api"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            backup_root = Path(temp_dir) / "backups"
+            backup_root.mkdir()
+            with patch.object(pack_storage, "BACKUP_DIR", backup_root):
+                self.assertEqual(
+                    web_api_module.WebAPIMixin._resolve_webui_export_output_dir(
+                        "nightly/sub"
+                    ),
+                    (backup_root / "nightly" / "sub").resolve(),
+                )
+                for bad in ("/tmp/escape", "../escape", "~/escape", "C:\\escape", 123):
+                    with self.assertRaises(ValueError):
+                        web_api_module.WebAPIMixin._resolve_webui_export_output_dir(bad)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,8 +10,9 @@ import re
 import secrets
 import time
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
+from urllib.parse import urlsplit
 
 from PIL import Image as PILImage
 from quart import jsonify, make_response, request, send_file
@@ -533,6 +534,18 @@ class WebAPIMixin:
             "导入运行时全量备份",
         )
         self._register_webui_api(
+            "settings/backup/import/session",
+            self._api_start_runtime_backup_import_session,
+            ["POST"],
+            "创建运行时全量备份分片导入会话",
+        )
+        self._register_webui_api(
+            "settings/backup/import/session/chunk/<session_id>/<index>/<total_chunks>",
+            self._api_upload_runtime_backup_import_chunk,
+            ["POST"],
+            "上传运行时全量备份分片（表单字段 file）",
+        )
+        self._register_webui_api(
             "bridge/auth_token",
             self._api_bridge_auth_token,
             ["GET"],
@@ -728,36 +741,50 @@ class WebAPIMixin:
         )
         return guidance
 
+    def _get_runtime_file_lock(self) -> asyncio.Lock:
+        if not hasattr(self, "_runtime_file_lock"):
+            self._runtime_file_lock = asyncio.Lock()
+        return self._runtime_file_lock
+
     async def _run_guarded_pack_file_operation(
         self,
         pack_id: str,
         operation: str,
         function,
         *args,
+        serialize_runtime_metadata: bool = False,
         **kwargs,
     ):
         """在整个文件快照期间阻止同一表情包启动语义任务。"""
-        manager = getattr(self, "semantic_task_manager", None)
-        locked = False
-        if manager is not None and pack_id:
-            manager.begin_external_pack_operation(pack_id, operation)
-            locked = True
-        kwargs["operation_guard"] = None if locked else self._semantic_operation_guard
-        worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-        try:
-            return await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            # 浏览器断开或请求超时时，to_thread 中的磁盘操作不会自动停止。
-            # 必须等它真正收尾后再释放外部操作锁，否则语义任务可能与仍在
-            # 运行的导出/覆盖线程同时改动同一个表情包。
+        async def _execute():
+            manager = getattr(self, "semantic_task_manager", None)
+            locked = False
+            if manager is not None and pack_id:
+                manager.begin_external_pack_operation(pack_id, operation)
+                locked = True
+            kwargs["operation_guard"] = (
+                None if locked else self._semantic_operation_guard
+            )
+            worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
             try:
-                await asyncio.shield(worker)
-            except Exception:
-                pass
-            raise
-        finally:
-            if locked:
-                manager.end_external_pack_operation(pack_id)
+                return await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                # 浏览器断开或请求超时时，to_thread 中的磁盘操作不会自动停止。
+                # 必须等它真正收尾后再释放外部操作锁，否则语义任务可能与仍在
+                # 运行的导出/覆盖线程同时改动同一个表情包。
+                try:
+                    await asyncio.shield(worker)
+                except Exception:
+                    pass
+                raise
+            finally:
+                if locked:
+                    manager.end_external_pack_operation(pack_id)
+
+        if serialize_runtime_metadata:
+            async with self._get_runtime_file_lock():
+                return await _execute()
+        return await _execute()
 
     async def _run_guarded_runtime_file_operation(
         self,
@@ -767,9 +794,7 @@ class WebAPIMixin:
         **kwargs,
     ):
         """在运行时全局文件操作期间持有所有已安装表情包的锁。"""
-        if not hasattr(self, "_runtime_file_lock"):
-            self._runtime_file_lock = asyncio.Lock()
-        async with self._runtime_file_lock:
+        async with self._get_runtime_file_lock():
             manager = getattr(self, "semantic_task_manager", None)
             pack_ids = (
                 sorted(path.name for path in PACKS_DIR.iterdir() if path.is_dir())
@@ -916,25 +941,128 @@ class WebAPIMixin:
         except Exception as exc:
             logger.error("图片变更后刷新语义元数据失败: %s", exc, exc_info=True)
 
-    def _finish_img_host_local_operation(self) -> None:
+    async def _run_img_host_local_cleanup(self, active: dict) -> None:
+        pack_id = str(active.get("pack_id") or "").strip()
+        manager = getattr(self, "semantic_task_manager", None)
+        try:
+            if manager is not None and pack_id:
+                pack_dir = PACKS_DIR / pack_id
+                if (pack_dir / "semantic_metadata.json").is_file():
+                    try:
+                        await asyncio.to_thread(invalidate_semantic_metadata, pack_dir)
+                    except Exception as exc:
+                        logger.error(
+                            "图床任务结束后刷新语义元数据失败: %s",
+                            exc,
+                            exc_info=True,
+                        )
+        finally:
+            if manager is not None and pack_id:
+                manager.end_external_pack_operation(pack_id)
+            if getattr(self, "_img_host_local_operation", None) is active:
+                self._img_host_local_operation = None
+
+    async def _finish_img_host_local_operation_async(self) -> None:
         active = getattr(self, "_img_host_local_operation", None)
         if not isinstance(active, dict):
             return
+        cleanup_task = active.get("cleanup_task")
+        if cleanup_task is None:
+            if active.get("finishing"):
+                return
+            active["finishing"] = True
+            cleanup_task = asyncio.create_task(self._run_img_host_local_cleanup(active))
+            active["cleanup_task"] = cleanup_task
+            self._img_host_cleanup_task = cleanup_task
+        await cleanup_task
+
+    def _finish_img_host_local_operation(self, *, skip_invalidation: bool = False) -> None:
+        active = getattr(self, "_img_host_local_operation", None)
+        if not isinstance(active, dict) or active.get("finishing"):
+            return
         pack_id = str(active.get("pack_id") or "").strip()
         manager = getattr(self, "semantic_task_manager", None)
-        if manager is not None and pack_id:
-            pack_dir = PACKS_DIR / pack_id
-            if (pack_dir / "semantic_metadata.json").is_file():
-                try:
-                    invalidate_semantic_metadata(pack_dir)
-                except Exception as exc:
-                    logger.error(
-                        "图床任务结束后刷新语义元数据失败: %s",
-                        exc,
-                        exc_info=True,
-                    )
-            manager.end_external_pack_operation(pack_id)
-        self._img_host_local_operation = None
+        pack_dir = PACKS_DIR / pack_id if pack_id else None
+        needs_invalidation = bool(
+            not skip_invalidation
+            and manager is not None
+            and pack_dir is not None
+            and (pack_dir / "semantic_metadata.json").is_file()
+        )
+        if needs_invalidation:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                active["finishing"] = True
+                cleanup_task = loop.create_task(
+                    self._run_img_host_local_cleanup(active)
+                )
+                active["cleanup_task"] = cleanup_task
+                self._img_host_cleanup_task = cleanup_task
+                return
+        active["finishing"] = True
+        try:
+            if manager is not None and pack_id:
+                if needs_invalidation and pack_dir is not None:
+                    try:
+                        invalidate_semantic_metadata(pack_dir)
+                    except Exception as exc:
+                        logger.error(
+                            "图床任务结束后刷新语义元数据失败: %s",
+                            exc,
+                            exc_info=True,
+                        )
+        finally:
+            if manager is not None and pack_id:
+                manager.end_external_pack_operation(pack_id)
+            if getattr(self, "_img_host_local_operation", None) is active:
+                self._img_host_local_operation = None
+
+    @staticmethod
+    def _resolve_webui_read_pack_context() -> tuple[dict | None, tuple | None]:
+        """解析 WebUI 只读接口的显式 managed_pack_id；未指定时回退默认包，非法或不存在时返回错误。"""
+        managed_pack_id = str(request.args.get("managed_pack_id") or "").strip()
+        if not managed_pack_id:
+            return None, None
+        try:
+            managed_pack_id = validate_pack_id(managed_pack_id)
+        except ValueError as exc:
+            return None, (jsonify({"message": str(exc)}), 400)
+
+        pack_dir = (PACKS_DIR / managed_pack_id).resolve()
+        packs_root = PACKS_DIR.resolve()
+        try:
+            pack_dir.relative_to(packs_root)
+        except ValueError:
+            return None, (jsonify({"message": "目标表情包路径无效"}), 400)
+        if not pack_dir.is_dir():
+            return None, (jsonify({"message": f"表情包不存在: {managed_pack_id}"}), 404)
+
+        return (
+            {
+                "pack_id": managed_pack_id,
+                "pack_dir": pack_dir,
+                "memes_dir": pack_dir / "memes",
+                "memes_data_path": pack_dir / "memes_data.json",
+                "manifest_path": pack_dir / "manifest.json",
+            },
+            None,
+        )
+
+    @staticmethod
+    async def _read_json_object(*, allow_empty: bool = False):
+        """安全解析 JSON 对象请求体；非对象或损坏的 JSON 输入统一返回 400。"""
+        raw = (await request.get_data()).strip()
+        if not raw:
+            if allow_empty:
+                return {}, None
+            return None, (jsonify({"message": "请求体必须为 JSON 对象"}), 400)
+        data = await request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return None, (jsonify({"message": "请求体必须为 JSON 对象"}), 400)
+        return data, None
 
     @staticmethod
     def _resolve_webui_pack_view_context() -> dict | None:
@@ -1008,7 +1136,7 @@ class WebAPIMixin:
         if not memes_dir.is_dir():
             return emojis
         for category_dir in memes_dir.iterdir():
-            if not category_dir.is_dir():
+            if not category_dir.is_dir() or category_dir.name.startswith("."):
                 continue
             category = category_dir.name
             files = []
@@ -1068,7 +1196,9 @@ class WebAPIMixin:
         return descriptions
 
     async def _api_get_emojis(self):
-        view_context = self._resolve_webui_pack_view_context()
+        view_context, error = self._resolve_webui_read_pack_context()
+        if error:
+            return error
         if view_context:
             emoji_data = await asyncio.to_thread(
                 self._scan_pack_emojis, view_context["memes_dir"]
@@ -1091,7 +1221,9 @@ class WebAPIMixin:
     async def _api_get_emoji_by_category(self, category):
         if not is_safe_category_name(str(category or "")):
             return jsonify({"message": "分类名称非法"}), 400
-        view_context = self._resolve_webui_pack_view_context()
+        view_context, error = self._resolve_webui_read_pack_context()
+        if error:
+            return error
         if view_context:
             category_path = view_context["memes_dir"] / category
             if not category_path.is_dir():
@@ -1156,6 +1288,7 @@ class WebAPIMixin:
                 result = await self._run_pack_mutation(
                     target_pack_id, "上传表情图片", mutate
                 )
+                self._reload_personas()
                 logger.info(f"表情添加成功: {result['path']}")
                 return (
                     jsonify(
@@ -1182,6 +1315,10 @@ class WebAPIMixin:
                     ),
                     409,
                 )
+            except ValueError as e:
+                return jsonify({"message": str(e)}), 400
+            except FileNotFoundError as e:
+                return jsonify({"message": str(e)}), 404
             except RuntimeError as e:
                 return jsonify({"message": str(e)}), 409
         except Exception as e:
@@ -1189,7 +1326,9 @@ class WebAPIMixin:
             return jsonify({"message": f"处理上传请求时出错: {str(e)}"}), 500
 
     async def _api_delete_emoji(self):
-        data = await request.get_json()
+        data, error = await self._read_json_object()
+        if error:
+            return error
         category = data.get("category")
         image_file = data.get("image_file")
         if category and not is_safe_category_name(str(category)):
@@ -1224,7 +1363,9 @@ class WebAPIMixin:
         return jsonify({"message": "表情未找到"}), 404
 
     async def _api_batch_delete_emojis(self):
-        data = await request.get_json()
+        data, error = await self._read_json_object()
+        if error:
+            return error
         category = data.get("category")
         image_files = data.get("image_files")
         if category and not is_safe_category_name(str(category)):
@@ -1262,7 +1403,9 @@ class WebAPIMixin:
         )
 
     async def _api_move_emoji(self):
-        data = await request.get_json()
+        data, error = await self._read_json_object()
+        if error:
+            return error
         source_category = data.get("source_category")
         target_category = data.get("target_category")
         image_file = data.get("image_file")
@@ -1371,7 +1514,9 @@ class WebAPIMixin:
                 manager.end_external_pack_operation(pack_id)
 
     async def _api_batch_move_emojis(self):
-        data = await request.get_json()
+        data, error = await self._read_json_object()
+        if error:
+            return error
         source_category = data.get("source_category")
         target_category = data.get("target_category")
         image_files = data.get("image_files")
@@ -1429,7 +1574,9 @@ class WebAPIMixin:
         )
 
     async def _api_batch_copy_emojis(self):
-        data = await request.get_json()
+        data, error = await self._read_json_object()
+        if error:
+            return error
         source_category = data.get("source_category")
         target_category = data.get("target_category")
         image_files = data.get("image_files")
@@ -1485,7 +1632,9 @@ class WebAPIMixin:
         )
 
     async def _api_clear_all_emojis(self):
-        data = await request.get_json(silent=True) or {}
+        data, error = await self._read_json_object(allow_empty=True)
+        if error:
+            return error
         pack_id, error = self._resolve_webui_write_pack(data)
         if error:
             return error
@@ -1515,7 +1664,9 @@ class WebAPIMixin:
 
     async def _api_get_emotions(self):
         try:
-            view_context = self._resolve_webui_pack_view_context()
+            view_context, error = self._resolve_webui_read_pack_context()
+            if error:
+                return error
             if view_context:
                 descriptions = await asyncio.to_thread(
                     self._load_pack_descriptions, view_context
@@ -1531,7 +1682,9 @@ class WebAPIMixin:
 
     async def _api_delete_category(self):
         try:
-            data = await request.get_json()
+            data, error = await self._read_json_object()
+            if error:
+                return error
             category = data.get("category")
             if not category:
                 return jsonify({"message": "分类不能为空"}), 400
@@ -1544,6 +1697,7 @@ class WebAPIMixin:
                 lambda: self._category_manager_for(pack_id).delete_category(category),
             )
             if deleted:
+                self._reload_personas()
                 return jsonify({"message": "分类删除成功"}), 200
             return jsonify({"message": "分类删除失败"}), 500
         except RuntimeError as e:
@@ -1552,7 +1706,9 @@ class WebAPIMixin:
             return jsonify({"message": f"分类删除失败: {str(e)}"}), 500
 
     async def _api_clear_category(self):
-        data = await request.get_json()
+        data, error = await self._read_json_object()
+        if error:
+            return error
         category = data.get("category")
         if category and not is_safe_category_name(str(category)):
             return jsonify({"message": "分类名称非法"}), 400
@@ -1588,7 +1744,9 @@ class WebAPIMixin:
 
     async def _api_restore_category(self):
         try:
-            data = await request.get_json()
+            data, error = await self._read_json_object()
+            if error:
+                return error
             category = data.get("category")
             description = data.get("description", "请添加描述")
             if not category:
@@ -1604,6 +1762,7 @@ class WebAPIMixin:
                 ),
             )
             if created:
+                self._reload_personas()
                 return (
                     jsonify({"message": "分类创建成功", "description": description}),
                     200,
@@ -1616,7 +1775,9 @@ class WebAPIMixin:
 
     async def _api_rename_category(self):
         try:
-            data = await request.get_json()
+            data, error = await self._read_json_object()
+            if error:
+                return error
             old_name = data.get("old_name")
             new_name = data.get("new_name")
             if not old_name or not new_name:
@@ -1632,6 +1793,7 @@ class WebAPIMixin:
                 ),
             )
             if renamed:
+                self._reload_personas()
                 return jsonify({"message": "分类重命名成功"}), 200
             return jsonify({"message": "分类重命名失败"}), 500
         except RuntimeError as e:
@@ -1641,7 +1803,9 @@ class WebAPIMixin:
 
     async def _api_update_description(self):
         try:
-            data = await request.get_json()
+            data, error = await self._read_json_object()
+            if error:
+                return error
             category = data.get("tag")
             description = data.get("description")
             if not category or not description:
@@ -1657,6 +1821,7 @@ class WebAPIMixin:
                 ),
             )
             if updated:
+                self._reload_personas()
                 return jsonify({"category": category, "description": description}), 200
             return jsonify({"message": "更新分类描述失败"}), 500
         except RuntimeError as e:
@@ -1666,7 +1831,9 @@ class WebAPIMixin:
 
     async def _api_remove_from_config(self):
         try:
-            data = await request.get_json()
+            data, error = await self._read_json_object()
+            if error:
+                return error
             category = data.get("category")
             if not category:
                 return jsonify({"message": "分类不能为空"}), 400
@@ -1681,6 +1848,7 @@ class WebAPIMixin:
                 ),
             )
             if removed:
+                self._reload_personas()
                 return jsonify({"message": "已从配置中移除分类"}), 200
             return jsonify({"message": "从配置中移除分类失败"}), 500
         except RuntimeError as e:
@@ -1690,7 +1858,9 @@ class WebAPIMixin:
 
     async def _api_sync_status(self):
         try:
-            view_context = self._resolve_webui_pack_view_context()
+            view_context, error = self._resolve_webui_read_pack_context()
+            if error:
+                return error
             missing_in_config, deleted_categories = await asyncio.to_thread(
                 lambda: self._category_manager_for(
                     view_context["pack_id"] if view_context else "",
@@ -1714,7 +1884,9 @@ class WebAPIMixin:
 
     async def _api_sync_config(self):
         try:
-            data = await request.get_json(silent=True) or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id, error = self._resolve_webui_write_pack(data)
             if error:
                 return error
@@ -1725,6 +1897,7 @@ class WebAPIMixin:
                 lambda: self._category_manager_for(pack_id).sync_with_filesystem(),
             )
             if synced:
+                self._reload_personas()
                 logger.info("配置同步成功")
                 return jsonify({"message": "配置同步成功"}), 200
             logger.warning("配置同步失败")
@@ -1833,14 +2006,14 @@ class WebAPIMixin:
         if status.get("running"):
             raise RuntimeError("已有同步任务正在运行，请等待当前任务完成")
 
-        self._invalidate_img_host_status_cache(pack_id)
-        self._last_img_host_sync_task_status = None
-        changes_local_files = task in {"overwrite_from_remote", "download"}
         effective_pack_id = str(
-            pack_id
-            or getattr(self, "_img_sync_pack_id", "")
+            getattr(self, "_img_sync_pack_id", "")
+            or pack_id
             or self._resolve_runtime_pack_context().get("pack_id")
         ).strip()
+        self._invalidate_img_host_status_cache(effective_pack_id or pack_id)
+        self._last_img_host_sync_task_status = None
+        changes_local_files = task in {"overwrite_from_remote", "download"}
         manager = getattr(self, "semantic_task_manager", None)
         if changes_local_files and manager is not None and effective_pack_id:
             operation_name = (
@@ -1852,24 +2025,31 @@ class WebAPIMixin:
             self._img_host_local_operation = {
                 "pack_id": effective_pack_id,
                 "operation": operation_name,
+                "finishing": False,
             }
         try:
             sync_client.sync_process = sync_client._start_sync_process(task)
-            # 即使浏览器断开，也要回收并释放表情包操作。
-            monitor = asyncio.create_task(
-                asyncio.to_thread(sync_client.sync_process.join)
-            )
+
+            async def _monitor_img_host_sync() -> None:
+                joined = False
+                try:
+                    await asyncio.to_thread(sync_client.sync_process.join)
+                    joined = True
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error("等待图床同步进程结束失败: %s", exc, exc_info=True)
+                finally:
+                    await self._finish_img_host_local_operation_async()
+                if joined:
+                    self._get_img_host_sync_task_status()
+
+            # 即使浏览器断开，也要在工作线程刷新语义元数据并释放表情包操作。
+            monitor = asyncio.create_task(_monitor_img_host_sync())
             self._img_host_sync_monitor = monitor
-            monitor.add_done_callback(
-                lambda completed: (
-                    None
-                    if completed.cancelled() or completed.exception()
-                    else self._get_img_host_sync_task_status()
-                )
-            )
         except Exception:
             if changes_local_files:
-                self._finish_img_host_local_operation()
+                self._finish_img_host_local_operation(skip_invalidation=True)
             raise
         return self._get_img_host_sync_task_status()
 
@@ -1882,8 +2062,11 @@ class WebAPIMixin:
 
             task_status = self._get_img_host_sync_task_status()
             cache_ttl = self._get_img_host_status_cache_ttl()
+            resolved_pack_id = str(
+                getattr(self, "_img_sync_pack_id", "") or pack_id
+            ).strip()
             cache_key = self._make_img_host_status_cache_key(
-                pack_id, getattr(sync_client, "local_dir", "")
+                resolved_pack_id, getattr(sync_client, "local_dir", "")
             )
             cache_store = self._ensure_img_host_status_cache()
             now = time.monotonic()
@@ -1906,8 +2089,8 @@ class WebAPIMixin:
             status["provider_label"] = self._get_provider_label()
             status["status_cache_hit"] = False
             status["status_cache_ttl"] = cache_ttl
-            if pack_id:
-                status["managed_pack_id"] = pack_id
+            if resolved_pack_id:
+                status["managed_pack_id"] = resolved_pack_id
 
             if not task_status.get("running") and cache_ttl > 0:
                 cache_store[cache_key] = {
@@ -1915,6 +2098,10 @@ class WebAPIMixin:
                     "payload": dict(status),
                 }
             return jsonify(status)
+        except FileNotFoundError as e:
+            return jsonify({"error": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         except Exception as e:
             error_text = str(e)
             lower_error_text = error_text.lower()
@@ -1949,6 +2136,10 @@ class WebAPIMixin:
                 return jsonify({"message": "图床服务未配置"}), 400
             task_status = self._start_img_host_sync_task("upload", pack_id=pack_id)
             return jsonify({"success": True, "task": task_status})
+        except FileNotFoundError as e:
+            return jsonify({"message": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
         except Exception as e:
             status_code = (
                 409
@@ -1970,6 +2161,10 @@ class WebAPIMixin:
                 "overwrite_to_remote", pack_id=pack_id
             )
             return jsonify({"success": True, "task": task_status})
+        except FileNotFoundError as e:
+            return jsonify({"message": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
         except Exception as e:
             status_code = (
                 409
@@ -1991,6 +2186,10 @@ class WebAPIMixin:
                 "overwrite_from_remote", pack_id=pack_id
             )
             return jsonify({"success": True, "task": task_status})
+        except FileNotFoundError as e:
+            return jsonify({"message": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
         except Exception as e:
             status_code = (
                 409
@@ -2010,6 +2209,10 @@ class WebAPIMixin:
                 return jsonify({"message": "图床服务未配置"}), 400
             task_status = self._start_img_host_sync_task("download", pack_id=pack_id)
             return jsonify({"success": True, "task": task_status})
+        except FileNotFoundError as e:
+            return jsonify({"message": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
         except Exception as e:
             status_code = (
                 409
@@ -2284,7 +2487,9 @@ class WebAPIMixin:
             return jsonify({"message": "图片不存在"}), 404
 
         try:
-            detail = get_image_semantic_detail(pack_dir, file_path)
+            detail = await asyncio.to_thread(
+                get_image_semantic_detail, pack_dir, file_path
+            )
             return jsonify(
                 {
                     "pack_id": pack_id,
@@ -2351,7 +2556,9 @@ class WebAPIMixin:
 
     async def _api_semantic_propose_image_revision(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
             (
                 pack_id,
                 category,
@@ -2387,7 +2594,9 @@ class WebAPIMixin:
 
     async def _api_semantic_save_image_impl(self, *, update_vector: bool):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
             (
                 pack_id,
                 category,
@@ -2445,7 +2654,9 @@ class WebAPIMixin:
 
     async def _api_semantic_restore_image_auto(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
             (
                 pack_id,
                 category,
@@ -2496,7 +2707,9 @@ class WebAPIMixin:
 
     async def _api_semantic_confirm_category(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
             (
                 pack_id,
                 category,
@@ -2649,7 +2862,9 @@ class WebAPIMixin:
 
     async def _api_semantic_start(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id = await self._semantic_request_pack_id(data)
             self._get_img_host_sync_task_status()
             external_data = (
@@ -2781,7 +2996,9 @@ class WebAPIMixin:
                 pack_id, data.get("items")
             )
             return jsonify(result), 200
-        except (ValueError, FileNotFoundError) as exc:
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except ValueError as exc:
             return jsonify({"message": str(exc)}), 400
         except RuntimeError as exc:
             return jsonify({"message": str(exc)}), 409
@@ -2803,7 +3020,9 @@ class WebAPIMixin:
                 pack_id, data.get("ids"), data.get("remember_rejection", False)
             )
             return jsonify(result), 200
-        except (ValueError, FileNotFoundError) as exc:
+        except FileNotFoundError as exc:
+            return jsonify({"message": str(exc)}), 404
+        except ValueError as exc:
             return jsonify({"message": str(exc)}), 400
 
     async def _api_semantic_import_auto_inbox(self):
@@ -2813,7 +3032,9 @@ class WebAPIMixin:
             包含导入计数的 Quart JSON 响应。
         """
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id = await self._semantic_request_pack_id(data)
             manager = getattr(self, "auto_collect_manager", None)
             if manager is None:
@@ -2859,7 +3080,9 @@ class WebAPIMixin:
 
     async def _api_semantic_retry(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id = await self._semantic_request_pack_id(data)
             self._get_img_host_sync_task_status()
             result = await self.semantic_task_manager.start(
@@ -2880,7 +3103,9 @@ class WebAPIMixin:
 
     async def _api_semantic_task_action(self, action: str):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id = await self._semantic_request_pack_id(data)
             self._get_img_host_sync_task_status()
             if action == "resume":
@@ -2902,7 +3127,9 @@ class WebAPIMixin:
 
     async def _api_semantic_rebuild_index(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id = await self._semantic_request_pack_id(data)
             self._get_img_host_sync_task_status()
             result = await self.semantic_task_manager.rebuild_index(
@@ -2921,7 +3148,9 @@ class WebAPIMixin:
 
     async def _api_semantic_clear_local_state(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id = await self._semantic_request_pack_id(data)
             result = await self.semantic_task_manager.clear_local_semantic_state(
                 pack_id
@@ -2941,7 +3170,9 @@ class WebAPIMixin:
 
     async def _api_semantic_delete_all(self):
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
             pack_id = await self._semantic_request_pack_id(data)
             result = await self.semantic_task_manager.delete_all_semantic_data(pack_id)
             return jsonify(
@@ -2962,12 +3193,15 @@ class WebAPIMixin:
 
     async def _api_set_default_pack(self):
         try:
-            data = await request.get_json()
-            pack_id = str((data or {}).get("pack_id") or "").strip()
+            data, error = await self._read_json_object()
+            if error:
+                return error
+            pack_id = str(data.get("pack_id") or "").strip()
             if not pack_id:
                 return jsonify({"message": "pack_id 不能为空"}), 400
-            result = set_default_pack(pack_id)
-            self._reload_personas()
+            async with self._get_runtime_file_lock():
+                result = set_default_pack(pack_id)
+                self._reload_personas()
             result.update(self._semantic_rebuild_guidance(pack_id))
             return jsonify({"message": "默认表情包设置成功", **result}), 200
         except FileNotFoundError as e:
@@ -2978,12 +3212,52 @@ class WebAPIMixin:
             logger.error(f"设置默认表情包失败: {e}", exc_info=True)
             return jsonify({"message": f"设置默认表情包失败: {str(e)}"}), 500
 
+    @staticmethod
+    def _resolve_webui_export_output_dir(output_dir: Any) -> Path | None:
+        """限制 WebUI 导出路径仅允许默认备份目录或其内部相对子目录。"""
+        if output_dir is None:
+            return None
+        if not isinstance(output_dir, str):
+            raise ValueError("导出目录格式无效")
+        raw = output_dir.strip()
+        if not raw:
+            return None
+        if "\x00" in raw or raw.startswith("~"):
+            raise ValueError("导出目录仅支持默认备份目录下的相对子目录")
+        rel = Path(raw)
+        win_rel = PureWindowsPath(raw)
+        if (
+            rel.is_absolute()
+            or rel.root
+            or win_rel.drive
+            or win_rel.root
+            or ".." in rel.parts
+        ):
+            raise ValueError("导出目录仅支持默认备份目录下的相对子目录")
+        backup_root = pack_storage.BACKUP_DIR.resolve()
+        candidate = backup_root / rel
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(backup_root)
+        except ValueError as exc:
+            raise ValueError("导出目录超出了允许的备份目录") from exc
+        current = candidate
+        while current != backup_root and current != current.parent:
+            if current.is_symlink() or getattr(current, "is_junction", lambda: False)():
+                raise ValueError("导出目录不能包含符号链接或目录联接")
+            current = current.parent
+        return resolved
+
     async def _api_export_pack(self):
         try:
             data = await request.get_json()
+            if data is not None and not isinstance(data, dict):
+                return jsonify({"message": "请求格式无效"}), 400
             payload = data or {}
             pack_id = str(payload.get("pack_id") or "").strip()
-            output_dir = payload.get("output_dir")
+            output_dir = self._resolve_webui_export_output_dir(
+                payload.get("output_dir")
+            )
             export_mode = str(payload.get("export_mode") or "share").strip().lower()
             include_value = payload.get(
                 "include_semantic", payload.get("semantic", True)
@@ -3095,7 +3369,9 @@ class WebAPIMixin:
 
             temp_dir = TEMP_DIR
             temp_dir.mkdir(parents=True, exist_ok=True)
-            safe_name = f"import_{int(time.time() * 1000)}.zip"
+            safe_name = (
+                f"import_{int(time.time() * 1000)}_{secrets.token_hex(8)}.zip"
+            )
             temp_zip_path = (temp_dir / safe_name).resolve()
             await self._save_uploaded_file(archive_file, temp_zip_path)
 
@@ -3111,6 +3387,7 @@ class WebAPIMixin:
                     "覆盖安装资源包",
                     import_pack_archive,
                     temp_zip_path,
+                    serialize_runtime_metadata=True,
                     overwrite=True,
                     set_as_default=set_as_default,
                     suggested_pack_id=suggested_pack_id,
@@ -3225,7 +3502,9 @@ class WebAPIMixin:
         """
         try:
             self._cleanup_pack_import_sessions()
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
             session_id = secrets.token_hex(16)
             filename = str(data.get("filename") or "").strip()
             total_chunks = _parse_int(data.get("total_chunks"), 0)
@@ -3390,7 +3669,9 @@ class WebAPIMixin:
     async def _api_apply_pack_import(self):
         try:
             self._cleanup_pack_import_sessions()
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
             token = str(data.get("import_token") or "").strip()
             archive_path, metadata_path = self._pack_import_session_paths(token)
             if not archive_path.is_file() or not metadata_path.is_file():
@@ -3428,6 +3709,7 @@ class WebAPIMixin:
                     "覆盖安装资源包",
                     import_pack_archive,
                     archive_path,
+                    serialize_runtime_metadata=True,
                     **import_kwargs,
                 )
             else:
@@ -3456,8 +3738,10 @@ class WebAPIMixin:
 
     async def _api_uninstall_pack(self):
         try:
-            data = await request.get_json()
-            pack_id = str((data or {}).get("pack_id") or "").strip()
+            data, error = await self._read_json_object()
+            if error:
+                return error
+            pack_id = str(data.get("pack_id") or "").strip()
             if not pack_id:
                 return jsonify({"message": "pack_id 不能为空"}), 400
             result = await self._run_guarded_pack_file_operation(
@@ -3465,6 +3749,7 @@ class WebAPIMixin:
                 "卸载资源包",
                 uninstall_pack,
                 pack_id,
+                serialize_runtime_metadata=True,
             )
             self._reload_personas()
             return jsonify({"message": "卸载成功", **result}), 200
@@ -3485,7 +3770,9 @@ class WebAPIMixin:
             已创建的表情包标识或校验错误。
         """
         try:
-            data = await request.get_json() or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
             result = await self._run_guarded_runtime_file_operation(
                 "创建表情包",
                 create_local_pack,
@@ -3744,8 +4031,10 @@ class WebAPIMixin:
     async def _api_install_community_pack(self):
         data = None
         try:
-            data = await request.get_json()
-            payload = data or {}
+            data, error = await self._read_json_object()
+            if error:
+                return error
+            payload = data
             overwrite = bool(payload.get("overwrite", False))
             set_as_default = bool(payload.get("set_as_default", False))
             pack_id = str(payload.get("pack_id") or "").strip()
@@ -3794,7 +4083,9 @@ class WebAPIMixin:
     async def _api_start_community_pack_install(self):
         """创建后台安装任务，供资源广场轮询真实下载进度。"""
         try:
-            payload = (await request.get_json()) or {}
+            payload, error = await self._read_json_object()
+            if error:
+                return error
             source = payload.get("source")
             pack_id = str(payload.get("pack_id") or "").strip()
             if not isinstance(source, dict):
@@ -3987,7 +4278,9 @@ class WebAPIMixin:
 
     async def _api_cancel_community_pack_install(self):
         """请求协作式取消正在运行的社区表情包安装任务。"""
-        payload = (await request.get_json()) or {}
+        payload, error = await self._read_json_object()
+        if error:
+            return error
         job_id = str(payload.get("job_id") or "").strip()
         if not job_id:
             return jsonify({"message": "job_id 不能为空"}), 400
@@ -4009,8 +4302,10 @@ class WebAPIMixin:
     async def _api_install_official_first_pack(self):
         data = None
         try:
-            data = await request.get_json()
-            payload = data or {}
+            data, error = await self._read_json_object(allow_empty=True)
+            if error:
+                return error
+            payload = data
             overwrite = bool(payload.get("overwrite", False))
             set_as_default = bool(payload.get("set_as_default", True))
 
@@ -4107,6 +4402,46 @@ class WebAPIMixin:
         saved = values.get("decision_service")
         saved = saved if isinstance(saved, dict) else {}
         draft = {name: data.get(name, saved.get(name)) for name in names}
+        if "token" not in data:
+            saved_provider = (
+                str(saved.get("provider") or "systemone").strip().casefold()
+                or "systemone"
+            )
+            draft_provider = (
+                str(draft.get("provider") or "systemone").strip().casefold()
+                or "systemone"
+            )
+            same_target = draft_provider == saved_provider
+            if same_target and draft_provider == "systemone":
+                saved_url_client = DecisionClient(
+                    {"provider": "systemone", "base_url": saved.get("base_url")}
+                )
+                draft_url_client = DecisionClient(
+                    {"provider": "systemone", "base_url": draft.get("base_url")}
+                )
+                if (
+                    saved_url_client._base_url_valid()
+                    and draft_url_client._base_url_valid()
+                ):
+                    saved_parts = urlsplit(saved_url_client._endpoint())
+                    draft_parts = urlsplit(draft_url_client._endpoint())
+                    saved_port = saved_parts.port or (
+                        443 if saved_parts.scheme.lower() == "https" else 80
+                    )
+                    draft_port = draft_parts.port or (
+                        443 if draft_parts.scheme.lower() == "https" else 80
+                    )
+                    same_target = (
+                        saved_parts.scheme.lower() == draft_parts.scheme.lower()
+                        and (saved_parts.hostname or "").lower()
+                        == (draft_parts.hostname or "").lower()
+                        and saved_port == draft_port
+                        and saved_parts.path == draft_parts.path
+                    )
+                else:
+                    same_target = False
+            if not same_target:
+                draft["token"] = ""
         draft["timeout"] = data.get("timeout", saved.get("timeout", 15))
         draft["max_concurrency"] = 1
         client = DecisionClient(draft)
@@ -4296,18 +4631,21 @@ class WebAPIMixin:
                 return jsonify({"message": f"获取规则失败: {str(e)}"}), 500
 
         try:
-            data = await request.get_json()
-            rules = (data or {}).get("rules", [])
-            before = get_selection_rules()
-            before_map = {
-                str(item.get("id") or ""): _normalize_pack_ids(
-                    item.get("pack_ids") or item.get("pack_id")
-                )
-                for item in before.get("rules", [])
-                if isinstance(item, dict)
-            }
-            saved = save_selection_rules(rules)
-            self._reload_personas()
+            data, error = await self._read_json_object()
+            if error:
+                return error
+            rules = data.get("rules", [])
+            async with self._get_runtime_file_lock():
+                before = get_selection_rules()
+                before_map = {
+                    str(item.get("id") or ""): _normalize_pack_ids(
+                        item.get("pack_ids") or item.get("pack_id")
+                    )
+                    for item in before.get("rules", [])
+                    if isinstance(item, dict)
+                }
+                saved = save_selection_rules(rules)
+                self._reload_personas()
             rebuild_packs = []
             if bool(getattr(self, "semantic_enabled", False)):
                 for item in saved.get("rules", []):
@@ -4336,13 +4674,19 @@ class WebAPIMixin:
     async def _api_export_runtime_backup(self):
         try:
             data = await request.get_json()
-            output_dir = (data or {}).get("output_dir")
+            if data is not None and not isinstance(data, dict):
+                return jsonify({"message": "请求格式无效"}), 400
+            output_dir = self._resolve_webui_export_output_dir(
+                (data or {}).get("output_dir")
+            )
             result = await self._run_guarded_runtime_file_operation(
                 "导出全量备份",
                 export_runtime_backup,
                 output_dir=output_dir,
             )
             return jsonify({"message": "全量备份导出成功", **result}), 200
+        except ValueError as e:
+            return jsonify({"message": str(e)}), 400
         except RuntimeError as e:
             return jsonify({"message": str(e)}), 409
         except Exception as e:
@@ -4428,7 +4772,9 @@ class WebAPIMixin:
             }
 
             TEMP_DIR.mkdir(parents=True, exist_ok=True)
-            safe_name = f"runtime_restore_{int(time.time() * 1000)}.zip"
+            safe_name = (
+                f"runtime_restore_{int(time.time() * 1000)}_{secrets.token_hex(8)}.zip"
+            )
             temp_zip_path = (TEMP_DIR / safe_name).resolve()
 
             files = await request.files
@@ -4446,11 +4792,20 @@ class WebAPIMixin:
                     return jsonify({"message": "仅支持 zip 备份文件"}), 400
                 if not file_b64:
                     return jsonify({"message": "缺少 file_b64"}), 400
-                try:
+                max_b64_length = ((MAX_PACK_ARCHIVE_BYTES + 2) // 3) * 4
+                if len(file_b64) > max_b64_length:
+                    raise RequestEntityTooLarge()
+
+                def _decode_and_write_backup() -> None:
                     raw_bytes = base64.b64decode(file_b64, validate=True)
+                    if len(raw_bytes) > MAX_PACK_ARCHIVE_BYTES:
+                        raise RequestEntityTooLarge()
+                    temp_zip_path.write_bytes(raw_bytes)
+
+                try:
+                    await asyncio.to_thread(_decode_and_write_backup)
                 except (ValueError, binascii.Error):
                     return jsonify({"message": "file_b64 非法"}), 400
-                temp_zip_path.write_bytes(raw_bytes)
             else:
                 return (
                     jsonify({"message": "缺少上传文件字段 file 或 JSON file_b64"}),
@@ -4480,3 +4835,180 @@ class WebAPIMixin:
                     temp_zip_path.unlink()
                 except Exception:
                     pass
+
+    @staticmethod
+    def _runtime_backup_import_session_dir() -> Path:
+        session_dir = (TEMP_DIR / "runtime_backup_import_sessions").resolve()
+        session_dir.mkdir(parents=True, exist_ok=True)
+        return session_dir
+
+    def _runtime_backup_import_session_paths(self, session_id: str) -> tuple[Path, Path]:
+        normalized = str(session_id or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{32}", normalized):
+            raise ValueError("无效的备份导入会话，请重新选择备份文件")
+        session_dir = self._runtime_backup_import_session_dir()
+        return (
+            (session_dir / f"{normalized}.zip").resolve(),
+            (session_dir / f"{normalized}.json").resolve(),
+        )
+
+    def _cleanup_runtime_backup_import_sessions(self) -> None:
+        session_dir = self._runtime_backup_import_session_dir()
+        now = time.time()
+        for path in session_dir.iterdir():
+            try:
+                if path.is_file() and now - path.stat().st_mtime > 1800:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                continue
+
+    async def _api_start_runtime_backup_import_session(self):
+        """创建运行时全量备份分片导入会话，突破单次 JSON/请求体大小上限。"""
+        try:
+            self._cleanup_runtime_backup_import_sessions()
+            data, error = await self._read_json_object()
+            if error:
+                return error
+            session_id = secrets.token_hex(16)
+            filename = str(data.get("filename") or "").strip()
+            total_chunks = _parse_int(data.get("total_chunks"), 0)
+            overwrite_raw = data.get("overwrite", False)
+            overwrite = (
+                overwrite_raw
+                if isinstance(overwrite_raw, bool)
+                else str(overwrite_raw).strip().lower() in {"1", "true", "yes", "on"}
+            )
+            if not filename or not filename.lower().endswith(".zip"):
+                raise ValueError("仅支持 zip 备份文件")
+            if not 1 <= total_chunks <= 2000:
+                raise ValueError("分片数量无效")
+            archive_path, metadata_path = self._runtime_backup_import_session_paths(
+                session_id
+            )
+            archive_path.write_bytes(b"")
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "filename": filename,
+                        "total_chunks": total_chunks,
+                        "received_chunks": 0,
+                        "overwrite": overwrite,
+                        "created_at": time.time(),
+                        "state": "uploading",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            return (
+                jsonify(
+                    {
+                        "message": "备份导入会话已创建",
+                        "session_id": session_id,
+                        "total_chunks": total_chunks,
+                    }
+                ),
+                200,
+            )
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
+        except (OSError, RuntimeError, TypeError, KeyError) as exc:
+            logger.error("创建运行时备份导入会话失败：%s", exc, exc_info=True)
+            return jsonify({"message": "创建备份导入会话失败"}), 500
+
+    async def _api_upload_runtime_backup_import_chunk(
+        self, session_id, index, total_chunks
+    ):
+        """追加运行时全量备份分片，收齐后立即执行恢复并清理临时文件。"""
+        archive_path = None
+        metadata_path = None
+        discard_session = False
+        try:
+            self._prepare_archive_upload_request()
+            self._cleanup_runtime_backup_import_sessions()
+            archive_path, metadata_path = self._runtime_backup_import_session_paths(
+                session_id
+            )
+            files = await request.files
+            if not files or "file" not in files:
+                raise ValueError("缺少上传文件字段 file")
+            uploaded_file = files["file"]
+            read = getattr(uploaded_file, "read", None) or uploaded_file.stream.read
+            if inspect.iscoroutinefunction(read):
+                chunk = await read()
+            else:
+                chunk = await asyncio.to_thread(read)
+                if inspect.isawaitable(chunk):
+                    chunk = await chunk
+
+            if not metadata_path.is_file():
+                raise ValueError("备份导入会话已失效，请重新选择备份文件")
+            session_data = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if not isinstance(session_data, dict):
+                raise TypeError("备份导入会话已失效，请重新选择备份文件")
+            if session_data.get("state") != "uploading":
+                return jsonify({"message": "备份已上传完成，请勿重复上传分片"}), 409
+            chunk_index = _parse_int(index)
+            chunk_total = _parse_int(total_chunks)
+            if chunk_total != int(session_data.get("total_chunks") or 0):
+                raise ValueError("分片总数与会话不一致，请重新上传")
+            if not 0 <= chunk_index < chunk_total:
+                raise ValueError("分片序号无效")
+            if chunk_index != session_data["received_chunks"]:
+                return jsonify({"message": "分片重复或顺序错误，请按顺序上传"}), 409
+            if archive_path.stat().st_size + len(chunk) > MAX_PACK_ARCHIVE_BYTES:
+                raise RequestEntityTooLarge()
+            discard_session = True
+            with archive_path.open("ab") as handle:
+                handle.write(chunk)
+            session_data["received_chunks"] = chunk_index + 1
+            if chunk_index + 1 == chunk_total:
+                session_data["state"] = "importing"
+            metadata_path.write_text(
+                json.dumps(session_data, ensure_ascii=False), encoding="utf-8"
+            )
+            if chunk_index + 1 < chunk_total:
+                discard_session = False
+                return (
+                    jsonify(
+                        {
+                            "message": "分片已接收",
+                            "received": chunk_index + 1,
+                            "total": chunk_total,
+                        }
+                    ),
+                    200,
+                )
+
+            import_task = asyncio.create_task(
+                self._run_guarded_runtime_file_operation(
+                    "恢复全量备份",
+                    import_runtime_backup,
+                    archive_path,
+                    overwrite=bool(session_data.get("overwrite", False)),
+                )
+            )
+            try:
+                result = await asyncio.shield(import_task)
+            except asyncio.CancelledError:
+                await asyncio.gather(import_task, return_exceptions=True)
+                raise
+            self._reload_personas()
+            return jsonify({"message": "全量备份导入成功", **result}), 200
+        except RuntimeError as exc:
+            return jsonify({"message": str(exc)}), 409
+        except RequestEntityTooLarge:
+            return jsonify({"message": "备份文件超过 1 GB，无法通过 WebUI 导入"}), 413
+        except (FileNotFoundError, TypeError, ValueError, zipfile.BadZipFile) as exc:
+            return jsonify({"message": str(exc)}), 400
+        except (OSError, KeyError) as exc:
+            logger.error("分片导入运行时备份失败：%s", exc, exc_info=True)
+            return jsonify({"message": "分片导入全量备份失败"}), 500
+        finally:
+            if discard_session:
+                for path in (archive_path, metadata_path):
+                    if path:
+                        try:
+                            path.unlink(missing_ok=True)
+                        except OSError:
+                            pass

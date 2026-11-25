@@ -35,8 +35,32 @@ def _is_pack_enabled(pack_id: str, registry_data: dict) -> bool:
     return False
 
 
+def _is_pack_explicitly_disabled(pack_id: str, registry_data: dict) -> bool:
+    installed = (
+        registry_data.get("installed_packs", [])
+        if isinstance(registry_data, dict)
+        else []
+    )
+    if not isinstance(installed, list):
+        return False
+    for pack in installed:
+        if not isinstance(pack, dict):
+            continue
+        if str(pack.get("id") or "").strip() != pack_id:
+            continue
+        return not bool(pack.get("enabled", True))
+    return False
+
+
 def _pack_exists(pack_id: str) -> bool:
-    return (PACKS_DIR / pack_id).is_dir()
+    try:
+        normalized = validate_pack_id(pack_id)
+        pack_dir = (PACKS_DIR / normalized).resolve()
+        if pack_dir.parent != PACKS_DIR.resolve():
+            return False
+        return pack_dir.is_dir()
+    except (ValueError, OSError):
+        return False
 
 
 def _normalize_pack_ids(raw_value) -> list[str]:
@@ -128,14 +152,22 @@ def resolve_pack_ids(
             pack_id
             for pack_id in resolved_default_ids
             if _pack_exists(pack_id)
-            and (_is_pack_enabled(pack_id, registry_data) or pack_id == DEFAULT_PACK_ID)
+            and (
+                _is_pack_enabled(pack_id, registry_data)
+                or (
+                    pack_id == DEFAULT_PACK_ID
+                    and not _is_pack_explicitly_disabled(DEFAULT_PACK_ID, registry_data)
+                )
+            )
         )
     )
     if valid_defaults:
         return valid_defaults
 
-    # 仅在所选表情包均不可用时回退到内置默认包。
-    if _pack_exists(DEFAULT_PACK_ID):
+    # 仅在所选表情包均不可用且内置默认包未被显式禁用时回退到内置默认包。
+    if _pack_exists(DEFAULT_PACK_ID) and not _is_pack_explicitly_disabled(
+        DEFAULT_PACK_ID, registry_data
+    ):
         return [DEFAULT_PACK_ID]
 
     # 最后回退到注册表中第一个启用的表情包。
@@ -239,7 +271,7 @@ def load_pack_category_mapping(pack_id: str) -> dict[str, str]:
         if resolved:
             return runtime_category_mapping(resolved)
 
-    if pack_id == DEFAULT_PACK_ID:
+    if pack_id == DEFAULT_PACK_ID and paths["pack_dir"].is_dir():
         return runtime_category_mapping(DEFAULT_CATEGORY_DESCRIPTIONS)
 
     return {}
@@ -268,8 +300,11 @@ def resolve_pack_context(
 
     # 合并全部表情包的分类映射，主表情包优先。
     merged_mapping = {}
+    primary_mapping = {}
     for pack_id in reversed(pack_ids):
         pack_mapping = load_pack_category_mapping(pack_id)
+        if pack_id == primary_pack_id:
+            primary_mapping = dict(pack_mapping)
         merged_mapping.update(pack_mapping)
 
     return {
@@ -281,4 +316,5 @@ def resolve_pack_context(
         "metadata_path": paths["metadata_path"],
         "manifest_path": paths["manifest_path"],
         "category_mapping": merged_mapping,
+        "primary_category_mapping": primary_mapping,
     }

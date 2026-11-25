@@ -1,7 +1,9 @@
 import asyncio
 import base64
 import copy
+import math
 import re
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -471,9 +473,9 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
     def _get_image_host_type(self) -> str:
         image_host = self._read_config_value(
             ("storage", "provider"),
-            default="stardots",
+            default="cloudflare_r2",
         )
-        return str(image_host or "stardots").strip().lower()
+        return str(image_host or "cloudflare_r2").strip().lower()
 
     def _read_path(self, path: tuple[str, ...], missing=None):
         current = self.config
@@ -496,16 +498,18 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         return dict(provider_config) if isinstance(provider_config, dict) else {}
 
     def _resolve_sync_pack_target(self, preferred_pack_id: str | None = None):
-        from .backend.packs.resolver import get_pack_paths, resolve_pack_id
+        from .backend.packs.resolver import (
+            get_pack_paths,
+            resolve_pack_id,
+            resolve_pack_paths,
+        )
 
         pack_id = str(preferred_pack_id or "").strip()
         if pack_id:
-            paths = get_pack_paths(pack_id)
-            pack_dir = paths["pack_dir"]
-            if pack_dir.is_dir():
-                memes_dir = paths["memes_dir"]
-                memes_dir.mkdir(parents=True, exist_ok=True)
-                return pack_id, memes_dir
+            paths = resolve_pack_paths(pack_id)
+            memes_dir = paths["memes_dir"]
+            memes_dir.mkdir(parents=True, exist_ok=True)
+            return paths["pack_dir"].name, memes_dir
 
         resolved_pack_id = resolve_pack_id()
         paths = get_pack_paths(resolved_pack_id)
@@ -536,16 +540,50 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                 current_dir = None
 
         if current_dir != target_memes_dir.resolve():
+            # 将同步状态移出 memes/，避免被各类目录扫描误识别为表情分类或随导出包泄漏。
+            sync_state_root = PLUGIN_DATA_DIR / "sync_state"
+            sync_state_dir = sync_state_root / target_pack_id
+            legacy_state_dir = target_memes_dir / ".sync-state"
+            if (
+                legacy_state_dir.is_dir()
+                and not legacy_state_dir.is_symlink()
+                and not getattr(legacy_state_dir, "is_junction", lambda: False)()
+                and sync_state_dir.parent == sync_state_root
+                and not sync_state_root.is_symlink()
+                and not getattr(sync_state_root, "is_junction", lambda: False)()
+                and not sync_state_dir.is_symlink()
+                and not getattr(sync_state_dir, "is_junction", lambda: False)()
+            ):
+                try:
+                    sync_state_dir.mkdir(parents=True, exist_ok=True)
+                    for legacy_item in legacy_state_dir.iterdir():
+                        if (
+                            not legacy_item.is_file()
+                            or legacy_item.is_symlink()
+                            or legacy_item.name == "worker.lock"
+                        ):
+                            continue
+                        target_item = sync_state_dir / legacy_item.name
+                        if target_item.is_symlink():
+                            continue
+                        if not target_item.exists():
+                            shutil.copy2(legacy_item, target_item)
+                        legacy_item.unlink(missing_ok=True)
+                    (legacy_state_dir / "worker.lock").unlink(missing_ok=True)
+                    legacy_state_dir.rmdir()
+                except OSError as exc:
+                    logger.warning(
+                        "迁移旧版同步状态目录 %s 失败：%s", legacy_state_dir, exc
+                    )
             # 构建适配器时仅验证配置，不发起网络探测。
+            previous_sync = self.img_sync
             try:
-                previous_sync = self.img_sync
                 self.img_sync = ImageSync(
                     config=self.img_sync_config,
                     local_dir=target_memes_dir,
                     provider_type=self.img_sync_provider_type,
+                    state_dir=sync_state_dir,
                 )
-                if previous_sync:
-                    previous_sync.close()
             except Exception as exc:
                 logger.error(
                     "图床 %s 初始化失败，无法同步：%s",
@@ -553,7 +591,17 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
                     exc,
                 )
                 self.img_sync = None
+                if previous_sync:
+                    try:
+                        previous_sync.close()
+                    except Exception as close_exc:
+                        logger.warning("关闭旧图床客户端失败：%s", close_exc)
                 return None
+            if previous_sync:
+                try:
+                    previous_sync.close()
+                except Exception as close_exc:
+                    logger.warning("关闭旧图床客户端失败：%s", close_exc)
 
         self._img_sync_pack_id = target_pack_id
         return self.img_sync
@@ -1264,7 +1312,13 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
         count = event.get_extra("meme_manager_preview_count") or 0
         if count >= MAX_PREVIEW_PAGES:
             return dumps_result({"ok": False, "reason": "preview_limit"})
-        if not isinstance(category, str) or type(after) is not int or after < 0:
+        if isinstance(after, bool) or not isinstance(after, (int, float)):
+            return dumps_result({"ok": False, "reason": "invalid_preview_arguments"})
+        if isinstance(after, float):
+            if not math.isfinite(after) or not after.is_integer():
+                return dumps_result({"ok": False, "reason": "invalid_preview_arguments"})
+            after = int(after)
+        if not isinstance(category, str) or after < 0:
             return dumps_result({"ok": False, "reason": "invalid_preview_arguments"})
         category = category.strip()
         context = self._resolve_runtime_pack_context(event=event)
@@ -1354,6 +1408,16 @@ class MemeSender(Star, WebAPIMixin, CommandMixin, EventHandlerMixin, Integration
             await self.auto_collect_manager.close()
         if getattr(self, "decision_client", None):
             await self.decision_client.close()
+        for job in getattr(self, "_community_install_jobs", {}).values():
+            if isinstance(job, dict) and job.get("status") in {"running", "cancelling"}:
+                job["cancel_requested"] = True
+        for job in getattr(self, "_community_update_jobs", {}).values():
+            if (
+                isinstance(job, dict)
+                and job.get("state") == "running"
+                and job.get("action") == "prepare"
+            ):
+                job["cancel_requested"] = True
         install_tasks = list(getattr(self, "_community_install_tasks", set()))
         install_tasks.extend(getattr(self, "_community_update_tasks", set()))
         for task in install_tasks:

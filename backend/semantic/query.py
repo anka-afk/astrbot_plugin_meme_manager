@@ -157,7 +157,7 @@ async def search_memes(
     """
     if not str(query or "").strip():
         return {"ok": True, "candidates": [], "reason": "查询词不能为空"}
-    metadata = load_metadata(pack_dir)
+    metadata = await asyncio.to_thread(load_metadata, pack_dir)
     if not metadata.get("images"):
         return {"ok": True, "candidates": [], "reason": "资源包没有语义元数据"}
     embedding = EmbeddingAdapter(embedding_provider)
@@ -239,6 +239,7 @@ def candidate_records_multi_pack(
         补全 entry_id 与 content_sha256 后的候选记录。
     """
     pack_dirs = {ctx["pack_id"]: ctx["pack_dir"] for ctx in pack_contexts}
+    metadata_by_pack: dict[str, dict[str, Any]] = {}
     records = []
 
     for candidate in candidates:
@@ -246,8 +247,10 @@ def candidate_records_multi_pack(
         if not source_pack_id or source_pack_id not in pack_dirs:
             continue
 
-        pack_dir = pack_dirs[source_pack_id]
-        metadata = load_metadata(pack_dir)
+        metadata = metadata_by_pack.get(source_pack_id)
+        if metadata is None:
+            metadata = load_metadata(pack_dirs[source_pack_id])
+            metadata_by_pack[source_pack_id] = metadata
         value = str(candidate.get("id") or "")
         prefix = parse_meme_id(value)
         if not prefix:

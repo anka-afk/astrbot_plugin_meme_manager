@@ -246,14 +246,28 @@ def text_hash(text: str) -> str:
 
 def normalize_vector(vector: Any) -> list[float]:
     if not isinstance(vector, (list, tuple)):
-        raise ValueError("向量必须是数组")
+        tolist = getattr(vector, "tolist", None)
+        if callable(tolist):
+            converted = tolist()
+            if isinstance(converted, list):
+                vector = converted
+            else:
+                raise ValueError("向量必须是数组")
+        else:
+            raise ValueError("向量必须是数组")
     values = [float(value) for value in vector]
     if any(not math.isfinite(value) for value in values):
         raise ValueError("向量不能包含无效数值")
-    norm = math.sqrt(sum(value * value for value in values))
-    if not values or norm == 0:
+    if not values:
         raise ValueError("向量不能为空且不能是全零向量")
-    return [value / norm for value in values]
+    max_abs = max(abs(value) for value in values)
+    if max_abs == 0:
+        raise ValueError("向量不能为空且不能是全零向量")
+    scaled = [value / max_abs for value in values]
+    scaled_norm = math.sqrt(sum(value * value for value in scaled))
+    if not math.isfinite(scaled_norm) or scaled_norm == 0:
+        raise ValueError("向量不能为空且不能是全零向量")
+    return [value / scaled_norm for value in scaled]
 
 
 def cosine_similarity(left: Iterable[float], right: Iterable[float]) -> float:
@@ -562,8 +576,8 @@ class SemanticImage:
         )
 
 
-def parse_caption_result(value: Any) -> tuple[str, list[str], str]:
-    """严格校验视觉模型结果，只返回可用于向量化的三个字段。"""
+def _extract_caption_payload(value: Any) -> dict[str, Any]:
+    """从视觉模型原始输出中提取单个一致的 JSON 对象。"""
     if isinstance(value, str):
         raw = value.strip()
         try:
@@ -596,9 +610,15 @@ def parse_caption_result(value: Any) -> tuple[str, list[str], str]:
                 raise ValueError("视觉模型没有返回 JSON")
     if not isinstance(value, dict):
         raise ValueError("视觉模型结果必须是 JSON 对象")
-    caption = str(value.get("caption") or "").strip()
-    tags = normalize_tags(value.get("tags"))
-    visible_text = str(value.get("visible_text") or "").strip()
+    return value
+
+
+def parse_caption_result(value: Any) -> tuple[str, list[str], str]:
+    """严格校验视觉模型结果，只返回可用于向量化的三个字段。"""
+    payload = _extract_caption_payload(value)
+    caption = str(payload.get("caption") or "").strip()
+    tags = normalize_tags(payload.get("tags"))
+    visible_text = str(payload.get("visible_text") or "").strip()
     if not caption or not tags:
         raise ValueError("视觉模型结果缺少 caption 或 tags")
     return caption, tags, visible_text
@@ -608,26 +628,8 @@ def parse_caption_result_with_review(
     value: Any,
 ) -> tuple[str, list[str], str, str, str, str]:
     """解析带分类符合判断的视觉结果，并兼容旧模型的三字段结果。"""
-    original = value
-    if isinstance(value, str):
-        raw = value.strip()
-        try:
-            value = json.loads(raw)
-        except json.JSONDecodeError:
-            decoder = json.JSONDecoder()
-            candidates = []
-            for start, character in enumerate(raw):
-                if character != "{":
-                    continue
-                try:
-                    candidate, _ = decoder.raw_decode(raw[start:])
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(candidate, dict) and candidate.get("caption"):
-                    candidates.append(candidate)
-            value = candidates[-1] if candidates else original
-    caption, tags, visible_text = parse_caption_result(original)
-    payload = value if isinstance(value, dict) else {}
+    payload = _extract_caption_payload(value)
+    caption, tags, visible_text = parse_caption_result(payload)
     category_fit = str(payload.get("category_fit") or "uncertain").strip().lower()
     if category_fit not in CATEGORY_FITS:
         raise ValueError("视觉模型结果的 category_fit 无效")

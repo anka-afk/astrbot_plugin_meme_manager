@@ -10,10 +10,10 @@ import aiohttp
 from astrbot.api import logger
 
 
-def ensure_dir_exists(path: str) -> None:
+def ensure_dir_exists(path: str | os.PathLike[str]) -> None:
     """确保目录存在，不存在则创建"""
-    if not os.path.exists(path):
-        os.makedirs(path)
+    if path:
+        os.makedirs(path, exist_ok=True)
 
 
 def save_json(data: dict[str, Any], filepath: str) -> bool:
@@ -31,7 +31,7 @@ def save_json(data: dict[str, Any], filepath: str) -> bool:
 def load_json(filepath: str, default: dict = None) -> dict:
     """从文件加载 JSON 数据"""
     try:
-        with open(filepath, encoding="utf-8") as f:
+        with open(filepath, encoding="utf-8-sig") as f:
             return json.load(f)
     except Exception as e:
         logger.error(f"加载 JSON 文件失败 {filepath}: {e}")

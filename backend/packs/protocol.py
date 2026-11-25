@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 PACK_TRANSFER_FORMAT = "astrbot-meme-pack"
@@ -75,10 +76,24 @@ def validate_source_descriptor(source: dict, context: str = "source") -> dict:
         raise ValueError(f"{context}.type 目前仅支持 github")
 
     repo = _require_str(source, "repo", context)
-    if "/" not in repo:
+    if (
+        not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
+        or any(segment in {".", ".."} for segment in repo.split("/"))
+    ):
         raise ValueError(f"{context}.repo 格式应为 owner/repo")
 
     ref = _require_str(source, "ref", context)
+    if (
+        ref.startswith("/")
+        or ref.endswith("/")
+        or "//" in ref
+        or ".." in ref
+        or any(
+            char.isspace() or ord(char) < 32 or char in "?#\\"
+            for char in ref
+        )
+    ):
+        raise ValueError(f"{context}.ref 非法")
     subpath = _require_str(source, "subpath", context).strip("/")
     if ".." in Path(subpath).parts or "\\" in subpath:
         raise ValueError(f"{context}.subpath 非法")

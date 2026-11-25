@@ -1332,20 +1332,18 @@ async function initSettingsPage() {
     setLoading(importBackupBtn, "导入中...");
     backupFileInput.disabled = true;
     importOverwriteCheckbox.disabled = true;
-    setPackTransferResult(importResult, "正在恢复备份，请不要关闭页面…");
+    setPackTransferResult(importResult, "正在上传备份文件，请不要关闭页面…");
     try {
-      const bytes = await file.arrayBuffer();
-      let binary = "";
-      const view = new Uint8Array(bytes);
-      const chunkSize = 0x8000;
-      for (let offset = 0; offset < view.length; offset += chunkSize) {
-        const chunk = view.subarray(offset, offset + chunkSize);
-        binary += String.fromCharCode(...chunk);
-      }
-      const response = await apiPost("settings/backup/import", {
+      const response = await window.MemeUI.uploadRuntimeBackupInChunks(file, {
         overwrite: importOverwriteCheckbox.checked,
-        file_name: file.name,
-        file_b64: btoa(binary),
+        onProgress: (received, total) => {
+          setPackTransferResult(
+            importResult,
+            received < total
+              ? `正在上传 ${file.name}（${received}/${total}）…`
+              : "上传完成，正在恢复备份，请不要关闭页面…",
+          );
+        },
       });
       setPackTransferResult(
         importResult,

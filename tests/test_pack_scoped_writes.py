@@ -286,6 +286,11 @@ def test_pack_scoped_upload_route_is_registered(pack_api, monkeypatch):
         "packs/import/session/chunk/<session_id>/<index>/<total_chunks>",
         ["POST"],
     ) in registered
+    assert ("settings/backup/import/session", ["POST"]) in registered
+    assert (
+        "settings/backup/import/session/chunk/<session_id>/<index>/<total_chunks>",
+        ["POST"],
+    ) in registered
 
 
 @pytest.mark.asyncio
@@ -550,3 +555,44 @@ async def test_cancelled_inspection_keeps_archive_until_worker_exits(
     with pytest.raises(asyncio.CancelledError):
         await task
     assert not any(path.exists() for path in pack_api._pack_import_session_paths(token))
+
+
+@pytest.mark.asyncio
+async def test_chunked_runtime_backup_import_round_trip(pack_api, monkeypatch):
+    app = Quart(__name__)
+    captured = []
+
+    def fake_import(archive_path, *, overwrite=False, **_kwargs):
+        captured.append((archive_path.read_bytes(), overwrite))
+        return {"restored_items": ["packs"]}
+
+    monkeypatch.setattr(web_api_module, "import_runtime_backup", fake_import)
+    pack_api._reload_personas = lambda: None
+
+    async with app.test_request_context(
+        "/",
+        method="POST",
+        json={"filename": "backup.zip", "total_chunks": 2, "overwrite": True},
+    ):
+        resp, status = await pack_api._api_start_runtime_backup_import_session()
+    assert status == 200
+    session_id = (await resp.get_json())["session_id"]
+
+    for index, chunk in enumerate((b"PK\x03\x04part1", b"part2")):
+        body, ctype = _multipart_body(chunk, filename="backup.zip")
+        async with app.test_request_context(
+            "/",
+            method="POST",
+            data=body,
+            headers={"Content-Type": ctype, "Content-Length": str(len(body))},
+        ):
+            resp, status = await pack_api._api_upload_runtime_backup_import_chunk(
+                session_id, str(index), "2"
+            )
+        assert status == 200, await resp.get_json()
+
+    assert captured == [(b"PK\x03\x04part1part2", True)]
+    assert not any(
+        path.exists()
+        for path in pack_api._runtime_backup_import_session_paths(session_id)
+    )

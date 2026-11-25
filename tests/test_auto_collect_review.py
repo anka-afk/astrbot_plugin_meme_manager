@@ -496,6 +496,26 @@ class AutoCollectReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.manager.pending_status("pack-a"))["count"], 1)
         self.assertFalse(self.manager._auto_accept_tasks)
 
+    async def test_deferred_auto_accept_tolerates_concurrently_discarded_item(self):
+        self.manager.manual_review = False
+        tasks = self.plugin.semantic_task_manager
+        busy = True
+
+        def check_pack(pack_id, _operation):
+            if pack_id == "pack-a" and busy:
+                raise RuntimeError("Pack is busy")
+
+        tasks.assert_pack_mutation_allowed = Mock(side_effect=check_pack)
+        tasks.begin_external_pack_operation = Mock(side_effect=check_pack)
+        first, _ = await self.add_candidate((0, 255, 0))
+        second, _ = await self.add_candidate((0, 0, 255))
+        retry = self.manager._auto_accept_tasks["pack-a"]
+        await self.manager.discard_pending("pack-a", [first])
+        busy = False
+        await asyncio.wait_for(retry, 3)
+        self.assertEqual((await self.manager.pending_status("pack-a"))["count"], 0)
+        self.assertEqual(len(list((self.packs / "pack-a" / "memes" / "happy").glob("*.png"))), 1)
+
     async def test_legacy_bulk_import_cannot_bypass_manual_review(self):
         await self.add_candidate()
         with self.assertRaises(RuntimeError):
@@ -666,3 +686,10 @@ class AutoCollectReviewTests(unittest.IsolatedAsyncioTestCase):
         event = SimpleNamespace(message_obj=SimpleNamespace(message=[]))
         self.assertFalse(await self.manager.submit(event))
         self.assertEqual(self.manager.counters, {})
+
+    async def test_discard_pending_removes_orphaned_missing_file(self):
+        record_id, _ = await self.add_candidate((12, 34, 56))
+        self.manager.pending_image_path("pack-a", record_id).unlink()
+        discarded = await self.manager.discard_pending("pack-a", [record_id])
+        self.assertEqual(discarded["discarded"], 1)
+        self.assertEqual((await self.manager.pending_status("pack-a"))["count"], 0)

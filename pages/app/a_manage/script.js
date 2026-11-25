@@ -40,7 +40,9 @@ async function initApp() {
         "img_host/sync/task_status",
       ].includes(endpoint)
     ) {
-      mergedParams.managed_pack_id = managedPackId;
+      if (!String(mergedParams.managed_pack_id || "").trim()) {
+        mergedParams.managed_pack_id = managedPackId;
+      }
     }
     if (
       ["meme_image_data", "auto-collect/inbox/image_data"].includes(endpoint)
@@ -59,15 +61,24 @@ async function initApp() {
       selectedPackId &&
       ["emoji/", "category/", "sync/"].some((prefix) =>
         endpoint.startsWith(prefix),
-      )
+      ) &&
+      !String(mergedBody.managed_pack_id || "").trim()
     ) {
-      // 写接口按当前管理的表情包定位目标目录，避免误改默认包。
+      // 写接口按当前管理的表情包定位目标目录，避免误改默认包；保留调用方显式指定的目标包。
       mergedBody.managed_pack_id = selectedPackId;
     }
-    if (selectedPackId && endpoint.startsWith("img_host/sync/")) {
+    if (
+      selectedPackId &&
+      endpoint.startsWith("img_host/sync/") &&
+      !String(mergedBody.managed_pack_id || "").trim()
+    ) {
       mergedBody.managed_pack_id = selectedPackId;
     }
-    if (selectedPackId && endpoint.startsWith("semantic/")) {
+    if (
+      selectedPackId &&
+      endpoint.startsWith("semantic/") &&
+      !String(mergedBody.pack_id || "").trim()
+    ) {
       mergedBody.pack_id = selectedPackId;
     }
     const result = await window.AstrBotPluginPage.apiPost(endpoint, mergedBody);
@@ -936,6 +947,8 @@ async function initApp() {
   };
   const uploadStateByCategory = new Map();
   let initialStatusTimerId = null;
+  let syncStatusRequestId = 0;
+  let imgHostSyncStatusRequestId = 0;
   let activeCategoryEdit = null;
   let pendingMoveTargetItems = [];
   let imagePreviewState = null;
@@ -984,7 +997,15 @@ async function initApp() {
 
   async function refreshPackExportCapability(packId = activeManagePackId) {
     const normalizedPackId = String(packId || "").trim();
+    const hasExportUi = Boolean(
+      transferCurrentPack ||
+        exportModeBackup ||
+        vectorBackupHint ||
+        exportPackDownloadBtn ||
+        exportModeInputs.length,
+    );
     if (
+      !hasExportUi ||
       !managePageActive ||
       exportDownloadInFlight ||
       normalizedPackId !== String(activeManagePackId || "").trim()
@@ -1154,11 +1175,15 @@ async function initApp() {
     rebuildPackVectorsBtn?.classList.remove("hidden");
     incrementPackVectorsBtn?.classList.remove("hidden");
     if (incrementPackVectorsBtn) {
+      const isVectorBusy = vectorOperations.has(normalizedPackId);
       incrementPackVectorsBtn.disabled =
         state !== "ready" ||
         !status?.embedding_provider_ready ||
-        vectorOperations.has(normalizedPackId) ||
+        isVectorBusy ||
         ["running", "paused"].includes(String(status?.task_status || ""));
+      incrementPackVectorsBtn.innerHTML = isVectorBusy
+        ? '<i class="fas fa-spinner fa-spin icon"></i>正在增量处理…'
+        : '<i class="fas fa-plus icon"></i>增量处理';
       incrementPackVectorsBtn.title =
         "仅处理描述已完成的新增或变化图片；更换向量模型或维度后需重建。";
     }
@@ -1379,9 +1404,11 @@ async function initApp() {
     const button = incremental
       ? incrementPackVectorsBtn
       : rebuildPackVectorsBtn;
-    setButtonBusy(button, incremental ? "正在增量处理…" : "正在重建…");
-    if (incrementPackVectorsBtn) incrementPackVectorsBtn.disabled = true;
-    if (rebuildPackVectorsBtn) rebuildPackVectorsBtn.disabled = true;
+    if (normalizedPackId === activeManagePackId) {
+      setButtonBusy(button, incremental ? "正在增量处理…" : "正在重建…");
+      if (incrementPackVectorsBtn) incrementPackVectorsBtn.disabled = true;
+      if (rebuildPackVectorsBtn) rebuildPackVectorsBtn.disabled = true;
+    }
     try {
       showToast(
         incremental ? "正在增量更新向量索引…" : "正在按当前向量模型建立索引…",
@@ -1640,7 +1667,11 @@ async function initApp() {
         "success",
       );
       await loadManagePackSwitcher(importedPackId);
+      clearSelections();
+      setClipboardItems([]);
       await refreshUi({ emojis: true, syncStatus: true });
+      resetImgHostSyncStatusDisplay();
+      void checkImgHostSyncStatus(false);
       await refreshPackExportCapability(importedPackId);
       showToast(`表情包 ${importedPackId} 已导入。`, "success", "导入成功");
       await maybeOfferVectorRebuild(importedPackId, data);
@@ -1896,6 +1927,7 @@ async function initApp() {
     moveResult.classList.add("hidden");
     const previousActivePackId = activeManagePackId;
     clearSelections();
+    setClipboardItems([]);
     activeManagePackId = targetPackId;
     void loadCollectionReview();
     applySemanticReviewData({ available: false });
@@ -1903,6 +1935,9 @@ async function initApp() {
     try {
       syncManagedPackQuery(targetPackId);
       await refreshUi({ emojis: true });
+      resetImgHostSyncStatusDisplay();
+      void checkSyncStatus(false);
+      void checkImgHostSyncStatus(false);
       await refreshPackExportCapability(targetPackId);
       showToast(`已切换管理视图到 ${targetPackId}。`, "success", "切换成功");
       await maybeOfferVectorRebuild(targetPackId);
@@ -1950,8 +1985,12 @@ async function initApp() {
     try {
       const data = await apiPost("packs/uninstall", { pack_id: targetPackId });
       const switchedPackId = String(data?.switched_default_to || "").trim();
+      clearSelections();
+      setClipboardItems([]);
       await loadManagePackSwitcher(switchedPackId);
       await refreshUi({ emojis: true, syncStatus: true });
+      resetImgHostSyncStatusDisplay();
+      void checkImgHostSyncStatus(false);
       const switchedHint = switchedPackId ? `，已切换到 ${switchedPackId}` : "";
       const createdHint = data?.auto_created_empty_pack
         ? "（已自动创建空表情包）"
@@ -1976,8 +2015,12 @@ async function initApp() {
         set_as_default: true,
       });
       const installedPackId = String(data?.pack_id || "").trim();
+      clearSelections();
+      setClipboardItems([]);
       await loadManagePackSwitcher(installedPackId);
       await refreshUi({ emojis: true, syncStatus: true });
+      resetImgHostSyncStatusDisplay();
+      void checkImgHostSyncStatus(false);
       const installedName = String(
         data?.selected_pack_name ||
           data?.name ||
@@ -2936,7 +2979,7 @@ async function initApp() {
     }
     renderImageSemantic(null, { loading: true });
     setImagePreviewBusy(false);
-    unlockPageScroll();
+    unlockPageScroll("image-preview");
   }
 
   async function openImagePreview(category, emoji, previewDataUrl = "") {
@@ -2951,7 +2994,7 @@ async function initApp() {
       semantic: null,
     };
     imagePreviewState = previewState;
-    lockPageScroll();
+    lockPageScroll("image-preview");
     imagePreviewModalRoot.classList.remove("hidden");
     imagePreviewModalRoot.setAttribute("aria-hidden", "false");
     imagePreviewImg.alt = `表情包预览：${emoji}`;
@@ -3080,7 +3123,7 @@ async function initApp() {
       confirmResolver = null;
       resolver(result);
     }
-    unlockPageScroll();
+    unlockPageScroll("confirm");
   }
 
   function showConfirm({
@@ -3098,6 +3141,10 @@ async function initApp() {
       return Promise.resolve(confirm(`${title}\n\n${description}`));
     }
 
+    if (confirmResolver) {
+      closeConfirm(false);
+    }
+
     confirmModalTitle.textContent = title;
     confirmModalDescription.textContent = description;
     confirmModalConfirmBtn.textContent = confirmLabel;
@@ -3111,7 +3158,7 @@ async function initApp() {
       !confirmModalRoot.contains(activeElement)
         ? activeElement
         : null;
-    lockPageScroll();
+    lockPageScroll("confirm");
     confirmModalRoot.inert = false;
     confirmModalRoot.classList.remove("hidden");
     confirmModalRoot.setAttribute("aria-hidden", "false");
@@ -3185,13 +3232,18 @@ async function initApp() {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  // 模态弹窗共享滚动锁：计数式，支持弹窗叠加（预览上再弹确认框）
-  let scrollLockCount = 0;
+  // 模态弹窗共享滚动锁：按弹窗归属幂等记录，支持叠加且重复开关不会失衡
+  const scrollLockOwners = new Set();
   let scrollLockSavedY = 0;
 
-  function lockPageScroll() {
-    scrollLockCount += 1;
-    if (scrollLockCount > 1) {
+  function lockPageScroll(owner = "default") {
+    const key = String(owner || "default");
+    if (scrollLockOwners.has(key)) {
+      return;
+    }
+    const wasEmpty = scrollLockOwners.size === 0;
+    scrollLockOwners.add(key);
+    if (!wasEmpty) {
       return;
     }
     scrollLockSavedY = window.scrollY || 0;
@@ -3199,12 +3251,9 @@ async function initApp() {
     document.body.style.top = `-${scrollLockSavedY}px`;
   }
 
-  function unlockPageScroll() {
-    if (scrollLockCount === 0) {
-      return;
-    }
-    scrollLockCount -= 1;
-    if (scrollLockCount > 0) {
+  function unlockPageScroll(owner = "default") {
+    const key = String(owner || "default");
+    if (!scrollLockOwners.delete(key) || scrollLockOwners.size > 0) {
       return;
     }
     document.body.classList.remove("page-scroll-locked");
@@ -4266,36 +4315,65 @@ async function initApp() {
 
     const failedUploads = [];
     const duplicateUploads = [];
+    let refreshError = null;
 
-    for (const file of uniqueFiles) {
-      uploadState.currentFileName = file.name;
-      refreshUploadDropzones(category);
+    try {
+      for (const file of uniqueFiles) {
+        uploadState.currentFileName = file.name;
+        refreshUploadDropzones(category);
 
-      try {
-        await uploadEmoji(category, file, packId);
-        uploadState.completed += 1;
-      } catch (error) {
-        if (error.code === "duplicate_emoji" || error.status === 409) {
-          uploadState.duplicates += 1;
-          duplicateUploads.push({ fileName: file.name, error });
-        } else {
-          uploadState.failed += 1;
-          failedUploads.push({ fileName: file.name, error });
+        try {
+          await uploadEmoji(category, file, packId);
+          uploadState.completed += 1;
+        } catch (error) {
+          if (
+            error?.code === "duplicate_emoji" ||
+            String(error?.message || "").includes("同一分类中已存在相同文件")
+          ) {
+            uploadState.duplicates += 1;
+            duplicateUploads.push({ fileName: file.name, error });
+          } else {
+            uploadState.failed += 1;
+            failedUploads.push({ fileName: file.name, error });
+          }
         }
+
+        refreshUploadDropzones(category);
       }
 
+      if (uploadState.completed > 0 && activeManagePackId === packId) {
+        uploadState.refreshing = true;
+        uploadState.currentFileName = "";
+        refreshUploadDropzones(category);
+        try {
+          await refreshUi({ emojis: true });
+        } catch (error) {
+          refreshError = error;
+        }
+      }
+    } finally {
+      uploadStateByCategory.delete(uploadKey);
       refreshUploadDropzones(category);
     }
 
-    if (uploadState.completed > 0 && activeManagePackId === packId) {
-      uploadState.refreshing = true;
-      uploadState.currentFileName = "";
-      refreshUploadDropzones(category);
-      await refreshUi({ emojis: true });
+    if (refreshError) {
+      const summaryParts = [`已上传 ${uploadState.completed} 个文件`];
+      if (uploadState.duplicates > 0) {
+        summaryParts.push(`跳过重复 ${uploadState.duplicates} 个`);
+      }
+      if (uploadState.failed > 0) {
+        summaryParts.push(`失败 ${uploadState.failed} 个`);
+      }
+      showToast(
+        `${summaryParts.join("，")}，但刷新列表失败：${
+          refreshError?.message || String(refreshError)
+        }`,
+        "warning",
+        "列表刷新失败",
+        4500,
+      );
+      return;
     }
-
-    uploadStateByCategory.delete(uploadKey);
-    refreshUploadDropzones(category);
 
     if (uploadState.failed === 0 && uploadState.duplicates === 0) {
       showToast(
@@ -4580,7 +4658,7 @@ async function initApp() {
     if (moveTargetList) {
       moveTargetList.innerHTML = "";
     }
-    unlockPageScroll();
+    unlockPageScroll("move-target");
     if (wasOpen && moveTargetRestoreFocus?.isConnected)
       moveTargetRestoreFocus.focus({ preventScroll: true });
     moveTargetRestoreFocus = null;
@@ -4641,7 +4719,7 @@ async function initApp() {
     }
 
     if (moveTargetModalRoot) {
-      lockPageScroll();
+      lockPageScroll("move-target");
       moveTargetModalRoot.classList.remove("hidden");
       moveTargetModalRoot.setAttribute("aria-hidden", "false");
       moveTargetCancelBtn.focus({ preventScroll: true });
@@ -4826,34 +4904,50 @@ async function initApp() {
       return;
     }
 
+    const packId = activeManagePackId;
     const groupedItems = groupEmojiItemsByCategory(pasteableItems);
     let copiedCount = 0;
     const conflictFiles = [];
     const missingFiles = [];
     const requestErrors = [];
 
-    for (const [sourceCategory, imageFiles] of groupedItems.entries()) {
-      try {
-        const data = await apiPost("emoji/batch_copy", {
-          source_category: sourceCategory,
-          target_category: targetCategory,
-          image_files: imageFiles,
-        });
+    const previousSelectDisabled = Boolean(managePackSelect?.disabled);
+    if (managePackSelect) {
+      managePackSelect.disabled = true;
+    }
+    try {
+      for (const [sourceCategory, imageFiles] of groupedItems.entries()) {
+        if (activeManagePackId !== packId) {
+          requestErrors.push("已切换表情包，已中止剩余粘贴操作");
+          break;
+        }
+        try {
+          const data = await apiPost("emoji/batch_copy", {
+            source_category: sourceCategory,
+            target_category: targetCategory,
+            image_files: imageFiles,
+            ...(packId ? { managed_pack_id: packId } : {}),
+          });
 
-        copiedCount += data.copied_count || 0;
-        (data.conflicting_files || []).forEach((filename) => {
-          conflictFiles.push(`${sourceCategory}/${filename}`);
-        });
-        (data.missing_files || []).forEach((filename) => {
-          missingFiles.push(`${sourceCategory}/${filename}`);
-        });
-      } catch (error) {
-        console.error("批量复制表情包失败", error);
-        requestErrors.push(`${sourceCategory}: ${error.message}`);
+          copiedCount += data.copied_count || 0;
+          (data.conflicting_files || []).forEach((filename) => {
+            conflictFiles.push(`${sourceCategory}/${filename}`);
+          });
+          (data.missing_files || []).forEach((filename) => {
+            missingFiles.push(`${sourceCategory}/${filename}`);
+          });
+        } catch (error) {
+          console.error("批量复制表情包失败", error);
+          requestErrors.push(`${sourceCategory}: ${error.message}`);
+        }
+      }
+    } finally {
+      if (managePackSelect) {
+        managePackSelect.disabled = previousSelectDisabled;
       }
     }
 
-    if (copiedCount > 0) {
+    if (copiedCount > 0 && activeManagePackId === packId) {
       await refreshUi({ emojis: true, imgHostStatus: true });
     }
 
@@ -5007,8 +5101,10 @@ async function initApp() {
           timeoutTimer = null;
         }
         if (subscriptionId && window.AstrBotPluginPage.unsubscribeSSE) {
+          const idToUnsubscribe = subscriptionId;
+          subscriptionId = null;
           try {
-            await window.AstrBotPluginPage.unsubscribeSSE(subscriptionId);
+            await window.AstrBotPluginPage.unsubscribeSSE(idToUnsubscribe);
           } catch (error) {
             console.warn("取消同步进度订阅失败:", error);
           }
@@ -5121,21 +5217,34 @@ async function initApp() {
       window.AstrBotPluginPage.subscribeSSE(
         "img_host/sync/progress",
         {
-          onOpen: () =>
-            setImgHostSyncProgress(`${actionLabel}进行中...`, "info"),
+          onOpen: () => {
+            if (done) return;
+            setImgHostSyncProgress(`${actionLabel}进行中...`, "info");
+          },
           onMessage: ({ parsed }) => handleStatus(parsed),
-          onError: () =>
+          onError: () => {
+            if (done) return;
             setImgHostSyncProgress(
               "实时进度连接异常，已切换轮询确认结果。",
               "warning",
-            ),
+            );
+          },
         },
         syncParams,
       )
         .then((id) => {
+          if (done) {
+            if (id && window.AstrBotPluginPage.unsubscribeSSE) {
+              void window.AstrBotPluginPage
+                .unsubscribeSSE(id)
+                .catch((error) => console.warn("取消同步进度订阅失败:", error));
+            }
+            return;
+          }
           subscriptionId = id;
         })
         .catch((error) => {
+          if (done) return;
           console.warn("订阅同步进度失败，改用轮询:", error);
           setImgHostSyncProgress(
             "实时进度不可用，正在轮询同步结果。",
@@ -5723,7 +5832,7 @@ async function initApp() {
       dangerConfirmResolver = null;
       resolver(result);
     }
-    unlockPageScroll();
+    unlockPageScroll("danger-confirm");
   }
 
   function startDangerCountdown() {
@@ -5781,6 +5890,10 @@ async function initApp() {
       );
     }
 
+    if (dangerConfirmResolver) {
+      closeDangerConfirm(false);
+    }
+
     resetDangerConfirmState();
     dangerConfirmConfig = { actionLabel, countdown };
     dangerModalTitle.textContent = title;
@@ -5792,7 +5905,7 @@ async function initApp() {
       dangerModalConfirmBtn.textContent = "请先勾选上方选项";
       dangerModalConfirmBtn.disabled = true;
     }
-    lockPageScroll();
+    lockPageScroll("danger-confirm");
     dangerModalRoot.classList.remove("hidden");
     dangerModalRoot.setAttribute("aria-hidden", "false");
 
@@ -5853,6 +5966,7 @@ async function initApp() {
       return;
     }
 
+    const packId = activeManagePackId;
     const confirmDescription = `确认删除已选中的 ${selectedCount} 个表情包？未成功删除的项目会保留选中状态。`;
     const confirmed =
       confirmMode === "danger"
@@ -5871,38 +5985,59 @@ async function initApp() {
     if (!confirmed) {
       return;
     }
+    if (activeManagePackId !== packId) {
+      showToast("表情包已切换，已取消本次批量删除。", "warning", "操作已取消");
+      return;
+    }
 
     let deletedCount = 0;
     const errors = [];
     const deletedKeys = [];
     const groupedSelections = groupEmojiItemsByCategory(uniqueItems);
 
-    for (const [category, imageFiles] of groupedSelections.entries()) {
-      try {
-        const data = await apiPost("emoji/batch_delete", {
-          category,
-          image_files: imageFiles,
-        });
-        deletedCount += data.deleted_count || 0;
-        (data.deleted_files || []).forEach((filename) => {
-          deletedKeys.push(createSelectionKey(category, filename));
-        });
-      } catch (error) {
-        console.error("批量删除失败", error);
-        errors.push(`${category}: ${error.message}`);
+    const previousSelectDisabled = Boolean(managePackSelect?.disabled);
+    if (managePackSelect) {
+      managePackSelect.disabled = true;
+    }
+    try {
+      for (const [category, imageFiles] of groupedSelections.entries()) {
+        if (activeManagePackId !== packId) {
+          errors.push("已切换表情包，已中止剩余删除操作");
+          break;
+        }
+        try {
+          const data = await apiPost("emoji/batch_delete", {
+            category,
+            image_files: imageFiles,
+            ...(packId ? { managed_pack_id: packId } : {}),
+          });
+          deletedCount += data.deleted_count || 0;
+          (data.deleted_files || []).forEach((filename) => {
+            deletedKeys.push(createSelectionKey(category, filename));
+          });
+        } catch (error) {
+          console.error("批量删除失败", error);
+          errors.push(`${category}: ${error.message}`);
+        }
+      }
+    } finally {
+      if (managePackSelect) {
+        managePackSelect.disabled = previousSelectDisabled;
       }
     }
 
-    if (useSelectionState) {
-      deletedKeys.forEach((selectionKey) => {
-        selectionState.items.delete(selectionKey);
-      });
-    }
+    if (activeManagePackId === packId) {
+      if (useSelectionState) {
+        deletedKeys.forEach((selectionKey) => {
+          selectionState.items.delete(selectionKey);
+        });
+      }
 
-    if (deletedCount > 0) {
-      await refreshUi({ emojis: true });
-    } else {
-      updateSelectionUI();
+      if (deletedCount > 0) {
+        await refreshUi({ emojis: true });
+      } else {
+        updateSelectionUI();
+      }
     }
 
     if (errors.length > 0) {
@@ -6687,11 +6822,18 @@ async function initApp() {
     const statusDiv = document.getElementById("sync-status");
     if (!statusDiv) return;
 
+    const requestId = ++syncStatusRequestId;
+    const requestedPackId = String(activeManagePackId || "").trim();
+    const isCurrentRequest = () =>
+      requestId === syncStatusRequestId &&
+      requestedPackId === String(activeManagePackId || "").trim();
+
     const btn = document.getElementById("check-sync-btn");
     setButtonBusy(btn, "正在检查中...");
 
     try {
       const data = await apiGet("sync/status");
+      if (!isCurrentRequest()) return;
       if (data.status === "error") throw new Error(data.message);
 
       const differences = normalizeSyncDifferences(data);
@@ -6701,13 +6843,16 @@ async function initApp() {
         showToast("配置状态已刷新。", "success", "检查完成");
       }
     } catch (error) {
+      if (!isCurrentRequest()) return;
       console.error("检查同步状态失败:", error);
       renderSyncStatusError(statusDiv, error.message);
       if (showAlert) {
         showToast(error.message, "error", "检查失败");
       }
     } finally {
-      restoreButton(btn);
+      if (requestId === syncStatusRequestId) {
+        restoreButton(btn);
+      }
     }
   }
 
@@ -6897,7 +7042,7 @@ async function initApp() {
     if (categoryEditDescInput) {
       categoryEditDescInput.value = "";
     }
-    unlockPageScroll();
+    unlockPageScroll("category-edit");
   }
 
   // 编辑类别
@@ -6923,7 +7068,7 @@ async function initApp() {
           : "";
     }
     if (categoryEditModalRoot) {
-      lockPageScroll();
+      lockPageScroll("category-edit");
       categoryEditModalRoot.classList.remove("hidden");
       categoryEditModalRoot.setAttribute("aria-hidden", "false");
     }
@@ -6941,7 +7086,7 @@ async function initApp() {
   // 保存类别修改
   async function saveCategory(oldName = activeCategoryEdit) {
     const newName = categoryEditNameInput?.value.trim() || "";
-    const newDesc = categoryEditDescInput?.value.trim() || "";
+    const newDesc = categoryEditDescInput?.value.trim() || "请添加描述";
 
     if (!newName) {
       showToast("类别名称不能为空。", "warning", "保存失败");
@@ -6954,6 +7099,7 @@ async function initApp() {
     }
 
     setButtonBusy(categoryEditSaveBtn, "保存中...");
+    let renamed = false;
 
     try {
       if (oldName !== newName) {
@@ -6961,6 +7107,11 @@ async function initApp() {
           old_name: oldName,
           new_name: newName,
         });
+        renamed = true;
+        activeCategoryEdit = newName;
+        if (categoryEditModalTitle) {
+          categoryEditModalTitle.textContent = `编辑类别「${newName}」`;
+        }
       }
 
       await apiPost("category/update_description", {
@@ -6973,6 +7124,9 @@ async function initApp() {
       showToast(`类别「${newName}」已保存。`, "success", "保存成功");
     } catch (error) {
       console.error("保存类别修改失败:", error);
+      if (renamed) {
+        await refreshUi({ emojis: true, syncStatus: true }).catch(() => {});
+      }
       showToast(error.message, "error", "保存失败");
     } finally {
       restoreButton(categoryEditSaveBtn);
@@ -7172,10 +7326,14 @@ async function initApp() {
         });
         createPackDialog.close();
         clearSelections();
+        setClipboardItems([]);
         lastMove = null;
         moveResult.classList.add("hidden");
         await loadManagePackSwitcher(result.pack_id);
         await refreshUi({ emojis: true });
+        resetImgHostSyncStatusDisplay();
+        void checkSyncStatus(false);
+        void checkImgHostSyncStatus(false);
         showToast(`已创建 ${result.name}`, "success", "创建成功");
       } catch (error) {
         errorLabel.textContent = error?.message || String(error);
@@ -7230,8 +7388,44 @@ async function initApp() {
       .catch((error) => console.warn("无法恢复图片同步进度：", error));
   }, 180);
 
+  function resetImgHostSyncStatusDisplay() {
+    const placeholderIds = [
+      "upload-count",
+      "download-count",
+      "remote-extra-count",
+      "local-extra-count",
+      "img-host-provider",
+      "remote-image-count",
+      "remote-storage-size",
+    ];
+    for (const id of placeholderIds) {
+      const element = document.getElementById(id);
+      if (element) {
+        element.textContent = "--";
+      }
+    }
+    const conflictCount = document.getElementById("conflict-count");
+    if (conflictCount) {
+      conflictCount.textContent = "0";
+    }
+    const conflictsBox = document.getElementById("img-host-conflicts");
+    if (conflictsBox) {
+      conflictsBox.classList.add("hidden");
+    }
+    const conflictFiles = document.getElementById("img-host-conflict-files");
+    if (conflictFiles) {
+      conflictFiles.replaceChildren();
+    }
+  }
+
   // 检查图床同步状态
   async function checkImgHostSyncStatus(showAlert = true) {
+    const requestId = ++imgHostSyncStatusRequestId;
+    const requestedPackId = String(activeManagePackId || "").trim();
+    const isCurrentRequest = () =>
+      requestId === imgHostSyncStatusRequestId &&
+      requestedPackId === String(activeManagePackId || "").trim();
+
     const uploadCountElement = document.getElementById("upload-count");
     const downloadCountElement = document.getElementById("download-count");
     const remoteExtraCountElement =
@@ -7246,6 +7440,7 @@ async function initApp() {
 
     try {
       const data = await apiGet("img_host/sync/status");
+      if (!isCurrentRequest()) return;
       const conflicts = data.conflicts || [];
       document.getElementById("conflict-count").textContent = conflicts.length;
       document
@@ -7323,28 +7518,9 @@ async function initApp() {
         );
       }
     } catch (error) {
+      if (!isCurrentRequest()) return;
       console.error("检查图床同步状态失败:", error);
-      if (uploadCountElement) {
-        uploadCountElement.textContent = "--";
-      }
-      if (downloadCountElement) {
-        downloadCountElement.textContent = "--";
-      }
-      if (remoteExtraCountElement) {
-        remoteExtraCountElement.textContent = "--";
-      }
-      if (localExtraCountElement) {
-        localExtraCountElement.textContent = "--";
-      }
-      if (providerElement) {
-        providerElement.textContent = "--";
-      }
-      if (remoteImageCountElement) {
-        remoteImageCountElement.textContent = "--";
-      }
-      if (remoteStorageSizeElement) {
-        remoteStorageSizeElement.textContent = "--";
-      }
+      resetImgHostSyncStatusDisplay();
       if (showAlert) {
         showToast(error.message, "error", "检查失败");
       }

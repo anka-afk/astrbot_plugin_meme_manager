@@ -82,6 +82,7 @@ def test_service_required_only_for_active_consumers(shared_config, consumer):
         ("timeout", 0),
         ("max_concurrency", 65),
         ("token", "value\nheader"),
+        ("token", "sk-test”"),
     ],
 )
 def test_invalid_service_config_does_not_mutate_values(shared_config, path, value):
@@ -290,3 +291,74 @@ async def test_decision_test_maps_upstream_failure_without_details(
     assert status == 200 and not body["ok"]
     assert body["reason"] == "insufficient_credits" and "余额" in body["message"]
     assert "cf-token" not in json.dumps(body)
+
+
+@pytest.mark.parametrize(
+    "saved_update,draft",
+    [
+        (
+            {
+                "provider": "cloudflare",
+                "account_id": "a" * 32,
+                "token": "cf-secret",
+                "model": "clef-flash",
+            },
+            {
+                "provider": "systemone",
+                "base_url": "https://attacker.example/v1",
+                "model": "test-model",
+            },
+        ),
+        (
+            {
+                "provider": "systemone",
+                "base_url": "https://system-one.dev/v1",
+                "token": "so-secret",
+                "model": "test-model",
+            },
+            {
+                "base_url": "https://attacker.example/v1",
+                "model": "test-model",
+            },
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_decision_test_does_not_leak_saved_token_across_target_change(
+    settings_api, monkeypatch, saved_update, draft
+):
+    settings_api.config["decision_service"].update(saved_update)
+    settings_api.config.save_config()
+
+    async def unexpected_request(client):
+        pytest.fail("变更提供方或地址时不得携带已保存的密钥发起请求")
+
+    monkeypatch.setattr(DecisionClient, "_get_session", unexpected_request)
+    status, body = await settings_call(settings_api, "decision_test", draft)
+    assert status == 200 and not body["ok"] and body["reason"] == "missing_token"
+
+
+def test_tool_only_skips_decision_requirement_for_selection_only(shared_config):
+    snapshot, values = describe_settings(shared_config)
+    updated = validate_settings_changes(
+        values,
+        snapshot["fields"],
+        {
+            "generation.emotion.tool_only": True,
+            "generation.emotion.llm.enabled": True,
+            "generation.emotion.llm.backend": "decision",
+        },
+        shared_config.schema,
+    )
+    assert updated["generation"]["emotion"]["tool_only"] is True
+    with pytest.raises(ValueError, match="密钥"):
+        validate_settings_changes(
+            values,
+            snapshot["fields"],
+            {
+                "generation.emotion.tool_only": True,
+                "auto_collect.enabled": True,
+                "auto_collect.judgment_backend": "decision",
+            },
+            shared_config.schema,
+        )

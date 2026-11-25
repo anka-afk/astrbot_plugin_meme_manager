@@ -119,8 +119,8 @@ class UploadTracker:
             f"{category}/{file_path.name}" if category else file_path.name
         )
         with self._lock:
-            self.uploaded_files.pop(relative, None)
-            self.save()
+            if self.uploaded_files.pop(relative, None) is not None:
+                self.save()
 
     def clear_record(self) -> None:
         """清空基线，不删除任何本地或远端图片。"""

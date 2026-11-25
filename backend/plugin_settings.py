@@ -208,7 +208,7 @@ def validate_settings_changes(
             if not valid_url:
                 raise ValueError(f"「{label}」需要填写完整的 HTTP 或 HTTPS 地址。")
         if path == "decision_service.token" and any(
-            ord(char) < 33 or ord(char) == 127 for char in value
+            ord(char) < 33 or ord(char) >= 127 for char in value
         ):
             raise ValueError("决策服务密钥包含无效字符。")
         if path == "decision_service.model" and (
@@ -233,10 +233,13 @@ def validate_settings_changes(
         model = str(decision.get("model") or "").strip()
         if model and model not in CLOUDFLARE_MODELS:
             raise ValueError("决策模型 ID 仅支持 clef、clef-flash、clef-omni。")
-    selection = updated.get("generation", {}).get("emotion", {}).get("llm", {})
+    emotion = updated.get("generation", {}).get("emotion", {})
+    selection = emotion.get("llm", {})
     collection = updated.get("auto_collect", {})
     decision_used = (
-        selection.get("enabled") and selection.get("backend") == "decision"
+        not emotion.get("tool_only")
+        and selection.get("enabled")
+        and selection.get("backend") == "decision"
     ) or (
         collection.get("enabled") and collection.get("judgment_backend") == "decision"
     )
@@ -246,6 +249,7 @@ def validate_settings_changes(
             reason = {
                 "missing_base_url": "请填写决策服务基础地址。",
                 "missing_token": "请填写决策服务密钥。",
+                "invalid_token": "决策服务密钥包含无效字符。",
                 "missing_model": "请填写决策模型 ID。",
                 "missing_account_id": "请填写 Cloudflare 账户 ID。",
                 "invalid_account_id": "Cloudflare 账户 ID 需为 32 位十六进制字符。",

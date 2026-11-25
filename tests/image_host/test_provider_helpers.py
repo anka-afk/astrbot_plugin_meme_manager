@@ -545,3 +545,106 @@ def test_stardots_download_error_does_not_expose_ticket(
         stardots.download_image({"id": "meme.png"}, tmp_path / "meme.png")
     assert "private-ticket" not in str(error.value)
     assert "ConnectionError" in str(error.value)
+
+
+def test_stardots_upload_leaves_modified_empty_and_handles_null_uploaded_at(
+    stardots, monkeypatch, make_image
+):
+    path = make_image("happy/meme.png")
+    monkeypatch.setattr(
+        stardots,
+        "_make_request",
+        lambda method, url, **kwargs: (
+            {
+                "success": True,
+                "ts": 1700000123456,
+                "data": {
+                    "filename": "happy@@CAT@@meme.png",
+                    "url": "https://cdn.example/happy@@CAT@@meme.png",
+                },
+            }
+            if method == "PUT"
+            else {
+                "success": True,
+                "data": {
+                    "totalCount": 1,
+                    "list": [
+                        {
+                            "name": "happy@@CAT@@meme.png",
+                            "byteSize": path.stat().st_size,
+                            "uploadedAt": None,
+                        }
+                    ],
+                },
+            }
+        ),
+    )
+    uploaded = stardots.upload_image(path)
+    assert uploaded["modified"] == ""
+    listed = stardots.get_image_list()
+    assert listed[0]["modified"] == ""
+
+
+def test_webdav_collection_trailing_slash_and_weak_etag_skips_if_match(
+    webdav, response, monkeypatch, make_image
+):
+    path = make_image("happy/meme.png")
+    content = path.read_bytes()
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs.get("headers") or {}))
+        if method == "PROPFIND":
+            return response(404)
+        if method == "MKCOL":
+            return response(201)
+        return response(200, content=content)
+
+    monkeypatch.setattr(webdav.session, "request", request)
+    assert webdav.get_image_list() == []
+    webdav._ensure_remote_dirs("memes/happy")
+    assert webdav.download_image(
+        {"id": "happy/meme.png", "size": len(content), "etag": 'W/"weak"'}, path
+    )
+    assert calls[0][:2] == ("PROPFIND", "https://dav.example/root/memes/")
+    assert calls[1][:2] == ("MKCOL", "https://dav.example/root/memes/")
+    assert calls[2][:2] == ("MKCOL", "https://dav.example/root/memes/happy/")
+    assert calls[3] == (
+        "GET",
+        "https://dav.example/root/memes/happy/meme.png",
+        {},
+    )
+
+
+def test_webdav_utf8_propfind_and_compressed_download_length_skip(
+    webdav, stardots, response, monkeypatch, make_image, tmp_path
+):
+    xml_bytes = (
+        '<D:multistatus xmlns:D="DAV:"><D:response><D:href>/root/memes/%E5%BC%80%E5%BF%83.png</D:href>'
+        "<D:propstat><D:prop><D:resourcetype/><D:getcontentlength>10</D:getcontentlength></D:prop>"
+        "<D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"
+    ).encode("utf-8")
+    parsed = webdav._parse_propfind_response(xml_bytes, "memes")
+    assert parsed[0]["path"] == "memes/开心.png"
+
+    path = make_image("happy/meme.png")
+    content = path.read_bytes()
+    headers = {"Content-Encoding": "gzip", "Content-Length": "1"}
+    monkeypatch.setattr(
+        webdav.session,
+        "request",
+        lambda *args, **kwargs: response(200, content=content, headers=headers),
+    )
+    assert webdav.download_image({"id": "happy/meme.png"}, tmp_path / "dav.png")
+
+    monkeypatch.setattr(
+        stardots,
+        "_make_request",
+        lambda *args, **kwargs: {"data": {"ticket": "t"}},
+    )
+    monkeypatch.setattr(
+        stardots.session,
+        "get",
+        lambda *args, **kwargs: response(200, content=content, headers=headers),
+    )
+    assert stardots.download_image({"id": "meme.png"}, tmp_path / "sd.png")

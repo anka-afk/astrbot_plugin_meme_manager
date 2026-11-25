@@ -160,7 +160,7 @@ class WebDAVProvider(ImageHostInterface):
                 if response.status_code == 404 and remote_dir == self.base_path:
                     self.listing_exists = False
                     return []
-                entries = self._parse_propfind_response(response.text, remote_dir)
+                entries = self._parse_propfind_response(response.content, remote_dir)
             finally:
                 response.close()
             for entry in entries:
@@ -203,7 +203,12 @@ class WebDAVProvider(ImageHostInterface):
         Returns:
             图片完整且通过校验时返回 True。
         """
-        headers = {"If-Match": image_info["etag"]} if image_info.get("etag") else {}
+        etag = str(image_info.get("etag") or "").strip()
+        headers = (
+            {"If-Match": etag}
+            if etag and not etag.startswith(("W/", "w/"))
+            else {}
+        )
         response = self._request(
             "GET",
             self._url_for_path(self._remote_id_to_path(image_info["id"])),
@@ -216,7 +221,11 @@ class WebDAVProvider(ImageHostInterface):
                     f"WebDAV download failed: HTTP {response.status_code}"
                 )
             size = image_info.get("size")
-            if size is None and response.headers.get("Content-Length", "").isdigit():
+            if (
+                size is None
+                and not response.headers.get("Content-Encoding")
+                and response.headers.get("Content-Length", "").isdigit()
+            ):
                 size = int(response.headers["Content-Length"])
             save_image_stream(
                 response.iter_content(chunk_size=1024 * 1024),
@@ -240,7 +249,7 @@ class WebDAVProvider(ImageHostInterface):
         """
         response = self._request(
             "PROPFIND",
-            self._url_for_path(remote_path),
+            self._url_for_path(remote_path, trailing_slash=True),
             headers={"Depth": str(depth), "Content-Type": "application/xml"},
             data=b'<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:prop>'
             b"<D:resourcetype/><D:getcontentlength/><D:getetag/><D:getlastmodified/>"
@@ -255,7 +264,7 @@ class WebDAVProvider(ImageHostInterface):
         return response
 
     def _parse_propfind_response(
-        self, xml_text: str, requested_path: str
+        self, xml_text: bytes | str, requested_path: str
     ) -> list[dict]:
         """要求资源类型状态成功，并保留可选元数据。
 
@@ -320,7 +329,9 @@ class WebDAVProvider(ImageHostInterface):
         current = ""
         for part in remote_dir.split("/") if remote_dir else []:
             current = f"{current}/{part}" if current else part
-            response = self._request("MKCOL", self._url_for_path(current))
+            response = self._request(
+                "MKCOL", self._url_for_path(current, trailing_slash=True)
+            )
             try:
                 if response.status_code not in (201, 405):
                     raise InvalidResponseError(
@@ -361,21 +372,23 @@ class WebDAVProvider(ImageHostInterface):
             )
         return response
 
-    def _url_for_path(self, remote_path: str) -> str:
+    def _url_for_path(self, remote_path: str, *, trailing_slash: bool = False) -> str:
         """构造经过转义的请求 URL。
 
         Args:
             remote_path: 包含命名空间的路径。
+            trailing_slash: 集合操作（PROPFIND/MKCOL）是否附加末尾斜杠。
 
         Returns:
             WebDAV 请求 URL。
         """
         remote_path = self._normalize_path(remote_path)
-        return (
+        url = (
             f"{self.base_url}/{quote(remote_path, safe='/')}"
             if remote_path
             else self.base_url
         )
+        return f"{url}/" if trailing_slash and not url.endswith("/") else url
 
     def _public_url_for_id(self, remote_id: str) -> str:
         """构造经过转义的公开 URL 或需身份验证的 DAV URL。

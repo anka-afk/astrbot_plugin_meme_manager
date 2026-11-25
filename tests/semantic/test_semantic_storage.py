@@ -483,3 +483,79 @@ def test_category_review_overview_is_unavailable_before_semantic_work(
     overview = storage.get_category_review_overview(pack_dir)
     assert not overview["available"]
     assert overview["statistics"]["total"] == 0
+
+
+def test_reconcile_metadata_drops_missing_external_entries(tmp_path):
+    pack_dir, memes_dir = create_pack(tmp_path)
+    happy = memes_dir / "happy"
+    happy.mkdir()
+    (happy / "keep.png").write_bytes(b"keep")
+    ghost_id = semantic_entry_id("b" * 64, "happy", "memes/happy/ghost.png")
+    external = {
+        "schema_version": storage.SCHEMA_VERSION,
+        "images": {
+            ghost_id: {
+                "entry_id": ghost_id,
+                "content_sha256": "b" * 64,
+                "relative_path": "memes/happy/ghost.png",
+                "category": "happy",
+                "caption": "ghost",
+                "tags": ["ghost"],
+                "caption_status": "done",
+                "embedding_status": "done",
+            }
+        },
+    }
+    metadata = storage.reconcile_metadata(pack_dir, external_data=external)
+    assert ghost_id not in metadata["images"]
+    storage.refresh_metadata_inventory_snapshot(pack_dir, metadata)
+    assert metadata["file_total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_build_index_prunes_stale_ghost_records(tmp_path):
+    pytest.importorskip("faiss")
+    pytest.importorskip("numpy")
+    from astrbot_plugin_meme_manager.backend.semantic import index
+
+    class Provider:
+        provider_config = {"id": "ghost-test", "embedding_model": "model"}
+        get_dim = staticmethod(lambda: 2)
+
+        def get_embedding(self, text):
+            return [1.0, 0.0]
+
+    pack_dir, memes_dir = create_pack(tmp_path)
+    happy = memes_dir / "happy"
+    happy.mkdir()
+    (happy / "keep.png").write_bytes(b"keep")
+    metadata = storage.reconcile_metadata(pack_dir)
+    for item in metadata["images"].values():
+        item.update(caption="Cat", tags=["cat"], caption_status="done")
+    ghost_id = semantic_entry_id("b" * 64, "happy", "memes/happy/ghost.png")
+    metadata["images"][ghost_id] = {
+        "entry_id": ghost_id,
+        "content_sha256": "b" * 64,
+        "relative_path": "memes/happy/ghost.png",
+        "category": "happy",
+        "caption": "Ghost",
+        "tags": ["ghost"],
+        "caption_status": "done",
+        "embedding_status": "pending",
+    }
+    storage.save_metadata(pack_dir, metadata)
+
+    runtime = tmp_path / "runtime"
+    await index.build_index(pack_dir, runtime, "pack", index.EmbeddingAdapter(Provider()))
+    reloaded = storage.load_metadata(pack_dir)
+    assert ghost_id not in reloaded["images"]
+    assert reloaded["file_total"] == 1
+    assert index.index_is_ready(
+        runtime,
+        "pack",
+        reloaded,
+        embedding_provider_id="ghost-test",
+        embedding_model="model",
+        embedding_dimension=2,
+        allow_partial=False,
+    )

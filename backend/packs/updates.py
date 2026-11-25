@@ -9,6 +9,7 @@ import time
 import zipfile
 from pathlib import Path
 
+from ..semantic.models import REVIEW_CATEGORY
 from ..semantic.storage import (
     load_metadata,
     reconcile_metadata,
@@ -64,6 +65,13 @@ def snapshot(pack: Path) -> dict:
         if not path.is_file():
             continue
         relative = path.relative_to(pack).as_posix()
+        rel_parts = Path(relative).parts
+        if (
+            rel_parts
+            and rel_parts[0] == "memes"
+            and any(part.startswith(".") for part in rel_parts[1:])
+        ):
+            continue
         digest = hashlib.sha256()
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -176,32 +184,52 @@ def prepare_update(
         operation_guard(pack_id, "准备资源包更新")
     cache_root = storage.TEMP_DIR / "community_updates"
     if cache_root.is_dir():
-        for cached in sorted(
-            cache_root.iterdir(), key=lambda path: path.stat().st_mtime, reverse=True
-        ):
+        cached_entries = []
+        for path in cache_root.iterdir():
+            try:
+                cached_entries.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+        for _, cached in sorted(cached_entries, key=lambda item: item[0], reverse=True):
             if not re.fullmatch(r"[0-9a-f]{32}", cached.name) or cached.is_symlink():
                 continue
-            record = storage._load_json(cached / "session.json", {})
-            if (
-                record.get("pack_id") == pack_id
-                and record.get("source") == source
-                and time.time() - record.get("created_at", 0) < 14400
-                and record.get("remote", {}).get("version")
-                == str(entry.get("version") or "")
-                and not (cached / "applied.json").exists()
-            ):
-                if cancel_check and cancel_check():
-                    raise storage.InstallCancelledError("已取消下载")
+            try:
+                record = storage._load_json(cached / "session.json", {})
+                if not isinstance(record, dict):
+                    raise ValueError("缓存会话格式损坏")
+                created_at = float(record.get("created_at") or 0)
+                remote = record.get("remote")
+                remote_version = (
+                    remote.get("version") if isinstance(remote, dict) else None
+                )
                 if (
-                    snapshot(cached / "candidate")["signature"]
-                    == record["remote"]["signature"]
+                    record.get("pack_id") == pack_id
+                    and record.get("source") == source
+                    and time.time() - created_at < 14400
+                    and remote_version == str(entry.get("version") or "")
+                    and not (cached / "applied.json").exists()
                 ):
-                    return {
-                        "session": cached.name,
-                        "has_baseline": bool(origin.get("files")),
-                        "version": record["remote"]["version"],
-                        "cached": True,
-                    }
+                    if cancel_check and cancel_check():
+                        raise storage.InstallCancelledError("已取消下载")
+                    if (
+                        snapshot(cached / "candidate")["signature"]
+                        == remote["signature"]
+                    ):
+                        return {
+                            "session": cached.name,
+                            "has_baseline": bool(origin.get("files")),
+                            "version": remote["version"],
+                            "cached": True,
+                        }
+            except storage.InstallCancelledError:
+                raise
+            except (ValueError, OSError, TypeError, KeyError, json.JSONDecodeError):
+                try:
+                    storage._require_regular_tree(cached, "清理损坏更新缓存")
+                    shutil.rmtree(cached, ignore_errors=True)
+                except (ValueError, OSError):
+                    pass
+                continue
     token = secrets.token_hex(16)
     session = storage.TEMP_DIR / "community_updates" / token
     if session.parent.is_dir():
@@ -338,7 +366,7 @@ def plan_update(data: dict, operation_guard=None) -> dict:
     for path, digest in local["files"].items():
         hashes.setdefault(digest, []).append(path)
     rows, categories = [], {}
-    destinations = set(local["files"])
+    destinations = {item.casefold() for item in local["files"]}
     baseline_hashes = set(base.values())
     counts = {
         "added": 0,
@@ -430,17 +458,18 @@ def plan_update(data: dict, operation_guard=None) -> dict:
                 if target:
                     destination = f"memes/{target}/{Path(path).name}"
             if action == "copy" or (
-                destination != local_path and destination in destinations
+                (action == "add" or destination != local_path)
+                and destination.casefold() in destinations
             ):
                 original = Path(destination)
                 number = 1
-                while destination in destinations:
+                while destination.casefold() in destinations:
                     destination = (
                         original.parent
                         / f"{original.stem}_upstream_{number}{original.suffix}"
                     ).as_posix()
                     number += 1
-            destinations.add(destination)
+            destinations.add(destination.casefold())
         rows.append(
             {
                 "path": path,
@@ -553,8 +582,15 @@ def commit_snapshot(
     )
     registry = storage._load_registry()
     entry = next(
-        item.copy() for item in registry["installed_packs"] if item["id"] == pack_id
+        (
+            item.copy()
+            for item in registry.get("installed_packs", [])
+            if isinstance(item, dict) and item.get("id") == pack_id
+        ),
+        None,
     )
+    if entry is None:
+        raise ValueError(f"表情包 {pack_id} 未在注册表中注册")
     info = {
         "pack_id": pack_id,
         "created_at": time.time(),
@@ -719,9 +755,26 @@ def apply_update(data: dict, operation_guard=None) -> dict:
                 item["embedding_status"] = "done"
                 reset_metadata["images"][entry_id] = item
         metadata["images"] = reset_metadata["images"]
-        metadata["requires_local_index_rebuild"] = any(
+        previous_indexable_ids = {
+            entry_id
+            for entry_id, item in local_images.items()
+            if isinstance(item, dict)
+            and item.get("category") != REVIEW_CATEGORY
+            and item.get("embedding_status") == "done"
+        }
+        current_indexable_ids = {
+            entry_id
+            for entry_id, item in metadata["images"].items()
+            if isinstance(item, dict)
+            and item.get("category") != REVIEW_CATEGORY
+            and item.get("embedding_status") == "done"
+        }
+        metadata["requires_local_index_rebuild"] = bool(
+            previous_indexable_ids - current_indexable_ids
+        ) or any(
             item.get("embedding_status") != "done"
             for item in metadata["images"].values()
+            if isinstance(item, dict) and item.get("category") != REVIEW_CATEGORY
         )
         save_metadata(prepared, metadata)
     storage._save_json(

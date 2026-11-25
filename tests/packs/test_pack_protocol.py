@@ -241,3 +241,25 @@ def test_validate_community_index_rejects_invalid_payloads(payload):
 )
 def test_is_official_pack_entry(entry, expected):
     assert protocol.is_official_pack_entry(entry) is expected
+
+
+def test_validate_source_descriptor_blocks_url_injection_and_allows_slash_ref():
+    valid = protocol.validate_source_descriptor(
+        {
+            "type": "github",
+            "repo": "owner/repo",
+            "ref": "release/v2",
+            "subpath": ".",
+        }
+    )
+    assert valid["ref"] == "release/v2"
+    for bad in (
+        {"repo": "owner/repo/extra", "ref": "main"},
+        {"repo": "owner/repo", "ref": "main?x=1"},
+        {"repo": "owner/repo", "ref": "main#frag"},
+        {"repo": "owner/repo", "ref": "../escape"},
+    ):
+        with pytest.raises(ValueError):
+            protocol.validate_source_descriptor(
+                {"type": "github", "subpath": ".", **bad}
+            )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import shutil
@@ -113,6 +114,7 @@ class SemanticTaskManager:
         self._external_pack_operations: dict[str, str] = {}
         self._pause_events: dict[str, asyncio.Event] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._persist_locks: dict[str, asyncio.Lock] = {}
 
     async def close(self) -> None:
         """插件卸载时取消后台任务；每张图片的状态已在处理前后持久化。"""
@@ -130,6 +132,32 @@ class SemanticTaskManager:
 
     def _lock(self, pack_id: str) -> asyncio.Lock:
         return self._locks.setdefault(pack_id, asyncio.Lock())
+
+    def _persist_lock(self, pack_id: str) -> asyncio.Lock:
+        return self._persist_locks.setdefault(pack_id, asyncio.Lock())
+
+    async def _save_metadata_async(
+        self, pack_id: str, pack_dir: Path, metadata: dict[str, Any]
+    ) -> None:
+        async with self._persist_lock(pack_id):
+            snapshot = copy.deepcopy(metadata)
+            await self._run_blocking(save_metadata, pack_dir, snapshot)
+
+    async def _update_state_async(self, pack_id: str, updater) -> dict[str, Any]:
+        async with self._persist_lock(pack_id):
+            def _apply() -> dict[str, Any]:
+                state = self._load_state(pack_id)
+                updated = updater(state)
+                if updated is not None:
+                    self._save_state(pack_id, updated)
+                    return updated
+                return state
+
+            return await self._run_blocking(_apply)
+
+    async def _record_vision_usage_async(self, pack_id: str, usage: Any) -> None:
+        async with self._persist_lock(pack_id):
+            await self._run_blocking(self._record_vision_usage, pack_id, usage)
 
     @staticmethod
     def _task_is_alive(task: asyncio.Task | None) -> bool:
@@ -439,7 +467,9 @@ class SemanticTaskManager:
                 [
                     category_path
                     for category_path in memes_root.iterdir()
-                    if category_path.is_dir() and not category_path.is_symlink()
+                    if category_path.is_dir()
+                    and not category_path.is_symlink()
+                    and not category_path.name.startswith(".")
                 ]
                 if memes_root.is_dir()
                 else []
@@ -929,6 +959,8 @@ class SemanticTaskManager:
         worker_alive = self._semantic_operation_is_alive(pack_id)
         if (
             not worker_alive
+            and not self._lock(pack_id).locked()
+            and not self._external_pack_operations.get(pack_id)
             and task_status in {"running", "paused"}
             and not metadata_read_only
             and not metadata_migration_required
@@ -942,8 +974,19 @@ class SemanticTaskManager:
                 state["updated_at"] = utc_now()
                 self._save_state(pack_id, state)
         images = data.get("images", {})
+        force_pending_ids = (
+            {
+                str(value)
+                for value in (state.get("force_pending_ids") or [])
+                if str(value) in images
+            }
+            if task_status in {"running", "paused"} and state.get("force")
+            else set()
+        )
         caption_done = sum(
-            1 for item in images.values() if semantic_caption_is_complete(item)
+            1
+            for entry_id, item in images.items()
+            if semantic_caption_is_complete(item) and str(entry_id) not in force_pending_ids
         )
         caption_failed = sum(
             1
@@ -960,14 +1003,22 @@ class SemanticTaskManager:
             for item in images.values()
             if isinstance(item, dict) and item.get("embedding_status") == "failed"
         )
-        pending = sum(1 for item in images.values() if self._item_is_queued(item))
+        pending = sum(
+            1
+            for entry_id, item in images.items()
+            if self._item_is_queued(item) or str(entry_id) in force_pending_ids
+        )
         waiting = sum(
             1
-            for item in images.values()
+            for entry_id, item in images.items()
             if isinstance(item, dict)
             and (
                 not semantic_caption_is_complete(item)
-                or item.get("embedding_status") == "pending"
+                or str(entry_id) in force_pending_ids
+                or (
+                    item.get("category") != REVIEW_CATEGORY
+                    and item.get("embedding_status") == "pending"
+                )
             )
         )
         embedding = self._embedding_adapter(pack_id)
@@ -986,10 +1037,14 @@ class SemanticTaskManager:
         )
         completed = sum(
             1
-            for item in images.values()
+            for entry_id, item in images.items()
             if isinstance(item, dict)
             and semantic_caption_is_complete(item)
-            and item.get("embedding_status") == "done"
+            and str(entry_id) not in force_pending_ids
+            and (
+                item.get("category") == REVIEW_CATEGORY
+                or item.get("embedding_status") == "done"
+            )
         )
         failed = sum(
             1
@@ -1026,18 +1081,21 @@ class SemanticTaskManager:
         )
         queued_caption_tasks = sum(
             1
-            for item in images.values()
+            for entry_id, item in images.items()
             if isinstance(item, dict)
             and (
                 not semantic_caption_is_complete(item)
+                or str(entry_id) in force_pending_ids
                 or (not worker_alive and item.get("caption_status") == "running")
             )
         )
         queued_embedding_tasks = sum(
             1
-            for item in images.values()
+            for entry_id, item in images.items()
             if isinstance(item, dict)
+            and item.get("category") != REVIEW_CATEGORY
             and semantic_caption_is_complete(item)
+            and str(entry_id) not in force_pending_ids
             and (
                 item.get("embedding_status") == "pending"
                 or (not worker_alive and item.get("embedding_status") == "running")
@@ -1262,9 +1320,11 @@ class SemanticTaskManager:
     def _item_is_queued(item: Any) -> bool:
         if not isinstance(item, dict):
             return False
-        return not semantic_caption_is_complete(item) or item.get(
-            "embedding_status"
-        ) in {"pending", "running", "failed"}
+        if not semantic_caption_is_complete(item):
+            return True
+        if item.get("category") == REVIEW_CATEGORY:
+            return False
+        return item.get("embedding_status") in {"pending", "running", "failed"}
 
     def _reset_running_items(
         self, pack_id: str, metadata: dict[str, Any] | None = None
@@ -1343,6 +1403,9 @@ class SemanticTaskManager:
             metadata = await self._run_blocking(
                 reconcile_metadata, pack_dir, external_data=external_data
             )
+            for item in metadata.get("images", {}).values():
+                if isinstance(item, dict) and item.get("embedding_status") == "cleared":
+                    item["embedding_status"] = "pending"
             if force:
                 for item in metadata.get("images", {}).values():
                     if item.get("manual_override") or item.get("provenance") in {
@@ -1379,12 +1442,27 @@ class SemanticTaskManager:
             )
             if needs_caption and not self._vision_provider_ready():
                 raise RuntimeError("未配置视觉模型，无法生成图片描述")
+            force_pending_ids = (
+                sorted(
+                    str(entry_id)
+                    for entry_id, item in metadata.get("images", {}).items()
+                    if isinstance(item, dict)
+                    and not (
+                        item.get("manual_override")
+                        or item.get("provenance") in {"manual", "mixed"}
+                    )
+                )
+                if force
+                else []
+            )
             save_metadata(pack_dir, metadata)
             state = {
                 "task_status": "running",
                 "task_phase": "captioning" if needs_caption else "indexing",
                 "queue_cleared": False,
                 "mode": mode,
+                "force": bool(force),
+                "force_pending_ids": force_pending_ids,
                 "concurrency": effective_concurrency,
                 "current": "",
                 "active_items": [],
@@ -1405,7 +1483,14 @@ class SemanticTaskManager:
             self._save_state(pack_id, state)
             pause_event = self._pause_events.setdefault(pack_id, asyncio.Event())
             pause_event.set()
-            task = asyncio.create_task(self._run(pack_id, mode=mode, force=force))
+            task = asyncio.create_task(
+                self._run(
+                    pack_id,
+                    mode=mode,
+                    force=force,
+                    force_pending_ids=set(force_pending_ids) if force else None,
+                )
+            )
             self._tasks[pack_id] = task
         result = self.status(pack_id)
         queue_summary = (
@@ -1453,11 +1538,16 @@ class SemanticTaskManager:
             # 不再等待已发出的模型请求“自然收尾”，否则上游卡住时
             # 页面会永久停在暂停中。
             self._pause_events.setdefault(pack_id, asyncio.Event()).clear()
-            state["task_status"] = "paused"
-            state["paused_at"] = str(state.get("paused_at") or utc_now())
-            state["updated_at"] = utc_now()
-            self._save_state(pack_id, state)
-            interrupted_requests = len(state.get("active_items") or [])
+            paused_state = await self._update_state_async(
+                pack_id,
+                lambda current: {
+                    **current,
+                    "task_status": "paused",
+                    "paused_at": str(current.get("paused_at") or utc_now()),
+                    "updated_at": utc_now(),
+                },
+            )
+            interrupted_requests = len(paused_state.get("active_items") or [])
             if task_is_running and active_task is not None:
                 active_task.cancel()
                 await asyncio.gather(active_task, return_exceptions=True)
@@ -1544,18 +1634,34 @@ class SemanticTaskManager:
                             "embedding_dimension": embedding.dimension,
                         }
                     )
+                force_flag = bool(state.get("force"))
+                resume_force_ids: list[str] = []
                 if not task_is_running:
                     metadata, _ = self._reset_running_items(pack_id)
+                    images_map = metadata.get("images", {})
+                    if force_flag and mode != "index_only":
+                        resume_force_ids = [
+                            str(entry_id)
+                            for entry_id in (state.get("force_pending_ids") or [])
+                            if str(entry_id) in images_map
+                        ]
+                        state["force_pending_ids"] = resume_force_ids
+                    needs_caption = mode != "index_only" and (
+                        bool(resume_force_ids)
+                        or any(
+                            isinstance(item, dict)
+                            and not semantic_caption_is_complete(item)
+                            for item in images_map.values()
+                        )
+                    )
+                    if needs_caption and not self._vision_provider_ready():
+                        raise RuntimeError("未配置视觉模型，无法生成图片描述")
                     state["active_items"] = []
                     state["current"] = ""
                     state["task_phase"] = (
-                        "captioning"
-                        if any(
-                            isinstance(item, dict)
-                            and not semantic_caption_is_complete(item)
-                            for item in metadata.get("images", {}).values()
-                        )
-                        else "indexing"
+                        "indexing"
+                        if mode == "index_only"
+                        else ("captioning" if needs_caption else "indexing")
                     )
                 if state.get("task_status") == "paused" and state.get("paused_at"):
                     try:
@@ -1576,7 +1682,14 @@ class SemanticTaskManager:
                 event.set()
                 if not task_is_running:
                     self._tasks[pack_id] = asyncio.create_task(
-                        self._run(pack_id, mode=mode, force=False)
+                        self._run(
+                            pack_id,
+                            mode=mode,
+                            force=force_flag,
+                            force_pending_ids=(
+                                set(resume_force_ids) if force_flag else None
+                            ),
+                        )
                     )
         result = self.status(pack_id)
         if result.get("task_status") == "running":
@@ -1650,11 +1763,21 @@ class SemanticTaskManager:
             images = metadata.get("images", {})
             if not isinstance(images, dict) or not images:
                 raise RuntimeError("还没有可建立索引的图片描述")
+            memes_root = (pack_dir / "memes").resolve()
             incomplete = sum(
                 1
                 for item in images.values()
                 if (
-                    not isinstance(item, dict) or not semantic_caption_is_complete(item)
+                    isinstance(item, dict)
+                    and (
+                        source := safe_relative_path(
+                            pack_dir, item.get("relative_path", "")
+                        )
+                    )
+                    is not None
+                    and source.is_relative_to(memes_root)
+                    and source.is_file()
+                    and not semantic_caption_is_complete(item)
                 )
             )
             if incomplete and force:
@@ -1670,6 +1793,8 @@ class SemanticTaskManager:
                     "task_status": "running",
                     "task_phase": "indexing",
                     "mode": "index_only",
+                    "force": bool(force),
+                    "force_pending_ids": [],
                     "current": "正在建立向量索引",
                     "active_items": [],
                     "started_at": utc_now(),
@@ -1703,6 +1828,8 @@ class SemanticTaskManager:
                             "completed_with_errors" if has_errors else "completed"
                         ),
                         "task_phase": "finished",
+                        "force": False,
+                        "force_pending_ids": [],
                         "current": "",
                         "active_items": [],
                         "finished_at": utc_now(),
@@ -1766,38 +1893,41 @@ class SemanticTaskManager:
             self._index_tasks.pop(pack_id, None)
             self._pause_events.pop(pack_id, None)
 
-            index_root = self.plugin_data_dir / "semantic_indexes" / pack_id
-            for index_file in index_root.glob("index*.faiss"):
-                index_file.unlink(missing_ok=True)
-            (index_root / "index_manifest.json").unlink(missing_ok=True)
+            def _clear_on_disk() -> None:
+                index_root = self.plugin_data_dir / "semantic_indexes" / pack_id
+                for index_file in index_root.glob("index*.faiss"):
+                    index_file.unlink(missing_ok=True)
+                (index_root / "index_manifest.json").unlink(missing_ok=True)
 
-            metadata = load_metadata(pack_dir)
-            kept_images = {}
-            for digest, raw_item in metadata.get("images", {}).items():
-                if not isinstance(raw_item, dict):
-                    continue
-                # 已完成的图片描述不是“待处理队列”，保留它们；其向量标记为 cleared，
-                # 这样清理后不会再次显示为待处理，但以后点击开始仍会重新建立向量。
-                if raw_item.get("caption_status") == "done":
-                    item = dict(raw_item)
-                    item["embedding_status"] = "cleared"
-                    item["error"] = None
-                    item["updated_at"] = utc_now()
-                    kept_images[str(digest)] = item
-            metadata["images"] = kept_images
-            metadata["requires_local_index_rebuild"] = True
-            save_metadata(pack_dir, metadata)
-            self._save_state(
-                pack_id,
-                {
-                    "task_status": "idle",
-                    "queue_cleared": True,
-                    "current": "",
-                    "last_error": None,
-                    "updated_at": utc_now(),
-                },
-            )
-        return self.status(pack_id)
+                metadata = load_metadata(pack_dir)
+                kept_images = {}
+                for digest, raw_item in metadata.get("images", {}).items():
+                    if not isinstance(raw_item, dict):
+                        continue
+                    # 已完成的图片描述不是“待处理队列”，保留它们；其向量标记为 cleared，
+                    # 这样清理后不会再次显示为待处理，但以后点击开始仍会重新建立向量。
+                    if raw_item.get("caption_status") == "done":
+                        item = dict(raw_item)
+                        item["embedding_status"] = "cleared"
+                        item["error"] = None
+                        item["updated_at"] = utc_now()
+                        kept_images[str(digest)] = item
+                metadata["images"] = kept_images
+                metadata["requires_local_index_rebuild"] = True
+                save_metadata(pack_dir, metadata)
+                self._save_state(
+                    pack_id,
+                    {
+                        "task_status": "idle",
+                        "queue_cleared": True,
+                        "current": "",
+                        "last_error": None,
+                        "updated_at": utc_now(),
+                    },
+                )
+
+            await self._run_blocking(_clear_on_disk)
+        return await self._run_blocking(self.status, pack_id)
 
     async def delete_all_semantic_data(self, pack_id: str) -> dict[str, Any]:
         """删除当前资源包的全部语义结果和本机索引，但保留原始图片。"""
@@ -1820,37 +1950,40 @@ class SemanticTaskManager:
             self._index_tasks.pop(pack_id, None)
             self._pause_events.pop(pack_id, None)
 
-            shutil.rmtree(
-                self.plugin_data_dir / "semantic_indexes" / pack_id,
-                ignore_errors=True,
-            )
-            save_metadata(
-                pack_dir,
-                {
-                    "pack_id": pack_id,
-                    "generated_at": utc_now(),
-                    "images": {},
-                    "file_total": 0,
-                    "unique_total": 0,
-                    "reused_duplicate_files": 0,
-                    "requires_local_index_rebuild": True,
-                    "semantic_data_deleted": True,
-                },
-            )
-            self._save_state(
-                pack_id,
-                {
-                    "task_status": "idle",
-                    "queue_cleared": True,
-                    "semantic_data_deleted": True,
-                    "current": "",
-                    "active_items": [],
-                    "last_error": None,
-                    "deleted_at": utc_now(),
-                    "updated_at": utc_now(),
-                },
-            )
-        return self.status(pack_id)
+            def _delete_on_disk() -> None:
+                shutil.rmtree(
+                    self.plugin_data_dir / "semantic_indexes" / pack_id,
+                    ignore_errors=True,
+                )
+                save_metadata(
+                    pack_dir,
+                    {
+                        "pack_id": pack_id,
+                        "generated_at": utc_now(),
+                        "images": {},
+                        "file_total": 0,
+                        "unique_total": 0,
+                        "reused_duplicate_files": 0,
+                        "requires_local_index_rebuild": True,
+                        "semantic_data_deleted": True,
+                    },
+                )
+                self._save_state(
+                    pack_id,
+                    {
+                        "task_status": "idle",
+                        "queue_cleared": True,
+                        "semantic_data_deleted": True,
+                        "current": "",
+                        "active_items": [],
+                        "last_error": None,
+                        "deleted_at": utc_now(),
+                        "updated_at": utc_now(),
+                    },
+                )
+
+            await self._run_blocking(_delete_on_disk)
+        return await self._run_blocking(self.status, pack_id)
 
     async def _process_caption_item(
         self,
@@ -1879,10 +2012,10 @@ class SemanticTaskManager:
             item.error = "图片路径无效或文件不存在"
             item.updated_at = utc_now()
             raw_item.update(item.to_dict())
-            save_metadata(pack_dir, metadata)
+            await self._save_metadata_async(pack_id, pack_dir, metadata)
             return
 
-        active_items: list[str] = []
+        entered_active = False
         try:
             async with semaphore:
                 # 关键的第二次检查：图片可能在暂停前已经通过第一次等待，随后
@@ -1890,32 +2023,38 @@ class SemanticTaskManager:
                 # 停止补位，只让已经发出的模型请求自然收尾。
                 while True:
                     await event.wait()
-                    state = self._load_state(pack_id)
-                    if state.get("task_status") != "paused":
+                    paused = False
+
+                    def _enter_active(state: dict[str, Any]) -> dict[str, Any] | None:
+                        nonlocal paused
+                        if state.get("task_status") == "paused":
+                            paused = True
+                            return None
+                        current_active = [
+                            str(value)
+                            for value in state.get("active_items", [])
+                            if str(value or "").strip()
+                        ]
+                        if item.relative_path not in current_active:
+                            current_active.append(item.relative_path)
+                        return {
+                            **state,
+                            "task_phase": "captioning",
+                            "active_items": current_active,
+                            "current": current_active[0]
+                            if len(current_active) == 1
+                            else f"并发处理中（{len(current_active)} 项）",
+                            "updated_at": utc_now(),
+                        }
+
+                    await self._update_state_async(pack_id, _enter_active)
+                    if not paused:
+                        entered_active = True
                         break
                     event.clear()
-                active_items = [
-                    str(value)
-                    for value in state.get("active_items", [])
-                    if str(value or "").strip()
-                ]
-                if item.relative_path not in active_items:
-                    active_items.append(item.relative_path)
-                self._save_state(
-                    pack_id,
-                    {
-                        **state,
-                        "task_phase": "captioning",
-                        "active_items": active_items,
-                        "current": active_items[0]
-                        if len(active_items) == 1
-                        else f"并发处理中（{len(active_items)} 项）",
-                        "updated_at": utc_now(),
-                    },
-                )
                 item.caption_status = "running"
                 raw_item.update(item.to_dict())
-                save_metadata(pack_dir, metadata)
+                await self._save_metadata_async(pack_id, pack_dir, metadata)
                 caption = await generate_caption(
                     self.context,
                     path,
@@ -1924,7 +2063,7 @@ class SemanticTaskManager:
                     category_description=item.category_description,
                     available_categories=available_categories,
                 )
-            self._record_vision_usage(pack_id, caption.get("token_usage"))
+            await self._record_vision_usage_async(pack_id, caption.get("token_usage"))
             manual_content = bool(
                 item.manual_override or item.provenance in {"manual", "mixed"}
             )
@@ -1970,7 +2109,9 @@ class SemanticTaskManager:
             item.text_hash = text_hash(item.vector_text)
             item.error = None
         except Exception as exc:
-            self._record_vision_usage(pack_id, getattr(exc, "token_usage", None))
+            await self._record_vision_usage_async(
+                pack_id, getattr(exc, "token_usage", None)
+            )
             item.error = self._safe_error(exc, pack_id)
             result_preview = str(getattr(exc, "result_preview", "") or "").strip()
             if result_preview:
@@ -1978,108 +2119,149 @@ class SemanticTaskManager:
             if item.caption_status != "done":
                 item.caption_status = "failed"
         finally:
-            item.updated_at = utc_now()
-            raw_item.update(item.to_dict())
-            save_metadata(pack_dir, metadata)
-            state = self._load_state(pack_id)
-            active_items = [
-                str(value)
-                for value in state.get("active_items", [])
-                if str(value or "").strip() and str(value) != item.relative_path
-            ]
-            self._save_state(
-                pack_id,
-                {
-                    **state,
-                    "active_items": active_items,
-                    "current": active_items[0]
-                    if len(active_items) == 1
-                    else (
-                        f"并发处理中（{len(active_items)} 项）" if active_items else ""
-                    ),
-                    "updated_at": utc_now(),
-                },
-            )
+            if entered_active:
+                item.updated_at = utc_now()
+                raw_item.update(item.to_dict())
+                await self._save_metadata_async(pack_id, pack_dir, metadata)
 
-    async def _run(self, pack_id: str, *, mode: str, force: bool) -> None:
+                def _leave_active(state: dict[str, Any]) -> dict[str, Any]:
+                    remaining = [
+                        str(value)
+                        for value in state.get("active_items", [])
+                        if str(value or "").strip() and str(value) != item.relative_path
+                    ]
+                    updated_state = {
+                        **state,
+                        "active_items": remaining,
+                        "current": remaining[0]
+                        if len(remaining) == 1
+                        else (
+                            f"并发处理中（{len(remaining)} 项）" if remaining else ""
+                        ),
+                        "updated_at": utc_now(),
+                    }
+                    if item.caption_status == "done" and isinstance(
+                        state.get("force_pending_ids"), list
+                    ):
+                        updated_state["force_pending_ids"] = [
+                            str(value)
+                            for value in state["force_pending_ids"]
+                            if str(value) != digest
+                        ]
+                    return updated_state
+
+                await self._update_state_async(pack_id, _leave_active)
+
+    async def _run(
+        self,
+        pack_id: str,
+        *,
+        mode: str,
+        force: bool,
+        force_pending_ids: set[str] | None = None,
+    ) -> None:
         pack_dir = self._pack_dir(pack_id)
+        current_task = asyncio.current_task()
+        registered_index_task = False
         try:
             metadata = await self._run_blocking(load_metadata, pack_dir)
             vision_provider = str(self.config.get("vision_provider_id") or "")
             embedding = self._embedding_adapter(pack_id)
-            descriptions = await self._run_blocking(
-                load_category_descriptions, pack_dir
-            )
-            memes_root = pack_dir / "memes"
-            available_categories = await self._run_blocking(
-                lambda: (
-                    {
-                        path.name: str(descriptions.get(path.name) or "")
-                        for path in memes_root.iterdir()
-                        if path.is_dir() and path.name != REVIEW_CATEGORY
-                    }
-                    if memes_root.is_dir()
-                    else {}
+            if mode != "index_only":
+                descriptions = await self._run_blocking(
+                    load_category_descriptions, pack_dir
                 )
-            )
-            state = await self._run_blocking(self._load_state, pack_id)
-            try:
-                concurrency = max(1, min(16, int(state.get("concurrency") or 1)))
-            except (TypeError, ValueError):
-                concurrency = self._configured_concurrency()
-            semaphore = asyncio.Semaphore(concurrency)
-            caption_tasks = [
-                asyncio.create_task(
-                    self._process_caption_item(
-                        pack_id,
-                        pack_dir,
-                        metadata,
-                        str(digest),
-                        raw_item,
-                        vision_provider,
-                        available_categories,
-                        force,
-                        semaphore,
-                    ),
-                    name=f"meme-semantic:{pack_id}:{str(digest)[:12]}",
+                memes_root = pack_dir / "memes"
+                available_categories = await self._run_blocking(
+                    lambda: (
+                        {
+                            path.name: str(descriptions.get(path.name) or "")
+                            for path in memes_root.iterdir()
+                            if path.is_dir()
+                            and not path.name.startswith(".")
+                            and path.name != REVIEW_CATEGORY
+                        }
+                        if memes_root.is_dir()
+                        else {}
+                    )
                 )
-                for digest, raw_item in list(metadata.get("images", {}).items())
-                if isinstance(raw_item, dict)
-                and not (
-                    raw_item.get("manual_override")
-                    or raw_item.get("provenance") in {"manual", "mixed"}
-                )
-                and (force or not semantic_caption_is_complete(raw_item))
-            ]
-            if caption_tasks:
-                try:
-                    await asyncio.gather(*caption_tasks)
-                except BaseException:
-                    # gather 遇到第一个异常会立即向上抛出，但不会自动等待其余
-                    # 协程结束。必须主动取消并收拢，否则页面已显示失败后，旧
-                    # 图片请求仍可能继续运行并覆盖下一轮任务的状态。
-                    for caption_task in caption_tasks:
-                        if not caption_task.done():
-                            caption_task.cancel()
-                    await asyncio.gather(*caption_tasks, return_exceptions=True)
-                    raise
-            pause_event = self._pause_events.setdefault(pack_id, asyncio.Event())
-            while (await self._run_blocking(self._load_state, pack_id)).get(
-                "task_status"
-            ) == "paused":
-                await pause_event.wait()
-            reclassification_result = await self._run_blocking(
-                apply_conflict_reclassifications, pack_dir, metadata
-            )
-            if reclassification_result.get("moved"):
                 state = await self._run_blocking(self._load_state, pack_id)
-                state["reclassified_items"] = int(
-                    state.get("reclassified_items", 0) or 0
-                ) + int(reclassification_result["moved"])
-                state["updated_at"] = utc_now()
-                await self._run_blocking(self._save_state, pack_id, state)
-            has_caption = any(
-                isinstance(item, dict) and semantic_caption_is_complete(item)
+                try:
+                    concurrency = max(1, min(16, int(state.get("concurrency") or 1)))
+                except (TypeError, ValueError):
+                    concurrency = self._configured_concurrency()
+                semaphore = asyncio.Semaphore(concurrency)
+                caption_tasks = [
+                    asyncio.create_task(
+                        self._process_caption_item(
+                            pack_id,
+                            pack_dir,
+                            metadata,
+                            str(digest),
+                            raw_item,
+                            vision_provider,
+                            available_categories,
+                            force if force_pending_ids is None else str(digest) in force_pending_ids,
+                            semaphore,
+                        ),
+                        name=f"meme-semantic:{pack_id}:{str(digest)[:12]}",
+                    )
+                    for digest, raw_item in list(metadata.get("images", {}).items())
+                    if isinstance(raw_item, dict)
+                    and not (
+                        raw_item.get("manual_override")
+                        or raw_item.get("provenance") in {"manual", "mixed"}
+                    )
+                    and (
+                        (
+                            str(digest) in force_pending_ids
+                            or not semantic_caption_is_complete(raw_item)
+                        )
+                        if force_pending_ids is not None
+                        else (force or not semantic_caption_is_complete(raw_item))
+                    )
+                ]
+                if caption_tasks:
+                    try:
+                        await asyncio.gather(*caption_tasks)
+                    except BaseException:
+                        # gather 遇到第一个异常会立即向上抛出，但不会自动等待其余
+                        # 协程结束。必须主动取消并收拢，否则页面已显示失败后，旧
+                        # 图片请求仍可能继续运行并覆盖下一轮任务的状态。
+                        for caption_task in caption_tasks:
+                            if not caption_task.done():
+                                caption_task.cancel()
+                        await asyncio.gather(*caption_tasks, return_exceptions=True)
+                        raise
+            pause_event = self._pause_events.setdefault(pack_id, asyncio.Event())
+            while True:
+                while (await self._run_blocking(self._load_state, pack_id)).get(
+                    "task_status"
+                ) == "paused":
+                    await pause_event.wait()
+                async with self._lock(pack_id):
+                    current_state = await self._run_blocking(self._load_state, pack_id)
+                    if current_state.get("task_status") == "paused":
+                        continue
+                    if mode != "caption_only" and current_task is not None:
+                        self._index_tasks[pack_id] = current_task
+                        registered_index_task = True
+                    break
+            if mode != "index_only":
+                reclassification_result = await self._run_blocking(
+                    apply_conflict_reclassifications, pack_dir, metadata
+                )
+                if reclassification_result.get("moved"):
+                    state = await self._run_blocking(self._load_state, pack_id)
+                    state["reclassified_items"] = int(
+                        state.get("reclassified_items", 0) or 0
+                    ) + int(reclassification_result["moved"])
+                    state["updated_at"] = utc_now()
+                    await self._run_blocking(self._save_state, pack_id, state)
+            indexable_has_caption = any(
+                isinstance(item, dict)
+                and item.get("category") != REVIEW_CATEGORY
+                and semantic_caption_is_complete(item)
                 for item in metadata.get("images", {}).values()
             )
             all_captions_done = bool(
@@ -2094,31 +2276,41 @@ class SemanticTaskManager:
                     isinstance(item, dict) and not semantic_caption_is_complete(item)
                     for item in metadata.get("images", {}).values()
                 )
-            elif embedding.ready and has_caption and all_captions_done:
+            elif (
+                embedding.ready
+                and indexable_has_caption
+                and (all_captions_done or mode == "index_only")
+            ):
                 # build_index 会从旧 FAISS 复用未变化向量，只补充新增或变化的图片。
-                index_state = await self._run_blocking(self._load_state, pack_id)
-                await self._run_blocking(
-                    self._save_state,
-                    pack_id,
-                    {
-                        **index_state,
-                        "task_status": "running",
-                        "task_phase": "indexing",
-                        "current": "正在建立向量索引",
-                        "updated_at": utc_now(),
-                    },
-                )
+                async with self._lock(pack_id):
+                    index_state = await self._run_blocking(self._load_state, pack_id)
+                    await self._run_blocking(
+                        self._save_state,
+                        pack_id,
+                        {
+                            **index_state,
+                            "task_status": "running",
+                            "task_phase": "indexing",
+                            "current": "正在建立向量索引",
+                            "updated_at": utc_now(),
+                        },
+                    )
                 await build_index(
                     pack_dir,
                     self.plugin_data_dir,
                     pack_id,
                     embedding,
                     force=force,
+                    incremental_only=(
+                        mode == "index_only" and not force and not all_captions_done
+                    ),
                 )
-            elif has_caption and not embedding.ready:
+            elif indexable_has_caption and not embedding.ready:
                 for item in metadata.get("images", {}).values():
-                    if not isinstance(item, dict) or not semantic_caption_is_complete(
-                        item
+                    if (
+                        not isinstance(item, dict)
+                        or item.get("category") == REVIEW_CATEGORY
+                        or not semantic_caption_is_complete(item)
                     ):
                         continue
                     item["embedding_status"] = "failed"
@@ -2129,8 +2321,15 @@ class SemanticTaskManager:
                 failed = any(
                     isinstance(item, dict)
                     and (
-                        not semantic_caption_is_complete(item)
-                        or item.get("embedding_status") != "done"
+                        (
+                            mode != "index_only"
+                            and not semantic_caption_is_complete(item)
+                        )
+                        or (
+                            item.get("category") != REVIEW_CATEGORY
+                            and semantic_caption_is_complete(item)
+                            and item.get("embedding_status") != "done"
+                        )
                     )
                     for item in latest.get("images", {}).values()
                 )
@@ -2140,6 +2339,8 @@ class SemanticTaskManager:
                     "task_status": "completed_with_errors" if failed else "completed",
                     "task_phase": "finished",
                     "mode": mode,
+                    "force": False,
+                    "force_pending_ids": [],
                     "current": "",
                     "active_items": [],
                     "finished_at": utc_now(),
@@ -2164,3 +2365,10 @@ class SemanticTaskManager:
                 }
             )
             await self._run_blocking(self._save_state, pack_id, failed_state)
+        finally:
+            if (
+                registered_index_task
+                and current_task is not None
+                and self._index_tasks.get(pack_id) is current_task
+            ):
+                self._index_tasks.pop(pack_id, None)
